@@ -1,0 +1,16 @@
+plugins {
+    id 'java'
+}
+
+group 'com.oddin.oddsfeed'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation files('src/libs/oddin_feed_sdk-0.0.1.jar')
+}
