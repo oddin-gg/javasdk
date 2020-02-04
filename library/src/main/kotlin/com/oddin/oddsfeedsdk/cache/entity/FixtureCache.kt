@@ -5,6 +5,7 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Fixture
 import com.oddin.oddsfeedsdk.api.entities.sportevent.TvChannel
+import com.oddin.oddsfeedsdk.api.entities.sportevent.TvChannelImpl
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.utils.URN
@@ -50,7 +51,8 @@ class FixtureCacheImpl @Inject constructor(
 
             val fixture = LocalizedFixture(
                 data.startTime?.toGregorianCalendar()?.time,
-                ConcurrentHashMap(data.extraInfo.info.map { it.key to it.value }.toMap())
+                ConcurrentHashMap(data.extraInfo.info.map { it.key to it.value }.toMap()),
+                data.tvChannels?.tvChannel?.map { TvChannelImpl(it.name, it.streamUrl) } ?: emptyList()
             )
 
             internalCache.put(id, fixture)
@@ -60,10 +62,9 @@ class FixtureCacheImpl @Inject constructor(
 }
 
 data class LocalizedFixture(
-    var startTime: Date?,
-    var extraInfo: ConcurrentHashMap<String, String>?,
-    // @TODO Missing in XML
-    var tvChannels: List<TvChannel>? = null
+    val startTime: Date?,
+    val extraInfo: ConcurrentHashMap<String, String>,
+    val tvChannels: List<TvChannel>
 )
 
 class FixtureImpl(

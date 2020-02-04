@@ -19,9 +19,9 @@ import javax.xml.datatype.XMLGregorianCalendar;
 
 /**
  * <p>Java class for fixture complex type.
- * 
+ *
  * <p>The following schema fragment specifies the expected content contained within this class.
- * 
+ *
  * <pre>
  * &lt;complexType name="fixture">
  *   &lt;complexContent>
@@ -37,17 +37,15 @@ import javax.xml.datatype.XMLGregorianCalendar;
  *   &lt;/complexContent>
  * &lt;/complexType>
  * </pre>
- * 
- * 
  */
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "fixture", propOrder = {
         "delayedInfo",
+        "tvChannels",
         "extraInfo"
 })
 public class RAFixture
-    extends RASportEvent
-{
+        extends RASportEvent {
 
     @XmlElement(name = "delayed_info")
     protected RADelayedInfo delayedInfo;
@@ -61,14 +59,16 @@ public class RAFixture
     @XmlAttribute(name = "next_live_time")
     @XmlSchemaType(name = "dateTime")
     protected XMLGregorianCalendar nextLiveTime;
+    @XmlElement(
+            name = "tv_channels"
+    )
+    protected RAPITvChannels tvChannels;
 
     /**
      * Gets the value of the delayedInfo property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link RADelayedInfo }
-     *     
+     *
+     * @return possible object is
+     * {@link RADelayedInfo }
      */
     public RADelayedInfo getDelayedInfo() {
         return delayedInfo;
@@ -76,11 +76,9 @@ public class RAFixture
 
     /**
      * Sets the value of the delayedInfo property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link RADelayedInfo }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link RADelayedInfo }
      */
     public void setDelayedInfo(RADelayedInfo value) {
         this.delayedInfo = value;
@@ -88,11 +86,9 @@ public class RAFixture
 
     /**
      * Gets the value of the extraInfo property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link RAExtraInfo }
-     *     
+     *
+     * @return possible object is
+     * {@link RAExtraInfo }
      */
     public RAExtraInfo getExtraInfo() {
         return extraInfo;
@@ -100,11 +96,9 @@ public class RAFixture
 
     /**
      * Sets the value of the extraInfo property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link RAExtraInfo }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link RAExtraInfo }
      */
     public void setExtraInfo(RAExtraInfo value) {
         this.extraInfo = value;
@@ -112,11 +106,9 @@ public class RAFixture
 
     /**
      * Gets the value of the startTimeConfirmed property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link Boolean }
-     *     
+     *
+     * @return possible object is
+     * {@link Boolean }
      */
     public Boolean isStartTimeConfirmed() {
         return startTimeConfirmed;
@@ -124,11 +116,9 @@ public class RAFixture
 
     /**
      * Sets the value of the startTimeConfirmed property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link Boolean }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link Boolean }
      */
     public void setStartTimeConfirmed(Boolean value) {
         this.startTimeConfirmed = value;
@@ -136,11 +126,9 @@ public class RAFixture
 
     /**
      * Gets the value of the startTime property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link XMLGregorianCalendar }
-     *     
+     *
+     * @return possible object is
+     * {@link XMLGregorianCalendar }
      */
     public XMLGregorianCalendar getStartTime() {
         return startTime;
@@ -148,11 +136,9 @@ public class RAFixture
 
     /**
      * Sets the value of the startTime property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link XMLGregorianCalendar }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link XMLGregorianCalendar }
      */
     public void setStartTime(XMLGregorianCalendar value) {
         this.startTime = value;
@@ -160,11 +146,9 @@ public class RAFixture
 
     /**
      * Gets the value of the nextLiveTime property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link XMLGregorianCalendar }
-     *     
+     *
+     * @return possible object is
+     * {@link XMLGregorianCalendar }
      */
     public XMLGregorianCalendar getNextLiveTime() {
         return nextLiveTime;
@@ -172,14 +156,20 @@ public class RAFixture
 
     /**
      * Sets the value of the nextLiveTime property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link XMLGregorianCalendar }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link XMLGregorianCalendar }
      */
     public void setNextLiveTime(XMLGregorianCalendar value) {
         this.nextLiveTime = value;
+    }
+
+    public RAPITvChannels getTvChannels() {
+        return this.tvChannels;
+    }
+
+    public void setTvChannels(RAPITvChannels value) {
+        this.tvChannels = value;
     }
 
 }
