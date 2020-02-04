@@ -42,6 +42,7 @@ public class ObjectFactory {
     private final static QName _MatchSummary_QNAME = new QName("http://schemas.oddin.gg/v1", "match_summary");
     private final static QName _TournamentSchedule_QNAME = new QName("http://schemas.oddin.gg/v1", "tournament_schedule");
     private final static QName _Schedule_QNAME = new QName("http://schemas.oddin.gg/v1", "schedule");
+    private final static QName _ReplaySetContent_QNAME = new QName("http://schemas.oddin.gg/v1", "replay_set_content");
 
     /**
      * Create a new ObjectFactory that can be used to create new instances of schema derived classes for package: gg.oddin.schemas.v1
@@ -355,6 +356,22 @@ public class ObjectFactory {
     }
 
     /**
+     * Create an instance of {@link RAReplaySetContent }
+     *
+     */
+    public RAReplaySetContent createReplaySetContent() {
+        return new RAReplaySetContent();
+    }
+
+    /**
+     * Create an instance of {@link RAReplayEvent }
+     *
+     */
+    public RAReplayEvent createReplayEvent() {
+        return new RAReplayEvent();
+    }
+
+    /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RABookmakerDetail }{@code >}}
      * 
      */
@@ -451,6 +468,15 @@ public class ObjectFactory {
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "schedule")
     public JAXBElement<RAScheduleEndpoint> createSchedule(RAScheduleEndpoint value) {
         return new JAXBElement<RAScheduleEndpoint>(_Schedule_QNAME, RAScheduleEndpoint.class, null, value);
+    }
+
+    /**
+     * Create an instance of {@link JAXBElement }{@code <}{@link RAReplaySetContent }{@code >}}
+     *
+     */
+    @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "replay_set_content")
+    public JAXBElement<RAReplaySetContent> createReplaySetContent(RAReplaySetContent value) {
+        return new JAXBElement<RAReplaySetContent>(_ReplaySetContent_QNAME, RAReplaySetContent.class, null, value);
     }
 
 }
