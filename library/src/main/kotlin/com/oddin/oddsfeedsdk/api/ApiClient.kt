@@ -48,6 +48,20 @@ interface ApiClient {
     suspend fun fetchLiveMatches(locale: Locale): List<RASportEvent>
     suspend fun fetchMatches(date: Date, locale: Locale): List<RASportEvent>
     suspend fun fetchMarketDescriptions(locale: Locale): List<RAMarketDescription>
+    suspend fun postReplayClear(nodeId: Int?): Boolean
+    suspend fun postReplayStop(nodeId: Int?): Boolean
+    suspend fun fetchReplaySetContent(nodeId: Int?): List<RAReplayEvent>
+    suspend fun putReplayEvent(eventId: URN, nodeId: Int?): Boolean
+    suspend fun deleteReplayEvent(eventId: URN, nodeId: Int?): Boolean
+    suspend fun postReplayStart(
+        nodeId: Int?,
+        speed: Int? = null,
+        maxDelay: Int? = null,
+        useReplayTimestamp: Boolean? = null,
+        productId: Int? = null,
+        runParallel: Boolean? = null
+    ): Boolean
+
     fun subscribeForData(oddsFeedExtListener: OddsFeedExtListener?)
     fun <T> subscribeForClass(clazz: Class<T>): Observable<T>
     fun close()
@@ -187,6 +201,92 @@ class ApiClientImpl @Inject constructor(
         return data.market
     }
 
+    override suspend fun postReplayClear(nodeId: Int?): Boolean {
+        var path = "/replay/clear"
+        if (nodeId != null) {
+            path = "$path&node_id=$nodeId"
+        }
+        return post(path)
+    }
+
+    override suspend fun postReplayStop(nodeId: Int?): Boolean {
+        var path = "/replay/stop"
+        if (nodeId != null) {
+            path = "$path&node_id=$nodeId"
+        }
+        return post(path)
+    }
+
+    override suspend fun fetchReplaySetContent(nodeId: Int?): List<RAReplayEvent> {
+        var path = "/replay"
+        if (nodeId != null) {
+            path = "$path&node_id=$nodeId"
+        }
+
+        val data: RAReplaySetContent = fetchData(path)
+        return data.event
+    }
+
+    override suspend fun putReplayEvent(eventId: URN, nodeId: Int?): Boolean {
+        var path = "/replay/events/$eventId"
+        if (nodeId != null) {
+            path = "$path&node_id=$nodeId"
+        }
+
+        return put(path)
+    }
+
+    override suspend fun deleteReplayEvent(eventId: URN, nodeId: Int?): Boolean {
+        var path = "/replay/events/$eventId"
+        if (nodeId != null) {
+            path = "$path&node_id=$nodeId"
+        }
+
+        return delete(path)
+    }
+
+    override suspend fun postReplayStart(
+        nodeId: Int?,
+        speed: Int?,
+        maxDelay: Int?,
+        useReplayTimestamp: Boolean?,
+        productId: Int?,
+        runParallel: Boolean?
+    ): Boolean {
+        val queryParams = mutableMapOf<String, Any>()
+        if (nodeId != null) {
+            queryParams["node_id"] = nodeId
+        }
+
+        if (speed != null) {
+            queryParams["speed"] = speed
+        }
+
+        if (maxDelay != null) {
+            queryParams["max_delay"] = maxDelay
+        }
+
+        if (useReplayTimestamp != null) {
+            queryParams["use_replay_timestamp"] = useReplayTimestamp
+        }
+
+        if (runParallel != null) {
+            queryParams["run_parallel"] = runParallel
+        }
+
+        if (productId != null) {
+            queryParams["product"] = productId
+        }
+
+        val params = queryParams.map { "${it.key}=${it.value}" }.joinToString("&")
+        var path = "/replay/play"
+        if (params.isNotEmpty()) {
+            path = "$path?$params"
+        }
+
+        return post(path)
+    }
+
     override suspend fun fetchProducers(): RAProducers {
         return fetchData("/descriptions/producers")
     }
@@ -219,6 +319,24 @@ class ApiClientImpl @Inject constructor(
         val result = Fuel.post(path).awaitStringResult()
         if (result is Result.Failure) {
             throw ApiException("Failed to post data", result.error)
+        }
+
+        return true
+    }
+
+    private suspend fun put(path: String): Boolean {
+        val result = Fuel.put(path).awaitStringResult()
+        if (result is Result.Failure) {
+            throw ApiException("Failed to put data", result.error)
+        }
+
+        return true
+    }
+
+    private suspend fun delete(path: String): Boolean {
+        val result = Fuel.delete(path).awaitStringResult()
+        if (result is Result.Failure) {
+            throw ApiException("Failed to delete data", result.error)
         }
 
         return true
