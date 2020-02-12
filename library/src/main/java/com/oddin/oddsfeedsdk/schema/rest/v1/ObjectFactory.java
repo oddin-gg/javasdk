@@ -348,6 +348,22 @@ public class ObjectFactory {
     }
 
     /**
+     * Create an instance of {@link RAPITvChannels }
+     *
+     */
+    public RAPITvChannels createTvChannels() {
+        return new RAPITvChannels();
+    }
+
+    /**
+     * Create an instance of {@link RAPITvChannel }
+     *
+     */
+    public RAPITvChannel createTvChannel() {
+        return new RAPITvChannel();
+    }
+
+    /**
      * Create an instance of {@link RAOutcomeDescription.Outcome }
      * 
      */
