@@ -16,7 +16,6 @@ import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
-import sun.plugin.dom.exception.InvalidStateException
 
 private val logger = KotlinLogging.logger {}
 
@@ -149,7 +148,7 @@ class OddsFeed {
         createdSessionData.forEach {
             try {
                 it.oddsFeedSession.open(
-                    sessionRoutingKeys[it.id] ?: throw InvalidStateException("missing routing keys for session"),
+                    sessionRoutingKeys[it.id] ?: throw Exception("missing routing keys for session"),
                     it.messageInterest,
                     it.oddsFeedListener,
                     oddsFeedExtListener

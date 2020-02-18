@@ -20,7 +20,7 @@ public class RADescSpecifiers {
 
     public List<RADescSpecifiers.Specifier> getSpecifier() {
         if (this.specifier == null) {
-            this.specifier = new ArrayList();
+            this.specifier = new ArrayList<RADescSpecifiers.Specifier>();
         }
 
         return this.specifier;
