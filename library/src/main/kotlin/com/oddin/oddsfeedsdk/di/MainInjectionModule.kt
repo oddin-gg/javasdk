@@ -38,7 +38,12 @@ class MainInjectionModule(
         bind(CacheManager::class.java).to(CacheManagerImpl::class.java).`in`(Singleton::class.java)
         bind(SDKProducerManager::class.java).to(ProducerManagerImpl::class.java).`in`(Singleton::class.java)
         bind(FeedMessageFactory::class.java).to(FeedMessageFactoryImpl::class.java)
-        bind(RecoveryManager::class.java).to(RecoveryManagerImpl::class.java).`in`(Singleton::class.java)
+
+        // Recovery manager
+        bind(RecoveryManagerImpl::class.java).`in`(Singleton::class.java)
+        bind(RecoveryManager::class.java).to(RecoveryManagerImpl::class.java)
+        bind(RecoveryMessageProcessor::class.java).to(RecoveryManagerImpl::class.java)
+
         bind(MarketDescriptionFactory::class.java).to(
             MarketDescriptionFactoryImpl::class.java
         )
@@ -69,6 +74,8 @@ class MainInjectionModule(
         bind(MarketDescriptionCache::class.java).to(MarketDescriptionCacheImpl::class.java)
             .`in`(Singleton::class.java)
         bind(ReplayManager::class.java).to(ReplayManagerImpl::class.java).`in`(Singleton::class.java)
+        bind(ReplaySession::class.java).to(ReplaySessionImpl::class.java)
+        bind(ExchangeNameProvider::class.java).to(ExchangeProviderImpl::class.java)
     }
 
     @Provides
@@ -80,5 +87,17 @@ class MainInjectionModule(
         taskManager: TaskManager
     ): LocalizedStaticDataCache {
         return LocalizedStaticDataCacheImpl(config, apiClient::fetchMatchStatusDescriptions, taskManager)
+    }
+
+    @Provides
+    @Named("ReplayExchange")
+    fun provideReplayExchangeProvider(): ExchangeNameProvider {
+        return ReplayExchangeProviderImpl()
+    }
+
+    @Provides
+    @Named("DummyRecoveryMessageProcessor")
+    fun provideDummyRecoveryMessageProcessor(): RecoveryMessageProcessor {
+        return DummyRecoveryMessageProcessorImpl()
     }
 }

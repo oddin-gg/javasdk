@@ -5,8 +5,8 @@ import com.oddin.oddsfeedsdk.DispatchManager
 import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.RawFeedMessage
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
-import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp
 import com.oddin.oddsfeedsdk.mq.entities.BasicMessage
+import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp
 import com.oddin.oddsfeedsdk.mq.entities.UnparsedMessage
 import com.oddin.oddsfeedsdk.mq.rabbit.AMQPConnectionProvider
 import com.oddin.oddsfeedsdk.schema.utils.URN
@@ -22,8 +22,30 @@ import javax.xml.bind.JAXBContext
 import javax.xml.bind.JAXBException
 import javax.xml.bind.Unmarshaller
 
+interface ExchangeNameProvider {
+    fun exchangeName(): String
+}
+
+class ReplayExchangeProviderImpl @Inject constructor(): ExchangeNameProvider {
+    override fun exchangeName(): String {
+        return "oddinreplay"
+    }
+}
+
+class ExchangeProviderImpl @Inject constructor(): ExchangeNameProvider {
+    override fun exchangeName(): String {
+        return "oddinfeed"
+    }
+}
+
 interface ChannelConsumer {
-    fun open(routingKeys: List<String>, messageInterest: MessageInterest, dispatchManager: DispatchManager)
+    fun open(
+        routingKeys: List<String>,
+        messageInterest: MessageInterest,
+        dispatchManager: DispatchManager,
+        exchangeNameProvider: ExchangeNameProvider
+    )
+
     fun close()
     val isOpened: Boolean
 }
@@ -44,7 +66,6 @@ class ChannelConsumerImpl @Inject constructor(
     private var unmarshaller: Unmarshaller
 
     companion object {
-        private const val EXCHANGE_NAME = "oddinfeed"
         private const val TIMESTAMP_KEY = "timestamp_in_ms"
         private const val SPORT_NAME = "sportId"
         private const val EVENT_TYPE_NAME = "eventType"
@@ -63,7 +84,12 @@ class ChannelConsumerImpl @Inject constructor(
         unmarshaller = jc.createUnmarshaller()
     }
 
-    override fun open(routingKeys: List<String>, messageInterest: MessageInterest, dispatchManager: DispatchManager) {
+    override fun open(
+        routingKeys: List<String>,
+        messageInterest: MessageInterest,
+        dispatchManager: DispatchManager,
+        exchangeNameProvider: ExchangeNameProvider
+    ) {
         if (isOpened) {
             return
         }
@@ -74,7 +100,8 @@ class ChannelConsumerImpl @Inject constructor(
             logger.debug { "Binding queue $queueName with routing key $it" }
             channel.queueBind(
                 queueName,
-                EXCHANGE_NAME, it
+                exchangeNameProvider.exchangeName(),
+                it
             )
         }
 
@@ -86,7 +113,14 @@ class ChannelConsumerImpl @Inject constructor(
                 body: ByteArray
             ) {
                 logger.debug { body.toString(Charset.defaultCharset()) }
-                publishMessage(envelope.routingKey, body, properties, System.currentTimeMillis(), messageInterest, dispatchManager)
+                publishMessage(
+                    envelope.routingKey,
+                    body,
+                    properties,
+                    System.currentTimeMillis(),
+                    messageInterest,
+                    dispatchManager
+                )
             }
         }
 

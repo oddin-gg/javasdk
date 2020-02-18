@@ -5,6 +5,7 @@ import com.github.kittinunf.fuel.core.FuelError
 import com.github.kittinunf.fuel.core.FuelManager
 import com.github.kittinunf.fuel.core.ResponseDeserializable
 import com.github.kittinunf.fuel.coroutines.awaitObjectResult
+import com.github.kittinunf.fuel.coroutines.awaitString
 import com.github.kittinunf.fuel.coroutines.awaitStringResult
 import com.github.kittinunf.result.Result
 import com.google.inject.Inject
@@ -17,7 +18,9 @@ import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
 import io.reactivex.Observable
 import io.reactivex.subjects.PublishSubject
 import mu.KotlinLogging
+import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.lang.Exception
 import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.*
@@ -58,7 +61,7 @@ interface ApiClient {
         speed: Int? = null,
         maxDelay: Int? = null,
         useReplayTimestamp: Boolean? = null,
-        productId: Int? = null,
+        product: String? = null,
         runParallel: Boolean? = null
     ): Boolean
 
@@ -204,7 +207,7 @@ class ApiClientImpl @Inject constructor(
     override suspend fun postReplayClear(nodeId: Int?): Boolean {
         var path = "/replay/clear"
         if (nodeId != null) {
-            path = "$path&node_id=$nodeId"
+            path = "$path?node_id=$nodeId"
         }
         return post(path)
     }
@@ -212,7 +215,7 @@ class ApiClientImpl @Inject constructor(
     override suspend fun postReplayStop(nodeId: Int?): Boolean {
         var path = "/replay/stop"
         if (nodeId != null) {
-            path = "$path&node_id=$nodeId"
+            path = "$path?node_id=$nodeId"
         }
         return post(path)
     }
@@ -220,7 +223,7 @@ class ApiClientImpl @Inject constructor(
     override suspend fun fetchReplaySetContent(nodeId: Int?): List<RAReplayEvent> {
         var path = "/replay"
         if (nodeId != null) {
-            path = "$path&node_id=$nodeId"
+            path = "$path?node_id=$nodeId"
         }
 
         val data: RAReplaySetContent = fetchData(path)
@@ -230,7 +233,7 @@ class ApiClientImpl @Inject constructor(
     override suspend fun putReplayEvent(eventId: URN, nodeId: Int?): Boolean {
         var path = "/replay/events/$eventId"
         if (nodeId != null) {
-            path = "$path&node_id=$nodeId"
+            path = "$path?node_id=$nodeId"
         }
 
         return put(path)
@@ -239,7 +242,7 @@ class ApiClientImpl @Inject constructor(
     override suspend fun deleteReplayEvent(eventId: URN, nodeId: Int?): Boolean {
         var path = "/replay/events/$eventId"
         if (nodeId != null) {
-            path = "$path&node_id=$nodeId"
+            path = "$path?node_id=$nodeId"
         }
 
         return delete(path)
@@ -250,7 +253,7 @@ class ApiClientImpl @Inject constructor(
         speed: Int?,
         maxDelay: Int?,
         useReplayTimestamp: Boolean?,
-        productId: Int?,
+        product: String?,
         runParallel: Boolean?
     ): Boolean {
         val queryParams = mutableMapOf<String, Any>()
@@ -274,8 +277,8 @@ class ApiClientImpl @Inject constructor(
             queryParams["run_parallel"] = runParallel
         }
 
-        if (productId != null) {
-            queryParams["product"] = productId
+        if (product != null) {
+            queryParams["product"] = product
         }
 
         val params = queryParams.map { "${it.key}=${it.value}" }.joinToString("&")
@@ -318,7 +321,8 @@ class ApiClientImpl @Inject constructor(
     private suspend fun post(path: String): Boolean {
         val result = Fuel.post(path).awaitStringResult()
         if (result is Result.Failure) {
-            throw ApiException("Failed to post data", result.error)
+            val error = unmarshalPossibleError(result.error.errorData)
+            throw ApiException("Failed to post data", error, result.error)
         }
 
         return true
@@ -327,7 +331,8 @@ class ApiClientImpl @Inject constructor(
     private suspend fun put(path: String): Boolean {
         val result = Fuel.put(path).awaitStringResult()
         if (result is Result.Failure) {
-            throw ApiException("Failed to put data", result.error)
+            val error = unmarshalPossibleError(result.error.errorData)
+            throw ApiException("Failed to put data", error, result.error)
         }
 
         return true
@@ -336,7 +341,8 @@ class ApiClientImpl @Inject constructor(
     private suspend fun delete(path: String): Boolean {
         val result = Fuel.delete(path).awaitStringResult()
         if (result is Result.Failure) {
-            throw ApiException("Failed to delete data", result.error)
+            val error = unmarshalPossibleError(result.error.errorData)
+            throw ApiException("Failed to delete data", error, result.error)
         }
 
         return true
@@ -345,14 +351,14 @@ class ApiClientImpl @Inject constructor(
     private suspend fun <T : Any> fetchData(path: String, locale: Locale? = null): T {
         val result: Result<T, FuelError> = Fuel.get(path).awaitObjectResult(Deserializer())
         if (result is Result.Failure) {
-            throw ApiException("Failed to get data", result.error)
+            val error = unmarshalPossibleError(result.error.errorData)
+            throw ApiException("Failed to get data", error, result.error)
         }
 
         val response = result.get()
         if (response is ResponseWithCode && response.responseCode != RAResponseCode.OK) {
             throw ApiException(
-                "Not acceptable response code from API: ${response.responseCode}",
-                null
+                "Not acceptable response code from API: ${response.responseCode}"
             )
         }
 
@@ -364,6 +370,13 @@ class ApiClientImpl @Inject constructor(
         return response
     }
 
+    private fun unmarshalPossibleError(data: ByteArray): RAError? {
+        return try {
+            Deserializer.UNMARSHALLER.unmarshal(ByteArrayInputStream(data)) as? RAError
+        } catch (e: Exception) {
+            null
+        }
+    }
 }
 
 class Deserializer<out T : Any> : ResponseDeserializable<T> {

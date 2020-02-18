@@ -22,8 +22,16 @@ import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
 interface RecoveryManager {
-    fun open()
+    fun open(replayOnly: Boolean)
 
+    fun initiateEventOddsMessagesRecovery(producerId: Long, eventId: URN): Long?
+
+    fun initiateEventStatefulMessagesRecovery(producerId: Long, eventId: URN): Long?
+
+    fun requestManualProducerRecovery(producerId: Long, timestamp: Long)
+}
+
+interface RecoveryMessageProcessor {
     fun onMessageProcessingStarted(sessionId: UUID, producerId: Long, timestamp: Long)
 
     fun onMessageProcessingEnded(sessionId: UUID, producerId: Long, generatedTimestamp: Long?)
@@ -41,12 +49,35 @@ interface RecoveryManager {
         requestId: Long,
         messageInterest: MessageInterest
     )
+}
 
-    fun initiateEventOddsMessagesRecovery(producerId: Long, eventId: URN): Long?
+class DummyRecoveryMessageProcessorImpl @Inject constructor() : RecoveryMessageProcessor {
+    override fun onMessageProcessingStarted(sessionId: UUID, producerId: Long, timestamp: Long) {
+        // no-op
+    }
 
-    fun initiateEventStatefulMessagesRecovery(producerId: Long, eventId: URN): Long?
+    override fun onMessageProcessingEnded(sessionId: UUID, producerId: Long, generatedTimestamp: Long?) {
+        // no-op
+    }
 
-    fun requestManualProducerRecovery(producerId: Long, timestamp: Long)
+    override fun onAliveReceived(
+        producerId: Long,
+        timestamp: MessageTimestamp,
+        isSubscribed: Boolean,
+        messageInterest: MessageInterest
+    ) {
+        // no-op
+    }
+
+    override fun onSnapshotCompleteReceived(
+        producerId: Long,
+        timestamp: MessageTimestamp,
+        requestId: Long,
+        messageInterest: MessageInterest
+    ) {
+        // no-op
+    }
+
 }
 
 private val logger = KotlinLogging.logger {}
@@ -58,14 +89,18 @@ class RecoveryManagerImpl @Inject constructor(
     private val globalEventsListener: GlobalEventsListener,
     private val feedMessageFactory: FeedMessageFactory,
     private val apiClient: ApiClient
-) : RecoveryManager {
+) : RecoveryManager, RecoveryMessageProcessor {
     private val producerRecoveryData = ConcurrentHashMap<Long, ProducerRecoveryData>()
     private val messageProcessingTimes = ConcurrentHashMap<UUID, Long>()
     private var isOpened = false
     private val lock = Any()
     private val sequence = generateSequence(Random.nextLong(20000)) { it + 1L }
 
-    override fun open() {
+    override fun open(replayOnly: Boolean) {
+        if (replayOnly) {
+            return
+        }
+
         if (isOpened) {
             logger.warn { "Recovery manager already opened. Skipping" }
             return

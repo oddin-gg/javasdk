@@ -19,7 +19,7 @@ public class URN {
     public static URN parse(String urnString) {
         String[] parts = urnString.split(":");
         if (parts.length != 3) {
-            throw new UnsupportedUrnFormatException("URN could not be parsed [$urnString]", null);
+            throw new UnsupportedUrnFormatException("URN could not be parsed " + urnString, null);
         }
 
         long id;

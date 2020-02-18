@@ -2,6 +2,9 @@ package com.oddin.oddsfeedsdk
 
 import com.google.inject.Inject
 import com.google.inject.Injector
+import com.google.inject.Key
+import com.google.inject.name.Named
+import com.google.inject.name.Names
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.cache.CacheManager
 import com.oddin.oddsfeedsdk.mq.*
@@ -19,6 +22,8 @@ import java.util.*
 
 interface OddsFeedSession
 
+interface ReplaySession
+
 interface SDKOddsFeedSession {
     fun open(
         routingKeys: List<String>,
@@ -32,13 +37,14 @@ interface SDKOddsFeedSession {
 
 private val logger = KotlinLogging.logger {}
 
-class OddsFeedSessionImpl @Inject constructor(
+open class OddsFeedSessionImpl @Inject constructor(
     private val channelConsumer: ChannelConsumer,
     private val dispatchManager: DispatchManager,
     private val producerManager: SDKProducerManager,
     private val cacheManager: CacheManager,
     private val feedMessageFactory: FeedMessageFactory,
-    private val recoveryManager: RecoveryManager
+    private val recoveryMessageProcessor: RecoveryMessageProcessor,
+    private val exchangeNameProvider: ExchangeNameProvider
 ) : OddsFeedSession, SDKOddsFeedSession {
 
     private val sessionId: UUID = UUID.randomUUID()
@@ -103,7 +109,7 @@ class OddsFeedSessionImpl @Inject constructor(
         }
 
         // Start connection to AMQP
-        channelConsumer.open(routingKeys, messageInterest, dispatchManager)
+        channelConsumer.open(routingKeys, messageInterest, dispatchManager, exchangeNameProvider)
 
         logger.info { "Session opened with message interest - $messageInterest" }
     }
@@ -153,7 +159,7 @@ class OddsFeedSessionImpl @Inject constructor(
         oddsFeedListener: OddsFeedListener?
     ) {
         val producerId = feedMessage.message?.getProduct()?.toLong() ?: return
-        recoveryManager.onMessageProcessingStarted(sessionId, producerId, System.currentTimeMillis())
+        recoveryMessageProcessor.onMessageProcessingStarted(sessionId, producerId, System.currentTimeMillis())
 
         var timestamp: Long? = null
         when (feedMessage.message) {
@@ -163,7 +169,7 @@ class OddsFeedSessionImpl @Inject constructor(
             }
 
             is OFSnapshotComplete -> {
-                recoveryManager.onSnapshotCompleteReceived(
+                recoveryMessageProcessor.onSnapshotCompleteReceived(
                     producerId,
                     feedMessage.timestamp,
                     feedMessage.message.requestId,
@@ -173,7 +179,7 @@ class OddsFeedSessionImpl @Inject constructor(
 
             is OFAlive -> {
                 timestamp = feedMessage.timestamp.created
-                recoveryManager.onAliveReceived(
+                recoveryMessageProcessor.onAliveReceived(
                     producerId,
                     feedMessage.timestamp,
                     feedMessage.message.subscribed == 1,
@@ -205,7 +211,7 @@ class OddsFeedSessionImpl @Inject constructor(
             }
         }
 
-        recoveryManager.onMessageProcessingEnded(sessionId, producerId, timestamp)
+        recoveryMessageProcessor.onMessageProcessingEnded(sessionId, producerId, timestamp)
     }
 
     private fun publishUnparsableMessage(feedMessage: FeedMessage) {
@@ -228,6 +234,8 @@ interface OddsFeedSessionBuilder {
     fun setSpecificEventOnly(specificEventOnly: URN): OddsFeedSessionBuilder
 
     fun build(): OddsFeedSession
+
+    fun buildReplay(): ReplaySession
 }
 
 data class SessionData(
@@ -282,4 +290,32 @@ class OddsFeedSessionBuilderImpl(
 
         return session
     }
+
+    override fun buildReplay(): ReplaySession {
+        val oddsFeedListener = oddsFeedListener ?: throw IllegalArgumentException("Listener not specified")
+        val session = injector.getInstance(ReplaySessionImpl::class.java)
+        sessions.add(SessionData(session, MessageInterest.ALL, setOf(), oddsFeedListener))
+
+        return session
+    }
 }
+
+class ReplaySessionImpl @Inject constructor(
+    channelConsumer: ChannelConsumer,
+    dispatchManager: DispatchManager,
+    producerManager: SDKProducerManager,
+    cacheManager: CacheManager,
+    feedMessageFactory: FeedMessageFactory,
+    @Named("DummyRecoveryMessageProcessor")
+    recoveryMessageProcessor: RecoveryMessageProcessor,
+    @Named("ReplayExchange")
+    exchangeNameProvider: ExchangeNameProvider
+) : ReplaySession, OddsFeedSessionImpl(
+    channelConsumer,
+    dispatchManager,
+    producerManager,
+    cacheManager,
+    feedMessageFactory,
+    recoveryMessageProcessor,
+    exchangeNameProvider
+)

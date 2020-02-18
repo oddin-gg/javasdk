@@ -1,35 +1,18 @@
 package com.oddin.oddsfeedsdk.schema.rest.v1;
 
-import javax.xml.bind.annotation.*;
+
+import javax.xml.bind.annotation.XmlAccessType;
+import javax.xml.bind.annotation.XmlAccessorType;
+import javax.xml.bind.annotation.XmlAttribute;
+import javax.xml.bind.annotation.XmlType;
 
 @XmlAccessorType(XmlAccessType.FIELD)
-@XmlType(
-        name = "replay_event",
-        namespace = "",
-        propOrder = {"value"}
-)
+@XmlType(name = "replay_event")
 public class RAReplayEvent {
-    @XmlValue
-    protected String value;
-    @XmlAttribute(
-            name = "id"
-    )
+    @XmlAttribute(name = "id")
     protected String id;
-    @XmlAttribute(
-            name = "position"
-    )
+    @XmlAttribute(name = "position")
     protected String position;
-
-    public RAReplayEvent() {
-    }
-
-    public String getValue() {
-        return this.value;
-    }
-
-    public void setValue(String value) {
-        this.value = value;
-    }
 
     public String getId() {
         return this.id;

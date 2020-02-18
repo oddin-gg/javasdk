@@ -42,8 +42,33 @@ for (SportEvent tournament : sportsInfoManager.getActiveTournaments("Dota 2")) {
 }
 ```
 
+### Replay
+
+You can use replay feature to receive data from previously played events. You need to build a replay session via session builder, add events to replay list and play it.
+
+```java
+// Set up your odds feed config
+// Build replay session
+OddsFeedSessionBuilder sessionBuilder = oddsFeed.getSessionBuilder();
+sessionBuilder.setListener(listener).buildReplay();
+
+oddsFeed.open();
+
+oddsFeed.getReplayManager().addSportEvent(URN.parse("od:match:1"));
+
+// Start receiving odds on your listener
+oddsFeed.getReplayManager().play();
+
+// Stop replay
+oddsFeed.getReplayManager().stop();
+
+// Stop and clear replay list
+oddsFeed.getReplayManager().clear();
+
+```
+
+You should start receiving event odds via provided listener.
+
 ### Current limitations
-* Replay manager not implemented, but is present in API
 * Match status (SportEventStatus) is not implemented and missing in API
-* Fixture streams are missing in API
  

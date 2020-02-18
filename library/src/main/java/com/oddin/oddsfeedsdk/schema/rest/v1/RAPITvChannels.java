@@ -18,9 +18,6 @@ public class RAPITvChannels {
     )
     protected List<RAPITvChannel> tvChannel;
 
-    public RAPITvChannels() {
-    }
-
     public List<RAPITvChannel> getTvChannel() {
         if (this.tvChannel == null) {
             this.tvChannel = new ArrayList<RAPITvChannel>();

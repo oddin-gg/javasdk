@@ -25,9 +25,6 @@ public class RAPITvChannel {
     )
     protected String streamUrl;
 
-    public RAPITvChannel() {
-    }
-
     public String getName() {
         return this.name;
     }

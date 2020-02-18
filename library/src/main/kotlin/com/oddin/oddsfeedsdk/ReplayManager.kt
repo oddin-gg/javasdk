@@ -5,6 +5,7 @@ import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.SportsInfoManager
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
+import com.oddin.oddsfeedsdk.mq.ExchangeNameProvider
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
@@ -24,14 +25,14 @@ interface ReplayManager {
     fun play(
         speed: Int,
         maxDelayInMs: Int,
-        producerId: Int,
+        producer: String,
         rewriteTimestamps: Boolean
     ): Boolean
 
     fun play(
         speed: Int,
         maxDelayInMs: Int,
-        producerId: Int,
+        producer: String,
         rewriteTimestamps: Boolean,
         runParallel: Boolean
     ): Boolean
@@ -57,7 +58,7 @@ class ReplayManagerImpl @Inject constructor(
             }
         }
 
-        return data?.mapNotNull { sportsInfoManager.getMatch(URN.parse(it.id)) }
+        return data?.filter { it.id != null }?.mapNotNull { sportsInfoManager.getMatch(URN.parse(it.id)) }
     }
 
     override fun addSportEvent(event: SportEvent): Boolean {
@@ -111,11 +112,11 @@ class ReplayManagerImpl @Inject constructor(
         )
     }
 
-    override fun play(speed: Int, maxDelayInMs: Int, producerId: Int, rewriteTimestamps: Boolean): Boolean {
+    override fun play(speed: Int, maxDelayInMs: Int, producer: String, rewriteTimestamps: Boolean): Boolean {
         return playReplay(
             speed = speed,
             maxDelay = maxDelayInMs,
-            productId = producerId,
+            product = producer,
             useReplayTimestamp = rewriteTimestamps
         )
     }
@@ -123,14 +124,14 @@ class ReplayManagerImpl @Inject constructor(
     override fun play(
         speed: Int,
         maxDelayInMs: Int,
-        producerId: Int,
+        producer: String,
         rewriteTimestamps: Boolean,
         runParallel: Boolean
     ): Boolean {
         return playReplay(
             speed = speed,
             maxDelay = maxDelayInMs,
-            productId = producerId,
+            product = producer,
             useReplayTimestamp = rewriteTimestamps,
             runParallel = runParallel
         )
@@ -162,7 +163,7 @@ class ReplayManagerImpl @Inject constructor(
         speed: Int? = null,
         maxDelay: Int? = null,
         useReplayTimestamp: Boolean? = null,
-        productId: Int? = null,
+        product: String? = null,
         runParallel: Boolean? = null
     ): Boolean {
         return runBlocking {
@@ -172,7 +173,7 @@ class ReplayManagerImpl @Inject constructor(
                     speed = speed,
                     maxDelay = maxDelay,
                     useReplayTimestamp = useReplayTimestamp,
-                    productId = productId,
+                    product = product,
                     runParallel = runParallel
                 )
             } catch (e: Exception) {

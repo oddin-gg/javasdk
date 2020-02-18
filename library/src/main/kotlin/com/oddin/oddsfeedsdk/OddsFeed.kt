@@ -12,8 +12,8 @@ import com.oddin.oddsfeedsdk.exceptions.UnsupportedMessageInterestCombination
 import com.oddin.oddsfeedsdk.mq.MessageInterest
 import com.oddin.oddsfeedsdk.mq.rabbit.AMQPConnectionProvider
 import com.oddin.oddsfeedsdk.schema.utils.URN
-import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener
+import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
 import sun.plugin.dom.exception.InvalidStateException
@@ -131,9 +131,12 @@ class OddsFeed {
             , oddsFeedConfiguration
         )
 
+        val hasReplay = createdSessionData.any { it.oddsFeedSession is ReplaySession }
+        val replayOnly = hasReplay && createdSessionData.size == 1
+
         val hasAliveMessageInterest =
             createdSessionData.firstOrNull { it.messageInterest == MessageInterest.SYSTEM_ALIVE_ONLY } != null
-        if (!hasAliveMessageInterest) {
+        if (!hasAliveMessageInterest && !replayOnly) {
             possibleAliveSession = injector.getInstance(OddsFeedSessionImpl::class.java)
             possibleAliveSession?.open(
                 MessageInterest.SYSTEM_ALIVE_ONLY.routingKeys,
@@ -156,7 +159,7 @@ class OddsFeed {
             }
         }
 
-        injector.getInstance(RecoveryManager::class.java).open()
+        injector.getInstance(RecoveryManager::class.java).open(replayOnly)
         injector.getInstance(TaskManager::class.java).open()
         injector.getInstance(ApiClient::class.java).subscribeForData(oddsFeedExtListener)
 
