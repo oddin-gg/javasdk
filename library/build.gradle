@@ -2,10 +2,11 @@ plugins {
     id 'java'
     id 'org.jetbrains.kotlin.jvm' version '1.3.50'
     id 'java-library'
+    id 'com.palantir.git-version' version '0.12.2'
 }
 
 group 'com.oddin.oddsfeed'
-version '0.0.2'
+version gitVersion().replace('v', '')
 
 sourceCompatibility = 1.8
 
