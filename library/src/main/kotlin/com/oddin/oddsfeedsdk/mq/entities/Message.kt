@@ -182,7 +182,7 @@ class BetSettlementImpl<T : SportEvent>(
 interface BetCancel<T : SportEvent> : MarketMessage<T> {
     val startTime: Date?
     val endTime: Date?
-    val supercededBy: String
+    val supercededBy: String?
     override val markets: List<MarketCancel>
 }
 
@@ -216,7 +216,7 @@ class BetCancelImpl<T : SportEvent>(
             return Date(time)
         }
 
-    override val supercededBy: String
+    override val supercededBy: String?
         get() = message.supercededBy
 }
 
