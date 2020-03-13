@@ -99,9 +99,9 @@ public class OFSportEventStatus {
     @XmlAttribute(name = "match_status", required = true)
     protected int matchStatus;
     @XmlAttribute(name = "home_score")
-    protected BigDecimal homeScore;
+    protected Double homeScore;
     @XmlAttribute(name = "away_score")
-    protected BigDecimal awayScore;
+    protected Double awayScore;
     @XmlAttribute(name = "home_penalty_score")
     protected Integer homePenaltyScore;
     @XmlAttribute(name = "away_penalty_score")
@@ -333,7 +333,7 @@ public class OFSportEventStatus {
      *     {@link BigDecimal }
      *
      */
-    public BigDecimal getHomeScore() {
+    public Double getHomeScore() {
         return homeScore;
     }
 
@@ -345,7 +345,7 @@ public class OFSportEventStatus {
      *     {@link BigDecimal }
      *
      */
-    public void setHomeScore(BigDecimal value) {
+    public void setHomeScore(Double value) {
         this.homeScore = value;
     }
 
@@ -357,7 +357,7 @@ public class OFSportEventStatus {
      *     {@link BigDecimal }
      *
      */
-    public BigDecimal getAwayScore() {
+    public Double getAwayScore() {
         return awayScore;
     }
 
@@ -369,7 +369,7 @@ public class OFSportEventStatus {
      *     {@link BigDecimal }
      *
      */
-    public void setAwayScore(BigDecimal value) {
+    public void setAwayScore(Double value) {
         this.awayScore = value;
     }
 

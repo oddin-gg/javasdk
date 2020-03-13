@@ -9,6 +9,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.TvChannelImpl
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.Utils
 import kotlinx.coroutines.runBlocking
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
@@ -50,7 +51,7 @@ class FixtureCacheImpl @Inject constructor(
             }
 
             val fixture = LocalizedFixture(
-                data.startTime?.toGregorianCalendar()?.time,
+                Utils.parseDate(data.startTime),
                 ConcurrentHashMap(data.extraInfo.info.map { it.key to it.value }.toMap()),
                 data.tvChannels?.tvChannel?.map { TvChannelImpl(it.name, it.streamUrl) } ?: emptyList()
             )

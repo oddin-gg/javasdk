@@ -34,13 +34,19 @@ import javax.xml.datatype.XMLGregorianCalendar;
  */
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "matchSummaryEndpoint", propOrder = {
-        "sportEvent"
+        "sportEvent", "sportEventStatus"
 })
 @XmlRootElement(name= "match_summary")
 public class RAMatchSummaryEndpoint {
 
     @XmlElement(name = "sport_event", required = true)
     protected RASportEvent sportEvent;
+
+    @XmlElement(
+            name = "sport_event_status",
+            required = true
+    )
+    protected RASportEventStatus sportEventStatus;
     @XmlAttribute(name = "generated_at")
     @XmlSchemaType(name = "dateTime")
     protected XMLGregorianCalendar generatedAt;
@@ -91,6 +97,14 @@ public class RAMatchSummaryEndpoint {
      */
     public void setGeneratedAt(XMLGregorianCalendar value) {
         this.generatedAt = value;
+    }
+
+    public RASportEventStatus getSportEventStatus() {
+        return sportEventStatus;
+    }
+
+    public void setSportEventStatus(RASportEventStatus sportEventStatus) {
+        this.sportEventStatus = sportEventStatus;
     }
 
 }

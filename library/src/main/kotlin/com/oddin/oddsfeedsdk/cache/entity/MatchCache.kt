@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.Utils
 import io.reactivex.disposables.Disposable
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
@@ -112,29 +113,28 @@ class MatchCacheImpl @Inject constructor(
         }
     }
 
-    // @TODO SportEvent status
     private fun refreshOrInsertItem(id: URN, locale: Locale, data: RASportEvent) {
         var item = internalCache.getIfPresent(id)
         val homeTeamId = data.competitors?.competitor?.firstOrNull()?.id
-        val awayTeamId =data.competitors?.competitor?.lastOrNull()?.id
+        val awayTeamId = data.competitors?.competitor?.lastOrNull()?.id
 
         if (item == null) {
             item = LocalizedMatch(
                 id,
-                data.scheduled?.toGregorianCalendar()?.time,
-                data.scheduledEnd?.toGregorianCalendar()?.time,
+                Utils.parseDate(data.scheduled),
+                Utils.parseDate(data.scheduledEnd),
                 URN.parse(data.tournament.sport.id),
                 URN.parse(data.tournament.id),
-                if(homeTeamId != null) URN.parse(homeTeamId) else null,
-                if(awayTeamId != null) URN.parse(awayTeamId) else null
+                if (homeTeamId != null) URN.parse(homeTeamId) else null,
+                if (awayTeamId != null) URN.parse(awayTeamId) else null
             )
         } else {
-            item.scheduledTime = data.scheduled?.toGregorianCalendar()?.time
-            item.scheduledEndTime = data.scheduledEnd?.toGregorianCalendar()?.time
+            item.scheduledTime = Utils.parseDate(data.scheduled)
+            item.scheduledEndTime = Utils.parseDate(data.scheduledEnd)
             item.sportId = URN.parse(data.tournament.sport.id)
             item.tournamentId = URN.parse(data.tournament.id)
-            item.homeTeamId = if(homeTeamId != null) URN.parse(homeTeamId) else null
-            item.awayTeamId = if(awayTeamId != null) URN.parse(awayTeamId) else null
+            item.homeTeamId = if (homeTeamId != null) URN.parse(homeTeamId) else null
+            item.awayTeamId = if (awayTeamId != null) URN.parse(awayTeamId) else null
         }
 
         item.name[locale] = data.name
@@ -168,9 +168,8 @@ class MatchImpl(
     private val locales: Set<Locale>
 ) : Match {
 
-    // @TODO FIX ME !!!
     override val status: MatchStatus?
-        get() = null
+        get() = entityFactory.buildMatchStatus(id, locales.toList())
 
     override val tournament: Tournament?
         get() = fetchTournament()
@@ -204,7 +203,7 @@ class MatchImpl(
         val item = matchCache.getMatch(id, locales)
 
         return if (item == null && exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
-            throw ItemNotFoundException("Competitor $id not found", null)
+            throw ItemNotFoundException("Match $id not found", null)
         } else {
             item
         }

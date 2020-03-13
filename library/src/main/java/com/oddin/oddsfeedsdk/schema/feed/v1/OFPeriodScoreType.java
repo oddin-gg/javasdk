@@ -44,9 +44,9 @@ public class OFPeriodScoreType {
     @XmlAttribute(name = "number", required = true)
     protected int number;
     @XmlAttribute(name = "home_score", required = true)
-    protected BigDecimal homeScore;
+    protected Double homeScore;
     @XmlAttribute(name = "away_score", required = true)
-    protected BigDecimal awayScore;
+    protected Double awayScore;
 
     /**
      * Gets the value of the matchStatusCode property.
@@ -85,10 +85,10 @@ public class OFPeriodScoreType {
      * 
      * @return
      *     possible object is
-     *     {@link BigDecimal }
+     *     {@link Double }
      *     
      */
-    public BigDecimal getHomeScore() {
+    public Double getHomeScore() {
         return homeScore;
     }
 
@@ -97,10 +97,10 @@ public class OFPeriodScoreType {
      * 
      * @param value
      *     allowed object is
-     *     {@link BigDecimal }
+     *     {@link Double }
      *     
      */
-    public void setHomeScore(BigDecimal value) {
+    public void setHomeScore(Double value) {
         this.homeScore = value;
     }
 
@@ -109,10 +109,10 @@ public class OFPeriodScoreType {
      * 
      * @return
      *     possible object is
-     *     {@link BigDecimal }
+     *     {@link Double }
      *     
      */
-    public BigDecimal getAwayScore() {
+    public Double getAwayScore() {
         return awayScore;
     }
 
@@ -121,10 +121,10 @@ public class OFPeriodScoreType {
      * 
      * @param value
      *     allowed object is
-     *     {@link BigDecimal }
+     *     {@link Double }
      *     
      */
-    public void setAwayScore(BigDecimal value) {
+    public void setAwayScore(Double value) {
         this.awayScore = value;
     }
 

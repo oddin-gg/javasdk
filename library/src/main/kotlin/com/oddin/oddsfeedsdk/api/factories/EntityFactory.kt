@@ -1,7 +1,9 @@
 package com.oddin.oddsfeedsdk.api.factories
 
 import com.google.inject.Inject
+import com.google.inject.name.Named
 import com.oddin.oddsfeedsdk.api.entities.sportevent.*
+import com.oddin.oddsfeedsdk.cache.LocalizedStaticDataCache
 import com.oddin.oddsfeedsdk.cache.entity.*
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.schema.utils.URN
@@ -21,6 +23,8 @@ interface EntityFactory {
     fun buildCompetitors(ids: List<URN>, locales: List<Locale>): List<Competitor>
 
     fun buildFixture(id: URN, locales: List<Locale>): Fixture
+
+    fun buildMatchStatus(id: URN, locales: List<Locale>): MatchStatus
 }
 
 class EntityFactoryImpl @Inject constructor(
@@ -29,7 +33,10 @@ class EntityFactoryImpl @Inject constructor(
     private val sportDataCache: SportDataCache,
     private val tournamentCache: TournamentCache,
     private val matchCache: MatchCache,
-    private val fixtureCache: FixtureCache
+    private val fixtureCache: FixtureCache,
+    private val matchStatusCache: MatchStatusCache,
+    @Named("MatchStatusCache")
+    private val staticMatchStatusCache: LocalizedStaticDataCache
 ) : EntityFactory {
     override fun buildSports(locales: List<Locale>): List<Sport> {
         val localizedSports = sportDataCache.getSports(locales.toSet())
@@ -127,6 +134,16 @@ class EntityFactoryImpl @Inject constructor(
         return FixtureImpl(
             id,
             fixtureCache,
+            oddsFeedConfiguration.exceptionHandlingStrategy,
+            locales.toSet()
+        )
+    }
+
+    override fun buildMatchStatus(id: URN, locales: List<Locale>): MatchStatus {
+        return MatchStatusImpl(
+            id,
+            matchStatusCache,
+            staticMatchStatusCache,
             oddsFeedConfiguration.exceptionHandlingStrategy,
             locales.toSet()
         )

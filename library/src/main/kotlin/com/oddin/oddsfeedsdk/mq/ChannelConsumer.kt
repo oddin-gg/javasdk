@@ -112,7 +112,7 @@ class ChannelConsumerImpl @Inject constructor(
                 properties: AMQP.BasicProperties,
                 body: ByteArray
             ) {
-                logger.debug { body.toString(Charset.defaultCharset()) }
+             //   logger.debug { body.toString(Charset.defaultCharset()) }
                 publishMessage(
                     envelope.routingKey,
                     body,

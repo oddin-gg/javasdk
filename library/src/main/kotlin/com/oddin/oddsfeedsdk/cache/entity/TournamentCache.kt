@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.Utils
 import io.reactivex.disposables.Disposable
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
@@ -132,18 +133,18 @@ class TournamentCacheImpl @Inject constructor(
         if (item == null) {
             item = LocalizedTournament(
                 id,
-                tournament.tournamentLength?.startDate?.toGregorianCalendar()?.time,
-                tournament.tournamentLength?.endDate?.toGregorianCalendar()?.time,
+                Utils.parseDate(tournament.tournamentLength?.startDate),
+                Utils.parseDate(tournament.tournamentLength?.endDate),
                 URN.parse(tournament.sport.id),
-                tournament.scheduled?.toGregorianCalendar()?.time,
-                tournament.scheduledEnd?.toGregorianCalendar()?.time
+                Utils.parseDate(tournament.scheduled),
+                Utils.parseDate(tournament.scheduledEnd)
             )
         } else {
-            item.startDate = tournament.tournamentLength?.startDate?.toGregorianCalendar()?.time
-            item.endDate = tournament.tournamentLength?.endDate?.toGregorianCalendar()?.time
+            item.startDate = Utils.parseDate(tournament.tournamentLength?.startDate)
+            item.endDate = Utils.parseDate(tournament.tournamentLength?.endDate)
             item.sportId = URN.parse(tournament.sport.id)
-            item.scheduledTime = tournament.scheduled?.toGregorianCalendar()?.time
-            item.scheduledEndTime = tournament.scheduledEnd?.toGregorianCalendar()?.time
+            item.scheduledTime = Utils.parseDate(tournament.scheduled)
+            item.scheduledEndTime = Utils.parseDate(tournament.scheduledEnd)
         }
 
         item.name[locale] = tournament.name

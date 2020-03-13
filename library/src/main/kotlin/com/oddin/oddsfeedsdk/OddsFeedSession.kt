@@ -2,16 +2,16 @@ package com.oddin.oddsfeedsdk
 
 import com.google.inject.Inject
 import com.google.inject.Injector
-import com.google.inject.Key
 import com.google.inject.name.Named
-import com.google.inject.name.Names
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.cache.CacheManager
-import com.oddin.oddsfeedsdk.mq.*
+import com.oddin.oddsfeedsdk.mq.ChannelConsumer
+import com.oddin.oddsfeedsdk.mq.ExchangeNameProvider
+import com.oddin.oddsfeedsdk.mq.FeedMessageFactory
+import com.oddin.oddsfeedsdk.mq.MessageInterest
 import com.oddin.oddsfeedsdk.mq.entities.*
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFAlive
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFFixtureChange
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFSnapshotComplete
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
@@ -88,7 +88,6 @@ open class OddsFeedSessionImpl @Inject constructor(
             })
         subscriptions.add(unparsableMessageDisposable)
 
-
         if (oddsFeedExtListener != null) {
             logger.info { "Adding extended listener to session $sessionId" }
             val rawMessageDisposable = dispatchManager
@@ -107,6 +106,8 @@ open class OddsFeedSessionImpl @Inject constructor(
         } else {
             logger.info { "No extended listener for session $sessionId" }
         }
+
+        cacheManager.sessionSubscribe(dispatchManager)
 
         // Start connection to AMQP
         channelConsumer.open(routingKeys, messageInterest, dispatchManager, exchangeNameProvider)

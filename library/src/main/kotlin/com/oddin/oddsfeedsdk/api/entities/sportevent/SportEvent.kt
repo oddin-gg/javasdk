@@ -16,34 +16,32 @@ interface SportEvent {
 }
 
 interface PeriodScore {
-    val homeScore: BigDecimal
-    val awayScore: BigDecimal
+    val homeScore: Double
+    val awayScore: Double
     val periodNumber: Int
-    val periodType: PeriodType
     val matchStatusCode: Int
 }
 
 data class PeriodScoreImpl(
-    override val homeScore: BigDecimal,
-    override val awayScore: BigDecimal,
+    override val homeScore: Double,
+    override val awayScore: Double,
     override val periodNumber: Int,
-    override val periodType: PeriodType,
     override val matchStatusCode: Int
 ) : PeriodScore
 
 interface CompetitionStatus {
     val winnerId: URN?
-    val status: EventStatus
-    val properties: Map<String, Any>
+    val status: EventStatus?
+    val properties: Map<String, Any>?
 }
 
 interface MatchStatus : CompetitionStatus {
-    val periodScores: List<PeriodScore>
-    val matchStatusId: Int
-    val matchStatus: LocalizedStaticData
-    fun getMatchStatus(locale: Locale): LocalizedStaticData
-    val homeScore: BigDecimal
-    val awayScore: BigDecimal
+    val periodScores: List<PeriodScore>?
+    val matchStatusId: Int?
+    val matchStatus: LocalizedStaticData?
+    fun getMatchStatus(locale: Locale): LocalizedStaticData?
+    val homeScore: Double?
+    val awayScore: Double?
 }
 
 interface Competition : SportEvent {
@@ -76,10 +74,6 @@ enum class HomeAway(val value: Int) {
     HOME(0), AWAY(1);
 }
 
-enum class PeriodType {
-    RegularPeriod, Overtime, Penalties, Other
-}
-
 enum class EventStatus(val apiName: String, val apiId: Int) {
     NotStarted("not_started", 0),
     Live("live", 1),
@@ -94,6 +88,9 @@ enum class EventStatus(val apiName: String, val apiId: Int) {
     Interrupted("interrupted", 10);
 
     companion object {
+        fun fromApiEventStatus(status: String?): EventStatus {
+            return values().firstOrNull { it.apiName == status } ?: Unknown
+        }
 
         fun fromFeedEventStatus(status: OFEventStatus): EventStatus {
             return when (status) {

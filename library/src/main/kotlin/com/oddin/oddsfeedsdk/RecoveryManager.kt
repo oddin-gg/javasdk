@@ -114,7 +114,7 @@ class RecoveryManagerImpl @Inject constructor(
         val mappedData = activeProducers.map { it.key to ProducerRecoveryData(it.key, producerManager) }.toMap()
         producerRecoveryData.putAll(mappedData)
 
-        taskManager.startTaskPeriodically(PeriodicTask("RecoveryManager", this::timerTick, 20, TimeUnit.SECONDS, 10))
+        taskManager.startTaskPeriodically(PeriodicTask("RecoveryManager", this::timerTick, 60, TimeUnit.SECONDS, 10))
         isOpened = true
     }
 

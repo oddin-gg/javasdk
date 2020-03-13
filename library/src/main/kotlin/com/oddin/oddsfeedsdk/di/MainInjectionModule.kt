@@ -68,6 +68,9 @@ class MainInjectionModule(
         bind(MatchCache::class.java).to(
             MatchCacheImpl::class.java
         ).`in`(Singleton::class.java)
+        bind(MatchStatusCache::class.java).to(
+            MatchStatusCacheImpl::class.java
+        ).`in`(Singleton::class.java)
         bind(FixtureCache::class.java).to(
             FixtureCacheImpl::class.java
         ).`in`(Singleton::class.java)
@@ -79,7 +82,6 @@ class MainInjectionModule(
     }
 
     @Provides
-    @Singleton
     @Named("MatchStatusCache")
     fun provideMatchStatusCache(
         config: OddsFeedConfiguration,

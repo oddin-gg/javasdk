@@ -15,18 +15,17 @@ import javax.xml.namespace.QName;
 
 
 /**
- * This object contains factory methods for each 
- * Java content interface and Java element interface 
- * generated in the gg.oddin.schemas.v1 package. 
- * <p>An ObjectFactory allows you to programatically 
- * construct new instances of the Java representation 
- * for XML content. The Java representation of XML 
- * content can consist of schema derived interfaces 
- * and classes representing the binding of schema 
- * type definitions, element declarations and model 
- * groups.  Factory methods for each of these are 
+ * This object contains factory methods for each
+ * Java content interface and Java element interface
+ * generated in the gg.oddin.schemas.v1 package.
+ * <p>An ObjectFactory allows you to programatically
+ * construct new instances of the Java representation
+ * for XML content. The Java representation of XML
+ * content can consist of schema derived interfaces
+ * and classes representing the binding of schema
+ * type definitions, element declarations and model
+ * groups.  Factory methods for each of these are
  * provided in this class.
- * 
  */
 @XmlRegistry
 public class ObjectFactory {
@@ -45,14 +44,12 @@ public class ObjectFactory {
 
     /**
      * Create a new ObjectFactory that can be used to create new instances of schema derived classes for package: gg.oddin.schemas.v1
-     * 
      */
     public ObjectFactory() {
     }
 
     /**
      * Create an instance of {@link RAScheduleEndpoint }
-     *
      */
     public RAScheduleEndpoint createScheduleEndpoint() {
         return new RAScheduleEndpoint();
@@ -60,7 +57,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RADescSpecifiers }
-     *
      */
     public RADescSpecifiers createDescSpecifiers() {
         return new RADescSpecifiers();
@@ -68,7 +64,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RADescSpecifiers.Specifier }
-     *
      */
     public RADescSpecifiers.Specifier createDescSpecifiersSpecifier() {
         return new RADescSpecifiers.Specifier();
@@ -76,7 +71,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAOutcomeDescription }
-     * 
      */
     public RAOutcomeDescription createOutcomeDescription() {
         return new RAOutcomeDescription();
@@ -84,7 +78,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RADatetournaments }
-     * 
      */
     public RADatetournaments createDatetournaments() {
         return new RADatetournaments();
@@ -92,7 +85,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAMatchStatusDescriptions }
-     * 
      */
     public RAMatchStatusDescriptions createMatchStatusDescriptions() {
         return new RAMatchStatusDescriptions();
@@ -100,7 +92,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAMatchStatusDescription }
-     * 
      */
     public RAMatchStatusDescription createMatchStatusDescription() {
         return new RAMatchStatusDescription();
@@ -108,7 +99,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAMarketDescriptions }
-     * 
      */
     public RAMarketDescriptions createMarketDescriptions() {
         return new RAMarketDescriptions();
@@ -116,7 +106,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAMarketDescription }
-     * 
      */
     public RAMarketDescription createMarketDescription() {
         return new RAMarketDescription();
@@ -124,7 +113,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RASportsEndpoint }
-     * 
      */
     public RASportsEndpoint createSportsEndpoint() {
         return new RASportsEndpoint();
@@ -132,7 +120,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RASportTournaments }
-     * 
      */
     public RASportTournaments createSportTournaments() {
         return new RASportTournaments();
@@ -140,7 +127,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAMatchSummaryEndpoint }
-     * 
      */
     public RAMatchSummaryEndpoint createMatchSummaryEndpoint() {
         return new RAMatchSummaryEndpoint();
@@ -148,7 +134,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RACompetitorProfileEndpoint }
-     * 
      */
     public RACompetitorProfileEndpoint createCompetitorProfileEndpoint() {
         return new RACompetitorProfileEndpoint();
@@ -156,7 +141,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAFixturesEndpoint }
-     * 
      */
     public RAFixturesEndpoint createFixturesEndpoint() {
         return new RAFixturesEndpoint();
@@ -164,7 +148,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAFixtureChangesEndpoint }
-     * 
      */
     public RAFixtureChangesEndpoint createFixtureChangesEndpoint() {
         return new RAFixtureChangesEndpoint();
@@ -172,7 +155,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAProducers }
-     * 
      */
     public RAProducers createProducers() {
         return new RAProducers();
@@ -180,7 +162,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAProducer }
-     * 
      */
     public RAProducer createProducer() {
         return new RAProducer();
@@ -188,7 +169,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RABookmakerDetail }
-     * 
      */
     public RABookmakerDetail createBookmakerDetail() {
         return new RABookmakerDetail();
@@ -196,7 +176,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATournamentInfo }
-     * 
      */
     public RATournamentInfo createTournamentInfo() {
         return new RATournamentInfo();
@@ -204,7 +183,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATournamentSchedule }
-     * 
      */
     public RATournamentSchedule createTournamentSchedule() {
         return new RATournamentSchedule();
@@ -212,7 +190,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATournaments }
-     * 
      */
     public RATournaments createTournaments() {
         return new RATournaments();
@@ -220,7 +197,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATeamCompetitor }
-     * 
      */
     public RATeamCompetitor createTeamCompetitor() {
         return new RATeamCompetitor();
@@ -228,7 +204,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RASportEvent }
-     * 
      */
     public RASportEvent createSportEvent() {
         return new RASportEvent();
@@ -236,7 +211,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATournament }
-     * 
      */
     public RATournament createTournament() {
         return new RATournament();
@@ -244,7 +218,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RACompetitors }
-     * 
      */
     public RACompetitors createCompetitors() {
         return new RACompetitors();
@@ -252,7 +225,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATournamentLength }
-     * 
      */
     public RATournamentLength createTournamentLength() {
         return new RATournamentLength();
@@ -260,7 +232,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATournamentExtended }
-     * 
      */
     public RATournamentExtended createTournamentExtended() {
         return new RATournamentExtended();
@@ -268,7 +239,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAInfo }
-     * 
      */
     public RAInfo createInfo() {
         return new RAInfo();
@@ -276,7 +246,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RASportEvents }
-     * 
      */
     public RASportEvents createSportEvents() {
         return new RASportEvents();
@@ -284,7 +253,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATeam }
-     * 
      */
     public RATeam createTeam() {
         return new RATeam();
@@ -292,7 +260,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAFixture }
-     * 
      */
     public RAFixture createFixture() {
         return new RAFixture();
@@ -300,7 +267,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RASportEventCompetitors }
-     * 
      */
     public RASportEventCompetitors createSportEventCompetitors() {
         return new RASportEventCompetitors();
@@ -308,7 +274,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAFixtureChange }
-     * 
      */
     public RAFixtureChange createFixtureChange() {
         return new RAFixtureChange();
@@ -316,7 +281,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RATeamExtended }
-     * 
      */
     public RATeamExtended createTeamExtended() {
         return new RATeamExtended();
@@ -324,7 +288,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RASport }
-     * 
      */
     public RASport createSport() {
         return new RASport();
@@ -332,7 +295,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RADelayedInfo }
-     * 
      */
     public RADelayedInfo createDelayedInfo() {
         return new RADelayedInfo();
@@ -340,7 +302,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAExtraInfo }
-     * 
      */
     public RAExtraInfo createExtraInfo() {
         return new RAExtraInfo();
@@ -348,7 +309,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAPITvChannels }
-     *
      */
     public RAPITvChannels createTvChannels() {
         return new RAPITvChannels();
@@ -356,7 +316,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAPITvChannel }
-     *
      */
     public RAPITvChannel createTvChannel() {
         return new RAPITvChannel();
@@ -364,7 +323,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAError }
-     *
      */
     public RAError createError() {
         return new RAError();
@@ -372,15 +330,20 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAErrorMessage }
-     *
      */
     public RAErrorMessage createErrorMessage() {
         return new RAErrorMessage();
     }
 
     /**
+     * Create an instance of {@link RASportEventStatus }
+     */
+    public RASportEventStatus createSportEventStatus() {
+        return new RASportEventStatus();
+    }
+
+    /**
      * Create an instance of {@link RAErrorAction }
-     *
      */
     public RAErrorAction createErrorAction() {
         return new RAErrorAction();
@@ -388,7 +351,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAOutcomeDescription.Outcome }
-     * 
      */
     public RAOutcomeDescription.Outcome createOutcomeDescriptionOutcome() {
         return new RAOutcomeDescription.Outcome();
@@ -396,7 +358,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAReplaySetContent }
-     *
      */
     public RAReplaySetContent createReplaySetContent() {
         return new RAReplaySetContent();
@@ -404,15 +365,34 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link RAReplayEvent }
-     *
      */
     public RAReplayEvent createReplayEvent() {
         return new RAReplayEvent();
     }
 
     /**
+     * Create an instance of {@link RAPeriodScore }
+     */
+    public RAPeriodScore createPeriodScore() {
+        return new RAPeriodScore();
+    }
+
+    /**
+     * Create an instance of {@link RAPeriodScoreBase }
+     */
+    public RAPeriodScoreBase createPeriodScoreBase() {
+        return new RAPeriodScoreBase();
+    }
+
+    /**
+     * Create an instance of {@link RAPeriodScores }
+     */
+    public RAPeriodScores createPeriodScores() {
+        return new RAPeriodScores();
+    }
+
+    /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RABookmakerDetail }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "bookmaker_details")
     public JAXBElement<RABookmakerDetail> createBookmakerDetails(RABookmakerDetail value) {
@@ -421,7 +401,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RATournamentInfo }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "tournament_info")
     public JAXBElement<RATournamentInfo> createTournamentInfo(RATournamentInfo value) {
@@ -430,7 +409,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RASportsEndpoint }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "sports")
     public JAXBElement<RASportsEndpoint> createSports(RASportsEndpoint value) {
@@ -439,7 +417,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RASportTournaments }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "sport_tournaments")
     public JAXBElement<RASportTournaments> createSportTournaments(RASportTournaments value) {
@@ -448,7 +425,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RADatetournaments }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "tournaments")
     public JAXBElement<RADatetournaments> createTournaments(RADatetournaments value) {
@@ -457,7 +433,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RACompetitorProfileEndpoint }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "competitor_profile")
     public JAXBElement<RACompetitorProfileEndpoint> createCompetitorProfile(RACompetitorProfileEndpoint value) {
@@ -466,7 +441,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RAFixturesEndpoint }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "fixtures_fixture")
     public JAXBElement<RAFixturesEndpoint> createFixturesFixture(RAFixturesEndpoint value) {
@@ -475,7 +449,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RAFixtureChangesEndpoint }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "fixture_changes")
     public JAXBElement<RAFixtureChangesEndpoint> createFixtureChanges(RAFixtureChangesEndpoint value) {
@@ -484,7 +457,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RAMatchSummaryEndpoint }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "match_summary")
     public JAXBElement<RAMatchSummaryEndpoint> createMatchSummary(RAMatchSummaryEndpoint value) {
@@ -493,7 +465,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RATournamentSchedule }{@code >}}
-     * 
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "tournament_schedule")
     public JAXBElement<RATournamentSchedule> createTournamentSchedule(RATournamentSchedule value) {
@@ -502,7 +473,6 @@ public class ObjectFactory {
 
     /**
      * Create an instance of {@link JAXBElement }{@code <}{@link RAScheduleEndpoint }{@code >}}
-     *
      */
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "schedule")
     public JAXBElement<RAScheduleEndpoint> createSchedule(RAScheduleEndpoint value) {

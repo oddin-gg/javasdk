@@ -92,6 +92,7 @@ class ApiClientImpl @Inject constructor(
                 Pair("accept", "application/xml")
             )
         FuelManager.instance.basePath = "https://${oddsFeedConfiguration.selectedEnvironment.apiHost}/${API_VERSION}"
+        simpleDateFormat.timeZone = TimeZone.getTimeZone("GMT")
     }
 
     override suspend fun fetchWhoAmI(): RABookmakerDetail {
@@ -321,7 +322,7 @@ class ApiClientImpl @Inject constructor(
     private suspend fun post(path: String): Boolean {
         val result = Fuel.post(path).awaitStringResult()
         if (result is Result.Failure) {
-            val error = unmarshalPossibleError(result.error.errorData)
+            val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to post data", error, result.error)
         }
 
@@ -331,7 +332,7 @@ class ApiClientImpl @Inject constructor(
     private suspend fun put(path: String): Boolean {
         val result = Fuel.put(path).awaitStringResult()
         if (result is Result.Failure) {
-            val error = unmarshalPossibleError(result.error.errorData)
+            val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to put data", error, result.error)
         }
 
@@ -341,7 +342,7 @@ class ApiClientImpl @Inject constructor(
     private suspend fun delete(path: String): Boolean {
         val result = Fuel.delete(path).awaitStringResult()
         if (result is Result.Failure) {
-            val error = unmarshalPossibleError(result.error.errorData)
+            val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to delete data", error, result.error)
         }
 
@@ -351,7 +352,7 @@ class ApiClientImpl @Inject constructor(
     private suspend fun <T : Any> fetchData(path: String, locale: Locale? = null): T {
         val result: Result<T, FuelError> = Fuel.get(path).awaitObjectResult(Deserializer())
         if (result is Result.Failure) {
-            val error = unmarshalPossibleError(result.error.errorData)
+            val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to get data", error, result.error)
         }
 
@@ -370,9 +371,9 @@ class ApiClientImpl @Inject constructor(
         return response
     }
 
-    private fun unmarshalPossibleError(data: ByteArray): RAError? {
+    private fun unmarshalPossibleError(error: FuelError): RAError? {
         return try {
-            Deserializer.UNMARSHALLER.unmarshal(ByteArrayInputStream(data)) as? RAError
+            Deserializer.UNMARSHALLER.unmarshal(ByteArrayInputStream(error.errorData)) as? RAError
         } catch (e: Exception) {
             null
         }
