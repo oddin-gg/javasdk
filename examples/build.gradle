@@ -12,5 +12,5 @@ repositories {
 }
 
 dependencies {
-    implementation files('src/libs/oddin_feed_sdk-0.0.1.jar')
+    implementation files('src/libs/oddin_feed_sdk-0.0.5.jar')
 }

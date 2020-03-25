@@ -48,6 +48,7 @@ class ReplayManagerImpl @Inject constructor(
     private val apiClient: ApiClient,
     private val sportsInfoManager: SportsInfoManager
 ) : ReplayManager {
+
     override fun getReplayList(): List<SportEvent>? {
         val data = runBlocking {
             try {

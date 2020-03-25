@@ -12,36 +12,189 @@ import kotlinx.coroutines.runBlocking
 import java.util.*
 
 interface SportsInfoManager {
+    /**
+     * Fetch all sports with default localization {@link Locale}
+     *
+     * @return - all sports with default localization
+     */
     val sports: List<Sport>?
+
+    /**
+     * Fetch all sports with selected localization {@link Locale}
+     *
+     * @param locale - {@link Locale} for data
+     * @return - all sports translated with selected localization
+     */
     fun getSports(locale: Locale): List<Sport>?
 
+    /**
+     * Fetch all tournaments with default localization {@link Locale}
+     *
+     * @return - all sports translated with default localization
+     */
     val activeTournaments: List<Tournament>?
+
+    /**
+     * Fetch all tournaments with selected localization {@link Locale}
+     *
+     * @param locale - {@link Locale} for data
+     * @return - all tournaments translated with selected localization
+     */
     fun getActiveTournaments(locale: Locale): List<Tournament>?
+
+    /**
+     * Fetch all tournaments for specific sport with default localization {@link Locale}
+     *
+     * @param sportName - specific sport for tournament
+     * @return - all tournaments for specific sport translated with default localization
+     */
     fun getActiveTournaments(sportName: String): List<Tournament>?
+
+    /**
+     * Fetch all tournaments for specific sport with selected localization {@link Locale}
+     *
+     * @param sportName - specific sport for tournament
+     * @param locale - {@link Locale} for data
+     * @return - all tournaments for specific sport translated with selected localization
+     */
     fun getActiveTournaments(sportName: String, locale: Locale): List<Tournament>?
 
+    /**
+     * Fetch a list of all matches scheduled on the specified date with default localization
+     *
+     * @param date - the date of matches
+     * @return - all matches scheduled on the specified date
+     */
     fun getMatchesFor(date: Date): List<Match>?
+
+    /**
+     * Fetch a list of all matches scheduled on the specified date with selected localization
+     *
+     * @param date - the date of matches
+     * @param locale - {@link Locale} for data
+     * @return - all matches scheduled on the specified date
+     */
     fun getMatchesFor(date: Date, locale: Locale): List<Match>?
+
+    /**
+     * Fetch all live matches with default localization
+     *
+     * @return - all live matches
+     */
     val liveMatches: List<Match>?
+
+    /**
+     * Fetch all live matches with selected localization
+     *
+     * @param locale - {@link Locale} for data
+     * @return - all live matches
+     */
     fun getLiveMatches(locale: Locale): List<Match>?
 
+    /**
+     * Fetch specified match with default localization
+     *
+     * @param id - specific match id{@link com.oddin.oddsfeedsdk.schema.utils.URN}
+     * @return - match with given id
+     */
     fun getMatch(id: URN): Match?
+
+    /**
+     * Fetch specified match with selected localization
+     *
+     * @param id - specific match id{@link com.oddin.oddsfeedsdk.schema.utils.URN}
+     * @param locale - {@link Locale} for data
+     * @return - match with given id
+     */
     fun getMatch(id: URN, locale: Locale): Match?
 
+    /**
+     * Fetch competitor for specific id with default localization
+     *
+     * @param id - specific competitor id {@link com.oddin.oddsfeedsdk.schema.utils.URN} identifier
+     * @return - competitor with given id
+     */
     fun getCompetitor(id: URN): Competitor?
+
+    /**
+     * Fetch competitor for specific id with selected localization
+     *
+     * @param id - specific competitor id {@link com.oddin.oddsfeedsdk.schema.utils.URN} identifier
+     * @param locale - {@link Locale} for data
+     * @return - competitor with given id
+     */
     fun getCompetitor(id: URN, locale: Locale): Competitor?
 
+    /**
+     * Fetch the list of all fixtures that have changed in the last 24 hours
+     *
+     * @return - all fixtures which were changed
+     */
     val fixtureChanges: List<FixtureChange>?
+
+    /**
+     * Fetch the list of all fixtures that have changed in the last 24 hours
+     *
+     * @param locale  - {@link Locale} for data
+     * @return - all fixtures which were changed
+     */
     fun getFixtureChanges(locale: Locale): List<FixtureChange>?
 
+    /**
+     * Fetch all events with prematch odd.
+     *
+     * @param startIndex starting index (zero based)
+     * @param limit      number of matches to return (max: 1000)
+     * @return a list of sport events
+     */
     fun getListOfMatches(startIndex: Int, limit: Int): List<Match>?
+
+    /**
+     * Fetch all events with prematch odd.
+     *
+     * @param startIndex starting index (zero based)
+     * @param limit      number of matches to return (max: 1000)
+     * @param locale     {@link Locale} for data
+     * @return a list of sport events
+     */
     fun getListOfMatches(startIndex: Int, limit: Int, locale: Locale): List<Match>?
 
+    /**
+     * Fetch all the available tournaments for given sport with default localization {@link Locale}
+     *
+     * @param sportId - specific sport id {@link com.oddin.oddsfeedsdk.schema.utils.URN}
+     * @return - all tournaments for given sport with default localization
+     */
     fun getAvailableTournaments(sportId: URN): List<Tournament>?
+
+    /**
+     * Fetch all the available tournaments for given sport with selected localization {@link Locale}
+     *
+     * @param sportId - specific sport id {@link com.oddin.oddsfeedsdk.schema.utils.URN}
+     * @param locale  - {@link Locale} for data
+     * @return - all tournaments for given sport with selected localization
+     */
     fun getAvailableTournaments(sportId: URN, locale: Locale): List<Tournament>?
 
+    /**
+     * Clear match from all caches
+     *
+     * @param id - specific match id {@link com.oddin.oddsfeedsdk.schema.utils.URN}
+     */
     fun clearMatch(id: URN)
+
+    /**
+     * Clear tournament from all caches
+     *
+     * @param id - specific tournament id {@link com.oddin.oddsfeedsdk.schema.utils.URN}
+     */
     fun clearTournament(id: URN)
+
+    /**
+     * Clear competitor from all caches
+     *
+     * @param id - specific competitor id {@link com.oddin.oddsfeedsdk.schema.utils.URN}
+     */
     fun clearCompetitor(id: URN)
 }
 

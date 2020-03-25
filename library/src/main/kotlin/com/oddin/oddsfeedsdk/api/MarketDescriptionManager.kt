@@ -10,8 +10,27 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import java.util.*
 
 interface MarketDescriptionManager {
+    /**
+     * Fetch all market descriptions with default localization
+     *
+     * @return a list of available  market descriptions
+     */
     val marketDescriptions: List<MarketDescription>?
+
+    /**
+     * Fetch all market descriptions with selected localization
+     *
+     * @param locale - {@link Locale} for data
+     * @return a list of available  market descriptions
+     */
     fun getMarketDescriptions(locale: Locale): List<MarketDescription>?
+
+
+    /**
+     * Clear market description from all caches
+     * @param marketId market id to be deleted
+     * @param variant optional market variant
+     */
     fun clearMarketDescription(marketId: Int, variant: String?)
 }
 

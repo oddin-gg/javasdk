@@ -9,8 +9,19 @@ import mu.KotlinLogging
 import java.util.*
 
 interface BookmakerDetail {
+    /**
+     * Expiration date of access token
+     */
     val expireAt: Date
+
+    /**
+     * Bookmaker id
+     */
     val bookmakerId: Int
+
+    /**
+     * Virtual host for RabbitMQ connection
+     */
     val virtualHost: String
 }
 
