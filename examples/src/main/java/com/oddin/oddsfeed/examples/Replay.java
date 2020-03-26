@@ -88,7 +88,7 @@ public class Replay {
         URN fifaMatch = URN.parse("od:match:653");
         URN overwatchMatch = URN.parse("od:match:2952");
         URN kogMatch = URN.parse("od:match:3073");
-        URN sc2Match = URN.parse("od:match:298");
+        URN sc2Match = URN.parse("od:match:2981");
         URN rocketLeagueMatch = URN.parse("od:match:2997");
 
         // Add test events to replay manager
