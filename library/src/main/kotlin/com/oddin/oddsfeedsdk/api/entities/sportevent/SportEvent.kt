@@ -13,6 +13,7 @@ interface SportEvent {
     val sportId: URN?
     val scheduledTime: Date?
     val scheduledEndTime: Date?
+    val liveOddsAvailability: LiveOddsAvailability?
 }
 
 interface PeriodScore {
@@ -72,6 +73,19 @@ interface Match : Competition {
 
 enum class HomeAway(val value: Int) {
     HOME(0), AWAY(1);
+}
+
+enum class LiveOddsAvailability(val availability: String) {
+    NOT_AVAILABLE("not_available"), AVAILABLE("available");
+
+    companion object {
+        fun fromApiEvent(availability: String?): LiveOddsAvailability {
+            return when(availability) {
+                NOT_AVAILABLE.availability -> NOT_AVAILABLE
+                else -> AVAILABLE
+            }
+        }
+    }
 }
 
 enum class EventStatus(val apiName: String, val apiId: Int) {

@@ -5,7 +5,6 @@ import com.github.kittinunf.fuel.core.FuelError
 import com.github.kittinunf.fuel.core.FuelManager
 import com.github.kittinunf.fuel.core.ResponseDeserializable
 import com.github.kittinunf.fuel.coroutines.awaitObjectResult
-import com.github.kittinunf.fuel.coroutines.awaitString
 import com.github.kittinunf.fuel.coroutines.awaitStringResult
 import com.github.kittinunf.result.Result
 import com.google.inject.Inject
@@ -20,7 +19,6 @@ import io.reactivex.subjects.PublishSubject
 import mu.KotlinLogging
 import java.io.ByteArrayInputStream
 import java.io.InputStream
-import java.lang.Exception
 import java.net.URI
 import java.text.SimpleDateFormat
 import java.util.*

@@ -93,5 +93,5 @@ interface ExceptionHandler {
 
 enum class Environment(val messagingHost: String, val apiHost: String) {
     PRODUCTION("mq.oddin.gg", "api-mq.oddin.gg"),
-    INTEGRATION("mq.oddin.gg", "api-mq.oddin.gg")
+    INTEGRATION("mq.integration.oddin.gg", "api-mq.integration.oddin.gg")
 }

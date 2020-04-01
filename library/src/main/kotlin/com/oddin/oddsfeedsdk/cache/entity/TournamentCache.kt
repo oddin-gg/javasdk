@@ -195,6 +195,9 @@ class TournamentImpl(
     override val scheduledEndTime: Date?
         get() = fetchTournament(locales)?.scheduledEndTime
 
+    override val liveOddsAvailability: LiveOddsAvailability?
+        get() = LiveOddsAvailability.NOT_AVAILABLE
+
     override val competitors: List<Competitor>?
         get() = fetchCompetitors(locales)
 

@@ -126,7 +126,8 @@ class MatchCacheImpl @Inject constructor(
                 URN.parse(data.tournament.sport.id),
                 URN.parse(data.tournament.id),
                 if (homeTeamId != null) URN.parse(homeTeamId) else null,
-                if (awayTeamId != null) URN.parse(awayTeamId) else null
+                if (awayTeamId != null) URN.parse(awayTeamId) else null,
+                LiveOddsAvailability.fromApiEvent(data.liveodds)
             )
         } else {
             item.scheduledTime = Utils.parseDate(data.scheduled)
@@ -135,6 +136,7 @@ class MatchCacheImpl @Inject constructor(
             item.tournamentId = URN.parse(data.tournament.id)
             item.homeTeamId = if (homeTeamId != null) URN.parse(homeTeamId) else null
             item.awayTeamId = if (awayTeamId != null) URN.parse(awayTeamId) else null
+            item.liveOddsAvailability = LiveOddsAvailability.fromApiEvent(data.liveodds)
         }
 
         item.name[locale] = data.name
@@ -151,7 +153,8 @@ data class LocalizedMatch(
     var sportId: URN,
     var tournamentId: URN,
     var homeTeamId: URN?,
-    var awayTeamId: URN?
+    var awayTeamId: URN?,
+    var liveOddsAvailability: LiveOddsAvailability?
 ) : LocalizedItem {
     val name = ConcurrentHashMap<Locale, String>()
 
@@ -198,6 +201,9 @@ class MatchImpl(
 
     override val scheduledEndTime: Date?
         get() = fetchMatch(locales)?.scheduledEndTime
+
+    override val liveOddsAvailability: LiveOddsAvailability?
+        get() = fetchMatch(locales)?.liveOddsAvailability
 
     private fun fetchMatch(locales: Set<Locale>): LocalizedMatch? {
         val item = matchCache.getMatch(id, locales)
