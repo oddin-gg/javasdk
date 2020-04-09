@@ -66,10 +66,20 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
     protected String result;
     @XmlAttribute(name = "id", required = true)
     protected int id;
+    @XmlAttribute(name = "ref_id")
+    protected int refId;
     @XmlAttribute(name = "specifiers")
     protected String specifiers;
     @XmlAttribute(name = "extended_specifiers")
     protected String extendedSpecifiers;
+
+    public int getRefId() {
+        return refId;
+    }
+
+    public void setRefId(int refId) {
+        this.refId = refId;
+    }
 
     /**
      * Gets the value of the outcome property.
@@ -240,12 +250,23 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
 
         @XmlAttribute(name = "id", required = true)
         protected Long id;
+        @XmlAttribute(name = "ref_id")
+        protected Long refId;
         @XmlAttribute(name = "result", required = true)
         protected OFResult result;
         @XmlAttribute(name = "void_factor")
         protected OFVoidFactor voidFactor;
         @XmlAttribute(name = "dead_heat_factor")
         protected Double deadHeatFactor;
+
+        public Long getRefId() {
+            return refId;
+        }
+
+        public void setRefId(Long refId) {
+            this.refId = refId;
+        }
+
 
         /**
          * Gets the value of the id property.

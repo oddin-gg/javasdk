@@ -15,12 +15,14 @@ import java.util.*
 
 interface Outcome {
     val id: Long
+    val refId: Long?
     val name: String?
     fun getName(locale: Locale): String?
 }
 
 open class OutcomeImpl(
     override val id: Long,
+    override val refId: Long?,
     private val marketData: MarketData,
     private val locale: Locale
 ) : Outcome {
@@ -42,9 +44,10 @@ open class OutcomeProbabilitiesImpl(
     override val probability: Double?,
     private val active: OFOutcomeActive?,
     id: Long,
+    refId: Long?,
     marketData: MarketData,
     locale: Locale
-) : OutcomeImpl(id, marketData, locale), OutcomeProbabilities {
+) : OutcomeImpl(id, refId, marketData, locale), OutcomeProbabilities {
     override val isActive: Boolean
         get() = active == null || active == OFOutcomeActive.ACTIVE
 }
@@ -77,14 +80,15 @@ interface OutcomeOdds : OutcomeProbabilities {
 }
 
 open class OutcomeOddsImpl(
-    private val odds: Double,
+    private val odds: Double?,
     probability: Double?,
     active: OFOutcomeActive?,
     id: Long,
+    refId: Long?,
     marketData: MarketData,
     locale: Locale,
     override val additionalProbabilities: AdditionalProbabilities?
-) : OutcomeProbabilitiesImpl(probability, active, id, marketData, locale), OutcomeOdds {
+) : OutcomeProbabilitiesImpl(probability, active, id, refId, marketData, locale), OutcomeOdds {
 
     override val isPlayerOutcome: Boolean
         get() = false
@@ -96,8 +100,8 @@ open class OutcomeOddsImpl(
         }
     }
 
-    private fun convertOdds(odds: Double): Double? {
-        if (odds.isNaN()) {
+    private fun convertOdds(odds: Double?): Double? {
+        if (odds == null || odds.isNaN()) {
             return odds
         }
 
@@ -125,14 +129,15 @@ interface CompetitorOutcomeOdds : OutcomeOdds {
 class CompetitorOutcomeOddsImpl(
     private val match: Match,
     private val teamId: Int,
-    odds: Double,
-    probability: Double,
+    odds: Double?,
+    probability: Double?,
     active: OFOutcomeActive?,
     id: Long,
+    refId: Long?,
     marketData: MarketData,
     locale: Locale,
     additionalProbabilities: AdditionalProbabilities?
-) : OutcomeOddsImpl(odds, probability, active, id, marketData, locale, additionalProbabilities),
+) : OutcomeOddsImpl(odds, probability, active, id, refId, marketData, locale, additionalProbabilities),
     CompetitorOutcomeOdds {
 
     override val homeOrAwayTeam: HomeAway
@@ -162,12 +167,13 @@ interface OutcomeSettlement : Outcome {
 
 class OutcomeSettlementImpl(
     id: Long,
+    refId: Long?,
     marketData: MarketData,
     locale: Locale,
     private val void: OFVoidFactor?,
     override val deadHeatFactor: Double?,
     private val result: OFResult
-) : OutcomeImpl(id, marketData, locale), OutcomeSettlement {
+) : OutcomeImpl(id, refId, marketData, locale), OutcomeSettlement {
 
     override val outcomeResult: OutcomeResult
         get() {

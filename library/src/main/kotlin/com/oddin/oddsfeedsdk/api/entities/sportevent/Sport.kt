@@ -5,6 +5,7 @@ import java.util.*
 
 interface SportSummary {
     val id: URN
+    val refId: URN?
     val names: Map<Locale, String>?
     fun getName(locale: Locale): String?
 }

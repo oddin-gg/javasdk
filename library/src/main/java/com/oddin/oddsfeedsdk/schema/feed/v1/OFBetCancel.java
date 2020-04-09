@@ -57,10 +57,20 @@ public class OFBetCancel implements BasicMessage {
     protected int product;
     @XmlAttribute(name = "event_id", required = true)
     protected String eventId;
+    @XmlAttribute(name = "ref_event_id")
+    protected String refEventId;
     @XmlAttribute(name = "timestamp", required = true)
     protected long timestamp;
     @XmlAttribute(name = "request_id")
     protected Long requestId;
+
+    public String getRefEventId() {
+        return refEventId;
+    }
+
+    public void setRefEventId(String refEventId) {
+        this.refEventId = refEventId;
+    }
 
     /**
      * Gets the value of the market property.

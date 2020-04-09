@@ -21,7 +21,7 @@ import mu.KotlinLogging
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
-interface SportDataCache: Closable {
+interface SportDataCache : Closable {
     fun getSports(locales: Set<Locale>): List<URN>
     fun getSport(id: URN, locales: Set<Locale>): LocalizedSport?
     fun getSportTournaments(id: URN, locale: Locale): List<URN>?
@@ -47,7 +47,7 @@ class SportDataCacheImpl @Inject constructor(
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
-            .subscribe( { response ->
+            .subscribe({ response ->
                 val locale = response.first ?: return@subscribe
                 val data = response.second ?: return@subscribe
 
@@ -107,7 +107,7 @@ class SportDataCacheImpl @Inject constructor(
                 tournamentIds.forEach {
                     try {
                         refreshOrInsertItem(id, locale, tournamentId = it)
-                    } catch(e: Exception) {
+                    } catch (e: Exception) {
                         logger.error { "Failed to refresh or insert tournament to sport" }
                     }
                 }
@@ -144,7 +144,7 @@ class SportDataCacheImpl @Inject constructor(
                     val id = URN.parse(it.id)
                     try {
                         refreshOrInsertItem(id, locale, sport = it)
-                    } catch(e: Exception) {
+                    } catch (e: Exception) {
                         logger.error { "Failed to insert or refresh sport" }
                     }
                 }
@@ -164,6 +164,7 @@ class SportDataCacheImpl @Inject constructor(
 
         if (sport != null) {
             localizedSport.name[locale] = sport.name
+            localizedSport.refId = if (sport.refId != null) URN.parse(sport.refId) else null
         }
 
         if (tournamentId != null) {
@@ -175,7 +176,7 @@ class SportDataCacheImpl @Inject constructor(
     }
 }
 
-data class LocalizedSport(val id: URN) : LocalizedItem {
+data class LocalizedSport(val id: URN, var refId: URN? = null) : LocalizedItem {
     var name = ConcurrentHashMap<Locale, String>()
     var tournamentIds: MutableSet<URN>? = null
 
@@ -190,6 +191,9 @@ class SportImpl(
     private val exceptionHandlingStrategy: ExceptionHandlingStrategy,
     private val locales: Set<Locale>
 ) : Sport {
+
+    override val refId: URN?
+        get() = fetchSport(locales)?.refId
 
     override val names: Map<Locale, String>?
         get() = fetchSport(locales)?.name

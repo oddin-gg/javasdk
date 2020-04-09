@@ -54,6 +54,7 @@ class MarketFactoryImpl @Inject constructor(
 
         return MarketWithOddsImpl(
             market.id,
+            market.refId,
             specifiersMap,
             marketData,
             locales.first(),
@@ -77,6 +78,7 @@ class MarketFactoryImpl @Inject constructor(
 
         return MarketWithSettlementImpl(
             market.id,
+            market.refId,
             specifiersMap,
             marketData,
             locales.first(),
@@ -90,6 +92,7 @@ class MarketFactoryImpl @Inject constructor(
 
         return MarketCancelImpl(
             market.id,
+            market.refId,
             specifiersMap,
             marketData,
             locales.first()
@@ -147,6 +150,7 @@ class MarketFactoryImpl @Inject constructor(
                 outcome.probabilities,
                 outcome.active,
                 outcome.id,
+                outcome.refId,
                 marketData,
                 locale,
                 additionalProbabilities
@@ -157,6 +161,7 @@ class MarketFactoryImpl @Inject constructor(
                 outcome.probabilities,
                 outcome.active,
                 outcome.id,
+                outcome.refId,
                 marketData,
                 locale,
                 additionalProbabilities
@@ -171,6 +176,7 @@ class MarketFactoryImpl @Inject constructor(
     ): OutcomeSettlement {
         return OutcomeSettlementImpl(
             outcome.id,
+            outcome.refId,
             marketData,
             locale,
             outcome.voidFactor,

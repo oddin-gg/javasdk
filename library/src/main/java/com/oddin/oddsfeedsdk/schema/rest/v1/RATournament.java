@@ -58,6 +58,8 @@ public class RATournament {
     protected RASport sport;
     @XmlAttribute(name = "id", required = true)
     protected String id;
+    @XmlAttribute(name = "ref_id")
+    protected String refId;
     @XmlAttribute(name = "name", required = true)
     protected String name;
     @XmlAttribute(name = "scheduled")
@@ -66,6 +68,14 @@ public class RATournament {
     @XmlAttribute(name = "scheduled_end")
     @XmlSchemaType(name = "dateTime")
     protected XMLGregorianCalendar scheduledEnd;
+
+    public String getRefId() {
+        return refId;
+    }
+
+    public void setRefId(String refId) {
+        this.refId = refId;
+    }
 
     /**
      * Gets the value of the tournamentLength property.

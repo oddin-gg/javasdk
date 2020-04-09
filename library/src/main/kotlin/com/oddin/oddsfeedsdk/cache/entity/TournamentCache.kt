@@ -133,6 +133,7 @@ class TournamentCacheImpl @Inject constructor(
         if (item == null) {
             item = LocalizedTournament(
                 id,
+                if (tournament.refId != null) URN.parse(tournament.refId) else null,
                 Utils.parseDate(tournament.tournamentLength?.startDate),
                 Utils.parseDate(tournament.tournamentLength?.endDate),
                 URN.parse(tournament.sport.id),
@@ -163,6 +164,7 @@ class TournamentCacheImpl @Inject constructor(
 
 data class LocalizedTournament(
     val id: URN,
+    val refId: URN?,
     var startDate: Date?,
     var endDate: Date?,
     var sportId: URN,
@@ -184,6 +186,9 @@ class TournamentImpl(
     private val exceptionHandlingStrategy: ExceptionHandlingStrategy,
     private val locales: Set<Locale>
 ) : Tournament {
+
+    override val refId: URN?
+        get() = fetchTournament(locales)?.refId
 
     override fun getName(locale: Locale): String? {
         return fetchTournament(setOf(locale))?.name?.get(locale)

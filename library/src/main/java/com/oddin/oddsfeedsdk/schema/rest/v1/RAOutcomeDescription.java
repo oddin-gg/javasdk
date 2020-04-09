@@ -108,10 +108,20 @@ public class RAOutcomeDescription {
 
         @XmlAttribute(name = "id", required = true)
         protected Long id;
+        @XmlAttribute(name = "ref_id")
+        protected Long refId;
         @XmlAttribute(name = "name", required = true)
         protected String name;
         @XmlAttribute(name = "description")
         protected String description;
+
+        public Long getRefId() {
+            return refId;
+        }
+
+        public void setRefId(Long refId) {
+            this.refId = refId;
+        }
 
         /**
          * Gets the value of the id property.

@@ -9,6 +9,7 @@ import java.util.*
 
 interface OutcomeDescription {
     val id: Long
+    val refId: Long?
     fun getName(locale: Locale): String?
     fun getDescription(locale: Locale): String?
 }
@@ -22,6 +23,7 @@ data class SpecifierImpl(override val name: String, override val type: String) :
 
 interface MarketDescription {
     val id: Int
+    val refId: Int?
 
     fun getName(locale: Locale): String?
     val outcomes: List<OutcomeDescription>

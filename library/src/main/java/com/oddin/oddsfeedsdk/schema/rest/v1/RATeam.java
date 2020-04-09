@@ -47,6 +47,8 @@ public class RATeam {
 
     @XmlAttribute(name = "id", required = true)
     protected String id;
+    @XmlAttribute(name = "ref_id")
+    protected String refId;
     @XmlAttribute(name = "name", required = true)
     protected String name;
     @XmlAttribute(name = "abbreviation", required = true)
@@ -57,6 +59,19 @@ public class RATeam {
     protected String countryCode;
     @XmlAttribute(name = "virtual")
     protected Boolean virtual;
+
+    public Boolean getVirtual() {
+        return virtual;
+    }
+
+    public String getRefId() {
+        return refId;
+    }
+
+    public void setRefId(String refId) {
+        this.refId = refId;
+    }
+
 
     /**
      * Gets the value of the id property.

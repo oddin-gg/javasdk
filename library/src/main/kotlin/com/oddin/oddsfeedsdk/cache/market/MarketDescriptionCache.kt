@@ -137,6 +137,7 @@ class MarketDescriptionCacheImpl @Inject constructor(
             val outcomes =
                 marketDescription.outcomes.outcome.map { it.id to LocalizedOutcomeDescription() }.toMap()
             item = LocalizedMarketDescription(
+                marketDescription.refId,
                 ConcurrentHashMap(outcomes)
             )
         }
@@ -144,6 +145,7 @@ class MarketDescriptionCacheImpl @Inject constructor(
         marketDescription.outcomes.outcome.forEach {
             val localizedOutcomeDescription = item.outcomes[it.id]
             localizedOutcomeDescription?.name?.put(locale, it.name)
+            localizedOutcomeDescription?.refId = it.refId
 
             if (it.description != null) {
                 localizedOutcomeDescription?.description?.put(locale, it.description)
@@ -159,6 +161,7 @@ class MarketDescriptionCacheImpl @Inject constructor(
 
 
 data class LocalizedMarketDescription(
+    val refId: Int?,
     var outcomes: ConcurrentHashMap<Long, LocalizedOutcomeDescription>
 ) : LocalizedItem {
     var specifiers: List<SpecifierImpl>? = null
@@ -171,6 +174,7 @@ data class LocalizedMarketDescription(
 class LocalizedOutcomeDescription {
     var name = ConcurrentHashMap<Locale, String>()
     var description = ConcurrentHashMap<Locale, String>()
+    var refId: Long? = null
 }
 
 class MarketDescriptionImpl(
@@ -181,12 +185,20 @@ class MarketDescriptionImpl(
     private val locales: Set<Locale>
 ) : MarketDescription {
 
+    override val refId: Int?
+        get() = fetchMarketDescription(locales)?.refId
+
     override fun getName(locale: Locale): String? {
         return fetchMarketDescription(setOf(locale))?.name?.get(locale)
     }
 
     override val outcomes: List<OutcomeDescription>
-        get() = fetchMarketDescription(locales)?.outcomes?.map { OutcomeDescriptionImpl(it.key, it.value) }
+        get() = fetchMarketDescription(locales)?.outcomes?.map {
+            OutcomeDescriptionImpl(
+                it.key,
+                it.value
+            )
+        }
             ?: emptyList()
 
     override val specifiers: List<Specifier>?
@@ -207,6 +219,9 @@ class OutcomeDescriptionImpl(
     override val id: Long,
     private val localizedOutcomeDescription: LocalizedOutcomeDescription
 ) : OutcomeDescription {
+
+    override val refId: Long?
+        get() = localizedOutcomeDescription.refId
 
     override fun getName(locale: Locale): String? {
         return localizedOutcomeDescription.name[locale]

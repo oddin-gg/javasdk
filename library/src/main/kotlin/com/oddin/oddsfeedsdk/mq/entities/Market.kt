@@ -10,6 +10,7 @@ import java.util.*
 // @TODO Market description!
 interface Market {
     val id: Int
+    val refId: Int?
     val specifiers: Map<String, String>
     val name: String?
 
@@ -18,6 +19,7 @@ interface Market {
 
 open class MarketImpl(
     override val id: Int,
+    override val refId: Int?,
     override val specifiers: Map<String, String>,
     private val marketData: MarketData,
     private val locale: Locale
@@ -56,13 +58,14 @@ interface MarketWithOdds : Market {
 
 class MarketWithOddsImpl(
     id: Int,
+    refId: Int?,
     specifiers: Map<String, String>,
     marketData: MarketData,
     locale: Locale,
     override val outcomeOdds: List<OutcomeOdds>,
     private val feedMarketStatus: OFMarketStatus,
     private val favourite: OFFavourite?
-) : MarketImpl(id, specifiers, marketData, locale), MarketWithOdds {
+) : MarketImpl(id, refId, specifiers, marketData, locale), MarketWithOdds {
 
     override val status: MarketStatus
         get() = MarketStatus.fromFeedValue(feedMarketStatus)
@@ -79,11 +82,12 @@ interface MarketWithSettlement : Market {
 
 class MarketWithSettlementImpl(
     id: Int,
+    refId: Int?,
     specifiers: Map<String, String>,
     marketData: MarketData,
     locale: Locale,
     override val outcomeSettlements: List<OutcomeSettlement>
-) : MarketImpl(id, specifiers, marketData, locale), MarketWithSettlement {
+) : MarketImpl(id, refId, specifiers, marketData, locale), MarketWithSettlement {
 
     override val voidReasonValue: StaticData?
         get() = null
@@ -99,10 +103,11 @@ interface MarketCancel : Market {
 
 class MarketCancelImpl(
     id: Int,
+    refId: Int?,
     specifiers: Map<String, String>,
     marketData: MarketData,
     locale: Locale
-) : MarketImpl(id, specifiers, marketData, locale), MarketCancel {
+) : MarketImpl(id, refId, specifiers, marketData, locale), MarketCancel {
 
     override val voidReasonValue: StaticData?
         get() = null

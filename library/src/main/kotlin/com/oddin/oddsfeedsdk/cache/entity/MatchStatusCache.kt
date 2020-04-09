@@ -201,7 +201,7 @@ data class LocalizedMatchStatus(
     var matchStatusId: Int?,
     var homeScore: Double,
     var awayScore: Double,
-    var properties: MutableMap<String, Any> = mutableMapOf()
+    var properties: MutableMap<String, Any?> = mutableMapOf()
 )
 
 class MatchStatusImpl(
@@ -233,7 +233,7 @@ class MatchStatusImpl(
     override val status: EventStatus?
         get() = fetchMatchStatus()?.status
 
-    override val properties: Map<String, Any>?
+    override val properties: Map<String, Any?>?
         get() = fetchMatchStatus()?.properties
 
     override fun getMatchStatus(locale: Locale): LocalizedStaticData? {

@@ -70,10 +70,20 @@ public class OFOddsChange implements BasicMessage {
     protected int product;
     @XmlAttribute(name = "event_id", required = true)
     protected String eventId;
+    @XmlAttribute(name = "event_ref_id")
+    protected String eventRefId;
     @XmlAttribute(name = "timestamp", required = true)
     protected long timestamp;
     @XmlAttribute(name = "request_id")
     protected Long requestId;
+
+    public String getEventRefId() {
+        return eventRefId;
+    }
+
+    public void setEventRefId(String eventRefId) {
+        this.eventRefId = eventRefId;
+    }
 
     /**
      * Gets the value of the sportEventStatus property.
@@ -361,6 +371,8 @@ public class OFOddsChange implements BasicMessage {
         public void setBetstopReason(Integer value) {
             this.betstopReason = value;
         }
+
+
 
     }
 

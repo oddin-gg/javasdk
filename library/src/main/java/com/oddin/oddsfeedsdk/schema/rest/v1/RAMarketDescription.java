@@ -46,10 +46,21 @@ public class RAMarketDescription {
     protected RADescSpecifiers specifiers;
     @XmlAttribute(name = "id", required = true)
     protected int id;
+    @XmlAttribute(name = "ref_id")
+    protected int refId;
     @XmlAttribute(name = "name", required = true)
     protected String name;
     @XmlAttribute(name = "variant")
     protected String variant;
+
+    public int getRefId() {
+        return refId;
+    }
+
+    public void setRefId(int refId) {
+        this.refId = refId;
+    }
+
 
     /**
      * Gets the value of the outcomes property.

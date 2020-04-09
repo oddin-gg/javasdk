@@ -5,6 +5,7 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Competitor
+import com.oddin.oddsfeedsdk.api.entities.sportevent.TeamCompetitor
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
@@ -110,6 +111,7 @@ class CompetitorCacheImpl @Inject constructor(
         if (item == null) {
             item = LocalizedCompetitor(
                 id,
+                if (data.refId != null) URN.parse(data.refId) else null,
                 data.isVirtual,
                 data.countryCode
             )
@@ -141,6 +143,7 @@ class CompetitorCacheImpl @Inject constructor(
 
 data class LocalizedCompetitor(
     val id: URN,
+    val refId: URN?,
     var virtual: Boolean?,
     var countryCode: String?
 ) : LocalizedItem {
@@ -166,6 +169,9 @@ class CompetitorImpl(
     private val exceptionHandlingStrategy: ExceptionHandlingStrategy,
     private val locales: Set<Locale>
 ) : Competitor {
+
+    override val refId: URN?
+        get() = fetchCompetitor(locales)?.refId
 
     override val names: Map<Locale, String>?
         get() = fetchCompetitor(locales)?.name
@@ -203,4 +209,40 @@ class CompetitorImpl(
             item
         }
     }
+}
+
+class TeamCompetitorImpl(override val qualifier: String?, private val competitor: Competitor) : TeamCompetitor {
+    override val countries: Map<Locale, String>?
+        get() = competitor.countries
+
+    override val abbreviations: Map<Locale, String>?
+        get() = competitor.abbreviations
+
+    override val virtual: Boolean?
+        get() = competitor.virtual
+
+    override val countryCode: String?
+        get() = competitor.countryCode
+
+    override fun getCountry(locale: Locale): String? {
+        return competitor.getCountry(locale)
+    }
+
+    override fun getAbbreviation(locale: Locale): String? {
+        return competitor.getAbbreviation(locale)
+    }
+
+    override val id: URN?
+        get() = competitor.id
+
+    override val refId: URN?
+        get() = competitor.refId
+
+    override val names: Map<Locale, String>?
+        get() = competitor.names
+
+    override fun getName(locale: Locale): String? {
+        return competitor.getName(locale)
+    }
+
 }

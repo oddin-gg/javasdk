@@ -80,10 +80,21 @@ public class OFOddsChangeMarket implements FeedMessageMarket {
     protected Integer cashoutStatus;
     @XmlAttribute(name = "id", required = true)
     protected int id;
+    @XmlAttribute(name = "ref_id")
+    protected int refId;
     @XmlAttribute(name = "specifiers")
     protected String specifiers;
     @XmlAttribute(name = "extended_specifiers")
     protected String extendedSpecifiers;
+
+    public int getRefId() {
+        return refId;
+    }
+
+    public void setRefId(int refId) {
+        this.refId = refId;
+    }
+
 
     /**
      * Gets the value of the marketMetadata property.
@@ -308,6 +319,8 @@ public class OFOddsChangeMarket implements FeedMessageMarket {
 
         @XmlAttribute(name = "id", required = true)
         protected Long id;
+        @XmlAttribute(name = "ref_id")
+        protected Long refId;
         @XmlAttribute(name = "odds")
         protected Double odds;
         @XmlAttribute(name = "probabilities")
@@ -326,6 +339,14 @@ public class OFOddsChangeMarket implements FeedMessageMarket {
         protected OFOutcomeActive active;
         @XmlAttribute(name = "team")
         protected Integer team;
+
+        public Long getRefId() {
+            return refId;
+        }
+
+        public void setRefId(Long refId) {
+            this.refId = refId;
+        }
 
         /**
          * Gets the value of the id property.

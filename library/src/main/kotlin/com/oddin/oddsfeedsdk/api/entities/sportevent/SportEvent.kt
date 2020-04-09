@@ -3,12 +3,11 @@ package com.oddin.oddsfeedsdk.api.entities.sportevent
 import com.oddin.oddsfeedsdk.cache.LocalizedStaticData
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus
 import com.oddin.oddsfeedsdk.schema.utils.URN
-import java.math.BigDecimal
 import java.util.*
 
 interface SportEvent {
     val id: URN?
-
+    val refId: URN?
     fun getName(locale: Locale): String?
     val sportId: URN?
     val scheduledTime: Date?
@@ -33,7 +32,7 @@ data class PeriodScoreImpl(
 interface CompetitionStatus {
     val winnerId: URN?
     val status: EventStatus?
-    val properties: Map<String, Any>?
+    val properties: Map<String, Any?>?
 }
 
 interface MatchStatus : CompetitionStatus {
@@ -66,8 +65,8 @@ interface Fixture {
 interface Match : Competition {
     override val status: MatchStatus?
     val tournament: Tournament?
-    val homeCompetitor: Competitor?
-    val awayCompetitor: Competitor?
+    val homeCompetitor: TeamCompetitor?
+    val awayCompetitor: TeamCompetitor?
     val fixture: Fixture?
 }
 

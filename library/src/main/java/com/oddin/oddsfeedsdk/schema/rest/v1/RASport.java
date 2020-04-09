@@ -38,8 +38,18 @@ public class RASport {
 
     @XmlAttribute(name = "id", required = true)
     protected String id;
+    @XmlAttribute(name = "ref_id")
+    protected String refId;
     @XmlAttribute(name = "name", required = true)
     protected String name;
+
+    public String getRefId() {
+        return refId;
+    }
+
+    public void setRefId(String refId) {
+        this.refId = refId;
+    }
 
     /**
      * Gets the value of the id property.

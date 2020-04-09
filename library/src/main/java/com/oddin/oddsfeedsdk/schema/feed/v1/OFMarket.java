@@ -43,10 +43,21 @@ public class OFMarket implements FeedMessageMarket {
     protected Integer voidReason;
     @XmlAttribute(name = "id", required = true)
     protected int id;
+    @XmlAttribute(name = "ref_id")
+    protected int refId;
     @XmlAttribute(name = "specifiers")
     protected String specifiers;
     @XmlAttribute(name = "extended_specifiers")
     protected String extendedSpecifiers;
+
+    public int getRefId() {
+        return refId;
+    }
+
+    public void setRefId(int refId) {
+        this.refId = refId;
+    }
+
 
     /**
      * Gets the value of the voidReason property.

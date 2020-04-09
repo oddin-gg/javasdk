@@ -5,6 +5,7 @@ import java.util.*
 
 interface Player {
     val id: URN?
+    val refId: URN?
     val names: Map<Locale, String>?
     fun getName(locale: Locale): String?
 }
@@ -17,6 +18,10 @@ interface Competitor : Player {
 
     fun getCountry(locale: Locale): String?
     fun getAbbreviation(locale: Locale): String?
+}
+
+interface TeamCompetitor: Competitor {
+    val qualifier: String?
 }
 
 

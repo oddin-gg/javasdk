@@ -5,6 +5,7 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
 import com.oddin.oddsfeedsdk.api.entities.sportevent.*
+import com.oddin.oddsfeedsdk.api.entities.sportevent.LiveOddsAvailability.Companion.fromApiEvent
 import com.oddin.oddsfeedsdk.api.factories.EntityFactory
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
@@ -116,18 +117,23 @@ class MatchCacheImpl @Inject constructor(
     private fun refreshOrInsertItem(id: URN, locale: Locale, data: RASportEvent) {
         var item = internalCache.getIfPresent(id)
         val homeTeamId = data.competitors?.competitor?.firstOrNull()?.id
+        val homeTeamQualifier = data.competitors?.competitor?.firstOrNull()?.qualifier
         val awayTeamId = data.competitors?.competitor?.lastOrNull()?.id
+        val awayTeamQualifier = data.competitors?.competitor?.lastOrNull()?.qualifier
 
         if (item == null) {
             item = LocalizedMatch(
                 id,
+                if (data.refId != null) URN.parse(data.refId) else null,
                 Utils.parseDate(data.scheduled),
                 Utils.parseDate(data.scheduledEnd),
                 URN.parse(data.tournament.sport.id),
                 URN.parse(data.tournament.id),
                 if (homeTeamId != null) URN.parse(homeTeamId) else null,
                 if (awayTeamId != null) URN.parse(awayTeamId) else null,
-                LiveOddsAvailability.fromApiEvent(data.liveodds)
+                homeTeamQualifier,
+                awayTeamQualifier,
+                fromApiEvent(data.liveodds)
             )
         } else {
             item.scheduledTime = Utils.parseDate(data.scheduled)
@@ -136,7 +142,9 @@ class MatchCacheImpl @Inject constructor(
             item.tournamentId = URN.parse(data.tournament.id)
             item.homeTeamId = if (homeTeamId != null) URN.parse(homeTeamId) else null
             item.awayTeamId = if (awayTeamId != null) URN.parse(awayTeamId) else null
-            item.liveOddsAvailability = LiveOddsAvailability.fromApiEvent(data.liveodds)
+            item.liveOddsAvailability = fromApiEvent(data.liveodds)
+            item.homeTeamQualifier = homeTeamQualifier
+            item.awayTeamQualifier = awayTeamQualifier
         }
 
         item.name[locale] = data.name
@@ -148,12 +156,15 @@ class MatchCacheImpl @Inject constructor(
 
 data class LocalizedMatch(
     val id: URN,
+    val refId: URN?,
     var scheduledTime: Date?,
     var scheduledEndTime: Date?,
     var sportId: URN,
     var tournamentId: URN,
     var homeTeamId: URN?,
     var awayTeamId: URN?,
+    var homeTeamQualifier: String?,
+    var awayTeamQualifier: String?,
     var liveOddsAvailability: LiveOddsAvailability?
 ) : LocalizedItem {
     val name = ConcurrentHashMap<Locale, String>()
@@ -171,17 +182,39 @@ class MatchImpl(
     private val locales: Set<Locale>
 ) : Match {
 
+    override val refId: URN?
+        get() = fetchMatch(locales)?.refId
+
     override val status: MatchStatus?
         get() = entityFactory.buildMatchStatus(id, locales.toList())
 
     override val tournament: Tournament?
         get() = fetchTournament()
 
-    override val homeCompetitor: Competitor?
-        get() = fetchCompetitor(fetchMatch(locales)?.homeTeamId)
+    override val homeCompetitor: TeamCompetitor?
+        get() {
+            val match = fetchMatch(locales) ?: return null
+            val competitor = fetchCompetitor(match.homeTeamId)
 
-    override val awayCompetitor: Competitor?
-        get() = fetchCompetitor(fetchMatch(locales)?.awayTeamId)
+            return if (competitor != null) {
+                TeamCompetitorImpl(match.homeTeamQualifier, competitor)
+            } else {
+                null
+            }
+        }
+
+
+    override val awayCompetitor: TeamCompetitor?
+        get() {
+            val match = fetchMatch(locales) ?: return null
+            val competitor = fetchCompetitor(match.awayTeamId)
+
+            return if (competitor != null) {
+                TeamCompetitorImpl(match.awayTeamQualifier, competitor)
+            } else {
+                null
+            }
+        }
 
     override val fixture: Fixture?
         get() = entityFactory.buildFixture(id, locales.toList())
