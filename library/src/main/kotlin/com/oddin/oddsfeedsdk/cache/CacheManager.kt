@@ -4,7 +4,7 @@ import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
 import com.google.inject.name.Named
-import com.oddin.oddsfeedsdk.DispatchManager
+import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.cache.entity.*
 import com.oddin.oddsfeedsdk.cache.market.MarketDescriptionCache
 import java.util.*
@@ -31,7 +31,7 @@ interface CacheManager {
 
     fun close()
 
-    fun sessionSubscribe(dispatchManager: DispatchManager)
+    fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage)
 }
 
 
@@ -63,7 +63,7 @@ class CacheManagerImpl @Inject constructor(
         }
     }
 
-    override fun sessionSubscribe(dispatchManager: DispatchManager) {
-        matchStatuses.subscribeForSession(dispatchManager)
+    override fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage) {
+        matchStatuses.onFeedMessageReceived(sessionId, feedMessage)
     }
 }

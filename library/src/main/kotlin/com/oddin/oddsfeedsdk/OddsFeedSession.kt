@@ -107,8 +107,6 @@ open class OddsFeedSessionImpl @Inject constructor(
             logger.info { "No extended listener for session $sessionId" }
         }
 
-        cacheManager.sessionSubscribe(dispatchManager)
-
         // Start connection to AMQP
         channelConsumer.open(routingKeys, messageInterest, dispatchManager, exchangeNameProvider)
 
@@ -161,6 +159,8 @@ open class OddsFeedSessionImpl @Inject constructor(
     ) {
         val producerId = feedMessage.message?.getProduct()?.toLong() ?: return
         recoveryMessageProcessor.onMessageProcessingStarted(sessionId, producerId, System.currentTimeMillis())
+
+        cacheManager.onFeedMessageReceived(sessionId, feedMessage)
 
         var timestamp: Long? = null
         when (feedMessage.message) {

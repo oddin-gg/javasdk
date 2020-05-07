@@ -2,7 +2,6 @@ package com.oddin.oddsfeedsdk.cache.entity
 
 import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
-import com.oddin.oddsfeedsdk.DispatchManager
 import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
@@ -31,7 +30,7 @@ import java.util.concurrent.TimeUnit
 interface MatchStatusCache : Closable {
     fun clearCacheItem(id: URN)
     fun getMatchStatus(id: URN): LocalizedMatchStatus?
-    fun subscribeForSession(dispatchManager: DispatchManager)
+    fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage)
 }
 
 private val logger = KotlinLogging.logger {}
@@ -91,28 +90,21 @@ class MatchStatusCacheImpl @Inject constructor(
         return matchStatus
     }
 
-    override fun subscribeForSession(dispatchManager: DispatchManager) {
-        val disposable = dispatchManager
-            .listen(FeedMessage::class.java)
-            .filter {
-                if (it.message is OFOddsChange) {
-                    it.message.sportEventStatus != null
-                } else {
-                    false
-                }
+    override fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage) {
+        val message = feedMessage.message as? OFOddsChange ?: return
+        if (message.sportEventStatus == null) {
+            return
+        }
+
+        val id = URN.parse(message.eventId)
+
+        synchronized(lock) {
+            try {
+                refreshOrInsertFeedItem(id, message.sportEventStatus)
+            } catch (e: Exception) {
+                logger.error { "Failed to process message in match status cache - $message" }
             }
-            .subscribe({
-                val message = it.message as? OFOddsChange ?: return@subscribe
-                val id = URN.parse(message.eventId)
-
-                synchronized(lock) {
-                    refreshOrInsertFeedItem(id, message.sportEventStatus)
-                }
-            }, {
-                logger.error { "Failed to process message in match status cache - $it" }
-            })
-
-        subscriptions.add(disposable)
+        }
     }
 
     override fun close() {
