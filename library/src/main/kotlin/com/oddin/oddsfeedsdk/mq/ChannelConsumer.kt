@@ -26,13 +26,13 @@ interface ExchangeNameProvider {
     fun exchangeName(): String
 }
 
-class ReplayExchangeProviderImpl @Inject constructor(): ExchangeNameProvider {
+class ReplayExchangeProviderImpl @Inject constructor() : ExchangeNameProvider {
     override fun exchangeName(): String {
         return "oddinreplay"
     }
 }
 
-class ExchangeProviderImpl @Inject constructor(): ExchangeNameProvider {
+class ExchangeProviderImpl @Inject constructor() : ExchangeNameProvider {
     override fun exchangeName(): String {
         return "oddinfeed"
     }
@@ -66,7 +66,6 @@ class ChannelConsumerImpl @Inject constructor(
     private var unmarshaller: Unmarshaller
 
     companion object {
-        private const val TIMESTAMP_KEY = "timestamp_in_ms"
         private const val SPORT_NAME = "sportId"
         private const val EVENT_TYPE_NAME = "eventType"
         private const val EVENT_ID_NAME = "eventId"
@@ -74,7 +73,6 @@ class ChannelConsumerImpl @Inject constructor(
             Pattern.compile("\\A([^.]+)\\.([^.]+)\\.([^.]+)\\.([^.]+)\\.(?<sportId>((\\d+)|(-)))\\.(?<eventType>((([a-z]+):([a-zA-Z_2]+))|(-)))\\.(?<eventId>((\\d+)|(-)))(\\.(?<nodeId>((-?\\d+)|(-))))?(\\z)")
         private const val SPORT_ID_PREFIX = "od:sport:"
         private const val EMPTY_POSITION = "-"
-
     }
 
     init {
@@ -112,7 +110,6 @@ class ChannelConsumerImpl @Inject constructor(
                 properties: AMQP.BasicProperties,
                 body: ByteArray
             ) {
-             //   logger.debug { body.toString(Charset.defaultCharset()) }
                 publishMessage(
                     envelope.routingKey,
                     body,
@@ -145,7 +142,7 @@ class ChannelConsumerImpl @Inject constructor(
         messageInterest: MessageInterest,
         dispatchManager: DispatchManager
     ) {
-        val sentAt = properties?.headers?.get(TIMESTAMP_KEY)?.toString()?.toLong() ?: 0
+        val sentAt = properties?.timestamp?.time ?: 0
         val timestamp = MessageTimestamp(0, sentAt, receivedAt, 0)
         val routingKeyInfo = parseRoute(route)
 
@@ -163,6 +160,11 @@ class ChannelConsumerImpl @Inject constructor(
             return
         }
 
+        if (unparsedMessage is BasicMessage) {
+            timestamp.created = unparsedMessage.getTimestamp()
+        }
+
+        timestamp.published = System.currentTimeMillis()
         val rawFeedMessage = RawFeedMessage(unparsedMessage, body, messageInterest, routingKeyInfo, timestamp)
         dispatchManager.publish(rawFeedMessage)
 

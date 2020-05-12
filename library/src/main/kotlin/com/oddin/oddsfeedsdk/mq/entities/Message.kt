@@ -12,13 +12,14 @@ interface UnparsedMessage
 
 interface BasicMessage : UnparsedMessage {
     fun getProduct(): Int
+    fun getTimestamp(): Long
 }
 
 fun OFFixtureChange.key(): String {
-    return "${getProduct()}_${eventId}_${timestamp}"
+    return "${getProduct()}_${eventId}_${getTimestamp()}"
 }
 
-data class MessageTimestamp(val created: Long, val sent: Long, val received: Long, val published: Long)
+data class MessageTimestamp(var created: Long, val sent: Long, val received: Long, var published: Long)
 
 interface Message {
     val producer: Producer?
