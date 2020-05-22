@@ -41,7 +41,7 @@ class MainInjectionModule(
 
         // Recovery manager
         bind(RecoveryManagerImpl::class.java).`in`(Singleton::class.java)
-        bind(RecoveryManager::class.java).to(RecoveryManagerImpl::class.java)
+        bind(SDKRecoveryManager::class.java).to(RecoveryManagerImpl::class.java)
         bind(RecoveryMessageProcessor::class.java).to(RecoveryManagerImpl::class.java)
 
         bind(MarketDescriptionFactory::class.java).to(

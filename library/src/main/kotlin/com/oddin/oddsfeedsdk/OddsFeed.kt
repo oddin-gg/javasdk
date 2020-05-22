@@ -61,6 +61,7 @@ class OddsFeed {
     private var _marketDescriptionManager: MarketDescriptionManager? = null
     private var _bookmakerDetail: BookmakerDetail? = null
     private var _replayManager: ReplayManager? = null
+    private var _recoveryManager: SDKRecoveryManager? = null
 
     private var oddsFeedExtListener: OddsFeedExtListener? = null
 
@@ -93,6 +94,11 @@ class OddsFeed {
     fun getReplayManager(): ReplayManager? {
         init()
         return _replayManager ?: throw IllegalStateException("Missing replay manager")
+    }
+
+    fun getRecoveryManager(): RecoveryManager? {
+        init()
+        return _recoveryManager ?: throw IllegalStateException("Missing recovery manager")
     }
 
     fun open() {
@@ -158,7 +164,7 @@ class OddsFeed {
             }
         }
 
-        injector.getInstance(RecoveryManager::class.java).open(replayOnly)
+        _recoveryManager?.open(replayOnly)
         injector.getInstance(TaskManager::class.java).open()
         injector.getInstance(ApiClient::class.java).subscribeForData(oddsFeedExtListener)
 
@@ -200,6 +206,7 @@ class OddsFeed {
         this@OddsFeed._marketDescriptionManager = injector.getInstance(MarketDescriptionManager::class.java)
         this@OddsFeed._sportsInfoManager = injector.getInstance(SportsInfoManager::class.java)
         this@OddsFeed._replayManager = injector.getInstance(ReplayManager::class.java)
+        this@OddsFeed._recoveryManager = injector.getInstance(SDKRecoveryManager::class.java)
         this@OddsFeed.feedInitialized = true
     }
 

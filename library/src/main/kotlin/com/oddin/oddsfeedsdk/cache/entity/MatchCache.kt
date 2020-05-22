@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.cache.entity
 
 import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
+import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
 import com.oddin.oddsfeedsdk.api.entities.sportevent.*
@@ -11,7 +12,11 @@ import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
-import com.oddin.oddsfeedsdk.schema.rest.v1.*
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFFixtureChange
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAFixturesEndpoint
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAScheduleEndpoint
+import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEvent
+import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentSchedule
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.utils.Utils
 import io.reactivex.disposables.Disposable
@@ -24,6 +29,7 @@ import java.util.concurrent.TimeUnit
 interface MatchCache : Closable {
     fun clearCacheItem(id: URN)
     fun getMatch(id: URN, locales: Set<Locale>): LocalizedMatch?
+    fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage)
 }
 
 private val logger = KotlinLogging.logger {}
@@ -79,6 +85,12 @@ class MatchCacheImpl @Inject constructor(
 
             return@synchronized internalCache.getIfPresent(id)
         }
+    }
+
+    override fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage) {
+        val message = feedMessage.message as? OFFixtureChange ?: return
+        val id = URN.parse(message.eventId)
+        clearCacheItem(id)
     }
 
     override fun close() {

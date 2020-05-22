@@ -53,7 +53,7 @@ class CacheManagerImpl @Inject constructor(
 
 
     override fun close() {
-        val closable = listOf<Closable>(competitorCache, matchCache, tournamentCache, sportDataCache, matchStatuses)
+        val closable = listOf(competitorCache, matchCache, tournamentCache, sportDataCache, matchStatuses)
         closable.forEach {
             try {
                 it.close()
@@ -64,6 +64,7 @@ class CacheManagerImpl @Inject constructor(
     }
 
     override fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage) {
+        matchCache.onFeedMessageReceived(sessionId, feedMessage)
         matchStatuses.onFeedMessageReceived(sessionId, feedMessage)
     }
 }

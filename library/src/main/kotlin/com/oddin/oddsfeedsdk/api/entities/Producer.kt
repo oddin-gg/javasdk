@@ -114,7 +114,8 @@ class ProducerImpl : Producer {
 
     override val statefulRecoveryWindowInMinutes: Int
 
-    override val recoveryInfo: RecoveryInfo? = null
+    override val recoveryInfo: RecoveryInfo?
+        get() = producerData?.lastRecoveryInfo
 
     constructor(producerData: ProducerData) {
         this.producerData = producerData

@@ -4,9 +4,7 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.WhoAmIManager
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.InitException
-import com.rabbitmq.client.Channel
-import com.rabbitmq.client.Connection
-import com.rabbitmq.client.ConnectionFactory
+import com.rabbitmq.client.*
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
 import java.util.concurrent.Executors
@@ -71,6 +69,7 @@ class SingleAMQPConnectionProvider @Inject constructor(
         // Empty password
         rabbitConnectionFactory.password = ""
         rabbitConnectionFactory.isAutomaticRecoveryEnabled = true
+        rabbitConnectionFactory.exceptionHandler = AMQPExceptionHandler()
         val connection = rabbitConnectionFactory.newConnection()
         logger.info { "AMQP connection created" }
 
@@ -91,6 +90,41 @@ class SingleAMQPConnectionProvider @Inject constructor(
 
     override fun isConnectionOpen(): Boolean {
       return connection?.isOpen ?: false
+    }
+
+}
+
+class AMQPExceptionHandler: ExceptionHandler {
+    override fun handleBlockedListenerException(p0: Connection?, p1: Throwable?) {
+        
+    }
+
+    override fun handleTopologyRecoveryException(p0: Connection?, p1: Channel?, p2: TopologyRecoveryException?) {
+        
+    }
+
+    override fun handleConsumerException(p0: Channel?, p1: Throwable?, p2: Consumer?, p3: String?, p4: String?) {
+        
+    }
+
+    override fun handleConnectionRecoveryException(p0: Connection?, p1: Throwable?) {
+        
+    }
+
+    override fun handleUnexpectedConnectionDriverException(p0: Connection?, p1: Throwable?) {
+        
+    }
+
+    override fun handleChannelRecoveryException(p0: Channel?, p1: Throwable?) {
+        
+    }
+
+    override fun handleReturnListenerException(p0: Channel?, p1: Throwable?) {
+        
+    }
+
+    override fun handleConfirmListenerException(p0: Channel?, p1: Throwable?) {
+        
     }
 
 }

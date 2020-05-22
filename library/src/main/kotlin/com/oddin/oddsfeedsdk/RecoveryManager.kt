@@ -21,14 +21,15 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.random.Random
 
-interface RecoveryManager {
-    fun open(replayOnly: Boolean)
 
+interface RecoveryManager {
     fun initiateEventOddsMessagesRecovery(producerId: Long, eventId: URN): Long?
 
     fun initiateEventStatefulMessagesRecovery(producerId: Long, eventId: URN): Long?
+}
 
-    fun requestManualProducerRecovery(producerId: Long, timestamp: Long)
+interface SDKRecoveryManager: RecoveryManager {
+    fun open(replayOnly: Boolean)
 }
 
 interface RecoveryMessageProcessor {
@@ -89,7 +90,7 @@ class RecoveryManagerImpl @Inject constructor(
     private val globalEventsListener: GlobalEventsListener,
     private val feedMessageFactory: FeedMessageFactory,
     private val apiClient: ApiClient
-) : RecoveryManager, RecoveryMessageProcessor {
+) : SDKRecoveryManager, RecoveryMessageProcessor {
     private val producerRecoveryData = ConcurrentHashMap<Long, ProducerRecoveryData>()
     private val messageProcessingTimes = ConcurrentHashMap<UUID, Long>()
     private var isOpened = false
@@ -200,14 +201,6 @@ class RecoveryManagerImpl @Inject constructor(
 
     override fun initiateEventStatefulMessagesRecovery(producerId: Long, eventId: URN): Long? {
         return makeEventRecovery(producerId, eventId, apiClient::postEventStatefulRecovery)
-    }
-
-    override fun requestManualProducerRecovery(producerId: Long, timestamp: Long) {
-        synchronized(lock) {
-            val producerRecoveryData = findOrMakeProducerRecoveryData(producerId)
-            producerDown(producerRecoveryData, ProducerDownReason.OTHER)
-            makeSnapshotRecovery(producerRecoveryData, timestamp)
-        }
     }
 
     private fun snapshotRecoveryFinished(requestId: Long, producerRecoveryData: ProducerRecoveryData) {
@@ -404,7 +397,7 @@ class RecoveryManagerImpl @Inject constructor(
                         producerRecoveryData,
                         ProducerDownReason.ALIVE_INTERVAL_VIOLATION
                     )
-                    calculateTiming(producerRecoveryData, now) -> producerDown(
+                    !calculateTiming(producerRecoveryData, now) -> producerDown(
                         producerRecoveryData,
                         ProducerDownReason.PROCESSING_QUEUE_DELAY_VIOLATION
                     )
