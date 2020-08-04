@@ -222,7 +222,7 @@ class BetCancelImpl<T : SportEvent>(
 }
 
 enum class FixtureChangeType {
-    NEW, TIME_UPDATE, CANCELLED, OTHER_CHANGE, COVERAGE;
+    NEW, TIME_UPDATE, CANCELLED, OTHER_CHANGE, COVERAGE, STREAM_URL;
 
     companion object {
         fun fromFeedType(fixtureChangeType: OFChangeType?): FixtureChangeType {
@@ -232,6 +232,7 @@ enum class FixtureChangeType {
                 OFChangeType.DATETIME -> TIME_UPDATE
                 OFChangeType.COVERAGE -> COVERAGE
                 OFChangeType.FORMAT -> OTHER_CHANGE
+                OFChangeType.STREAM_URL -> STREAM_URL
                 else -> OTHER_CHANGE
             }
         }

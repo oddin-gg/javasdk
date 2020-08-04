@@ -18,7 +18,9 @@ public enum OFChangeType {
     @XmlEnumValue("4")
     FORMAT(4),
     @XmlEnumValue("5")
-    COVERAGE(5);
+    COVERAGE(5),
+    @XmlEnumValue("106")
+    STREAM_URL(106);
 
     private final int value;
 
