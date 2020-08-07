@@ -23,8 +23,7 @@ public class Main {
         // You need to properly set your access token in order to access API and Feed features.
         // Please check with support that your IP was whitelisted.
         OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
-                // Only supported env for now is production
-                .selectProduction()
+                .selectIntegration()
                 .setExceptionHandlingStrategy(ExceptionHandlingStrategy.CATCH)
                 // @TODO Set your access token
                 .setAccessToken("foo-bar")

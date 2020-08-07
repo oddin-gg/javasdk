@@ -18,8 +18,7 @@ public class Replay {
 
     public Replay(String token) {
         OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
-                // Only supported env for now is production
-                .selectProduction()
+                .selectIntegration()
                 .setExceptionHandlingStrategy(ExceptionHandlingStrategy.CATCH)
                 .setAccessToken(token)
                 .setSDKNodeId(1)
