@@ -9,6 +9,7 @@
 package com.oddin.oddsfeedsdk.schema.feed.v1;
 
 import com.oddin.oddsfeedsdk.mq.entities.BasicMessage;
+import com.oddin.oddsfeedsdk.mq.entities.IdMessage;
 
 import javax.xml.bind.annotation.*;
 
@@ -36,7 +37,7 @@ import javax.xml.bind.annotation.*;
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "")
 @XmlRootElement(name = "fixture_change")
-public class OFFixtureChange implements BasicMessage {
+public class OFFixtureChange implements BasicMessage, IdMessage {
 
     @XmlAttribute(name = "change_type")
     protected OFChangeType changeType;

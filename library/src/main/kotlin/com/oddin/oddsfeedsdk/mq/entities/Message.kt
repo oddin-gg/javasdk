@@ -15,8 +15,12 @@ interface BasicMessage : UnparsedMessage {
     fun getTimestamp(): Long
 }
 
+interface IdMessage {
+    fun getEventId(): String
+}
+
 fun OFFixtureChange.key(): String {
-    return "${getProduct()}_${eventId}_${getTimestamp()}"
+    return "${getProduct()}_${getEventId()}_${getTimestamp()}"
 }
 
 data class MessageTimestamp(var created: Long, val sent: Long, val received: Long, var published: Long)
@@ -70,12 +74,8 @@ interface MarketInitializer {
     }
 }
 
-enum class OddsChangeReason {
-    NORMAL, RISK_ADJUSTMENT, SYSTEM_DOWN
-}
 
 interface OddsChange<T : SportEvent> : MarketMessage<T> {
-    val changeReason: OddsChangeReason
     val betStopReasonData: StaticData?
     val betStopReason: String?
     val bettingStatusData: StaticData?
@@ -92,14 +92,6 @@ class OddsChangeImpl<T : SportEvent>(
     private val marketFactory: MarketFactory
 ) : EventMessageImpl<T>(event, message.requestId, rawMessage, producer, timestamp), OddsChange<T>, MarketInitializer {
     private var _markets: List<MarketWithOdds>? = null
-
-    override val changeReason: OddsChangeReason
-        get() {
-            return when (message.oddsChangeReason) {
-                OFOddsChangeReason.RISK_ADJUSTMENT_UPDATE -> OddsChangeReason.RISK_ADJUSTMENT
-                else -> OddsChangeReason.NORMAL
-            }
-        }
 
     override val betStopReasonData: StaticData?
         get() = null

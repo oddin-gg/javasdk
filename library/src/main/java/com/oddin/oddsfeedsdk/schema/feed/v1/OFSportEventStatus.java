@@ -18,192 +18,66 @@ import javax.xml.bind.annotation.XmlType;
 
 /**
  * <p>Java class for sportEventStatus complex type.
- * 
+ *
  * <p>The following schema fragment specifies the expected content contained within this class.
- * 
+ *
  * <pre>
  * &lt;complexType name="sportEventStatus">
  *   &lt;complexContent>
  *     &lt;restriction base="{http://www.w3.org/2001/XMLSchema}anyType">
  *       &lt;sequence>
- *         &lt;element name="clock" type="{}clockType" minOccurs="0"/>
+ *         &lt;element name="scoreboard" type="{}scoreboardType" minOccurs="0"/>
  *         &lt;element name="period_scores" type="{}periodscoresType" minOccurs="0"/>
  *         &lt;element name="results" type="{}resultsType" minOccurs="0"/>
- *         &lt;element name="statistics" type="{}statisticsType" minOccurs="0"/>
  *       &lt;/sequence>
  *       &lt;attribute name="status" use="required" type="{}eventStatus" />
- *       &lt;attribute name="reporting" type="{}reportingStatus" />
  *       &lt;attribute name="match_status" use="required" type="{http://www.w3.org/2001/XMLSchema}int" />
  *       &lt;attribute name="home_score" type="{http://www.w3.org/2001/XMLSchema}decimal" />
  *       &lt;attribute name="away_score" type="{http://www.w3.org/2001/XMLSchema}decimal" />
- *       &lt;attribute name="home_penalty_score" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_penalty_score" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="home_gamescore" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_gamescore" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="home_legscore" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_legscore" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="current_server" type="{}teamType" />
- *       &lt;attribute name="expedite_mode" type="{http://www.w3.org/2001/XMLSchema}boolean" />
- *       &lt;attribute name="tiebreak" type="{http://www.w3.org/2001/XMLSchema}boolean" />
- *       &lt;attribute name="home_suspend" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_suspend" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="balls" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="strikes" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="outs" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="bases" type="{http://www.w3.org/2001/XMLSchema}string" />
- *       &lt;attribute name="home_batter" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_batter" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="possession" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="position" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="try" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="yards" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="throw" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="visit" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="remaining_reds" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="delivery" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="home_remaining_bowls" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_remaining_bowls" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="current_end" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="innings" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="over" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="home_penalty_runs" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_penalty_runs" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="home_dismissals" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="away_dismissals" type="{http://www.w3.org/2001/XMLSchema}int" />
- *       &lt;attribute name="current_ct_team" type="{}teamType" />
  *     &lt;/restriction>
  *   &lt;/complexContent>
  * &lt;/complexType>
  * </pre>
- * 
- * 
  */
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "sportEventStatus", propOrder = {
-    "clock",
-    "periodScores",
-    "results",
-    "statistics"
+        "periodScores",
+        "results",
+        "scoreboard"
 })
 public class OFSportEventStatus {
 
-    protected OFClockType clock;
+    @XmlElement(name = "scoreboard")
+    protected OFScoreboard scoreboard;
     @XmlElement(name = "period_scores")
     protected OFPeriodscoresType periodScores;
     protected OFResultsType results;
-    protected OFStatisticsType statistics;
     @XmlAttribute(name = "status", required = true)
     protected OFEventStatus status;
-    @XmlAttribute(name = "reporting")
-    protected Integer reporting;
     @XmlAttribute(name = "match_status", required = true)
     protected int matchStatus;
     @XmlAttribute(name = "home_score")
     protected Double homeScore;
     @XmlAttribute(name = "away_score")
     protected Double awayScore;
-    @XmlAttribute(name = "home_penalty_score")
-    protected Integer homePenaltyScore;
-    @XmlAttribute(name = "away_penalty_score")
-    protected Integer awayPenaltyScore;
-    @XmlAttribute(name = "home_gamescore")
-    protected Integer homeGamescore;
-    @XmlAttribute(name = "away_gamescore")
-    protected Integer awayGamescore;
-    @XmlAttribute(name = "home_legscore")
-    protected Integer homeLegscore;
-    @XmlAttribute(name = "away_legscore")
-    protected Integer awayLegscore;
-    @XmlAttribute(name = "current_server")
-    protected Integer currentServer;
-    @XmlAttribute(name = "expedite_mode")
-    protected Boolean expediteMode;
-    @XmlAttribute(name = "tiebreak")
-    protected Boolean tiebreak;
-    @XmlAttribute(name = "home_suspend")
-    protected Integer homeSuspend;
-    @XmlAttribute(name = "away_suspend")
-    protected Integer awaySuspend;
-    @XmlAttribute(name = "balls")
-    protected Integer balls;
-    @XmlAttribute(name = "strikes")
-    protected Integer strikes;
-    @XmlAttribute(name = "outs")
-    protected Integer outs;
-    @XmlAttribute(name = "bases")
-    protected String bases;
-    @XmlAttribute(name = "home_batter")
-    protected Integer homeBatter;
-    @XmlAttribute(name = "away_batter")
-    protected Integer awayBatter;
-    @XmlAttribute(name = "possession")
-    protected Integer possession;
-    @XmlAttribute(name = "position")
-    protected Integer position;
-    @XmlAttribute(name = "try")
-    protected Integer _try;
-    @XmlAttribute(name = "yards")
-    protected Integer yards;
-    @XmlAttribute(name = "throw")
-    protected Integer _throw;
-    @XmlAttribute(name = "visit")
-    protected Integer visit;
-    @XmlAttribute(name = "remaining_reds")
-    protected Integer remainingReds;
-    @XmlAttribute(name = "delivery")
-    protected Integer delivery;
-    @XmlAttribute(name = "home_remaining_bowls")
-    protected Integer homeRemainingBowls;
-    @XmlAttribute(name = "away_remaining_bowls")
-    protected Integer awayRemainingBowls;
-    @XmlAttribute(name = "current_end")
-    protected Integer currentEnd;
-    @XmlAttribute(name = "innings")
-    protected Integer innings;
-    @XmlAttribute(name = "over")
-    protected Integer over;
-    @XmlAttribute(name = "home_penalty_runs")
-    protected Integer homePenaltyRuns;
-    @XmlAttribute(name = "away_penalty_runs")
-    protected Integer awayPenaltyRuns;
-    @XmlAttribute(name = "home_dismissals")
-    protected Integer homeDismissals;
-    @XmlAttribute(name = "away_dismissals")
-    protected Integer awayDismissals;
-    @XmlAttribute(name = "current_ct_team")
-    protected Integer currentCtTeam;
 
-    /**
-     * Gets the value of the clock property.
-     *
-     * @return
-     *     possible object is
-     *     {@link OFClockType }
-     *
-     */
-    public OFClockType getClock() {
-        return clock;
+    @XmlAttribute(name = "scoreboard_available")
+    protected boolean scoreboardAvailable;
+
+    public OFScoreboard getScoreboard() {
+        return scoreboard;
     }
 
-    /**
-     * Sets the value of the clock property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link OFClockType }
-     *
-     */
-    public void setClock(OFClockType value) {
-        this.clock = value;
+    public void setScoreboard(OFScoreboard scoreboard) {
+        this.scoreboard = scoreboard;
     }
+
 
     /**
      * Gets the value of the periodScores property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link OFPeriodscoresType }
-     *     
+     *
+     * @return possible object is
+     * {@link OFPeriodscoresType }
      */
     public OFPeriodscoresType getPeriodScores() {
         return periodScores;
@@ -211,11 +85,9 @@ public class OFSportEventStatus {
 
     /**
      * Sets the value of the periodScores property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link OFPeriodscoresType }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link OFPeriodscoresType }
      */
     public void setPeriodScores(OFPeriodscoresType value) {
         this.periodScores = value;
@@ -223,11 +95,9 @@ public class OFSportEventStatus {
 
     /**
      * Gets the value of the results property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link OFResultsType }
-     *     
+     *
+     * @return possible object is
+     * {@link OFResultsType }
      */
     public OFResultsType getResults() {
         return results;
@@ -235,43 +105,16 @@ public class OFSportEventStatus {
 
     /**
      * Sets the value of the results property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link OFResultsType }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link OFResultsType }
      */
     public void setResults(OFResultsType value) {
         this.results = value;
     }
 
     /**
-     * Gets the value of the statistics property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link OFStatisticsType }
-     *     
-     */
-    public OFStatisticsType getStatistics() {
-        return statistics;
-    }
-
-    /**
-     * Sets the value of the statistics property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link OFStatisticsType }
-     *     
-     */
-    public void setStatistics(OFStatisticsType value) {
-        this.statistics = value;
-    }
-
-    /**
      * Gets the value of the status property.
-     * 
      */
     public OFEventStatus getStatus() {
         return status;
@@ -279,39 +122,13 @@ public class OFSportEventStatus {
 
     /**
      * Sets the value of the status property.
-     * 
      */
     public void setStatus(OFEventStatus value) {
         this.status = value;
     }
 
     /**
-     * Gets the value of the reporting property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getReporting() {
-        return reporting;
-    }
-
-    /**
-     * Sets the value of the reporting property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setReporting(Integer value) {
-        this.reporting = value;
-    }
-
-    /**
      * Gets the value of the matchStatus property.
-     * 
      */
     public int getMatchStatus() {
         return matchStatus;
@@ -319,7 +136,6 @@ public class OFSportEventStatus {
 
     /**
      * Sets the value of the matchStatus property.
-     * 
      */
     public void setMatchStatus(int value) {
         this.matchStatus = value;
@@ -328,10 +144,8 @@ public class OFSportEventStatus {
     /**
      * Gets the value of the homeScore property.
      *
-     * @return
-     *     possible object is
-     *     {@link BigDecimal }
-     *
+     * @return possible object is
+     * {@link BigDecimal }
      */
     public Double getHomeScore() {
         return homeScore;
@@ -340,10 +154,8 @@ public class OFSportEventStatus {
     /**
      * Sets the value of the homeScore property.
      *
-     * @param value
-     *     allowed object is
-     *     {@link BigDecimal }
-     *
+     * @param value allowed object is
+     *              {@link BigDecimal }
      */
     public void setHomeScore(Double value) {
         this.homeScore = value;
@@ -352,10 +164,8 @@ public class OFSportEventStatus {
     /**
      * Gets the value of the awayScore property.
      *
-     * @return
-     *     possible object is
-     *     {@link BigDecimal }
-     *
+     * @return possible object is
+     * {@link BigDecimal }
      */
     public Double getAwayScore() {
         return awayScore;
@@ -364,853 +174,20 @@ public class OFSportEventStatus {
     /**
      * Sets the value of the awayScore property.
      *
-     * @param value
-     *     allowed object is
-     *     {@link BigDecimal }
-     *
+     * @param value allowed object is
+     *              {@link BigDecimal }
      */
     public void setAwayScore(Double value) {
         this.awayScore = value;
     }
 
-    /**
-     * Gets the value of the homePenaltyScore property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomePenaltyScore() {
-        return homePenaltyScore;
-    }
-
-    /**
-     * Sets the value of the homePenaltyScore property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomePenaltyScore(Integer value) {
-        this.homePenaltyScore = value;
-    }
-
-    /**
-     * Gets the value of the awayPenaltyScore property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwayPenaltyScore() {
-        return awayPenaltyScore;
-    }
-
-    /**
-     * Sets the value of the awayPenaltyScore property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwayPenaltyScore(Integer value) {
-        this.awayPenaltyScore = value;
-    }
-
-    /**
-     * Gets the value of the homeGamescore property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomeGamescore() {
-        return homeGamescore;
-    }
-
-    /**
-     * Sets the value of the homeGamescore property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomeGamescore(Integer value) {
-        this.homeGamescore = value;
-    }
-
-    /**
-     * Gets the value of the awayGamescore property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwayGamescore() {
-        return awayGamescore;
-    }
-
-    /**
-     * Sets the value of the awayGamescore property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwayGamescore(Integer value) {
-        this.awayGamescore = value;
-    }
-
-    /**
-     * Gets the value of the homeLegscore property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomeLegscore() {
-        return homeLegscore;
-    }
-
-    /**
-     * Sets the value of the homeLegscore property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomeLegscore(Integer value) {
-        this.homeLegscore = value;
-    }
-
-    /**
-     * Gets the value of the awayLegscore property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwayLegscore() {
-        return awayLegscore;
-    }
-
-    /**
-     * Sets the value of the awayLegscore property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwayLegscore(Integer value) {
-        this.awayLegscore = value;
-    }
-
-    /**
-     * Gets the value of the currentServer property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getCurrentServer() {
-        return currentServer;
-    }
-
-    /**
-     * Sets the value of the currentServer property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setCurrentServer(Integer value) {
-        this.currentServer = value;
-    }
-
-    /**
-     * Gets the value of the expediteMode property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Boolean }
-     *
-     */
-    public Boolean isExpediteMode() {
-        return expediteMode;
-    }
-
-    /**
-     * Sets the value of the expediteMode property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Boolean }
-     *
-     */
-    public void setExpediteMode(Boolean value) {
-        this.expediteMode = value;
-    }
-
-    /**
-     * Gets the value of the tiebreak property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Boolean }
-     *
-     */
-    public Boolean isTiebreak() {
-        return tiebreak;
-    }
-
-    /**
-     * Sets the value of the tiebreak property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Boolean }
-     *
-     */
-    public void setTiebreak(Boolean value) {
-        this.tiebreak = value;
-    }
-
-    /**
-     * Gets the value of the homeSuspend property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomeSuspend() {
-        return homeSuspend;
-    }
-
-    /**
-     * Sets the value of the homeSuspend property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomeSuspend(Integer value) {
-        this.homeSuspend = value;
-    }
-
-    /**
-     * Gets the value of the awaySuspend property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwaySuspend() {
-        return awaySuspend;
-    }
-
-    /**
-     * Sets the value of the awaySuspend property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwaySuspend(Integer value) {
-        this.awaySuspend = value;
-    }
-
-    /**
-     * Gets the value of the balls property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getBalls() {
-        return balls;
-    }
-
-    /**
-     * Sets the value of the balls property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setBalls(Integer value) {
-        this.balls = value;
-    }
-
-    /**
-     * Gets the value of the strikes property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getStrikes() {
-        return strikes;
-    }
-
-    /**
-     * Sets the value of the strikes property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setStrikes(Integer value) {
-        this.strikes = value;
-    }
-
-    /**
-     * Gets the value of the outs property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getOuts() {
-        return outs;
-    }
-
-    /**
-     * Sets the value of the outs property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setOuts(Integer value) {
-        this.outs = value;
-    }
-
-    /**
-     * Gets the value of the bases property.
-     *
-     * @return
-     *     possible object is
-     *     {@link String }
-     *
-     */
-    public String getBases() {
-        return bases;
-    }
-
-    /**
-     * Sets the value of the bases property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link String }
-     *
-     */
-    public void setBases(String value) {
-        this.bases = value;
-    }
-
-    /**
-     * Gets the value of the homeBatter property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomeBatter() {
-        return homeBatter;
-    }
-
-    /**
-     * Sets the value of the homeBatter property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomeBatter(Integer value) {
-        this.homeBatter = value;
-    }
-
-    /**
-     * Gets the value of the awayBatter property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwayBatter() {
-        return awayBatter;
-    }
-
-    /**
-     * Sets the value of the awayBatter property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwayBatter(Integer value) {
-        this.awayBatter = value;
-    }
-
-    /**
-     * Gets the value of the possession property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getPossession() {
-        return possession;
-    }
-
-    /**
-     * Sets the value of the possession property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setPossession(Integer value) {
-        this.possession = value;
-    }
-
-    /**
-     * Gets the value of the position property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getPosition() {
-        return position;
-    }
-
-    /**
-     * Sets the value of the position property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setPosition(Integer value) {
-        this.position = value;
-    }
-
-    /**
-     * Gets the value of the try property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getTry() {
-        return _try;
-    }
-
-    /**
-     * Sets the value of the try property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setTry(Integer value) {
-        this._try = value;
-    }
-
-    /**
-     * Gets the value of the yards property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getYards() {
-        return yards;
-    }
-
-    /**
-     * Sets the value of the yards property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setYards(Integer value) {
-        this.yards = value;
-    }
-
-    /**
-     * Gets the value of the throw property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getThrow() {
-        return _throw;
-    }
-
-    /**
-     * Sets the value of the throw property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setThrow(Integer value) {
-        this._throw = value;
-    }
-
-    /**
-     * Gets the value of the visit property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getVisit() {
-        return visit;
-    }
-
-    /**
-     * Sets the value of the visit property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setVisit(Integer value) {
-        this.visit = value;
-    }
-
-    /**
-     * Gets the value of the remainingReds property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getRemainingReds() {
-        return remainingReds;
-    }
-
-    /**
-     * Sets the value of the remainingReds property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setRemainingReds(Integer value) {
-        this.remainingReds = value;
-    }
-
-    /**
-     * Gets the value of the delivery property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getDelivery() {
-        return delivery;
-    }
-
-    /**
-     * Sets the value of the delivery property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setDelivery(Integer value) {
-        this.delivery = value;
-    }
-
-    /**
-     * Gets the value of the homeRemainingBowls property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomeRemainingBowls() {
-        return homeRemainingBowls;
-    }
-
-    /**
-     * Sets the value of the homeRemainingBowls property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomeRemainingBowls(Integer value) {
-        this.homeRemainingBowls = value;
-    }
-
-    /**
-     * Gets the value of the awayRemainingBowls property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwayRemainingBowls() {
-        return awayRemainingBowls;
-    }
-
-    /**
-     * Sets the value of the awayRemainingBowls property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwayRemainingBowls(Integer value) {
-        this.awayRemainingBowls = value;
-    }
-
-    /**
-     * Gets the value of the currentEnd property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getCurrentEnd() {
-        return currentEnd;
-    }
-
-    /**
-     * Sets the value of the currentEnd property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setCurrentEnd(Integer value) {
-        this.currentEnd = value;
-    }
-
-    /**
-     * Gets the value of the innings property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getInnings() {
-        return innings;
-    }
-
-    /**
-     * Sets the value of the innings property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setInnings(Integer value) {
-        this.innings = value;
-    }
-
-    /**
-     * Gets the value of the over property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getOver() {
-        return over;
-    }
-
-    /**
-     * Sets the value of the over property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setOver(Integer value) {
-        this.over = value;
-    }
-
-    /**
-     * Gets the value of the homePenaltyRuns property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomePenaltyRuns() {
-        return homePenaltyRuns;
-    }
-
-    /**
-     * Sets the value of the homePenaltyRuns property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomePenaltyRuns(Integer value) {
-        this.homePenaltyRuns = value;
-    }
-
-    /**
-     * Gets the value of the awayPenaltyRuns property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwayPenaltyRuns() {
-        return awayPenaltyRuns;
-    }
-
-    /**
-     * Sets the value of the awayPenaltyRuns property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwayPenaltyRuns(Integer value) {
-        this.awayPenaltyRuns = value;
-    }
-
-    /**
-     * Gets the value of the homeDismissals property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getHomeDismissals() {
-        return homeDismissals;
-    }
-
-    /**
-     * Sets the value of the homeDismissals property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setHomeDismissals(Integer value) {
-        this.homeDismissals = value;
-    }
-
-    /**
-     * Gets the value of the awayDismissals property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getAwayDismissals() {
-        return awayDismissals;
-    }
-
-    /**
-     * Sets the value of the awayDismissals property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setAwayDismissals(Integer value) {
-        this.awayDismissals = value;
-    }
 
-    /**
-     * Gets the value of the currentCtTeam property.
-     *
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *
-     */
-    public Integer getCurrentCtTeam() {
-        return currentCtTeam;
+    public boolean isScoreboardAvailable() {
+        return scoreboardAvailable;
     }
 
-    /**
-     * Sets the value of the currentCtTeam property.
-     *
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *
-     */
-    public void setCurrentCtTeam(Integer value) {
-        this.currentCtTeam = value;
+    public void setScoreboardAvailable(boolean scoreboardAvailable) {
+        this.scoreboardAvailable = scoreboardAvailable;
     }
 
 }

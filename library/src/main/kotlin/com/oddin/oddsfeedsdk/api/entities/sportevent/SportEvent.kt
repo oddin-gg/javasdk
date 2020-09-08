@@ -22,6 +22,21 @@ interface PeriodScore {
     val matchStatusCode: Int
 }
 
+data class Scoreboard(
+    val currentCtTeam: Int,
+    val homeWonRounds: Int,
+    val awayWonRounds: Int,
+    val currentRound: Int,
+    val homeKills: Int,
+    val awayKills: Int,
+    val homeDestroyedTurrets: Int,
+    val awayDestroyedTurrets: Int,
+    val homeGold: Int,
+    val awayGold: Int,
+    val homeDestroyedTowers: Int,
+    val awayDestroyedTowers: Int
+)
+
 data class PeriodScoreImpl(
     override val homeScore: Double,
     override val awayScore: Double,
@@ -42,6 +57,8 @@ interface MatchStatus : CompetitionStatus {
     fun getMatchStatus(locale: Locale): LocalizedStaticData?
     val homeScore: Double?
     val awayScore: Double?
+    val isScoreboardAvailable: Boolean
+    val scoreboard: Scoreboard?
 }
 
 interface Competition : SportEvent {
@@ -79,7 +96,7 @@ enum class LiveOddsAvailability(val availability: String) {
 
     companion object {
         fun fromApiEvent(availability: String?): LiveOddsAvailability {
-            return when(availability) {
+            return when (availability) {
                 NOT_AVAILABLE.availability -> NOT_AVAILABLE
                 else -> AVAILABLE
             }

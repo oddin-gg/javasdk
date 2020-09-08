@@ -9,6 +9,7 @@
 package com.oddin.oddsfeedsdk.schema.feed.v1;
 
 import com.oddin.oddsfeedsdk.mq.entities.BasicMessage;
+import com.oddin.oddsfeedsdk.mq.entities.IdMessage;
 
 import javax.xml.bind.annotation.*;
 import java.util.ArrayList;
@@ -17,9 +18,9 @@ import java.util.List;
 
 /**
  * <p>Java class for anonymous complex type.
- * 
+ *
  * <p>The following schema fragment specifies the expected content contained within this class.
- * 
+ *
  * <pre>
  * &lt;complexType>
  *   &lt;complexContent>
@@ -47,25 +48,18 @@ import java.util.List;
  *   &lt;/complexContent>
  * &lt;/complexType>
  * </pre>
- * 
- * 
  */
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "", propOrder = {
         "sportEventStatus",
-        "oddsGenerationProperties",
-    "odds"
+        "odds"
 })
 @XmlRootElement(name = "odds_change")
-public class OFOddsChange implements BasicMessage {
+public class OFOddsChange implements BasicMessage, IdMessage {
 
     @XmlElement(name = "sport_event_status")
     protected OFSportEventStatus sportEventStatus;
-    @XmlElement(name = "odds_generation_properties")
-    protected OFOddsGenerationProperties oddsGenerationProperties;
     protected OFOddsChange.Odds odds;
-    @XmlAttribute(name = "odds_change_reason")
-    protected OFOddsChangeReason oddsChangeReason;
     @XmlAttribute(name = "product", required = true)
     protected int product;
     @XmlAttribute(name = "event_id", required = true)
@@ -87,11 +81,9 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Gets the value of the sportEventStatus property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link OFSportEventStatus }
-     *     
+     *
+     * @return possible object is
+     * {@link OFSportEventStatus }
      */
     public OFSportEventStatus getSportEventStatus() {
         return sportEventStatus;
@@ -99,47 +91,19 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Sets the value of the sportEventStatus property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link OFSportEventStatus }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link OFSportEventStatus }
      */
     public void setSportEventStatus(OFSportEventStatus value) {
         this.sportEventStatus = value;
     }
 
     /**
-     * Gets the value of the oddsGenerationProperties property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link OFOddsGenerationProperties }
-     *     
-     */
-    public OFOddsGenerationProperties getOddsGenerationProperties() {
-        return oddsGenerationProperties;
-    }
-
-    /**
-     * Sets the value of the oddsGenerationProperties property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link OFOddsGenerationProperties }
-     *     
-     */
-    public void setOddsGenerationProperties(OFOddsGenerationProperties value) {
-        this.oddsGenerationProperties = value;
-    }
-
-    /**
      * Gets the value of the odds property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link OFOddsChange.Odds }
-     *     
+     *
+     * @return possible object is
+     * {@link OFOddsChange.Odds }
      */
     public OFOddsChange.Odds getOdds() {
         return odds;
@@ -147,43 +111,16 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Sets the value of the odds property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link OFOddsChange.Odds }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link OFOddsChange.Odds }
      */
     public void setOdds(OFOddsChange.Odds value) {
         this.odds = value;
     }
 
     /**
-     * Gets the value of the oddsChangeReason property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link Integer }
-     *     
-     */
-    public OFOddsChangeReason getOddsChangeReason() {
-        return oddsChangeReason;
-    }
-
-    /**
-     * Sets the value of the oddsChangeReason property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link Integer }
-     *     
-     */
-    public void setOddsChangeReason(OFOddsChangeReason value) {
-        this.oddsChangeReason = value;
-    }
-
-    /**
      * Gets the value of the product property.
-     * 
      */
     public int getProduct() {
         return product;
@@ -191,7 +128,6 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Sets the value of the product property.
-     * 
      */
     public void setProduct(int value) {
         this.product = value;
@@ -199,11 +135,9 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Gets the value of the eventId property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link String }
-     *     
+     *
+     * @return possible object is
+     * {@link String }
      */
     public String getEventId() {
         return eventId;
@@ -211,11 +145,9 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Sets the value of the eventId property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link String }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link String }
      */
     public void setEventId(String value) {
         this.eventId = value;
@@ -223,7 +155,6 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Gets the value of the timestamp property.
-     * 
      */
     public long getTimestamp() {
         return timestamp;
@@ -231,7 +162,6 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Sets the value of the timestamp property.
-     * 
      */
     public void setTimestamp(long value) {
         this.timestamp = value;
@@ -239,11 +169,9 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Gets the value of the requestId property.
-     * 
-     * @return
-     *     possible object is
-     *     {@link Long }
-     *     
+     *
+     * @return possible object is
+     * {@link Long }
      */
     public Long getRequestId() {
         return requestId;
@@ -251,11 +179,9 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * Sets the value of the requestId property.
-     * 
-     * @param value
-     *     allowed object is
-     *     {@link Long }
-     *     
+     *
+     * @param value allowed object is
+     *              {@link Long }
      */
     public void setRequestId(Long value) {
         this.requestId = value;
@@ -264,9 +190,9 @@ public class OFOddsChange implements BasicMessage {
 
     /**
      * <p>Java class for anonymous complex type.
-     * 
+     *
      * <p>The following schema fragment specifies the expected content contained within this class.
-     * 
+     *
      * <pre>
      * &lt;complexType>
      *   &lt;complexContent>
@@ -280,12 +206,10 @@ public class OFOddsChange implements BasicMessage {
      *   &lt;/complexContent>
      * &lt;/complexType>
      * </pre>
-     * 
-     * 
      */
     @XmlAccessorType(XmlAccessType.FIELD)
     @XmlType(name = "", propOrder = {
-        "market"
+            "market"
     })
     public static class Odds {
 
@@ -297,25 +221,23 @@ public class OFOddsChange implements BasicMessage {
 
         /**
          * Gets the value of the market property.
-         * 
+         *
          * <p>
          * This accessor method returns a reference to the live list,
          * not a snapshot. Therefore any modification you make to the
          * returned list will be present inside the JAXB object.
          * This is why there is not a <CODE>set</CODE> method for the market property.
-         * 
+         *
          * <p>
          * For example, to add a new item, do as follows:
          * <pre>
          *    getMarket().add(newItem);
          * </pre>
-         * 
-         * 
+         *
+         *
          * <p>
          * Objects of the following type(s) are allowed in the list
          * {@link OFOddsChangeMarket }
-         * 
-         * 
          */
         public List<OFOddsChangeMarket> getMarket() {
             if (market == null) {
@@ -326,11 +248,9 @@ public class OFOddsChange implements BasicMessage {
 
         /**
          * Gets the value of the bettingStatus property.
-         * 
-         * @return
-         *     possible object is
-         *     {@link Integer }
-         *     
+         *
+         * @return possible object is
+         * {@link Integer }
          */
         public Integer getBettingStatus() {
             return bettingStatus;
@@ -338,11 +258,9 @@ public class OFOddsChange implements BasicMessage {
 
         /**
          * Sets the value of the bettingStatus property.
-         * 
-         * @param value
-         *     allowed object is
-         *     {@link Integer }
-         *     
+         *
+         * @param value allowed object is
+         *              {@link Integer }
          */
         public void setBettingStatus(Integer value) {
             this.bettingStatus = value;
@@ -350,11 +268,9 @@ public class OFOddsChange implements BasicMessage {
 
         /**
          * Gets the value of the betstopReason property.
-         * 
-         * @return
-         *     possible object is
-         *     {@link Integer }
-         *     
+         *
+         * @return possible object is
+         * {@link Integer }
          */
         public Integer getBetstopReason() {
             return betstopReason;
@@ -362,16 +278,13 @@ public class OFOddsChange implements BasicMessage {
 
         /**
          * Sets the value of the betstopReason property.
-         * 
-         * @param value
-         *     allowed object is
-         *     {@link Integer }
-         *     
+         *
+         * @param value allowed object is
+         *              {@link Integer }
          */
         public void setBetstopReason(Integer value) {
             this.betstopReason = value;
         }
-
 
 
     }

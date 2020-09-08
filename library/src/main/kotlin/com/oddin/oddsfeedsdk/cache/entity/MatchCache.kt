@@ -1,8 +1,8 @@
 package com.oddin.oddsfeedsdk.cache.entity
 
+import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
-import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
 import com.oddin.oddsfeedsdk.api.entities.sportevent.*
@@ -12,7 +12,6 @@ import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFFixtureChange
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAFixturesEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAScheduleEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEvent
@@ -26,10 +25,8 @@ import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-interface MatchCache : Closable {
-    fun clearCacheItem(id: URN)
+interface MatchCache : Closable, CacheLoader<LocalizedMatch> {
     fun getMatch(id: URN, locales: Set<Locale>): LocalizedMatch?
-    fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage)
 }
 
 private val logger = KotlinLogging.logger {}
@@ -37,6 +34,11 @@ private val logger = KotlinLogging.logger {}
 class MatchCacheImpl @Inject constructor(
     private val apiClient: ApiClient
 ) : MatchCache {
+
+    companion object {
+        private const val urnType = "match"
+    }
+
     private val lock = Any()
     private val subscription: Disposable
     private val internalCache = CacheBuilder
@@ -74,30 +76,22 @@ class MatchCacheImpl @Inject constructor(
     }
 
     override fun getMatch(id: URN, locales: Set<Locale>): LocalizedMatch? {
-        return synchronized(lock) {
-            val localizedMatch = internalCache.getIfPresent(id)
-            val localeSet = localizedMatch?.loadedLocales ?: emptySet()
-            val toFetchLocales = locales.filter { !localeSet.contains(it) }
-
-            if (toFetchLocales.isNotEmpty()) {
-                loadAndCacheItem(id, toFetchLocales)
-            }
-
-            return@synchronized internalCache.getIfPresent(id)
-        }
+        return loadFromCache(id, locales)
     }
 
-    override fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage) {
-        val message = feedMessage.message as? OFFixtureChange ?: return
-        val id = URN.parse(message.eventId)
-        clearCacheItem(id)
+    override fun getLock(): Any {
+        return lock
+    }
+
+    override fun getCache(): Cache<URN, LocalizedMatch> {
+        return internalCache
     }
 
     override fun close() {
         subscription.dispose()
     }
 
-    private fun loadAndCacheItem(id: URN, locales: List<Locale>) {
+    override fun loadAndCacheItem(id: URN, locales: List<Locale>) {
         runBlocking {
             locales.forEach {
                 val data = try {
@@ -162,6 +156,10 @@ class MatchCacheImpl @Inject constructor(
         item.name[locale] = data.name
 
         internalCache.put(id, item)
+    }
+
+    override fun getSupportedURNType(): String {
+       return urnType
     }
 
 }

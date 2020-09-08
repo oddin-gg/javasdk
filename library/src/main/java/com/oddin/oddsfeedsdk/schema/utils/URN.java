@@ -5,9 +5,9 @@ import com.oddin.oddsfeedsdk.exceptions.UnsupportedUrnFormatException;
 import java.util.Objects;
 
 public class URN {
-    private String prefix;
-    private String type;
-    private Long id;
+    final private String prefix;
+    final private String type;
+    final private Long id;
 
 
     URN(String prefix, String type, Long id) {

@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.cache.entity
 
+import com.google.common.cache.Cache
 import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
@@ -21,8 +22,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 
-interface TournamentCache : Closable {
-    fun clearCacheItem(id: URN)
+interface TournamentCache : Closable, CacheLoader<LocalizedTournament> {
     fun getTournament(id: URN, locales: Set<Locale>): LocalizedTournament?
     fun getTournamentCompetitors(id: URN, locale: Locale): List<URN>?
 }
@@ -32,6 +32,11 @@ private val logger = KotlinLogging.logger {}
 class TournamentCacheImpl @Inject constructor(
     private val apiClient: ApiClient
 ) : TournamentCache {
+
+    companion object {
+        private const val urnType = "match"
+    }
+
     private val lock = Any()
 
     private val subscription: Disposable
@@ -74,17 +79,7 @@ class TournamentCacheImpl @Inject constructor(
     }
 
     override fun getTournament(id: URN, locales: Set<Locale>): LocalizedTournament? {
-        return synchronized(lock) {
-            val localizedTournament = internalCache.getIfPresent(id)
-            val localeSet = localizedTournament?.loadedLocales ?: emptySet()
-            val toFetchLocales = locales.filter { !localeSet.contains(it) }
-
-            if (toFetchLocales.isNotEmpty()) {
-                loadAndCacheItem(id, toFetchLocales)
-            }
-
-            return@synchronized internalCache.getIfPresent(id)
-        }
+        return loadFromCache(id, locales)
     }
 
     override fun getTournamentCompetitors(id: URN, locale: Locale): List<URN>? {
@@ -94,11 +89,19 @@ class TournamentCacheImpl @Inject constructor(
         }
     }
 
+    override fun getLock(): Any {
+        return lock
+    }
+
+    override fun getCache(): Cache<URN, LocalizedTournament> {
+        return internalCache
+    }
+
     override fun close() {
         subscription.dispose()
     }
 
-    private fun loadAndCacheItem(id: URN, locales: List<Locale>) {
+    override fun loadAndCacheItem(id: URN, locales: List<Locale>) {
         runBlocking {
             locales.forEach {
                 val data = try {
@@ -159,6 +162,10 @@ class TournamentCacheImpl @Inject constructor(
         }
 
         internalCache.put(id, item)
+    }
+
+    override fun getSupportedURNType(): String {
+        return urnType
     }
 }
 

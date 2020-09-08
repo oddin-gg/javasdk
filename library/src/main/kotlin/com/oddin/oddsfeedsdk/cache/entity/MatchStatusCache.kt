@@ -5,10 +5,7 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
-import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus
-import com.oddin.oddsfeedsdk.api.entities.sportevent.MatchStatus
-import com.oddin.oddsfeedsdk.api.entities.sportevent.PeriodScore
-import com.oddin.oddsfeedsdk.api.entities.sportevent.PeriodScoreImpl
+import com.oddin.oddsfeedsdk.api.entities.sportevent.*
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedStaticData
 import com.oddin.oddsfeedsdk.cache.LocalizedStaticDataCache
@@ -16,6 +13,7 @@ import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFPeriodScoreType
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFScoreboard
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAPeriodScore
@@ -30,7 +28,7 @@ import java.util.concurrent.TimeUnit
 interface MatchStatusCache : Closable {
     fun clearCacheItem(id: URN)
     fun getMatchStatus(id: URN): LocalizedMatchStatus?
-    fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage)
+    fun onFeedMessageReceived(id: URN, feedMessage: FeedMessage)
 }
 
 private val logger = KotlinLogging.logger {}
@@ -90,13 +88,11 @@ class MatchStatusCacheImpl @Inject constructor(
         return matchStatus
     }
 
-    override fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage) {
+    override fun onFeedMessageReceived(id: URN, feedMessage: FeedMessage) {
         val message = feedMessage.message as? OFOddsChange ?: return
         if (message.sportEventStatus == null) {
             return
         }
-
-        val id = URN.parse(message.eventId)
 
         synchronized(lock) {
             try {
@@ -123,7 +119,9 @@ class MatchStatusCacheImpl @Inject constructor(
                 mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
                 data.matchStatus,
                 data.homeScore,
-                data.awayScore
+                data.awayScore,
+                data.isScoreboardAvailable,
+                makeScoreboard(data.scoreboard)
             )
         } else {
             item.status = EventStatus.fromFeedEventStatus(data.status)
@@ -131,9 +129,9 @@ class MatchStatusCacheImpl @Inject constructor(
             item.matchStatusId = data.matchStatus
             item.homeScore = data.homeScore
             item.awayScore = data.awayScore
+            item.isScoreboardAvailable = data.isScoreboardAvailable
+            item.scoreboard = makeScoreboard(data.scoreboard)
         }
-
-        item.properties["current_ct_team"] = data.currentCtTeam
 
         internalCache.put(id, item)
     }
@@ -148,7 +146,9 @@ class MatchStatusCacheImpl @Inject constructor(
                 mapApiPeriodScores(data.periodScores?.periodScore ?: listOf()),
                 data.matchStatusCode,
                 data.homeScore,
-                data.awayScore
+                data.awayScore,
+                false,
+                null
             )
         } else {
             item.winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null
@@ -184,6 +184,23 @@ class MatchStatusCacheImpl @Inject constructor(
         }.sortedBy { it.periodNumber }
     }
 
+    private fun makeScoreboard(scoreboard: OFScoreboard?): Scoreboard? {
+        val data = scoreboard ?: return null
+        return Scoreboard(
+            currentCtTeam = data.currentCTTeam,
+            homeWonRounds = data.homeWonRounds,
+            awayWonRounds = data.awayWonRounds,
+            currentRound = data.currentRound,
+            homeKills = data.homeKills,
+            awayKills = data.awayKills,
+            homeDestroyedTowers = data.homeDestroyedTowers,
+            awayDestroyedTowers = data.awayDestroyedTowers,
+            homeDestroyedTurrets = data.homeDestroyedTurrets,
+            awayDestroyedTurrets = data.awayDestroyedTurrets,
+            homeGold = data.homeGold,
+            awayGold = data.awayGold
+        )
+    }
 }
 
 data class LocalizedMatchStatus(
@@ -193,6 +210,8 @@ data class LocalizedMatchStatus(
     var matchStatusId: Int?,
     var homeScore: Double,
     var awayScore: Double,
+    var isScoreboardAvailable: Boolean,
+    var scoreboard: Scoreboard?,
     var properties: MutableMap<String, Any?> = mutableMapOf()
 )
 
@@ -218,6 +237,12 @@ class MatchStatusImpl(
 
     override val awayScore: Double?
         get() = fetchMatchStatus()?.awayScore
+
+    override val isScoreboardAvailable: Boolean
+        get() = fetchMatchStatus()?.isScoreboardAvailable ?: false
+
+    override val scoreboard: Scoreboard?
+        get() = fetchMatchStatus()?.scoreboard
 
     override val winnerId: URN?
         get() = fetchMatchStatus()?.winnerId

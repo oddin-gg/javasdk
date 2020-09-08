@@ -5,8 +5,12 @@ import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
 import com.google.inject.name.Named
 import com.oddin.oddsfeedsdk.FeedMessage
+import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.cache.entity.*
 import com.oddin.oddsfeedsdk.cache.market.MarketDescriptionCache
+import com.oddin.oddsfeedsdk.mq.entities.EventMessage
+import com.oddin.oddsfeedsdk.mq.entities.IdMessage
+import com.oddin.oddsfeedsdk.schema.utils.URN
 import java.util.*
 import java.util.concurrent.TimeUnit
 
@@ -64,7 +68,11 @@ class CacheManagerImpl @Inject constructor(
     }
 
     override fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage) {
-        matchCache.onFeedMessageReceived(sessionId, feedMessage)
-        matchStatuses.onFeedMessageReceived(sessionId, feedMessage)
+        val eventMessage = feedMessage.message as? IdMessage ?: return
+        val id = URN.parse(eventMessage.getEventId()) ?: return
+
+        matchCache.onFeedMessageReceived(id, feedMessage)
+        tournamentCache.onFeedMessageReceived(id, feedMessage)
+        matchStatuses.onFeedMessageReceived(id, feedMessage)
     }
 }
