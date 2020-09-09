@@ -101,14 +101,6 @@ public class ObjectFactory {
     }
 
     /**
-     * Create an instance of {@link OFOddsGenerationProperties }
-     * 
-     */
-    public OFOddsGenerationProperties createOddsGenerationProperties() {
-        return new OFOddsGenerationProperties();
-    }
-
-    /**
      * Create an instance of {@link OFOddsChange.Odds }
      * 
      */
@@ -157,11 +149,11 @@ public class ObjectFactory {
     }
 
     /**
-     * Create an instance of {@link OFStatisticsType }
+     * Create an instance of {@link OFScoreboard }
      * 
      */
-    public OFStatisticsType createStatisticsType() {
-        return new OFStatisticsType();
+    public OFScoreboard createScoreboard() {
+        return new OFScoreboard();
     }
 
     /**
@@ -194,14 +186,6 @@ public class ObjectFactory {
      */
     public OFResultType createResultType() {
         return new OFResultType();
-    }
-
-    /**
-     * Create an instance of {@link OFClockType }
-     * 
-     */
-    public OFClockType createClockType() {
-        return new OFClockType();
     }
 
     /**
