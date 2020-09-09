@@ -110,7 +110,15 @@ class ProducerImpl : Producer {
         get() = System.currentTimeMillis() - lastProcessedMessageGenTimestamp
 
     override val timestampForRecovery: Long
-        get() = producerData?.recoveryFromTimestamp ?: 0
+        get() {
+            val lastAliveReceivedGenTimestamp = producerData?.lastAliveReceivedGenTimestamp ?: 0
+
+            return if (lastAliveReceivedGenTimestamp == 0L) {
+                producerData?.recoveryFromTimestamp ?: 0
+            } else {
+                lastAliveReceivedGenTimestamp
+            }
+        }
 
     override val statefulRecoveryWindowInMinutes: Int
 
