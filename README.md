@@ -69,6 +69,4 @@ oddsFeed.getReplayManager().clear();
 
 You should start receiving event odds via provided listener.
 
-### Current limitations
-* Match status (SportEventStatus) is not implemented and missing in API
  
