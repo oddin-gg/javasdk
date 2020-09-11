@@ -9,124 +9,124 @@ import javax.xml.bind.annotation.XmlType;
 @XmlType(name = "scoreboardType")
 public class OFScoreboard {
 
-    @XmlAttribute(name = "match_status_code")
-    protected int currentCTTeam;
+    @XmlAttribute(name = "current_ct_team")
+    protected Integer currentCTTeam;
     @XmlAttribute(name = "home_won_rounds")
-    protected int homeWonRounds;
+    protected Integer homeWonRounds;
     @XmlAttribute(name = "away_won_rounds")
-    protected int awayWonRounds;
+    protected Integer awayWonRounds;
     @XmlAttribute(name = "current_round")
-    protected int currentRound;
+    protected Integer currentRound;
     @XmlAttribute(name = "home_kills")
-    protected int homeKills;
+    protected Integer homeKills;
     @XmlAttribute(name = "away_kills")
-    protected int awayKills;
+    protected Integer awayKills;
     @XmlAttribute(name = "home_destroyed_turrets")
-    protected int homeDestroyedTurrets;
+    protected Integer homeDestroyedTurrets;
     @XmlAttribute(name = "away_destroyed_turrets")
-    protected int awayDestroyedTurrets;
+    protected Integer awayDestroyedTurrets;
     @XmlAttribute(name = "home_gold")
-    protected int homeGold;
+    protected Integer homeGold;
     @XmlAttribute(name = "away_gold")
-    protected int awayGold;
+    protected Integer awayGold;
     @XmlAttribute(name = "home_destroyed_towers")
-    protected int homeDestroyedTowers;
+    protected Integer homeDestroyedTowers;
     @XmlAttribute(name = "away_destroyed_towers")
-    protected int awayDestroyedTowers;
+    protected Integer awayDestroyedTowers;
 
-    public int getCurrentCTTeam() {
+    public Integer getCurrentCTTeam() {
         return currentCTTeam;
     }
 
-    public void setCurrentCTTeam(int currentCTTeam) {
+    public void setCurrentCTTeam(Integer currentCTTeam) {
         this.currentCTTeam = currentCTTeam;
     }
 
-    public int getHomeWonRounds() {
+    public Integer getHomeWonRounds() {
         return homeWonRounds;
     }
 
-    public void setHomeWonRounds(int homeWonRounds) {
+    public void setHomeWonRounds(Integer homeWonRounds) {
         this.homeWonRounds = homeWonRounds;
     }
 
-    public int getAwayWonRounds() {
+    public Integer getAwayWonRounds() {
         return awayWonRounds;
     }
 
-    public void setAwayWonRounds(int awayWonRounds) {
+    public void setAwayWonRounds(Integer awayWonRounds) {
         this.awayWonRounds = awayWonRounds;
     }
 
-    public int getCurrentRound() {
+    public Integer getCurrentRound() {
         return currentRound;
     }
 
-    public void setCurrentRound(int currentRound) {
+    public void setCurrentRound(Integer currentRound) {
         this.currentRound = currentRound;
     }
 
-    public int getHomeKills() {
+    public Integer getHomeKills() {
         return homeKills;
     }
 
-    public void setHomeKills(int homeKills) {
+    public void setHomeKills(Integer homeKills) {
         this.homeKills = homeKills;
     }
 
-    public int getAwayKills() {
+    public Integer getAwayKills() {
         return awayKills;
     }
 
-    public void setAwayKills(int awayKills) {
+    public void setAwayKills(Integer awayKills) {
         this.awayKills = awayKills;
     }
 
-    public int getHomeDestroyedTurrets() {
+    public Integer getHomeDestroyedTurrets() {
         return homeDestroyedTurrets;
     }
 
-    public void setHomeDestroyedTurrets(int homeDestroyedTurrets) {
+    public void setHomeDestroyedTurrets(Integer homeDestroyedTurrets) {
         this.homeDestroyedTurrets = homeDestroyedTurrets;
     }
 
-    public int getAwayDestroyedTurrets() {
+    public Integer getAwayDestroyedTurrets() {
         return awayDestroyedTurrets;
     }
 
-    public void setAwayDestroyedTurrets(int awayDestroyedTurrets) {
+    public void setAwayDestroyedTurrets(Integer awayDestroyedTurrets) {
         this.awayDestroyedTurrets = awayDestroyedTurrets;
     }
 
-    public int getHomeGold() {
+    public Integer getHomeGold() {
         return homeGold;
     }
 
-    public void setHomeGold(int homeGold) {
+    public void setHomeGold(Integer homeGold) {
         this.homeGold = homeGold;
     }
 
-    public int getAwayGold() {
+    public Integer getAwayGold() {
         return awayGold;
     }
 
-    public void setAwayGold(int awayGold) {
+    public void setAwayGold(Integer awayGold) {
         this.awayGold = awayGold;
     }
 
-    public int getHomeDestroyedTowers() {
+    public Integer getHomeDestroyedTowers() {
         return homeDestroyedTowers;
     }
 
-    public void setHomeDestroyedTowers(int homeDestroyedTowers) {
+    public void setHomeDestroyedTowers(Integer homeDestroyedTowers) {
         this.homeDestroyedTowers = homeDestroyedTowers;
     }
 
-    public int getAwayDestroyedTowers() {
+    public Integer getAwayDestroyedTowers() {
         return awayDestroyedTowers;
     }
 
-    public void setAwayDestroyedTowers(int awayDestroyedTowers) {
+    public void setAwayDestroyedTowers(Integer awayDestroyedTowers) {
         this.awayDestroyedTowers = awayDestroyedTowers;
     }
 }
