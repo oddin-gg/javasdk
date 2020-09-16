@@ -27,6 +27,15 @@ public class RAPeriodScore extends RAPeriodScoreBase {
     )
     protected Integer matchStatusCode;
 
+    @XmlAttribute(name = "home_won_rounds")
+    protected Integer homeWonRounds;
+    @XmlAttribute(name = "away_won_rounds")
+    protected Integer awayWonRounds;
+    @XmlAttribute(name = "home_kills")
+    protected Integer homeKills;
+    @XmlAttribute(name = "away_kills")
+    protected Integer awayKills;
+
     public double getHomeScore() {
         return homeScore;
     }
@@ -49,6 +58,38 @@ public class RAPeriodScore extends RAPeriodScoreBase {
 
     public void setMatchStatusCode(Integer matchStatusCode) {
         this.matchStatusCode = matchStatusCode;
+    }
+
+    public Integer getHomeWonRounds() {
+        return homeWonRounds;
+    }
+
+    public void setHomeWonRounds(Integer homeWonRounds) {
+        this.homeWonRounds = homeWonRounds;
+    }
+
+    public Integer getAwayWonRounds() {
+        return awayWonRounds;
+    }
+
+    public void setAwayWonRounds(Integer awayWonRounds) {
+        this.awayWonRounds = awayWonRounds;
+    }
+
+    public Integer getHomeKills() {
+        return homeKills;
+    }
+
+    public void setHomeKills(Integer homeKills) {
+        this.homeKills = homeKills;
+    }
+
+    public Integer getAwayKills() {
+        return awayKills;
+    }
+
+    public void setAwayKills(Integer awayKills) {
+        this.awayKills = awayKills;
     }
 
 }

@@ -47,6 +47,14 @@ public class OFPeriodScoreType {
     protected Double homeScore;
     @XmlAttribute(name = "away_score", required = true)
     protected Double awayScore;
+    @XmlAttribute(name = "home_won_rounds")
+    protected Integer homeWonRounds;
+    @XmlAttribute(name = "away_won_rounds")
+    protected Integer awayWonRounds;
+    @XmlAttribute(name = "home_kills")
+    protected Integer homeKills;
+    @XmlAttribute(name = "away_kills")
+    protected Integer awayKills;
 
     /**
      * Gets the value of the matchStatusCode property.
@@ -126,6 +134,38 @@ public class OFPeriodScoreType {
      */
     public void setAwayScore(Double value) {
         this.awayScore = value;
+    }
+
+    public Integer getHomeWonRounds() {
+        return homeWonRounds;
+    }
+
+    public void setHomeWonRounds(Integer homeWonRounds) {
+        this.homeWonRounds = homeWonRounds;
+    }
+
+    public Integer getAwayWonRounds() {
+        return awayWonRounds;
+    }
+
+    public void setAwayWonRounds(Integer awayWonRounds) {
+        this.awayWonRounds = awayWonRounds;
+    }
+
+    public Integer getHomeKills() {
+        return homeKills;
+    }
+
+    public void setHomeKills(Integer homeKills) {
+        this.homeKills = homeKills;
+    }
+
+    public Integer getAwayKills() {
+        return awayKills;
+    }
+
+    public void setAwayKills(Integer awayKills) {
+        this.awayKills = awayKills;
     }
 
 }

@@ -168,7 +168,11 @@ class MatchStatusCacheImpl @Inject constructor(
                 it.homeScore,
                 it.awayScore,
                 it.number,
-                it.matchStatusCode
+                it.matchStatusCode,
+                it.homeWonRounds,
+                it.awayWonRounds,
+                it.homeKills,
+                it.awayKills
             )
         }.sortedBy { it.periodNumber }
     }
@@ -179,7 +183,11 @@ class MatchStatusCacheImpl @Inject constructor(
                 it.homeScore,
                 it.awayScore,
                 it.number,
-                it.matchStatusCode
+                it.matchStatusCode,
+                it.homeWonRounds,
+                it.awayWonRounds,
+                it.homeKills,
+                it.awayKills
             )
         }.sortedBy { it.periodNumber }
     }
