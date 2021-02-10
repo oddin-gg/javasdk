@@ -41,6 +41,7 @@ public class ObjectFactory {
     private final static QName _MatchSummary_QNAME = new QName("http://schemas.oddin.gg/v1", "match_summary");
     private final static QName _TournamentSchedule_QNAME = new QName("http://schemas.oddin.gg/v1", "tournament_schedule");
     private final static QName _Schedule_QNAME = new QName("http://schemas.oddin.gg/v1", "schedule");
+    private final static QName _TournamentLength_QNAME = new QName("http://schemas.oddin.gg/v1", "tournament_length");
 
     /**
      * Create a new ObjectFactory that can be used to create new instances of schema derived classes for package: gg.oddin.schemas.v1
@@ -477,5 +478,13 @@ public class ObjectFactory {
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "schedule")
     public JAXBElement<RAScheduleEndpoint> createSchedule(RAScheduleEndpoint value) {
         return new JAXBElement<RAScheduleEndpoint>(_Schedule_QNAME, RAScheduleEndpoint.class, null, value);
+    }
+
+    /**
+     * Create an instance of {@link JAXBElement }{@code <}{@link RATournamentLength }{@code >}}
+     */
+    @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "tournament_length")
+    public JAXBElement<RATournamentLength> createTournamentLength(RATournamentLength value) {
+        return new JAXBElement<RATournamentLength>(_TournamentLength_QNAME, RATournamentLength.class, null, value);
     }
 }

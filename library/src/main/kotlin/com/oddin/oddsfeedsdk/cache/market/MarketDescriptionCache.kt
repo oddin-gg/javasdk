@@ -39,6 +39,7 @@ class CompositeKey(val marketId: Int, val variant: String?) {
 
 interface MarketDescriptionCache {
     fun getMarketDescriptions(locale: Locale): List<CompositeKey>
+
     fun getMarketDescription(
         marketId: Int,
         variant: String?,

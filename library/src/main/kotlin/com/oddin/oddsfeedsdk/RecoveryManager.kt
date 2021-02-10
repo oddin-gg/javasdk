@@ -226,7 +226,7 @@ class RecoveryManagerImpl @Inject constructor(
             producerRecoveryData.firstRecoveryCompleted = true
         }
 
-        producerRecoveryData.setProducerRecoveryState(0, 0, RecoveryState.COMPLETED)
+        producerRecoveryData.setProducerRecoveryState(requestId, started, RecoveryState.COMPLETED)
         producerUp(producerRecoveryData, reason)
     }
 
@@ -370,8 +370,8 @@ class RecoveryManagerImpl @Inject constructor(
         }
 
         producerManager.setProducerRecoveryInfo(
-            requestId,
-            RecoveryInfoImpl(recoverFrom, requestId, now, oddsFeedConfiguration.sdkNodeId, succeed)
+            producerRecoveryData.producerId,
+            RecoveryInfoImpl(recoverFrom, now, requestId, oddsFeedConfiguration.sdkNodeId, succeed)
         )
     }
 
