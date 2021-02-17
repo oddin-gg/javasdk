@@ -40,7 +40,6 @@ class MatchStatusCacheImpl @Inject constructor(
     private val subscriptions = mutableListOf<Disposable>()
     private val internalCache = CacheBuilder
         .newBuilder()
-        .expireAfterWrite(5L, TimeUnit.MINUTES)
         .build<URN, LocalizedMatchStatus>()
 
     init {
