@@ -32,8 +32,7 @@ interface MatchCache : Closable, CacheLoader<LocalizedMatch> {
 private val logger = KotlinLogging.logger {}
 
 class MatchCacheImpl @Inject constructor(
-    private val apiClient: ApiClient,
-    private val matchStatusCache: MatchStatusCache
+    private val apiClient: ApiClient
 ) : MatchCache {
 
     companion object {
@@ -44,9 +43,6 @@ class MatchCacheImpl @Inject constructor(
     private val subscription: Disposable
     private val internalCache = CacheBuilder
         .newBuilder()
-        .removalListener<URN, LocalizedMatch> {
-            matchStatusCache.clearCacheItem(it.key)
-        }
         .expireAfterWrite(12L, TimeUnit.HOURS)
         .build<URN, LocalizedMatch>()
 

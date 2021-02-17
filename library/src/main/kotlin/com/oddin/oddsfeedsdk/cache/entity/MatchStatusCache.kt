@@ -17,6 +17,7 @@ import com.oddin.oddsfeedsdk.schema.feed.v1.OFScoreboard
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAPeriodScore
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAScoreboard
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import io.reactivex.disposables.Disposable
@@ -40,6 +41,7 @@ class MatchStatusCacheImpl @Inject constructor(
     private val subscriptions = mutableListOf<Disposable>()
     private val internalCache = CacheBuilder
         .newBuilder()
+        .expireAfterWrite(20L, TimeUnit.MINUTES)
         .build<URN, LocalizedMatchStatus>()
 
     init {
@@ -120,7 +122,7 @@ class MatchStatusCacheImpl @Inject constructor(
                 data.homeScore,
                 data.awayScore,
                 data.isScoreboardAvailable,
-                makeScoreboard(data.scoreboard)
+                makeFeedScoreboard(data.scoreboard)
             )
         } else {
             item.status = EventStatus.fromFeedEventStatus(data.status)
@@ -129,7 +131,10 @@ class MatchStatusCacheImpl @Inject constructor(
             item.homeScore = data.homeScore
             item.awayScore = data.awayScore
             item.isScoreboardAvailable = data.isScoreboardAvailable
-            item.scoreboard = makeScoreboard(data.scoreboard)
+            // Update scoreboard only when ready
+            if (data.scoreboard != null) {
+                item.scoreboard = makeFeedScoreboard(data.scoreboard)
+            }
         }
 
         internalCache.put(id, item)
@@ -146,8 +151,8 @@ class MatchStatusCacheImpl @Inject constructor(
                 data.matchStatusCode,
                 data.homeScore,
                 data.awayScore,
-                false,
-                null
+                data.isScoreboardAvailable,
+                makeApiScoreboard(data.scoreboard)
             )
         } else {
             item.winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null
@@ -156,6 +161,12 @@ class MatchStatusCacheImpl @Inject constructor(
             item.matchStatusId = data.matchStatusCode
             item.homeScore = data.homeScore
             item.awayScore = data.awayScore
+            item.isScoreboardAvailable = data.isScoreboardAvailable
+
+            // Update scoreboard only when ready
+            if (data.scoreboard != null) {
+                item.scoreboard = makeApiScoreboard(data.scoreboard)
+            }
         }
 
         internalCache.put(id, item)
@@ -191,7 +202,25 @@ class MatchStatusCacheImpl @Inject constructor(
         }.sortedBy { it.periodNumber }
     }
 
-    private fun makeScoreboard(scoreboard: OFScoreboard?): Scoreboard? {
+    private fun makeFeedScoreboard(scoreboard: OFScoreboard?): Scoreboard? {
+        val data = scoreboard ?: return null
+        return Scoreboard(
+            currentCtTeam = data.currentCTTeam,
+            homeWonRounds = data.homeWonRounds,
+            awayWonRounds = data.awayWonRounds,
+            currentRound = data.currentRound,
+            homeKills = data.homeKills,
+            awayKills = data.awayKills,
+            homeDestroyedTowers = data.homeDestroyedTowers,
+            awayDestroyedTowers = data.awayDestroyedTowers,
+            homeDestroyedTurrets = data.homeDestroyedTurrets,
+            awayDestroyedTurrets = data.awayDestroyedTurrets,
+            homeGold = data.homeGold,
+            awayGold = data.awayGold
+        )
+    }
+
+    private fun makeApiScoreboard(scoreboard: RAScoreboard?): Scoreboard? {
         val data = scoreboard ?: return null
         return Scoreboard(
             currentCtTeam = data.currentCTTeam,

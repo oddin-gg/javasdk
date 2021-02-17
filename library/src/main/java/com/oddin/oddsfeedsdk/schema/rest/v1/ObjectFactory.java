@@ -8,6 +8,8 @@
 
 package com.oddin.oddsfeedsdk.schema.rest.v1;
 
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFScoreboard;
+
 import javax.xml.bind.JAXBElement;
 import javax.xml.bind.annotation.XmlElementDecl;
 import javax.xml.bind.annotation.XmlRegistry;
@@ -341,6 +343,14 @@ public class ObjectFactory {
      */
     public RASportEventStatus createSportEventStatus() {
         return new RASportEventStatus();
+    }
+
+    /**
+     * Create an instance of {@link OFScoreboard }
+     *
+     */
+    public RAScoreboard createScoreboard() {
+        return new RAScoreboard();
     }
 
     /**

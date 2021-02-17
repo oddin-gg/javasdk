@@ -1,9 +1,6 @@
 package com.oddin.oddsfeedsdk.schema.rest.v1;
 
-import javax.xml.bind.annotation.XmlAccessType;
-import javax.xml.bind.annotation.XmlAccessorType;
-import javax.xml.bind.annotation.XmlAttribute;
-import javax.xml.bind.annotation.XmlType;
+import javax.xml.bind.annotation.*;
 
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(
@@ -23,6 +20,30 @@ public class RASportEventStatus extends RASportEventStatusBase {
             name = "match_status_code"
     )
     protected Integer matchStatusCode;
+
+    @XmlAttribute(name = "scoreboard_available")
+    protected boolean scoreboardAvailable;
+
+    @XmlElement(name = "scoreboard")
+    protected RAScoreboard scoreboard;
+
+    public RAScoreboard getScoreboard() {
+        return scoreboard;
+    }
+
+    public void setScoreboard(RAScoreboard scoreboard) {
+        this.scoreboard = scoreboard;
+    }
+
+
+    public boolean isScoreboardAvailable() {
+        return scoreboardAvailable;
+    }
+
+    public void setScoreboardAvailable(boolean scoreboardAvailable) {
+        this.scoreboardAvailable = scoreboardAvailable;
+    }
+
 
     public Double getHomeScore() {
         return homeScore;
