@@ -370,10 +370,12 @@ class ApiClientImpl @Inject constructor(
     }
 
     private fun unmarshalPossibleError(error: FuelError): RAError? {
-        return try {
-            Deserializer.UNMARSHALLER.unmarshal(ByteArrayInputStream(error.errorData)) as? RAError
-        } catch (e: Exception) {
-            null
+        synchronized(Deserializer.UNMARSHALLER) {
+            return try {
+                Deserializer.UNMARSHALLER.unmarshal(ByteArrayInputStream(error.errorData)) as? RAError
+            } catch (e: Exception) {
+                null
+            }
         }
     }
 }
@@ -391,7 +393,9 @@ class Deserializer<out T : Any> : ResponseDeserializable<T> {
     }
 
     override fun deserialize(inputStream: InputStream): T? {
-        @Suppress("UNCHECKED_CAST")
-        return UNMARSHALLER.unmarshal(inputStream) as T?
+        synchronized(UNMARSHALLER) {
+            @Suppress("UNCHECKED_CAST")
+            return UNMARSHALLER.unmarshal(inputStream) as T?
+        }
     }
 }
