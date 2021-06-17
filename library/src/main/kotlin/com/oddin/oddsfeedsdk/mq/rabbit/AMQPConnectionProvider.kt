@@ -4,6 +4,7 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.WhoAmIManager
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.InitException
+import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener
 import com.rabbitmq.client.*
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
@@ -21,7 +22,8 @@ private val logger = KotlinLogging.logger {}
 class SingleAMQPConnectionProvider @Inject constructor(
     private val rabbitConnectionFactory: ConnectionFactory,
     private val config: OddsFeedConfiguration,
-    private val whoAmIManager: WhoAmIManager
+    private val whoAmIManager: WhoAmIManager,
+    private val globalEventsListener: GlobalEventsListener
 ) : AMQPConnectionProvider {
     private var connection: Connection? = null
     private val syncLock = Any()
@@ -73,6 +75,20 @@ class SingleAMQPConnectionProvider @Inject constructor(
         val connection = rabbitConnectionFactory.newConnection()
         logger.info { "AMQP connection created" }
 
+        connection.addShutdownListener {
+            try {
+                globalEventsListener.onConnectionDown()
+            } catch (e: Exception) {
+
+            }
+
+            if (it.isInitiatedByApplication) {
+                logger.info { "AMQP connection shut down by application" }
+            } else {
+                logger.info { "AMQP connection shut down by: $it" }
+            }
+        }
+
         return connection
     }
 
@@ -89,42 +105,42 @@ class SingleAMQPConnectionProvider @Inject constructor(
     }
 
     override fun isConnectionOpen(): Boolean {
-      return connection?.isOpen ?: false
+        return connection?.isOpen ?: false
     }
 
 }
 
-class AMQPExceptionHandler: ExceptionHandler {
+class AMQPExceptionHandler : ExceptionHandler {
     override fun handleBlockedListenerException(p0: Connection?, p1: Throwable?) {
-        
+
     }
 
     override fun handleTopologyRecoveryException(p0: Connection?, p1: Channel?, p2: TopologyRecoveryException?) {
-        
+
     }
 
     override fun handleConsumerException(p0: Channel?, p1: Throwable?, p2: Consumer?, p3: String?, p4: String?) {
-        
+
     }
 
     override fun handleConnectionRecoveryException(p0: Connection?, p1: Throwable?) {
-        
+
     }
 
     override fun handleUnexpectedConnectionDriverException(p0: Connection?, p1: Throwable?) {
-        
+
     }
 
     override fun handleChannelRecoveryException(p0: Channel?, p1: Throwable?) {
-        
+
     }
 
     override fun handleReturnListenerException(p0: Channel?, p1: Throwable?) {
-        
+
     }
 
     override fun handleConfirmListenerException(p0: Channel?, p1: Throwable?) {
-        
+
     }
 
 }
