@@ -169,6 +169,7 @@ class SportDataCacheImpl @Inject constructor(
 
         if (tournamentId != null) {
             val sportTournamentIds = localizedSport.tournamentIds ?: mutableSetOf()
+            sportTournamentIds.add(tournamentId)
             localizedSport.tournamentIds = sportTournamentIds
         }
 
