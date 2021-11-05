@@ -5,10 +5,8 @@ import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
 import com.google.inject.name.Named
 import com.oddin.oddsfeedsdk.FeedMessage
-import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.cache.entity.*
 import com.oddin.oddsfeedsdk.cache.market.MarketDescriptionCache
-import com.oddin.oddsfeedsdk.mq.entities.EventMessage
 import com.oddin.oddsfeedsdk.mq.entities.IdMessage
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import java.util.*
@@ -73,6 +71,7 @@ class CacheManagerImpl @Inject constructor(
 
         matchCache.onFeedMessageReceived(id, feedMessage)
         tournamentCache.onFeedMessageReceived(id, feedMessage)
+        fixtureCache.onFeedMessageReceived(id, feedMessage)
         matchStatuses.onFeedMessageReceived(id, feedMessage)
     }
 }
