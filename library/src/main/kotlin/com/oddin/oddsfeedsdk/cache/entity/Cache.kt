@@ -32,12 +32,12 @@ interface CacheLoader<T : LocalizedItem> {
     fun onFeedMessageReceived(id: URN, feedMessage: FeedMessage) {
         when {
             feedMessage.message as? OFFixtureChange == null -> return
-            id.type != getSupportedURNType() -> return
+            getSupportedURNType() != null && id.type != getSupportedURNType() -> return
             else -> clearCacheItem(id)
         }
     }
 
-    fun getSupportedURNType(): String
+    fun getSupportedURNType(): String?
 
     fun clearCacheItem(id: URN)
 }
