@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.api.entities
 
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
+import java.time.Instant
 
 interface RecoveryInfo {
     val after: Long
@@ -34,7 +35,7 @@ interface Producer {
     val producerScopes: Set<ProducerScope>
     val lastProcessedMessageGenTimestamp: Long
     val processingQueDelay: Long
-    val timestampForRecovery: Long
+    val timestampForRecovery: Instant?
     val statefulRecoveryWindowInMinutes: Int
     val recoveryInfo: RecoveryInfo?
 }
@@ -109,15 +110,17 @@ class ProducerImpl : Producer {
     override val processingQueDelay: Long
         get() = System.currentTimeMillis() - lastProcessedMessageGenTimestamp
 
-    override val timestampForRecovery: Long
+    override val timestampForRecovery: Instant?
         get() {
             val lastAliveReceivedGenTimestamp = producerData?.lastAliveReceivedGenTimestamp ?: 0
 
-            return if (lastAliveReceivedGenTimestamp == 0L) {
-                producerData?.recoveryFromTimestamp ?: 0
+            val millis = if (lastAliveReceivedGenTimestamp == 0L) {
+                producerData?.recoveryFromTimestamp ?: 0L
             } else {
                 lastAliveReceivedGenTimestamp
             }
+
+            return if (millis > 0L) Instant.ofEpochMilli(millis) else null
         }
 
     override val statefulRecoveryWindowInMinutes: Int

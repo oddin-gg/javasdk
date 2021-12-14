@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.config
 
+import java.time.Duration
 import java.util.*
 
 class OddsFeedConfiguration internal constructor(
@@ -10,7 +11,8 @@ class OddsFeedConfiguration internal constructor(
     val messagingPort: Int,
     val sdkNodeId: Int?,
     val exceptionHandlingStrategy: ExceptionHandlingStrategy,
-    val selectedEnvironment: Environment
+    val selectedEnvironment: Environment,
+    val initialSnapshotRecoveryInterval: Duration?,
 )
 
 class OddsFeedConfigurationBuilder internal constructor() {
@@ -29,6 +31,7 @@ class OddsFeedConfigurationBuilder internal constructor() {
 
     private var exceptionHandlingStrategy = ExceptionHandlingStrategy.THROW
 
+    private var initialSnapshotRecoveryInterval: Duration? = null
 
     fun selectProduction() = apply {
         selectedEnvironment = Environment.PRODUCTION
@@ -50,6 +53,10 @@ class OddsFeedConfigurationBuilder internal constructor() {
         this.exceptionHandlingStrategy = exceptionHandlingStrategy
     }
 
+    fun setInitialSnapshotRecoveryInterval(interval: Duration) = apply {
+        this.initialSnapshotRecoveryInterval = interval
+    }
+
     @Throws(IllegalArgumentException::class)
     fun build(): OddsFeedConfiguration {
         val token = accessToken ?: throw IllegalArgumentException("Missing access token. Please set access token.")
@@ -64,7 +71,8 @@ class OddsFeedConfigurationBuilder internal constructor() {
             maxRecoveryExecutionMinutes = maxRecoveryExecutionMinutes,
             messagingPort = messagingPort,
             sdkNodeId = sdkNodeId,
-            selectedEnvironment = environment
+            selectedEnvironment = environment,
+            initialSnapshotRecoveryInterval = initialSnapshotRecoveryInterval,
         )
     }
 

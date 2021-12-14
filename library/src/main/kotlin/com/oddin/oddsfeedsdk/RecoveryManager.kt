@@ -16,6 +16,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
+import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -212,7 +213,10 @@ class RecoveryManagerImpl @Inject constructor(
         logger.info { "Recovery finished for request $requestId in ${finished - started} ms" }
 
         if (producerRecoveryData.recoveryState == RecoveryState.INTERRUPTED) {
-            makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.lastValidAliveGenTimestampInRecovery ?: 0L)
+            makeSnapshotRecovery(
+                producerRecoveryData,
+                producerRecoveryData.lastValidAliveGenTimestampInRecovery?.let { Instant.ofEpochMilli(it) }
+            )
             return
         }
 
@@ -289,7 +293,7 @@ class RecoveryManagerImpl @Inject constructor(
                 producerDown(producerRecoveryData, ProducerDownReason.OTHER)
             }
 
-            makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery ?: 0L)
+            makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery)
             return
         }
 
@@ -305,7 +309,7 @@ class RecoveryManagerImpl @Inject constructor(
             isBackFromInactivity -> producerUp(producerRecoveryData, ProducerUpReason.RETURNED_FROM_INACTIVITY)
             isInRecovery -> {
                 if (producerRecoveryData.isFlaggedDown && !producerRecoveryData.isPerformingRecovery && producerRecoveryData.producerDownReason != ProducerDownReason.PROCESSING_QUEUE_DELAY_VIOLATION) {
-                    makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery ?: 0L)
+                    makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery)
                 }
 
                 val recoveryTiming = now - (producerRecoveryData.lastRecoveryStartedAt ?: 0)
@@ -313,10 +317,10 @@ class RecoveryManagerImpl @Inject constructor(
                 if (producerRecoveryData.isPerformingRecovery && recoveryTiming > maxInterval) {
                     // @TODO recoveryId 0
                     producerRecoveryData.setProducerRecoveryState(0, 0, RecoveryState.ERROR)
-                    makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery ?: 0L)
+                    makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery)
                 }
             }
-            else -> makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery ?: 0L)
+            else -> makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery)
         }
 
         producerRecoveryData.systemAliveReceived(timestamp.received, timestamp.created)
@@ -334,19 +338,22 @@ class RecoveryManagerImpl @Inject constructor(
         notifyProducerChangedState(producerRecoveryData, reason.toProducerStatusReason())
     }
 
-    private fun makeSnapshotRecovery(producerRecoveryData: ProducerRecoveryData, from: Long) {
+    private fun makeSnapshotRecovery(producerRecoveryData: ProducerRecoveryData, from: Instant?) {
         if (!isOpened) {
             return
         }
 
         val now = System.currentTimeMillis()
-        var recoverFrom = from
-        if (recoverFrom != 0L) {
-            val recoveryTime = now - recoverFrom
-            val maxRecoveryTime = (producerRecoveryData.statefulRecoveryWindowInMinutes ?: 0) * 60 * 1000L
-            if (recoveryTime > maxRecoveryTime) {
-                recoverFrom = now - maxRecoveryTime
-            }
+        val recoverFrom: Instant? = (from ?: oddsFeedConfiguration.initialSnapshotRecoveryInterval?.let {
+            Instant.ofEpochMilli(now - it.toMillis())
+        })?.let { recoverFrom ->
+            producerRecoveryData.statefulRecoveryWindowInMinutes?.let {
+                val statefulRecoveryWindowInMillis = it * 60 * 1000L
+                val maxRecoveryTimestamp = Instant.ofEpochMilli(now - statefulRecoveryWindowInMillis)
+                if (recoverFrom.isBefore(maxRecoveryTimestamp)) {
+                    maxRecoveryTimestamp
+                } else recoverFrom
+            } ?: recoverFrom
         }
 
         val requestId = sequence.take(1).first()
@@ -361,7 +368,7 @@ class RecoveryManagerImpl @Inject constructor(
                     producerName,
                     requestId,
                     oddsFeedConfiguration.sdkNodeId,
-                    if (recoverFrom == 0L) null else recoverFrom
+                    recoverFrom?.toEpochMilli(),
                 )
             } catch (e: Exception) {
                 logger.error { "Recovery failed with $e" }
@@ -371,7 +378,7 @@ class RecoveryManagerImpl @Inject constructor(
 
         producerManager.setProducerRecoveryInfo(
             producerRecoveryData.producerId,
-            RecoveryInfoImpl(recoverFrom, now, requestId, oddsFeedConfiguration.sdkNodeId, succeed)
+            RecoveryInfoImpl(recoverFrom?.toEpochMilli() ?: 0L, now, requestId, oddsFeedConfiguration.sdkNodeId, succeed)
         )
     }
 
@@ -528,7 +535,7 @@ class ProducerRecoveryData(val producerId: Long, private val producerManager: SD
     val lastRecoveryStartedAt: Long?
         get() = currentRecovery?.recoveryStartedAt
 
-    val timestampForRecovery: Long?
+    val timestampForRecovery: Instant?
         get() = producerManager.getProducer(producerId)?.timestampForRecovery
 
     var lastMessageReceivedTimestamp: Long?
