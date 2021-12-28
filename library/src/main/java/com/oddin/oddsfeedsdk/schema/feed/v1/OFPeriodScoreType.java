@@ -8,7 +8,6 @@
 
 package com.oddin.oddsfeedsdk.schema.feed.v1;
 
-import java.math.BigDecimal;
 import javax.xml.bind.annotation.XmlAccessType;
 import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlAttribute;
@@ -55,6 +54,26 @@ public class OFPeriodScoreType {
     protected Integer homeKills;
     @XmlAttribute(name = "away_kills")
     protected Integer awayKills;
+    @XmlAttribute(name = "home_goals")
+    protected Integer homeGoals;
+    @XmlAttribute(name = "away_goals")
+    protected Integer awayGoals;
+
+    public Integer getHomeGoals() {
+        return homeGoals;
+    }
+
+    public void setHomeGoals(Integer homeGoals) {
+        this.homeGoals = homeGoals;
+    }
+
+    public Integer getAwayGoals() {
+        return awayGoals;
+    }
+
+    public void setAwayGoals(Integer awayGoals) {
+        this.awayGoals = awayGoals;
+    }
 
     /**
      * Gets the value of the matchStatusCode property.
