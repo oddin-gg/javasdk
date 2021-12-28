@@ -35,6 +35,26 @@ public class RAPeriodScore extends RAPeriodScoreBase {
     protected Integer homeKills;
     @XmlAttribute(name = "away_kills")
     protected Integer awayKills;
+    @XmlAttribute(name = "home_goals")
+    protected Integer homeGoals;
+    @XmlAttribute(name = "away_goals")
+    protected Integer awayGoals;
+
+    public Integer getHomeGoals() {
+        return homeGoals;
+    }
+
+    public void setHomeGoals(Integer homeGoals) {
+        this.homeGoals = homeGoals;
+    }
+
+    public Integer getAwayGoals() {
+        return awayGoals;
+    }
+
+    public void setAwayGoals(Integer awayGoals) {
+        this.awayGoals = awayGoals;
+    }
 
     public double getHomeScore() {
         return homeScore;

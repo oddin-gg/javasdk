@@ -1,8 +1,9 @@
 package com.oddin.oddsfeedsdk.schema.rest.v1;
 
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFScoreboard;
-
-import javax.xml.bind.annotation.*;
+import javax.xml.bind.annotation.XmlAccessType;
+import javax.xml.bind.annotation.XmlAccessorType;
+import javax.xml.bind.annotation.XmlAttribute;
+import javax.xml.bind.annotation.XmlType;
 
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "scoreboardType")
@@ -32,7 +33,27 @@ public class RAScoreboard {
     protected Integer homeDestroyedTowers;
     @XmlAttribute(name = "away_destroyed_towers")
     protected Integer awayDestroyedTowers;
+    @XmlAttribute(name = "home_goals")
+    protected Integer homeGoals;
+    @XmlAttribute(name = "away_goals")
+    protected Integer awayGoals;
 
+
+    public Integer getHomeGoals() {
+        return homeGoals;
+    }
+
+    public void setHomeGoals(Integer homeGoals) {
+        this.homeGoals = homeGoals;
+    }
+
+    public Integer getAwayGoals() {
+        return awayGoals;
+    }
+
+    public void setAwayGoals(Integer awayGoals) {
+        this.awayGoals = awayGoals;
+    }
 
     public Integer getCurrentCTTeam() {
         return currentCTTeam;

@@ -175,14 +175,16 @@ class MatchStatusCacheImpl @Inject constructor(
     private fun mapApiPeriodScores(periodScores: List<RAPeriodScore>): List<PeriodScore> {
         return periodScores.map {
             PeriodScoreImpl(
-                it.homeScore,
-                it.awayScore,
-                it.number,
-                it.matchStatusCode,
-                it.homeWonRounds,
-                it.awayWonRounds,
-                it.homeKills,
-                it.awayKills
+                homeScore = it.homeScore,
+                awayScore = it.awayScore,
+                periodNumber = it.number,
+                matchStatusCode = it.matchStatusCode,
+                homeWonRounds = it.homeWonRounds,
+                awayWonRounds = it.awayWonRounds,
+                homeKills = it.homeKills,
+                awayKills = it.awayKills,
+                homeGoals = it.homeGoals,
+                awayGoals = it.awayGoals,
             )
         }.sortedBy { it.periodNumber }
     }
@@ -190,14 +192,16 @@ class MatchStatusCacheImpl @Inject constructor(
     private fun mapFeedPeriodScores(periodScores: List<OFPeriodScoreType>): List<PeriodScore> {
         return periodScores.map {
             PeriodScoreImpl(
-                it.homeScore,
-                it.awayScore,
-                it.number,
-                it.matchStatusCode,
-                it.homeWonRounds,
-                it.awayWonRounds,
-                it.homeKills,
-                it.awayKills
+                homeScore = it.homeScore,
+                awayScore = it.awayScore,
+                periodNumber = it.number,
+                matchStatusCode = it.matchStatusCode,
+                homeWonRounds = it.homeWonRounds,
+                awayWonRounds = it.awayWonRounds,
+                homeKills = it.homeKills,
+                awayKills = it.awayKills,
+                homeGoals = it.homeGoals,
+                awayGoals = it.awayGoals,
             )
         }.sortedBy { it.periodNumber }
     }
@@ -216,7 +220,9 @@ class MatchStatusCacheImpl @Inject constructor(
             homeDestroyedTurrets = data.homeDestroyedTurrets,
             awayDestroyedTurrets = data.awayDestroyedTurrets,
             homeGold = data.homeGold,
-            awayGold = data.awayGold
+            awayGold = data.awayGold,
+            homeGoals = data.homeGoals,
+            awayGoals = data.awayGoals,
         )
     }
 
@@ -234,7 +240,9 @@ class MatchStatusCacheImpl @Inject constructor(
             homeDestroyedTurrets = data.homeDestroyedTurrets,
             awayDestroyedTurrets = data.awayDestroyedTurrets,
             homeGold = data.homeGold,
-            awayGold = data.awayGold
+            awayGold = data.awayGold,
+            homeGoals = data.homeGoals,
+            awayGoals = data.awayGoals,
         )
     }
 }

@@ -24,32 +24,38 @@ interface PeriodScore {
     val awayWonRounds: Int?
     val homeKills: Int?
     val awayKills: Int?
+    val homeGoals: Int?
+    val awayGoals: Int?
 }
 
 data class Scoreboard(
-    val currentCtTeam: Int?,
-    val homeWonRounds: Int?,
-    val awayWonRounds: Int?,
-    val currentRound: Int?,
-    val homeKills: Int?,
-    val awayKills: Int?,
-    val homeDestroyedTurrets: Int?,
-    val awayDestroyedTurrets: Int?,
-    val homeGold: Int?,
-    val awayGold: Int?,
-    val homeDestroyedTowers: Int?,
-    val awayDestroyedTowers: Int?
+        val currentCtTeam: Int?,
+        val homeWonRounds: Int?,
+        val awayWonRounds: Int?,
+        val currentRound: Int?,
+        val homeKills: Int?,
+        val awayKills: Int?,
+        val homeDestroyedTurrets: Int?,
+        val awayDestroyedTurrets: Int?,
+        val homeGold: Int?,
+        val awayGold: Int?,
+        val homeDestroyedTowers: Int?,
+        val awayDestroyedTowers: Int?,
+        val homeGoals: Int?,
+        val awayGoals: Int?
 )
 
 data class PeriodScoreImpl(
-    override val homeScore: Double,
-    override val awayScore: Double,
-    override val periodNumber: Int,
-    override val matchStatusCode: Int,
-    override val homeWonRounds: Int?,
-    override val awayWonRounds: Int?,
-    override val homeKills: Int?,
-    override val awayKills: Int?
+        override val homeScore: Double,
+        override val awayScore: Double,
+        override val periodNumber: Int,
+        override val matchStatusCode: Int,
+        override val homeWonRounds: Int?,
+        override val awayWonRounds: Int?,
+        override val homeKills: Int?,
+        override val awayKills: Int?,
+        override val homeGoals: Int?,
+        override val awayGoals: Int?
 ) : PeriodScore
 
 interface CompetitionStatus {
