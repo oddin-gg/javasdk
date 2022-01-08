@@ -11,4 +11,5 @@ interface Tournament : LongTermEvent {
     val competitors: List<Competitor>?
     val startDate: Date?
     val endDate: Date?
+    val riskTier: Int?
 }
