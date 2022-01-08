@@ -68,6 +68,8 @@ public class RATournament {
     @XmlAttribute(name = "scheduled_end")
     @XmlSchemaType(name = "dateTime")
     protected XMLGregorianCalendar scheduledEnd;
+    @XmlAttribute(name = "risk_tier")
+    protected Integer riskTier;
 
     public String getRefId() {
         return refId;
@@ -75,6 +77,14 @@ public class RATournament {
 
     public void setRefId(String refId) {
         this.refId = refId;
+    }
+
+    public Integer getRiskTier() {
+        return riskTier;
+    }
+
+    public void setRiskTier(Integer riskTier) {
+        this.riskTier = riskTier;
     }
 
     /**

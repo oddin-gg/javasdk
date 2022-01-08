@@ -141,7 +141,8 @@ class TournamentCacheImpl @Inject constructor(
                 Utils.parseDate(tournament.tournamentLength?.endDate),
                 URN.parse(tournament.sport.id),
                 Utils.parseDate(tournament.scheduled),
-                Utils.parseDate(tournament.scheduledEnd)
+                Utils.parseDate(tournament.scheduledEnd),
+                tournament.riskTier
             )
         } else {
             item.startDate = Utils.parseDate(tournament.tournamentLength?.startDate)
@@ -149,6 +150,7 @@ class TournamentCacheImpl @Inject constructor(
             item.sportId = URN.parse(tournament.sport.id)
             item.scheduledTime = Utils.parseDate(tournament.scheduled)
             item.scheduledEndTime = Utils.parseDate(tournament.scheduledEnd)
+            item.riskTier = tournament.riskTier
         }
 
         item.name[locale] = tournament.name
@@ -176,7 +178,8 @@ data class LocalizedTournament(
     var endDate: Date?,
     var sportId: URN,
     var scheduledTime: Date?,
-    var scheduledEndTime: Date?
+    var scheduledEndTime: Date?,
+    var riskTier: Int?
 ) : LocalizedItem {
     val name = ConcurrentHashMap<Locale, String>()
     var competitorIds: MutableSet<URN>? = null
@@ -221,6 +224,9 @@ class TournamentImpl(
 
     override val sport: SportSummary?
         get() = fetchSport(locales)
+
+    override val riskTier: Int?
+        get() = fetchTournament(locales)?.riskTier
 
     private fun fetchTournament(locales: Set<Locale>): LocalizedTournament? {
         val item = tournamentCache.getTournament(id, locales)
