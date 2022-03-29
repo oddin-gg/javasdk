@@ -1,16 +1,54 @@
 plugins {
     id 'java'
+    id 'idea'
+    id 'application'
+}
+
+application {
+    mainClass = 'com.oddin.oddsfeed.examples.Main'
 }
 
 group 'com.oddin.oddsfeed'
 version '1.0-SNAPSHOT'
 
+repositories {
+    mavenCentral()
+    mavenLocal()
+}
+
 sourceCompatibility = 1.8
+
+wrapper {
+    gradleVersion = '7.4.1'
+}
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
-    implementation files('src/libs/oddin_feed_sdk-0.0.5.jar')
+
+    def oddsFeedVersion = '0.0.25' // here you can update version of lib
+
+    implementation group: "com.oddin.oddsfeed", name: 'odds-feed', version: oddsFeedVersion
+
+    // https://mvnrepository.com/artifact/ch.qos.logback/logback-classic
+    implementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.11'
+
+    // https://mvnrepository.com/artifact/org.slf4j/slf4j-api
+    implementation group: 'org.slf4j', name: 'slf4j-api', version: '1.7.36'
+
+    // https://mvnrepository.com/artifact/org.jetbrains/annotations
+    implementation group: 'org.jetbrains', name: 'annotations', version: '23.0.0'
+
+    // -------------------------------------------------------------------------------------------
+    // !!! Uncomment below if you are using Java 9+ ----------------------------------------------
+    // -------------------------------------------------------------------------------------------
+
+    // https://mvnrepository.com/artifact/org.glassfish.jaxb/jaxb-runtime
+    // implementation group: 'org.glassfish.jaxb', name: 'jaxb-runtime', version: '2.3.6'
+
+    // https://mvnrepository.com/artifact/jakarta.xml.bind/jakarta.xml.bind-api
+    // implementation group: 'jakarta.xml.bind', name: 'jakarta.xml.bind-api', version: '2.3.3'
+
 }
