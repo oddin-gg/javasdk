@@ -18,15 +18,21 @@ import org.jetbrains.annotations.NotNull;
 
 // Very basic example of receiving data from odds feed and printing them to console
 public class Main {
+
     public static void main(String[] args) {
+        String token = System.getenv("ODDIN_GG_ODDS_FEED_TOKEN");
+        if (token == null) {
+            // @TODO Set your access token here or fill environment property ODDIN_GG_ODDS_FEED_TOKEN
+            token = "change it here or setup ODDIN_GG_ODDS_FEED_TOKEN env property";
+        }
+
         // Basic configuration for odds feed.
         // You need to properly set your access token in order to access API and Feed features.
         // Please check with support that your IP was whitelisted.
         OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectIntegration()
                 .setExceptionHandlingStrategy(ExceptionHandlingStrategy.CATCH)
-                // @TODO Set your access token
-                .setAccessToken("foo-bar")
+                .setAccessToken(token)
                 .setSDKNodeId(1)
                 .build();
 
