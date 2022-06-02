@@ -29,20 +29,22 @@ interface PeriodScore {
 }
 
 data class Scoreboard(
-        val currentCtTeam: Int?,
-        val homeWonRounds: Int?,
-        val awayWonRounds: Int?,
-        val currentRound: Int?,
-        val homeKills: Int?,
-        val awayKills: Int?,
-        val homeDestroyedTurrets: Int?,
-        val awayDestroyedTurrets: Int?,
-        val homeGold: Int?,
-        val awayGold: Int?,
-        val homeDestroyedTowers: Int?,
-        val awayDestroyedTowers: Int?,
-        val homeGoals: Int?,
-        val awayGoals: Int?
+    val currentCtTeam: Int?,
+    val homeWonRounds: Int?,
+    val awayWonRounds: Int?,
+    val currentRound: Int?,
+    val homeKills: Int?,
+    val awayKills: Int?,
+    val homeDestroyedTurrets: Int?,
+    val awayDestroyedTurrets: Int?,
+    val homeGold: Int?,
+    val awayGold: Int?,
+    val homeDestroyedTowers: Int?,
+    val awayDestroyedTowers: Int?,
+    val homeGoals: Int?,
+    val awayGoals: Int?,
+    val time: Int?,
+    val gameTime: Int?
 )
 
 data class PeriodScoreImpl(

@@ -6,6 +6,8 @@ import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.ProducerManager;
 import com.oddin.oddsfeedsdk.api.MarketDescriptionManager;
 import com.oddin.oddsfeedsdk.api.SportsInfoManager;
+import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
+import com.oddin.oddsfeedsdk.api.entities.sportevent.Scoreboard;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
@@ -15,6 +17,8 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import org.jetbrains.annotations.NotNull;
+
+import java.time.Duration;
 
 // Very basic example of receiving data from odds feed and printing them to console
 public class Main {
@@ -34,6 +38,7 @@ public class Main {
                 .setExceptionHandlingStrategy(ExceptionHandlingStrategy.CATCH)
                 .setAccessToken(token)
                 .setSDKNodeId(1)
+                .setInitialSnapshotRecoveryInterval(Duration.ofMinutes(5))
                 .build();
 
         // Init instance of odds feed with global listener
@@ -67,6 +72,20 @@ public class Main {
                     @Override
                     public void onOddsChange(@NotNull OddsFeedSession session, @NotNull OddsChange<SportEvent> message) {
                         System.out.println("Odds change message received " + message);
+
+                        // Scoreboard
+                        Match match = (Match) message.getEvent();
+                        if (
+                                match.getStatus() != null &&
+                                        match.getStatus().isScoreboardAvailable() &&
+                                        match.getStatus().getScoreboard() != null
+                        ) {
+                            Scoreboard scoreboard = match.getStatus().getScoreboard();
+                            System.out.println("Home Goals: " + scoreboard.getHomeGoals());
+                            System.out.println("Away Goals: " + scoreboard.getAwayGoals());
+                            System.out.println("Time: " + scoreboard.getTime());
+                            System.out.println("Game Time: " + scoreboard.getGameTime());
+                        }
                     }
 
                     @Override
