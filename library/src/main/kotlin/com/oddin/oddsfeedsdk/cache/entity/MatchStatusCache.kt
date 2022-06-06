@@ -223,6 +223,8 @@ class MatchStatusCacheImpl @Inject constructor(
             awayGold = data.awayGold,
             homeGoals = data.homeGoals,
             awayGoals = data.awayGoals,
+            time = data.time,
+            gameTime = data.gameTime,
         )
     }
 
@@ -243,6 +245,8 @@ class MatchStatusCacheImpl @Inject constructor(
             awayGold = data.awayGold,
             homeGoals = data.homeGoals,
             awayGoals = data.awayGoals,
+            time = data.time,
+            gameTime = data.gameTime,
         )
     }
 }

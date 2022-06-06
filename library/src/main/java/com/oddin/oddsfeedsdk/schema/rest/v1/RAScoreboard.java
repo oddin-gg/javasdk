@@ -37,7 +37,10 @@ public class RAScoreboard {
     protected Integer homeGoals;
     @XmlAttribute(name = "away_goals")
     protected Integer awayGoals;
-
+    @XmlAttribute(name = "time")
+    protected Integer time;
+    @XmlAttribute(name = "game_time")
+    protected Integer gameTime;
 
     public Integer getHomeGoals() {
         return homeGoals;
@@ -53,6 +56,22 @@ public class RAScoreboard {
 
     public void setAwayGoals(Integer awayGoals) {
         this.awayGoals = awayGoals;
+    }
+
+    public Integer getTime() {
+        return time;
+    }
+
+    public void setTime(Integer time) {
+        this.time = time;
+    }
+
+    public Integer getGameTime() {
+        return gameTime;
+    }
+
+    public void setGameTime(Integer gameTime) {
+        this.gameTime = gameTime;
     }
 
     public Integer getCurrentCTTeam() {
