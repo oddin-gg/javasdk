@@ -8,7 +8,6 @@ class OddsFeedConfiguration internal constructor(
     val defaultLocale: Locale,
     val maxInactivitySeconds: Int,
     val maxRecoveryExecutionMinutes: Int,
-    val messagingPort: Int,
     val sdkNodeId: Int?,
     val exceptionHandlingStrategy: ExceptionHandlingStrategy,
     val selectedEnvironment: Environment,
@@ -22,7 +21,7 @@ class OddsFeedConfigurationBuilder internal constructor() {
 
     private var selectedEnvironment: Environment? = null
 
-    private var messagingPort: Int = 5672
+    private val defaultMessagingPort: Int = 5672
 
     private var maxInactivitySeconds: Int = 20
     private var maxRecoveryExecutionMinutes: Int = 360
@@ -34,11 +33,20 @@ class OddsFeedConfigurationBuilder internal constructor() {
     private var initialSnapshotRecoveryInterval: Duration? = null
 
     fun selectProduction() = apply {
-        selectedEnvironment = Environment.PRODUCTION
+        selectedEnvironment = Environment("mq.oddin.gg", "api-mq.oddin.gg", defaultMessagingPort)
     }
 
     fun selectIntegration() = apply {
-        selectedEnvironment = Environment.INTEGRATION
+        selectedEnvironment =
+            Environment("mq.integration.oddin.gg", "api-mq.integration.oddin.gg", defaultMessagingPort)
+    }
+
+    fun selectEnvironment(messagingHost: String, apiHost: String) = apply {
+        selectedEnvironment = Environment(messagingHost, apiHost, defaultMessagingPort)
+    }
+
+    fun selectEnvironment(messagingHost: String, apiHost: String, messagingPort: Int) = apply {
+        selectedEnvironment = Environment(messagingHost, apiHost, messagingPort)
     }
 
     fun setAccessToken(accessToken: String) = apply {
@@ -69,7 +77,6 @@ class OddsFeedConfigurationBuilder internal constructor() {
             exceptionHandlingStrategy = exceptionHandlingStrategy,
             maxInactivitySeconds = maxInactivitySeconds,
             maxRecoveryExecutionMinutes = maxRecoveryExecutionMinutes,
-            messagingPort = messagingPort,
             sdkNodeId = sdkNodeId,
             selectedEnvironment = environment,
             initialSnapshotRecoveryInterval = initialSnapshotRecoveryInterval,
@@ -99,7 +106,4 @@ interface ExceptionHandler {
     }
 }
 
-enum class Environment(val messagingHost: String, val apiHost: String) {
-    PRODUCTION("mq.oddin.gg", "api-mq.oddin.gg"),
-    INTEGRATION("mq.integration.oddin.gg", "api-mq.integration.oddin.gg")
-}
+data class Environment(val messagingHost: String, val apiHost: String, val messagingPort: Int)

@@ -8,7 +8,6 @@ import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener
 import com.rabbitmq.client.*
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
-import java.util.concurrent.Executors
 
 
 interface AMQPConnectionProvider {
@@ -50,7 +49,7 @@ class SingleAMQPConnectionProvider @Inject constructor(
         logger.info("Creating new AMQP connection")
 
         rabbitConnectionFactory.host = config.selectedEnvironment.messagingHost
-        rabbitConnectionFactory.port = config.messagingPort
+        rabbitConnectionFactory.port = config.selectedEnvironment.messagingPort
         rabbitConnectionFactory.useSslProtocol()
 
         // Validate bookmaker again
