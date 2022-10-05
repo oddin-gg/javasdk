@@ -41,6 +41,8 @@ public class OFScoreboard {
     protected Integer time;
     @XmlAttribute(name = "game_time")
     protected Integer gameTime;
+    @XmlAttribute(name = "current_def_team")
+    protected Integer currentDefenderTeam;
 
     public Integer getHomeGoals() {
         return homeGoals;
@@ -169,4 +171,9 @@ public class OFScoreboard {
     public void setAwayDestroyedTowers(Integer awayDestroyedTowers) {
         this.awayDestroyedTowers = awayDestroyedTowers;
     }
+
+    public Integer getCurrentDefenderTeam() { return currentDefenderTeam;   }
+
+    public void setCurrentDefenderTeam(Integer currentDefenderTeam) { this.currentDefenderTeam = currentDefenderTeam; }
+
 }

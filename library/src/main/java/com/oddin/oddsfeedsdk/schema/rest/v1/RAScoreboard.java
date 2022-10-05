@@ -42,6 +42,9 @@ public class RAScoreboard {
     @XmlAttribute(name = "game_time")
     protected Integer gameTime;
 
+    @XmlAttribute(name = "current_def_team")
+    protected Integer currentDefenderTeam;
+
     public Integer getHomeGoals() {
         return homeGoals;
     }
@@ -169,4 +172,8 @@ public class RAScoreboard {
     public void setAwayDestroyedTowers(Integer awayDestroyedTowers) {
         this.awayDestroyedTowers = awayDestroyedTowers;
     }
+
+    public Integer getCurrentDefenderTeam() { return currentDefenderTeam;   }
+
+    public void setCurrentDefenderTeam(Integer currentDefenderTeam) { this.currentDefenderTeam = currentDefenderTeam; }
 }
