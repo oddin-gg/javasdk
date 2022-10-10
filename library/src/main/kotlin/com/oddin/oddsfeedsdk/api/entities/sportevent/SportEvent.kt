@@ -44,7 +44,8 @@ data class Scoreboard(
     val homeGoals: Int?,
     val awayGoals: Int?,
     val time: Int?,
-    val gameTime: Int?
+    val gameTime: Int?,
+    val currentDefenderTeam: Int?
 )
 
 data class PeriodScoreImpl(

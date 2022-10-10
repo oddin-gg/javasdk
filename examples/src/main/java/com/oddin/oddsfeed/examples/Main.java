@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import com.oddin.oddsfeedsdk.mq.entities.*;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
