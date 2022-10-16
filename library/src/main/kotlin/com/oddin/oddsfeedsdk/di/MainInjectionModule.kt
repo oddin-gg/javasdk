@@ -8,8 +8,8 @@ import com.oddin.oddsfeedsdk.*
 import com.oddin.oddsfeedsdk.api.*
 import com.oddin.oddsfeedsdk.api.factories.*
 import com.oddin.oddsfeedsdk.cache.*
-import com.oddin.oddsfeedsdk.cache.market.*
 import com.oddin.oddsfeedsdk.cache.entity.*
+import com.oddin.oddsfeedsdk.cache.market.*
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.mq.*
 import com.oddin.oddsfeedsdk.mq.rabbit.AMQPConnectionProvider
@@ -75,6 +75,8 @@ class MainInjectionModule(
             FixtureCacheImpl::class.java
         ).`in`(Singleton::class.java)
         bind(MarketDescriptionCache::class.java).to(MarketDescriptionCacheImpl::class.java)
+            .`in`(Singleton::class.java)
+        bind(MarketVoidReasonsCache::class.java).to(MarketVoidReasonsCacheImpl::class.java)
             .`in`(Singleton::class.java)
         bind(ReplayManager::class.java).to(ReplayManagerImpl::class.java).`in`(Singleton::class.java)
         bind(ReplaySession::class.java).to(ReplaySessionImpl::class.java)

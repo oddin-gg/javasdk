@@ -7,6 +7,7 @@ import com.google.inject.name.Named
 import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.cache.entity.*
 import com.oddin.oddsfeedsdk.cache.market.MarketDescriptionCache
+import com.oddin.oddsfeedsdk.cache.market.MarketVoidReasonsCache
 import com.oddin.oddsfeedsdk.mq.entities.IdMessage
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import java.util.*
@@ -28,6 +29,7 @@ interface CacheManager {
     val tournamentCache: TournamentCache
     val fixtureCache: FixtureCache
     val marketDescriptionCache: MarketDescriptionCache
+    val marketVoidReasonsCache: MarketVoidReasonsCache
     val sportDataCache: SportDataCache
     val matchStatuses: MatchStatusCache
 
@@ -35,7 +37,6 @@ interface CacheManager {
 
     fun onFeedMessageReceived(sessionId: UUID, feedMessage: FeedMessage)
 }
-
 
 class CacheManagerImpl @Inject constructor(
     @Named("MatchStatusCache")
@@ -45,14 +46,13 @@ class CacheManagerImpl @Inject constructor(
     override val tournamentCache: TournamentCache,
     override val fixtureCache: FixtureCache,
     override val marketDescriptionCache: MarketDescriptionCache,
+    override val marketVoidReasonsCache: MarketVoidReasonsCache,
     override val sportDataCache: SportDataCache,
     override val matchStatuses: MatchStatusCache
 ) : CacheManager {
     private val _dispatchedFixtureChanges: Cache<String, String> =
         CacheBuilder.newBuilder().expireAfterWrite(1L, TimeUnit.HOURS).build()
     override val dispatchedFixtureChanges: Cache<String, String> = _dispatchedFixtureChanges
-
-
 
     override fun close() {
         val closable = listOf(competitorCache, matchCache, tournamentCache, sportDataCache, matchStatuses)

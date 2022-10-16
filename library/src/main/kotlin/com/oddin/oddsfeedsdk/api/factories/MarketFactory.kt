@@ -95,6 +95,8 @@ class MarketFactoryImpl @Inject constructor(
             market.refId,
             specifiersMap,
             marketData,
+            market.voidReasonId,
+            market.voidReasonParams,
             locales.first()
         )
     }

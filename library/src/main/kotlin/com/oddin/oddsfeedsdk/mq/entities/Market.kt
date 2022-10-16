@@ -97,8 +97,12 @@ class MarketWithSettlementImpl(
 }
 
 interface MarketCancel : Market {
+    @Deprecated("voidReasonId and voidReasonParams")
     val voidReasonValue: StaticData?
+    @Deprecated("voidReasonId and voidReasonParams")
     val voidReason: String?
+    val voidReasonId: Int?
+    val voidReasonParams: String?
 }
 
 class MarketCancelImpl(
@@ -106,9 +110,10 @@ class MarketCancelImpl(
     refId: Int?,
     specifiers: Map<String, String>,
     marketData: MarketData,
+    override val voidReasonId: Int?,
+    override val voidReasonParams: String?,
     locale: Locale
-) : MarketImpl(id, refId, specifiers, marketData, locale), MarketCancel {
-
+): MarketImpl(id, refId, specifiers, marketData, locale), MarketCancel {
     override val voidReasonValue: StaticData?
         get() = null
 
