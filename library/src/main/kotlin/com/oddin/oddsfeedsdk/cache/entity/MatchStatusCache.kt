@@ -185,6 +185,8 @@ class MatchStatusCacheImpl @Inject constructor(
                 awayKills = it.awayKills,
                 homeGoals = it.homeGoals,
                 awayGoals = it.awayGoals,
+                homePoints = it.homePoints,
+                awayPoints = it.awayPoints
             )
         }.sortedBy { it.periodNumber }
     }
@@ -202,6 +204,8 @@ class MatchStatusCacheImpl @Inject constructor(
                 awayKills = it.awayKills,
                 homeGoals = it.homeGoals,
                 awayGoals = it.awayGoals,
+                homePoints = it.homePoints,
+                awayPoints = it.awayPoints
             )
         }.sortedBy { it.periodNumber }
     }
@@ -225,7 +229,10 @@ class MatchStatusCacheImpl @Inject constructor(
             awayGoals = data.awayGoals,
             time = data.time,
             gameTime = data.gameTime,
-            currentDefenderTeam = data.currentDefenderTeam
+            currentDefenderTeam = data.currentDefenderTeam,
+            homePoints = data.homePoints,
+            awayPoints = data.awayPoints,
+            remainingGameTime = data.remainingGameTime
         )
     }
 
@@ -248,7 +255,10 @@ class MatchStatusCacheImpl @Inject constructor(
             awayGoals = data.awayGoals,
             time = data.time,
             gameTime = data.gameTime,
-            currentDefenderTeam = data.currentDefenderTeam
+            currentDefenderTeam = data.currentDefenderTeam,
+            homePoints = data.homePoints,
+            awayPoints = data.awayPoints,
+            remainingGameTime = data.remainingGameTime
         )
     }
 }

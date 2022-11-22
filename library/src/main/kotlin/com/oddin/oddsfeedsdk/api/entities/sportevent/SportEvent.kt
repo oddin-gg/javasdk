@@ -26,6 +26,8 @@ interface PeriodScore {
     val awayKills: Int?
     val homeGoals: Int?
     val awayGoals: Int?
+    val homePoints: Int?
+    val awayPoints: Int?
 }
 
 data class Scoreboard(
@@ -45,7 +47,10 @@ data class Scoreboard(
     val awayGoals: Int?,
     val time: Int?,
     val gameTime: Int?,
-    val currentDefenderTeam: Int?
+    val currentDefenderTeam: Int?,
+    val homePoints: Int?,
+    val awayPoints: Int?,
+    val remainingGameTime: Int?
 )
 
 data class PeriodScoreImpl(
@@ -58,7 +63,9 @@ data class PeriodScoreImpl(
         override val homeKills: Int?,
         override val awayKills: Int?,
         override val homeGoals: Int?,
-        override val awayGoals: Int?
+        override val awayGoals: Int?,
+        override val homePoints: Int?,
+        override val awayPoints: Int?
 ) : PeriodScore
 
 interface CompetitionStatus {
