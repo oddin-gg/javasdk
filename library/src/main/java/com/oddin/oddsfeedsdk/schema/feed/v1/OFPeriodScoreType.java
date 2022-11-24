@@ -58,6 +58,10 @@ public class OFPeriodScoreType {
     protected Integer homeGoals;
     @XmlAttribute(name = "away_goals")
     protected Integer awayGoals;
+    @XmlAttribute(name = "home_points")
+    protected Integer homePoints;
+    @XmlAttribute(name = "away_points")
+    protected Integer awayPoints;
 
     public Integer getHomeGoals() {
         return homeGoals;
@@ -187,4 +191,19 @@ public class OFPeriodScoreType {
         this.awayKills = awayKills;
     }
 
+    public Integer getHomePoints() {
+        return homePoints;
+    }
+
+    public void setHomePoints(Integer homePoints) {
+        this.homePoints = homePoints;
+    }
+
+    public Integer getAwayPoints() {
+        return awayPoints;
+    }
+
+    public void setAwayPoints(Integer awayPoints) {
+        this.awayPoints = awayPoints;
+    }
 }
