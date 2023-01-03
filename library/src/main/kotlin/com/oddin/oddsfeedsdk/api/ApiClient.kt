@@ -49,6 +49,7 @@ interface ApiClient {
     suspend fun fetchLiveMatches(locale: Locale): List<RASportEvent>
     suspend fun fetchMatches(date: Date, locale: Locale): List<RASportEvent>
     suspend fun fetchMarketDescriptions(locale: Locale): List<RAMarketDescription>
+    suspend fun fetchMarketVoidReasons(): List<RAMarketVoidReasons.VoidReason>
     suspend fun postReplayClear(nodeId: Int?): Boolean
     suspend fun postReplayStop(nodeId: Int?): Boolean
     suspend fun fetchReplaySetContent(nodeId: Int?): List<RAReplayEvent>
@@ -201,6 +202,11 @@ class ApiClientImpl @Inject constructor(
     override suspend fun fetchMarketDescriptions(locale: Locale): List<RAMarketDescription> {
         val data: RAMarketDescriptions = fetchData("/descriptions/${locale.language}/markets", locale)
         return data.market
+    }
+
+    override suspend fun fetchMarketVoidReasons(): List<RAMarketVoidReasons.VoidReason> {
+        val data: RAMarketVoidReasons = fetchData("/descriptions/void_reasons")
+        return data.voidReason
     }
 
     override suspend fun postReplayClear(nodeId: Int?): Boolean {

@@ -9,6 +9,7 @@ import com.oddin.oddsfeedsdk.api.SportsInfoManager;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Scoreboard;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.api.factories.MarketVoidReason;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -19,6 +20,7 @@ import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
+import java.util.List;
 
 // Very basic example of receiving data from odds feed and printing them to console
 public class Main {
@@ -102,6 +104,9 @@ public class Main {
                     @Override
                     public void onBetCancel(@NotNull OddsFeedSession session, @NotNull BetCancel<SportEvent> message) {
                         System.out.println("Bet cancel message received " + message);
+                        for (MarketCancel market : message.getMarkets()) {
+                            System.out.println("Canceled market: '"+market.getName()+"'; VoidReasonID: "+market.getVoidReasonId()+"; VoidReasonParams: '"+market.getVoidReasonParams()+"'");
+                        }
                     }
 
                     @Override
@@ -116,6 +121,16 @@ public class Main {
 
         // Market description manager gives you information about all markets and outcomes
         MarketDescriptionManager marketManager = oddsFeed.getMarketDescriptionManager();
+
+        List<MarketVoidReason> voidReasons = marketManager.getMarketVoidReasons();
+        for(MarketVoidReason voidReason: voidReasons) {
+            System.out.println("Void reason: " + voidReason.getId() + "; '" +
+                    voidReason.getName() + "'; '"
+                    + voidReason.getDescription() + "'; '"
+                    + voidReason.getTemplate() + "'; '"
+                    + voidReason.getParams() + "'; '"
+            );
+        }
 
         // Sports info manager gives you information about all sports, tournaments, matches and fixtures
         SportsInfoManager sportsInfoManager = oddsFeed.getSportsInfoManager();

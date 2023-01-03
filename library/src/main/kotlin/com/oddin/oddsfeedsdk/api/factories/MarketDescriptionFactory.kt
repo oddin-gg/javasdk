@@ -1,9 +1,9 @@
 package com.oddin.oddsfeedsdk.api.factories
 
 import com.google.inject.Inject
-import com.oddin.oddsfeedsdk.cache.market.CompositeKey
 import com.oddin.oddsfeedsdk.cache.market.MarketDescriptionCache
 import com.oddin.oddsfeedsdk.cache.market.MarketDescriptionImpl
+import com.oddin.oddsfeedsdk.cache.market.MarketVoidReasonsCache
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import java.util.*
 
@@ -31,6 +31,15 @@ interface MarketDescription {
     val specifiers: List<Specifier>?
 }
 
+interface MarketVoidReason {
+    val id: Int
+
+    val name: String?
+    val description: String?
+    val template: String?
+    val params: List<String>?
+}
+
 interface MarketDescriptionFactory {
     fun getMarketDescription(
         marketId: Int,
@@ -39,11 +48,14 @@ interface MarketDescriptionFactory {
     ): MarketDescription?
 
     fun getMarketDescriptions(locale: Locale): List<MarketDescription>
+    fun getMarketVoidReasons(): List<MarketVoidReason>
+    fun getMarketVoidReason(id: Int): MarketVoidReason?
 }
 
 class MarketDescriptionFactoryImpl @Inject constructor(
     private val oddsFeedConfiguration: OddsFeedConfiguration,
-    private val marketDescriptionCache: MarketDescriptionCache
+    private val marketDescriptionCache: MarketDescriptionCache,
+    private val marketVoidReasonsCache: MarketVoidReasonsCache
 ) :
     MarketDescriptionFactory {
     override fun getMarketDescription(
@@ -72,5 +84,13 @@ class MarketDescriptionFactoryImpl @Inject constructor(
                 setOf(locale)
             )
         }
+    }
+
+    override fun getMarketVoidReasons(): List<MarketVoidReason> {
+        return marketVoidReasonsCache.getMarketVoidReasons()
+    }
+
+    override fun getMarketVoidReason(id: Int): MarketVoidReason? {
+        return marketVoidReasonsCache.getMarketVoidReason(id)
     }
 }

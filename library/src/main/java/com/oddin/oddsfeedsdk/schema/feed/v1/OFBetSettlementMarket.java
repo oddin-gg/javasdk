@@ -12,12 +12,12 @@ import com.oddin.oddsfeedsdk.api.factories.FeedMarketOutcome;
 import com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket;
 import org.jetbrains.annotations.NotNull;
 
-import java.util.ArrayList;
-import java.util.List;
 import javax.xml.bind.annotation.XmlAccessType;
 import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlAttribute;
 import javax.xml.bind.annotation.XmlType;
+import java.util.ArrayList;
+import java.util.List;
 
 
 /**
@@ -45,6 +45,8 @@ import javax.xml.bind.annotation.XmlType;
  *       &lt;/choice>
  *       &lt;attGroup ref="{}marketAttributes"/>
  *       &lt;attribute name="void_reason" type="{http://www.w3.org/2001/XMLSchema}int" />
+ *       &lt;attribute name="void_reason_id" type="{http://www.w3.org/2001/XMLSchema}int" />
+ *       &lt;attribute name="void_reason_params" type="{http://www.w3.org/2001/XMLSchema}string" />
  *       &lt;attribute name="result" type="{http://www.w3.org/2001/XMLSchema}string" />
  *     &lt;/restriction>
  *   &lt;/complexContent>
@@ -57,11 +59,16 @@ import javax.xml.bind.annotation.XmlType;
 @XmlType(name = "betSettlementMarket", propOrder = {
     "outcome"
 })
+
 public class OFBetSettlementMarket implements FeedMessageMarket {
 
     protected List<OFBetSettlementMarket.OFOutcome> outcome;
     @XmlAttribute(name = "void_reason")
     protected Integer voidReason;
+    @XmlAttribute(name = "void_reason_id")
+    protected Integer voidReasonId;
+    @XmlAttribute(name = "void_reason_params")
+    protected String voidReasonParams;
     @XmlAttribute(name = "result")
     protected String result;
     @XmlAttribute(name = "id", required = true)
@@ -132,6 +139,54 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
      */
     public void setVoidReason(Integer value) {
         this.voidReason = value;
+    }
+
+    /**
+     * Gets the value of the voidReasonId property.
+     *
+     * @return
+     *     possible object is
+     *     {@link Integer }
+     *
+     */
+    public Integer getVoidReasonId() {
+        return voidReasonId;
+    }
+
+    /**
+     * Sets the value of the voidReasonId property.
+     *
+     * @param value
+     *     allowed object is
+     *     {@link Integer }
+     *
+     */
+    public void setVoidReasonId(Integer value) {
+        this.voidReasonId = value;
+    }
+
+    /**
+     * Gets the value of the voidReasonParams property.
+     *
+     * @return
+     *     possible object is
+     *     {@link String }
+     *
+     */
+    public String getVoidReasonParams() {
+        return voidReasonParams;
+    }
+
+    /**
+     * Sets the value of the voidReasonParams property.
+     *
+     * @param value
+     *     allowed String is
+     *     {@link Integer }
+     *
+     */
+    public void setVoidReasonParams(String value) {
+        this.voidReasonParams = value;
     }
 
     /**
@@ -357,5 +412,4 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
         }
 
     }
-
 }

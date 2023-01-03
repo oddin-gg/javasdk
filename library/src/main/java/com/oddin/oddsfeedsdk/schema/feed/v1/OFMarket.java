@@ -28,6 +28,8 @@ import javax.xml.bind.annotation.XmlType;
  *     &lt;restriction base="{http://www.w3.org/2001/XMLSchema}anyType">
  *       &lt;attGroup ref="{}marketAttributes"/>
  *       &lt;attribute name="void_reason" type="{http://www.w3.org/2001/XMLSchema}int" />
+ *       &lt;attribute name="void_reason_id" type="{http://www.w3.org/2001/XMLSchema}int" />
+ *       &lt;attribute name="void_reason_params" type="{http://www.w3.org/2001/XMLSchema}string" />
  *     &lt;/restriction>
  *   &lt;/complexContent>
  * &lt;/complexType>
@@ -41,6 +43,10 @@ public class OFMarket implements FeedMessageMarket {
 
     @XmlAttribute(name = "void_reason")
     protected Integer voidReason;
+    @XmlAttribute(name = "void_reason_id")
+    protected Integer voidReasonId;
+    @XmlAttribute(name = "void_reason_params")
+    protected String voidReasonParams;
     @XmlAttribute(name = "id", required = true)
     protected int id;
     @XmlAttribute(name = "ref_id")
@@ -81,6 +87,54 @@ public class OFMarket implements FeedMessageMarket {
      */
     public void setVoidReason(Integer value) {
         this.voidReason = value;
+    }
+
+    /**
+     * Gets the value of the voidReasonId property.
+     *
+     * @return
+     *     possible object is
+     *     {@link Integer }
+     *
+     */
+    public Integer getVoidReasonId() {
+        return voidReasonId;
+    }
+
+    /**
+     * Sets the value of the voidReasonId property.
+     *
+     * @param value
+     *     allowed object is
+     *     {@link Integer }
+     *
+     */
+    public void setVoidReasonId(Integer value) {
+        this.voidReasonId = value;
+    }
+
+    /**
+     * Gets the value of the voidReasonParams property.
+     *
+     * @return
+     *     possible object is
+     *     {@link String }
+     *
+     */
+    public String getVoidReasonParams() {
+        return voidReasonParams;
+    }
+
+    /**
+     * Sets the value of the voidReasonParams property.
+     *
+     * @param value
+     *     allowed String is
+     *     {@link Integer }
+     *
+     */
+    public void setVoidReasonParams(String value) {
+        this.voidReasonParams = value;
     }
 
     /**
@@ -147,5 +201,4 @@ public class OFMarket implements FeedMessageMarket {
     public void setExtendedSpecifiers(String value) {
         this.extendedSpecifiers = value;
     }
-
 }

@@ -44,6 +44,7 @@ public class ObjectFactory {
     private final static QName _TournamentSchedule_QNAME = new QName("http://schemas.oddin.gg/v1", "tournament_schedule");
     private final static QName _Schedule_QNAME = new QName("http://schemas.oddin.gg/v1", "schedule");
     private final static QName _TournamentLength_QNAME = new QName("http://schemas.oddin.gg/v1", "tournament_length");
+    private final static QName _VoidReasonsVoidReasonParam_QNAME = new QName("http://schemas.oddin.gg/v1", "param");
 
     /**
      * Create a new ObjectFactory that can be used to create new instances of schema derived classes for package: gg.oddin.schemas.v1
@@ -400,6 +401,39 @@ public class ObjectFactory {
      */
     public RAPeriodScores createPeriodScores() {
         return new RAPeriodScores();
+    }
+
+    /**
+     * Create an instance of {@link RAMarketVoidReasons }
+     *
+     */
+    public RAMarketVoidReasons createMarketVoidReasons() {
+        return new RAMarketVoidReasons();
+    }
+
+    /**
+     * Create an instance of {@link RAMarketVoidReasons.VoidReason }
+     *
+     */
+    public RAMarketVoidReasons.VoidReason createMarketVoidReasonsVoidReason() {
+        return new RAMarketVoidReasons.VoidReason();
+    }
+
+    /**
+     * Create an instance of {@link RAMarketVoidReasons.VoidReason.Param }
+     *
+     */
+    public RAMarketVoidReasons.VoidReason.Param createMarketVoidReasonsVoidReasonParam() {
+        return new RAMarketVoidReasons.VoidReason.Param();
+    }
+
+    /**
+     * Create an instance of {@link JAXBElement }{@code <}{@link RAMarketVoidReasons.VoidReason.Param }{@code >}}
+     *
+     */
+    @XmlElementDecl(namespace = "", name = "param", scope = RAMarketVoidReasons.VoidReason.class)
+    public JAXBElement<RAMarketVoidReasons.VoidReason.Param> createMarketVoidReasonsVoidReasonParam(RAMarketVoidReasons.VoidReason.Param value) {
+        return new JAXBElement<RAMarketVoidReasons.VoidReason.Param>(_VoidReasonsVoidReasonParam_QNAME, RAMarketVoidReasons.VoidReason.Param.class, RAMarketVoidReasons.VoidReason.class, value);
     }
 
     /**
