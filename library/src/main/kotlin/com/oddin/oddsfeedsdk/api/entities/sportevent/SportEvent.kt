@@ -16,6 +16,7 @@ interface SportEvent {
 }
 
 interface PeriodScore {
+    val periodType: String
     val homeScore: Double
     val awayScore: Double
     val periodNumber: Int
@@ -54,6 +55,7 @@ data class Scoreboard(
 )
 
 data class PeriodScoreImpl(
+        override val periodType: String,
         override val homeScore: Double,
         override val awayScore: Double,
         override val periodNumber: Int,

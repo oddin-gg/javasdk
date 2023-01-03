@@ -175,6 +175,7 @@ class MatchStatusCacheImpl @Inject constructor(
     private fun mapApiPeriodScores(periodScores: List<RAPeriodScore>): List<PeriodScore> {
         return periodScores.map {
             PeriodScoreImpl(
+                periodType = it.type,
                 homeScore = it.homeScore,
                 awayScore = it.awayScore,
                 periodNumber = it.number,
@@ -194,6 +195,7 @@ class MatchStatusCacheImpl @Inject constructor(
     private fun mapFeedPeriodScores(periodScores: List<OFPeriodScoreType>): List<PeriodScore> {
         return periodScores.map {
             PeriodScoreImpl(
+                periodType = it.type,
                 homeScore = it.homeScore,
                 awayScore = it.awayScore,
                 periodNumber = it.number,

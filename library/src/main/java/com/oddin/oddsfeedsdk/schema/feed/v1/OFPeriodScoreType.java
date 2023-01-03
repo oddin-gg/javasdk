@@ -38,6 +38,8 @@ import javax.xml.bind.annotation.XmlType;
 @XmlType(name = "periodScoreType")
 public class OFPeriodScoreType {
 
+    @XmlAttribute(name = "type", required = true)
+    protected String type;
     @XmlAttribute(name = "match_status_code", required = true)
     protected int matchStatusCode;
     @XmlAttribute(name = "number", required = true)
@@ -205,5 +207,13 @@ public class OFPeriodScoreType {
 
     public void setAwayPoints(Integer awayPoints) {
         this.awayPoints = awayPoints;
+    }
+
+    public String getType() {
+        return type;
+    }
+
+    public void setType(String type) {
+        this.type = type;
     }
 }
