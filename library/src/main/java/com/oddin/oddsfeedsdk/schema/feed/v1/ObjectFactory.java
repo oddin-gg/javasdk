@@ -53,6 +53,22 @@ public class ObjectFactory {
     }
 
     /**
+     * Create an instance of {@link OFRollbackBetSettlement }
+     *
+     */
+    public OFRollbackBetSettlement createRollbackBetSettlement() {
+        return new OFRollbackBetSettlement();
+    }
+
+    /**
+     * Create an instance of {@link OFRollbackBetCancel }
+     *
+     */
+    public OFRollbackBetCancel createOFRollbackBetCancel() {
+        return new OFRollbackBetCancel();
+    }
+
+    /**
      * Create an instance of {@link OFOddsChangeMarket }
      * 
      */
@@ -66,6 +82,22 @@ public class ObjectFactory {
      */
     public OFBetSettlementMarket createBetSettlementMarket() {
         return new OFBetSettlementMarket();
+    }
+
+    /**
+     * Create an instance of {@link OFRollbackBetSettlementMarket }
+     *
+     */
+    public OFRollbackBetSettlementMarket createRollbackBetSettlementMarket() {
+        return new OFRollbackBetSettlementMarket();
+    }
+
+    /**
+     * Create an instance of {@link OFRollbackBetCancelMarket }
+     *
+     */
+    public OFRollbackBetCancelMarket createRollbackBetCancelMarket() {
+        return new OFRollbackBetCancelMarket();
     }
 
     /**

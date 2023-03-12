@@ -21,6 +21,7 @@ import org.jetbrains.annotations.NotNull;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 
 // Very basic example of receiving data from odds feed and printing them to console
 public class Main {
@@ -99,6 +100,26 @@ public class Main {
                     @Override
                     public void onBetSettlement(@NotNull OddsFeedSession session, @NotNull BetSettlement<SportEvent> message) {
                         System.out.println("Bet settlement message received " + message);
+                    }
+
+                    @Override
+                    public void onRollbackBetSettlement(@NotNull OddsFeedSession session, @NotNull RollbackBetSettlement<SportEvent> message) {
+                        System.out.println("Rollback Settlement received for match: " + message.getEvent().getName(Locale.ENGLISH));
+
+                        List<Market> markets = message.getMarkets();
+                        markets.forEach(m -> {
+                            System.out.println("     Rollback bet settlement message received for market type " + m.getId() + ": " + m.getName() + ", " + m.getSpecifiers());
+                        });
+                    }
+
+                    @Override
+                    public void onRollbackBetCancel(@NotNull OddsFeedSession session, @NotNull RollbackBetCancel<SportEvent> message) {
+                        System.out.println("Rollback Cancel received for match: " + message.getEvent().getName(Locale.ENGLISH));
+
+                        List<Market> markets = message.getMarkets();
+                        markets.forEach(m -> {
+                            System.out.println("     Rollback bet cancel message received for market type " + m.getId() + ": " + m.getName() + ", " + m.getSpecifiers());
+                        });
                     }
 
                     @Override

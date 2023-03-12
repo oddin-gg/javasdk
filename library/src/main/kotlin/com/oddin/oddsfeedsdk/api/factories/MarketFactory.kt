@@ -5,9 +5,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Match
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.mq.entities.*
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlementMarket
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFMarket
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChangeMarket
+import com.oddin.oddsfeedsdk.schema.feed.v1.*
 import mu.KotlinLogging
 import java.util.*
 
@@ -38,6 +36,8 @@ class MarketFactoryImpl @Inject constructor(
         return when (market) {
             is OFOddsChangeMarket -> buildOddsChangeMarket(event, market) as T
             is OFBetSettlementMarket -> buildBetSettlementMarket(event, market) as T
+            is OFRollbackBetSettlementMarket -> buildRollbackBetSettlementMarket(event, market) as T
+            is OFRollbackBetCancelMarket -> buildRollbackBetCancelMarket(event, market) as T
             is OFMarket -> buildBetCancelMarket(event, market) as T
             else -> null
         }
@@ -86,6 +86,22 @@ class MarketFactoryImpl @Inject constructor(
         )
     }
 
+    private fun buildRollbackBetSettlementMarket(
+        event: SportEvent,
+        market: OFRollbackBetSettlementMarket
+    ): Market? {
+        val specifiersMap = extractSpecifiers(market.specifiers)
+        val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
+
+        return MarketImpl(
+            market.id,
+            null,
+            specifiersMap,
+            marketData,
+            locales.first()
+        )
+    }
+
     private fun buildBetCancelMarket(event: SportEvent, market: OFMarket): MarketCancel? {
         val specifiersMap = extractSpecifiers(market.specifiers)
         val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
@@ -97,6 +113,22 @@ class MarketFactoryImpl @Inject constructor(
             marketData,
             market.voidReasonId,
             market.voidReasonParams,
+            locales.first()
+        )
+    }
+
+    private fun buildRollbackBetCancelMarket(
+        event: SportEvent,
+        market: OFRollbackBetCancelMarket
+    ): Market? {
+        val specifiersMap = extractSpecifiers(market.specifiers)
+        val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
+
+        return MarketImpl(
+            market.id,
+            null,
+            specifiersMap,
+            marketData,
             locales.first()
         )
     }

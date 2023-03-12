@@ -12,6 +12,8 @@ interface BaseOddsFeedListener<T : SportEvent> {
     fun onOddsChange(session: OddsFeedSession, message: OddsChange<T>)
     fun onBetStop(session: OddsFeedSession, message: BetStop<T>)
     fun onBetSettlement(session: OddsFeedSession, message: BetSettlement<T>)
+    fun onRollbackBetSettlement(session: OddsFeedSession, message: RollbackBetSettlement<T>)
+    fun onRollbackBetCancel(session: OddsFeedSession, message: RollbackBetCancel<T>)
     fun onBetCancel(session: OddsFeedSession, message: BetCancel<T>)
     fun onFixtureChange(session: OddsFeedSession, message: FixtureChange<T>)
     fun onUnparsableMessage(session: OddsFeedSession, message: UnparsableMessage<T>){}

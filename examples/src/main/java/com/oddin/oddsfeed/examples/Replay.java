@@ -59,6 +59,16 @@ public class Replay {
                     }
 
                     @Override
+                    public void onRollbackBetSettlement(@NotNull OddsFeedSession oddsFeedSession, @NotNull RollbackBetSettlement<SportEvent> betSettlement) {
+
+                    }
+
+                    @Override
+                    public void onRollbackBetCancel(@NotNull OddsFeedSession oddsFeedSession, @NotNull RollbackBetCancel<SportEvent> betCancel) {
+
+                    }
+
+                    @Override
                     public void onBetCancel(@NotNull OddsFeedSession oddsFeedSession, @NotNull BetCancel<SportEvent> betCancel) {
 
                     }
