@@ -77,7 +77,23 @@ class FeedMessageFactoryImpl @Inject constructor(
                 timestamp,
                 marketFactory
             )
+            is OFRollbackBetSettlement -> RollbackBetSettlementImpl(
+                sportEvent,
+                feedMessage.message,
+                feedMessage.rawMessage,
+                producer,
+                timestamp,
+                marketFactory
+            )
             is OFBetCancel -> BetCancelImpl(
+                sportEvent,
+                feedMessage.message,
+                feedMessage.rawMessage,
+                producer,
+                timestamp,
+                marketFactory
+            )
+            is OFRollbackBetCancel -> RollbackBetCancelImpl(
                 sportEvent,
                 feedMessage.message,
                 feedMessage.rawMessage,

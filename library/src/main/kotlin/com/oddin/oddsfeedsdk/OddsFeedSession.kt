@@ -201,6 +201,12 @@ open class OddsFeedSessionImpl @Inject constructor(
                 is BetSettlement<SportEvent> -> {
                     oddsFeedListener?.onBetSettlement(this@OddsFeedSessionImpl, message)
                 }
+                is RollbackBetSettlement<SportEvent> -> {
+                    oddsFeedListener?.onRollbackBetSettlement(this@OddsFeedSessionImpl, message)
+                }
+                is RollbackBetCancel<SportEvent> -> {
+                    oddsFeedListener?.onRollbackBetCancel(this@OddsFeedSessionImpl, message)
+                }
                 is FixtureChange<SportEvent> -> {
                     oddsFeedListener?.onFixtureChange(this@OddsFeedSessionImpl, message)
                 }
