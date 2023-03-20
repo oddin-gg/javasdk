@@ -310,7 +310,7 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
         @XmlAttribute(name = "result", required = true)
         protected OFResult result;
         @XmlAttribute(name = "void_factor")
-        protected OFVoidFactor voidFactor;
+        protected Double voidFactor;
         @XmlAttribute(name = "dead_heat_factor")
         protected Double deadHeatFactor;
 
@@ -371,7 +371,7 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
          *     {@link Double }
          *     
          */
-        public OFVoidFactor getVoidFactor() {
+        public Double getVoidFactor() {
             return voidFactor;
         }
 
@@ -383,7 +383,7 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
          *     {@link Double }
          *     
          */
-        public void setVoidFactor(OFVoidFactor value) {
+        public void setVoidFactor(Double value) {
             this.voidFactor = value;
         }
 

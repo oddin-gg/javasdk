@@ -2,13 +2,10 @@ package com.oddin.oddsfeedsdk.mq.entities
 
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Competitor
 import com.oddin.oddsfeedsdk.api.factories.MarketData
-import com.oddin.oddsfeedsdk.api.factories.MarketDescriptionFactory
 import com.oddin.oddsfeedsdk.api.entities.sportevent.HomeAway
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match
-import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOutcomeActive
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFResult
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFVoidFactor
 import java.math.BigDecimal
 import java.math.MathContext
 import java.util.*
@@ -159,8 +156,13 @@ enum class OutcomeResult {
     LOST, WON, UNDECIDED_YET
 }
 
+enum class VoidFactor(val value: Double) {
+    REFUND_HALF(0.50),
+    REFUND_FULL(1.00)
+}
+
 interface OutcomeSettlement : Outcome {
-    val voidFactor: Double?
+    val voidFactor: VoidFactor?
     val deadHeatFactor: Double?
     val outcomeResult: OutcomeResult
 }
@@ -170,7 +172,7 @@ class OutcomeSettlementImpl(
     refId: Long?,
     marketData: MarketData,
     locale: Locale,
-    private val void: OFVoidFactor?,
+    private val void: Double?,
     override val deadHeatFactor: Double?,
     private val result: OFResult
 ) : OutcomeImpl(id, refId, marketData, locale), OutcomeSettlement {
@@ -184,6 +186,12 @@ class OutcomeSettlementImpl(
             }
         }
 
-    override val voidFactor: Double?
-        get() = void?.value() ?: 0.0
+    override val voidFactor: VoidFactor?
+        get() {
+            return when (void) {
+                0.50 -> VoidFactor.REFUND_HALF
+                1.00 -> VoidFactor.REFUND_FULL
+                else -> null
+            }
+        }
 }
