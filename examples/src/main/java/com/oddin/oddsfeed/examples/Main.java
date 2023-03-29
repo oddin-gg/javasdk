@@ -99,6 +99,11 @@ public class Main {
                     @Override
                     public void onBetSettlement(@NotNull OddsFeedSession session, @NotNull BetSettlement<SportEvent> message) {
                         System.out.println("Bet settlement message received " + message);
+                        message.getMarkets().forEach(m -> m.getOutcomeSettlements().forEach(o -> {
+                            if(o.getVoidFactor() != null) {
+                                System.out.println("Received outcome with void factor: " + o.getVoidFactor());
+                            }
+                        }));
                     }
 
                     @Override
@@ -123,13 +128,15 @@ public class Main {
         MarketDescriptionManager marketManager = oddsFeed.getMarketDescriptionManager();
 
         List<MarketVoidReason> voidReasons = marketManager.getMarketVoidReasons();
-        for(MarketVoidReason voidReason: voidReasons) {
-            System.out.println("Void reason: " + voidReason.getId() + "; '" +
-                    voidReason.getName() + "'; '"
-                    + voidReason.getDescription() + "'; '"
-                    + voidReason.getTemplate() + "'; '"
-                    + voidReason.getParams() + "'; '"
-            );
+        if(voidReasons != null) {
+            for (MarketVoidReason voidReason : voidReasons) {
+                System.out.println("Void reason: " + voidReason.getId() + "; '" +
+                        voidReason.getName() + "'; '"
+                        + voidReason.getDescription() + "'; '"
+                        + voidReason.getTemplate() + "'; '"
+                        + voidReason.getParams() + "'; '"
+                );
+            }
         }
 
         // Sports info manager gives you information about all sports, tournaments, matches and fixtures
