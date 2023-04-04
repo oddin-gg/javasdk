@@ -144,6 +144,14 @@ interface BetSettlement<T : SportEvent> : MarketMessage<T> {
     override val markets: List<MarketWithSettlement>
 }
 
+interface RollbackBetSettlement<T : SportEvent> : MarketMessage<T> {
+    override val markets: List<Market>
+}
+
+interface RollbackBetCancel<T : SportEvent> : MarketMessage<T> {
+    override val markets: List<Market>
+}
+
 class BetSettlementImpl<T : SportEvent>(
     event: T,
     private val message: OFBetSettlement,
@@ -167,6 +175,44 @@ class BetSettlementImpl<T : SportEvent>(
     override val markets: List<MarketWithSettlement>
         get() {
             val markets = _markets ?: initMarkets(message.outcomes?.market, event, marketFactory)
+            _markets = markets
+            return markets
+        }
+}
+
+class RollbackBetSettlementImpl<T : SportEvent>(
+    event: T,
+    private val message: OFRollbackBetSettlement,
+    rawMessage: ByteArray,
+    producer: Producer,
+    timestamp: MessageTimestamp,
+    private val marketFactory: MarketFactory
+) : EventMessageImpl<T>(event,null, rawMessage, producer, timestamp), RollbackBetSettlement<T>,
+    MarketInitializer {
+    private var _markets: List<Market>? = null
+
+    override val markets: List<Market>
+        get() {
+            val markets = _markets ?: initMarkets(message.market, event, marketFactory)
+            _markets = markets
+            return markets
+        }
+}
+
+class RollbackBetCancelImpl<T : SportEvent>(
+    event: T,
+    private val message: OFRollbackBetCancel,
+    rawMessage: ByteArray,
+    producer: Producer,
+    timestamp: MessageTimestamp,
+    private val marketFactory: MarketFactory
+) : EventMessageImpl<T>(event,null, rawMessage, producer, timestamp), RollbackBetCancel<T>,
+    MarketInitializer {
+    private var _markets: List<Market>? = null
+
+    override val markets: List<Market>
+        get() {
+            val markets = _markets ?: initMarkets(message.market, event, marketFactory)
             _markets = markets
             return markets
         }
