@@ -28,7 +28,7 @@ repositories {
 
 dependencies {
 
-    def oddsFeedVersion = '0.0.30' // here you can update version of lib
+    def oddsFeedVersion = '0.0.31' // here you can update version of lib
 
     implementation group: "com.oddin.oddsfeed", name: 'odds-feed', version: oddsFeedVersion
 
