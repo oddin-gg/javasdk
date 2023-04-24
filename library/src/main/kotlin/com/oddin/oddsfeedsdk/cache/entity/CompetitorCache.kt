@@ -113,7 +113,8 @@ class CompetitorCacheImpl @Inject constructor(
                 id,
                 if (data.refId != null) URN.parse(data.refId) else null,
                 data.isVirtual,
-                data.countryCode
+                data.countryCode,
+                data.underage,
             )
         } else {
             item.virtual = data.isVirtual
@@ -145,7 +146,8 @@ data class LocalizedCompetitor(
     val id: URN,
     val refId: URN?,
     var virtual: Boolean?,
-    var countryCode: String?
+    var countryCode: String?,
+    val underage: Int,
 ) : LocalizedItem {
     val country = ConcurrentHashMap<Locale, String>()
     val name = ConcurrentHashMap<Locale, String>()
@@ -167,7 +169,7 @@ class CompetitorImpl(
     override val id: URN,
     private val competitorCache: CompetitorCache,
     private val exceptionHandlingStrategy: ExceptionHandlingStrategy,
-    private val locales: Set<Locale>
+    private val locales: Set<Locale>,
 ) : Competitor {
 
     override val refId: URN?
@@ -187,6 +189,9 @@ class CompetitorImpl(
 
     override val countryCode: String?
         get() = fetchCompetitor(locales)?.countryCode
+
+    override val underage: Int?
+        get() = fetchCompetitor(locales)?.underage
 
     override fun getCountry(locale: Locale): String? {
         return fetchCompetitor(setOf(locale))?.country?.get(locale)
@@ -227,6 +232,9 @@ class TeamCompetitorImpl(override val qualifier: String?, private val competitor
     override fun getCountry(locale: Locale): String? {
         return competitor.getCountry(locale)
     }
+
+    override val underage: Int?
+        get() = competitor.underage
 
     override fun getAbbreviation(locale: Locale): String? {
         return competitor.getAbbreviation(locale)

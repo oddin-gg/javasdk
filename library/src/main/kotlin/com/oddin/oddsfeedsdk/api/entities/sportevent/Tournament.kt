@@ -12,4 +12,5 @@ interface Tournament : LongTermEvent {
     val startDate: Date?
     val endDate: Date?
     val riskTier: Int?
+    fun getAbbreviation(locale: Locale): String?
 }
