@@ -8,6 +8,7 @@ interface SportSummary {
     val refId: URN?
     val names: Map<Locale, String>?
     fun getName(locale: Locale): String?
+    fun getAbbreviation(locale: Locale): String?
 }
 
 interface Sport: SportSummary {

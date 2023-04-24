@@ -154,6 +154,7 @@ class TournamentCacheImpl @Inject constructor(
         }
 
         item.name[locale] = tournament.name
+        item.abbreviation[locale] = tournament.abbreviation
 
         if (tournament is RATournamentExtended) {
             val ids = tournament.competitors.competitor.map { URN.parse(it.id) }
@@ -182,6 +183,7 @@ data class LocalizedTournament(
     var riskTier: Int?
 ) : LocalizedItem {
     val name = ConcurrentHashMap<Locale, String>()
+    val abbreviation = ConcurrentHashMap<Locale, String>()
     var competitorIds: MutableSet<URN>? = null
 
     override val loadedLocales: Set<Locale>
@@ -202,6 +204,10 @@ class TournamentImpl(
 
     override fun getName(locale: Locale): String? {
         return fetchTournament(setOf(locale))?.name?.get(locale)
+    }
+
+    override fun getAbbreviation(locale: Locale): String? {
+        return fetchTournament(setOf(locale))?.abbreviation?.get(locale)
     }
 
     override val scheduledTime: Date?
