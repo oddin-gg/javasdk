@@ -9,6 +9,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.TeamCompetitor
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
@@ -27,7 +28,8 @@ interface CompetitorCache : Closable {
 private val logger = KotlinLogging.logger {}
 
 class CompetitorCacheImpl @Inject constructor(
-    private val apiClient: ApiClient
+    private val apiClient: ApiClient,
+    private val oddsFeedConfiguration: OddsFeedConfiguration,
 ) : CompetitorCache {
     private val lock = Any()
     private val subscription: Disposable
@@ -57,7 +59,7 @@ class CompetitorCacheImpl @Inject constructor(
 
                 if (teams != null) {
                     synchronized(lock) {
-                        handleTeamData(locale, teams)
+                        handleTeamData(locale, teams.map { it.id })
                     }
                 }
             }, {
@@ -105,7 +107,7 @@ class CompetitorCacheImpl @Inject constructor(
         }
     }
 
-    private fun refreshOrInsertItem(id: URN, locale: Locale, data: RATeam) {
+    private fun refreshOrInsertItem(id: URN, locale: Locale, data: RATeamExtended) {
         var item = internalCache.getIfPresent(id)
 
         if (item == null) {
@@ -115,6 +117,7 @@ class CompetitorCacheImpl @Inject constructor(
                 data.isVirtual,
                 data.countryCode,
                 data.underage,
+                data.iconPath,
             )
         } else {
             item.virtual = data.isVirtual
@@ -133,11 +136,45 @@ class CompetitorCacheImpl @Inject constructor(
         internalCache.put(id, item)
     }
 
-    private fun handleTeamData(locale: Locale, teams: List<RATeam>) {
-        teams.forEach {
-            val id = URN.parse(it.id)
+    private fun handleTeamData(locale: Locale, teamsIDs: List<String>) {
+        runBlocking {
+            teamsIDs.forEach { id ->
+                val urn = try {
+                    URN.parse(id)
+                } catch (e: Exception) {
+                    val msg = "Failed to parse id [$id] to urn";
+                    if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                        throw ItemNotFoundException(msg, e)
+                    } else {
+                        logger.error(e) { msg }
+                        return@forEach
+                    }
+                }
 
-            refreshOrInsertItem(id, locale, it)
+                val data = try {
+                    apiClient.fetchCompetitorProfile(urn, locale)
+                } catch (e: Exception) {
+                    val msg = "Failed to fetch competitor profile for id: [$id], locale: [$locale]";
+                    if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                        throw ItemNotFoundException(msg, e)
+                    } else {
+                        logger.error(e) { msg }
+                        return@forEach
+                    }
+                }
+
+                try {
+                    refreshOrInsertItem(urn, locale, data)
+                } catch (e: Exception) {
+                    val msg = "Failed to refresh or insert competitor for id: [$id], locale: [$locale]"
+                    if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                        throw ItemNotFoundException(msg, e)
+                    } else {
+                        logger.error(e) { msg }
+                        return@forEach
+                    }
+                }
+            }
         }
     }
 }
@@ -148,6 +185,7 @@ data class LocalizedCompetitor(
     var virtual: Boolean?,
     var countryCode: String?,
     val underage: Int,
+    val iconPath: String?,
 ) : LocalizedItem {
     val country = ConcurrentHashMap<Locale, String>()
     val name = ConcurrentHashMap<Locale, String>()
@@ -193,6 +231,9 @@ class CompetitorImpl(
     override val underage: Int?
         get() = fetchCompetitor(locales)?.underage
 
+    override val iconPath: String?
+        get() = fetchCompetitor(locales)?.iconPath
+
     override fun getCountry(locale: Locale): String? {
         return fetchCompetitor(setOf(locale))?.country?.get(locale)
     }
@@ -235,6 +276,9 @@ class TeamCompetitorImpl(override val qualifier: String?, private val competitor
 
     override val underage: Int?
         get() = competitor.underage
+
+    override val iconPath: String?
+        get() = competitor.iconPath
 
     override fun getAbbreviation(locale: Locale): String? {
         return competitor.getAbbreviation(locale)
