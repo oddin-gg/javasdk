@@ -16,6 +16,7 @@ interface Competitor : Player {
     val virtual: Boolean?
     val countryCode: String?
     val underage: Int?
+    val iconPath: String?
 
     fun getCountry(locale: Locale): String?
     fun getAbbreviation(locale: Locale): String?
