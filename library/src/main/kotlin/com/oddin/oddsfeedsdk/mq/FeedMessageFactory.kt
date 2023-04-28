@@ -2,14 +2,14 @@ package com.oddin.oddsfeedsdk.mq
 
 import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.FeedMessage
-import com.oddin.oddsfeedsdk.ProducerManager
 import com.oddin.oddsfeedsdk.SDKProducerManager
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
-import com.oddin.oddsfeedsdk.api.factories.MarketFactory
 import com.oddin.oddsfeedsdk.api.factories.EntityFactory
+import com.oddin.oddsfeedsdk.api.factories.MarketFactory
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.mq.entities.*
 import com.oddin.oddsfeedsdk.schema.feed.v1.*
+import com.oddin.oddsfeedsdk.schema.utils.URN
 
 interface FeedMessageFactory {
 
@@ -45,11 +45,22 @@ class FeedMessageFactoryImpl @Inject constructor(
         requireNotNull(feedMessage.message)
 
         val timestamp = feedMessage.timestamp.copy(published = System.currentTimeMillis())
-        val sportEvent = entityFactory.buildMatch(
-            feedMessage.routingKey.eventId,
-            listOf(config.defaultLocale),
-            sportId = feedMessage.routingKey.sportId
-        ) as T
+        val sportEvent: T = when (feedMessage.routingKey.eventId.type) {
+            URN.TypeMatch -> entityFactory.buildMatch(
+                feedMessage.routingKey.eventId,
+                listOf(config.defaultLocale),
+                sportId = feedMessage.routingKey.sportId
+            ) as T
+            URN.TypeTournament -> entityFactory.buildTournament(
+                feedMessage.routingKey.eventId,
+                feedMessage.routingKey.sportId,
+                listOf(config.defaultLocale)
+            ) as T
+            else -> {
+                throw IllegalStateException("Unsupported SportEvent type: " + feedMessage.routingKey.eventId.type)
+            }
+        }
+
         val producer = producerManager.getProducer(feedMessage.message.getProduct().toLong())
         requireNotNull(producer)
 

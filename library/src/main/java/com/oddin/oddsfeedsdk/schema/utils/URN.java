@@ -9,6 +9,8 @@ public class URN {
     final private String type;
     final private Long id;
 
+    static public final String TypeMatch = "match";
+    static public final String TypeTournament = "tournament";
 
     URN(String prefix, String type, Long id) {
         this.prefix = prefix;
