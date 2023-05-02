@@ -74,7 +74,7 @@ class FixtureCacheImpl @Inject constructor(
             val fixture = LocalizedFixture(
                 Utils.parseDate(data.startTime),
                 ConcurrentHashMap(data.extraInfo.info.map { it.key to it.value }.toMap()),
-                data.tvChannels?.tvChannel?.map { TvChannelImpl(it.name, it.streamUrl) } ?: emptyList()
+                data.tvChannels?.tvChannel?.map { TvChannelImpl(it.name, it.streamUrl, it.language) } ?: emptyList()
             )
 
             internalCache.put(id, fixture)

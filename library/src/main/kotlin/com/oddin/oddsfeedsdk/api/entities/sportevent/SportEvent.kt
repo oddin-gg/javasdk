@@ -95,9 +95,14 @@ interface Competition : SportEvent {
 interface TvChannel {
     val name: String
     val streamUrl: String
+    val language: String?
 }
 
-data class TvChannelImpl(override val name: String, override val streamUrl: String) : TvChannel
+data class TvChannelImpl(
+    override val name: String,
+    override val streamUrl: String,
+    override val language: String?,
+) : TvChannel
 
 interface Fixture {
     val startTime: Date?

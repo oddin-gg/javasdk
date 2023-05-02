@@ -312,17 +312,17 @@ public class ObjectFactory {
     }
 
     /**
-     * Create an instance of {@link RAPITvChannels }
+     * Create an instance of {@link RATvChannels }
      */
-    public RAPITvChannels createTvChannels() {
-        return new RAPITvChannels();
+    public RATvChannels createTvChannels() {
+        return new RATvChannels();
     }
 
     /**
-     * Create an instance of {@link RAPITvChannel }
+     * Create an instance of {@link RATvChannel }
      */
-    public RAPITvChannel createTvChannel() {
-        return new RAPITvChannel();
+    public RATvChannel createTvChannel() {
+        return new RATvChannel();
     }
 
     /**
