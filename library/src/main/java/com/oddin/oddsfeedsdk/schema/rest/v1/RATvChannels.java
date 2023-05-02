@@ -12,15 +12,15 @@ import java.util.List;
         name = "tvChannels",
         propOrder = {"tvChannel"}
 )
-public class RAPITvChannels {
+public class RATvChannels {
     @XmlElement(
             name = "tv_channel"
     )
-    protected List<RAPITvChannel> tvChannel;
+    protected List<RATvChannel> tvChannel;
 
-    public List<RAPITvChannel> getTvChannel() {
+    public List<RATvChannel> getTvChannel() {
         if (this.tvChannel == null) {
-            this.tvChannel = new ArrayList<RAPITvChannel>();
+            this.tvChannel = new ArrayList<RATvChannel>();
         }
 
         return this.tvChannel;

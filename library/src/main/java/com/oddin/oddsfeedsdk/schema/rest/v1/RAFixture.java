@@ -62,7 +62,7 @@ public class RAFixture
     @XmlElement(
             name = "tv_channels"
     )
-    protected RAPITvChannels tvChannels;
+    protected RATvChannels tvChannels;
 
     /**
      * Gets the value of the delayedInfo property.
@@ -164,11 +164,11 @@ public class RAFixture
         this.nextLiveTime = value;
     }
 
-    public RAPITvChannels getTvChannels() {
+    public RATvChannels getTvChannels() {
         return this.tvChannels;
     }
 
-    public void setTvChannels(RAPITvChannels value) {
+    public void setTvChannels(RATvChannels value) {
         this.tvChannels = value;
     }
 
