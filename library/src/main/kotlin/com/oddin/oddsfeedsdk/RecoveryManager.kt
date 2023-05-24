@@ -460,7 +460,7 @@ class RecoveryManagerImpl @Inject constructor(
         val messageProcessingDelay = timestamp - (producerRecoveryData.lastProcessedMessageGenTimestamp ?: 0L)
         val userAliveDelay = timestamp - (producerRecoveryData.lastUserSessionAliveReceivedTimestamp ?: 0L)
 
-        return messageProcessingDelay < maxInactivity && userAliveDelay < maxInactivity
+        return Math.abs(messageProcessingDelay) < maxInactivity && Math.abs(userAliveDelay) < maxInactivity
     }
 }
 
