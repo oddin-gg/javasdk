@@ -33,12 +33,33 @@ class OddsFeedConfigurationBuilder internal constructor() {
     private var initialSnapshotRecoveryInterval: Duration? = null
 
     fun selectProduction() = apply {
-        selectedEnvironment = Environment("mq.oddin.gg", "api-mq.oddin.gg", defaultMessagingPort)
+        selectProduction(Region.DEFAULT)
+    }
+
+    fun selectProduction(region: Region) = apply {
+        val mqHost =  "mq." + region.host + "oddin.gg"
+        val apiHost = "api-mq."+ region.host + "oddin.gg"
+        selectedEnvironment = Environment(mqHost, apiHost, defaultMessagingPort)
     }
 
     fun selectIntegration() = apply {
-        selectedEnvironment =
-            Environment("mq.integration.oddin.gg", "api-mq.integration.oddin.gg", defaultMessagingPort)
+        selectIntegration(Region.DEFAULT)
+    }
+
+    fun selectIntegration(region: Region) = apply {
+        val mqHost =  "mq.integration."+ region.host + "oddin.gg"
+        val apiHost = "api-mq.integration."+ region.host + "oddin.gg"
+        selectedEnvironment = Environment(mqHost, apiHost, defaultMessagingPort)
+    }
+
+    fun selectTest() = apply {
+        selectTest(Region.DEFAULT)
+    }
+
+    fun selectTest(region: Region) = apply {
+        val mqHost =  "mq-test.integration."+ region.host +"oddin.gg"
+        val apiHost = "api-mq-test.integration."+ region.host +"oddin.gg"
+        selectedEnvironment = Environment(mqHost, apiHost, defaultMessagingPort)
     }
 
     fun selectEnvironment(messagingHost: String, apiHost: String) = apply {
@@ -107,3 +128,8 @@ interface ExceptionHandler {
 }
 
 data class Environment(val messagingHost: String, val apiHost: String, val messagingPort: Int)
+
+enum class Region(val host: String) {
+    DEFAULT(""),
+    AP_SOUTHEAST_1("ap-southeast-1.")
+}
