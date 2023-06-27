@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.api.factories.MarketVoidReason;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
+import com.oddin.oddsfeedsdk.config.Region;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.*;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
@@ -37,8 +38,7 @@ public class Main {
         // You need to properly set your access token in order to access API and Feed features.
         // Please check with support that your IP was whitelisted.
         OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
-                //.selectEnvironment("mq-test.integration.oddin.gg", "api-mq-test.integration.oddin.gg", 5672)
-                .selectIntegration()
+                .selectIntegration(Region.DEFAULT)
                 .setExceptionHandlingStrategy(ExceptionHandlingStrategy.CATCH)
                 .setAccessToken(token)
                 .setSDKNodeId(1)
