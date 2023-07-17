@@ -187,7 +187,16 @@ class MatchStatusCacheImpl @Inject constructor(
                 homeGoals = it.homeGoals,
                 awayGoals = it.awayGoals,
                 homePoints = it.homePoints,
-                awayPoints = it.awayPoints
+                awayPoints = it.awayPoints,
+                homeRuns = it.homeRuns,
+                awayRuns  = it. awayRuns,
+                homeWicketsFallen = it.homeWicketsFallen,
+                awayWicketsFallen = it.awayWicketsFallen,
+                homeOversPlayed   = it.homeOversPlayed,
+                homeBallsPlayed   = it.homeBallsPlayed,
+                awayOversPlayed   = it.awayOversPlayed,
+                awayBallsPlayed   = it.awayBallsPlayed,
+                homeWonCoinToss   = it.homeWonCoinToss,
             )
         }.sortedBy { it.periodNumber }
     }
@@ -207,7 +216,16 @@ class MatchStatusCacheImpl @Inject constructor(
                 homeGoals = it.homeGoals,
                 awayGoals = it.awayGoals,
                 homePoints = it.homePoints,
-                awayPoints = it.awayPoints
+                awayPoints = it.awayPoints,
+                homeRuns = it.homeRuns,
+                awayRuns  = it. awayRuns,
+                homeWicketsFallen = it.homeWicketsFallen,
+                awayWicketsFallen = it.awayWicketsFallen,
+                homeOversPlayed   = it.homeOversPlayed,
+                homeBallsPlayed   = it.homeBallsPlayed,
+                awayOversPlayed   = it.awayOversPlayed,
+                awayBallsPlayed   = it.awayBallsPlayed,
+                homeWonCoinToss   = it.homeWonCoinToss,
             )
         }.sortedBy { it.periodNumber }
     }
@@ -234,7 +252,19 @@ class MatchStatusCacheImpl @Inject constructor(
             currentDefenderTeam = data.currentDefenderTeam,
             homePoints = data.homePoints,
             awayPoints = data.awayPoints,
-            remainingGameTime = data.remainingGameTime
+            remainingGameTime = data.remainingGameTime,
+            homeRuns = data.homeRuns,
+            awayRuns  = data. awayRuns,
+            homeWicketsFallen = data.homeWicketsFallen,
+            awayWicketsFallen = data.awayWicketsFallen,
+            homeOversPlayed   = data.homeOversPlayed,
+            homeBallsPlayed   = data.homeBallsPlayed,
+            awayOversPlayed   = data.awayOversPlayed,
+            awayBallsPlayed   = data.awayBallsPlayed,
+            homeWonCoinToss   = data.homeWonCoinToss,
+            homeBatting =  data.homeBatting,
+            awayBatting =  data.awayBatting,
+            inning = data.inning
         )
     }
 
@@ -260,7 +290,19 @@ class MatchStatusCacheImpl @Inject constructor(
             currentDefenderTeam = data.currentDefenderTeam,
             homePoints = data.homePoints,
             awayPoints = data.awayPoints,
-            remainingGameTime = data.remainingGameTime
+            remainingGameTime = data.remainingGameTime,
+            homeRuns = data.homeRuns,
+            awayRuns  = data. awayRuns,
+            homeWicketsFallen = data.homeWicketsFallen,
+            awayWicketsFallen = data.awayWicketsFallen,
+            homeOversPlayed   = data.homeOversPlayed,
+            homeBallsPlayed   = data.homeBallsPlayed,
+            awayOversPlayed   = data.awayOversPlayed,
+            awayBallsPlayed   = data.awayBallsPlayed,
+            homeWonCoinToss   = data.homeWonCoinToss,
+            homeBatting =  data.homeBatting,
+            awayBatting =  data.awayBatting,
+            inning = data.inning
         )
     }
 }
