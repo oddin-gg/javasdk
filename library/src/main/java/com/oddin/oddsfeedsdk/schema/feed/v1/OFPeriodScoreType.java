@@ -64,6 +64,96 @@ public class OFPeriodScoreType {
     protected Integer homePoints;
     @XmlAttribute(name = "away_points")
     protected Integer awayPoints;
+    @XmlAttribute(name = "home_runs")
+    protected Integer homeRuns;
+    @XmlAttribute(name = "away_runs")
+    protected Integer awayRuns;
+    @XmlAttribute(name = "home_wickets_fallen")
+    protected Integer homeWicketsFallen;
+    @XmlAttribute(name = "away_wickets_fallen")
+    protected Integer awayWicketsFallen;
+    @XmlAttribute(name = "home_overs_played")
+    protected Integer homeOversPlayed;
+    @XmlAttribute(name = "home_balls_played")
+    protected Integer homeBallsPlayed;
+    @XmlAttribute(name = "away_overs_played")
+    protected Integer awayOversPlayed;
+    @XmlAttribute(name = "away_balls_played")
+    protected Integer awayBallsPlayed;
+    @XmlAttribute(name = "home_won_coin_toss")
+    protected Boolean homeWonCoinToss;
+
+    public Integer getHomeRuns() {
+        return homeRuns;
+    }
+
+    public void setHomeRuns(Integer homeRuns) {
+        this.homeRuns = homeRuns;
+    }
+
+    public Integer getAwayRuns() {
+        return awayRuns;
+    }
+
+    public void setAwayRuns(Integer awayRuns) {
+        this.awayRuns = awayRuns;
+    }
+
+    public Integer getHomeWicketsFallen() {
+        return homeWicketsFallen;
+    }
+
+    public void setHomeWicketsFallen(Integer homeWicketsFallen) {
+        this.homeWicketsFallen = homeWicketsFallen;
+    }
+
+    public Integer getAwayWicketsFallen() {
+        return awayWicketsFallen;
+    }
+
+    public void setAwayWicketsFallen(Integer awayWicketsFallen) {
+        this.awayWicketsFallen = awayWicketsFallen;
+    }
+
+    public Integer getHomeOversPlayed() {
+        return homeOversPlayed;
+    }
+
+    public void setHomeOversPlayed(Integer homeOversPlayed) {
+        this.homeOversPlayed = homeOversPlayed;
+    }
+
+    public Integer getHomeBallsPlayed() {
+        return homeBallsPlayed;
+    }
+
+    public void setHomeBallsPlayed(Integer homeBallsPlayed) {
+        this.homeBallsPlayed = homeBallsPlayed;
+    }
+
+    public Integer getAwayOversPlayed() {
+        return awayOversPlayed;
+    }
+
+    public void setAwayOversPlayed(Integer awayOversPlayed) {
+        this.awayOversPlayed = awayOversPlayed;
+    }
+
+    public Integer getAwayBallsPlayed() {
+        return awayBallsPlayed;
+    }
+
+    public void setAwayBallsPlayed(Integer awayBallsPlayed) {
+        this.awayBallsPlayed = awayBallsPlayed;
+    }
+
+    public Boolean getHomeWonCoinToss() {
+        return homeWonCoinToss;
+    }
+
+    public void setHomeWonCoinToss(Boolean homeWonCoinToss) {
+        this.homeWonCoinToss = homeWonCoinToss;
+    }
 
     public Integer getHomeGoals() {
         return homeGoals;
