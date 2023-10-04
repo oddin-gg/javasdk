@@ -38,6 +38,7 @@ public class ObjectFactory {
     private final static QName _SportTournaments_QNAME = new QName("http://schemas.oddin.gg/v1", "sport_tournaments");
     private final static QName _Tournaments_QNAME = new QName("http://schemas.oddin.gg/v1", "tournaments");
     private final static QName _CompetitorProfile_QNAME = new QName("http://schemas.oddin.gg/v1", "competitor_profile");
+    private final static QName _PlayerProfile_QNAME = new QName("http://schemas.oddin.gg/v1", "player_profile");
     private final static QName _FixturesFixture_QNAME = new QName("http://schemas.oddin.gg/v1", "fixtures_fixture");
     private final static QName _FixtureChanges_QNAME = new QName("http://schemas.oddin.gg/v1", "fixture_changes");
     private final static QName _MatchSummary_QNAME = new QName("http://schemas.oddin.gg/v1", "match_summary");
@@ -141,6 +142,13 @@ public class ObjectFactory {
      */
     public RACompetitorProfileEndpoint createCompetitorProfileEndpoint() {
         return new RACompetitorProfileEndpoint();
+    }
+
+    /**
+     * Create an instance of {@link RAPlayerProfileEndpoint }
+     */
+    public RAPlayerProfileEndpoint createPlayerProfileEndpoint() {
+        return new RAPlayerProfileEndpoint();
     }
 
     /**
@@ -288,6 +296,13 @@ public class ObjectFactory {
      */
     public RATeamExtended createTeamExtended() {
         return new RATeamExtended();
+    }
+
+    /**
+     * Create an instance of {@link RAPlayerProfileEndpoint.Player }
+     */
+    public RAPlayerProfileEndpoint.Player createPlayerProfilePlayer() {
+        return new RAPlayerProfileEndpoint.Player();
     }
 
     /**
@@ -482,6 +497,14 @@ public class ObjectFactory {
     @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "competitor_profile")
     public JAXBElement<RACompetitorProfileEndpoint> createCompetitorProfile(RACompetitorProfileEndpoint value) {
         return new JAXBElement<RACompetitorProfileEndpoint>(_CompetitorProfile_QNAME, RACompetitorProfileEndpoint.class, null, value);
+    }
+
+    /**
+     * Create an instance of {@link JAXBElement }{@code <}{@link RAPlayerProfileEndpoint }{@code >}}
+     */
+    @XmlElementDecl(namespace = "http://schemas.oddin.gg/v1", name = "player_profile")
+    public JAXBElement<RAPlayerProfileEndpoint> createPlayerProfile(RAPlayerProfileEndpoint value) {
+        return new JAXBElement<RAPlayerProfileEndpoint>(_PlayerProfile_QNAME, RAPlayerProfileEndpoint.class, null, value);
     }
 
     /**

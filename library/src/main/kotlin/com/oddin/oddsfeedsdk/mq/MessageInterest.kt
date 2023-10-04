@@ -15,13 +15,13 @@ enum class MessageInterest(val routingKeys: List<String>) {
     open fun getPossibleSourceProducers(availableProducers: Map<Long, Producer>): Set<Long> {
         val possibleProducers = mutableSetOf<Long>()
         when (this) {
-            LIVE_ONLY -> possibleProducers.addAll(availableProducers.filterValues { it ->
+            LIVE_ONLY -> possibleProducers.addAll(availableProducers.filterValues {
                 it.producerScopes.contains(
                     ProducerScope.LIVE
                 )
             }.keys)
 
-            PREMATCH_ONLY -> possibleProducers.addAll(availableProducers.filterValues { it ->
+            PREMATCH_ONLY -> possibleProducers.addAll(availableProducers.filterValues {
                 it.producerScopes.contains(
                     ProducerScope.PREMATCH
                 )

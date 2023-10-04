@@ -26,6 +26,15 @@ interface MarketDescriptionManager {
      */
     fun getMarketDescriptions(locale: Locale): List<MarketDescription>?
 
+    /**
+     * Fetch market description with selected localization
+     *
+     * @param marketId market id
+     * @param variant optional market variant
+     * @param locale - {@link Locale} for data
+     * @return a market descriptions
+     */
+    fun getMarketDescription(marketId: Int, variant: String?, locale: Locale): MarketDescription?
 
     /**
      * Clear market description from all caches
@@ -66,6 +75,19 @@ class MarketDescriptionManagerImpl @Inject constructor(
 
         return wrapError(callable, "marketDescriptions")
     }
+
+    override fun getMarketDescription(
+            marketId: Int,
+            variant: String?,
+            locale: Locale): MarketDescription? {
+
+        val callable = {
+            marketDescriptionFactory.getMarketDescription(marketId, variant, listOf(locale))
+        }
+
+        return wrapError(callable, "getMarketDescriptionByIdAndVariant")
+    }
+
 
     override fun clearMarketDescription(marketId: Int, variant: String?) {
         cacheManager.marketDescriptionCache.clearCacheItem(marketId, variant)

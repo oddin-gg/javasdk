@@ -135,12 +135,7 @@ open class OddsFeedSessionImpl @Inject constructor(
             return false
         }
 
-        val isProducerInScope = messageInterest.isProducerInScope(producer)
-        if (!isProducerInScope) {
-            return false
-        }
-
-        return true
+        return messageInterest.isProducerInScope(producer)
     }
 
     // Simple filter for odds change messages

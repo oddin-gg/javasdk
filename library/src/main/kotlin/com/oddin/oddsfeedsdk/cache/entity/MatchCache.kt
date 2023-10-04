@@ -36,7 +36,7 @@ class MatchCacheImpl @Inject constructor(
 ) : MatchCache {
 
     companion object {
-        private const val urnType = "match"
+        private const val URN_TYPE = "match"
     }
 
     private val lock = Any()
@@ -159,7 +159,7 @@ class MatchCacheImpl @Inject constructor(
     }
 
     override fun getSupportedURNType(): String {
-       return urnType
+       return URN_TYPE
     }
 
 }
@@ -195,7 +195,7 @@ class MatchImpl(
     override val refId: URN?
         get() = fetchMatch(locales)?.refId
 
-    override val status: MatchStatus?
+    override val status: MatchStatus
         get() = entityFactory.buildMatchStatus(id, locales.toList())
 
     override val tournament: Tournament?
@@ -226,7 +226,7 @@ class MatchImpl(
             }
         }
 
-    override val fixture: Fixture?
+    override val fixture: Fixture
         get() = entityFactory.buildFixture(id, locales.toList())
 
     override val competitors: List<Competitor>

@@ -1,7 +1,6 @@
 package com.oddin.oddsfeedsdk.subscribe
 
 import com.oddin.oddsfeedsdk.OddsFeedSession
-import com.oddin.oddsfeedsdk.api.entities.sportevent.Match
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.mq.MessageInterest
 import com.oddin.oddsfeedsdk.mq.RoutingKeyInfo

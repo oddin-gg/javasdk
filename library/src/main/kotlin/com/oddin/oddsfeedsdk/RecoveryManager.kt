@@ -20,6 +20,7 @@ import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 import kotlin.random.Random
 
 
@@ -460,7 +461,7 @@ class RecoveryManagerImpl @Inject constructor(
         val messageProcessingDelay = timestamp - (producerRecoveryData.lastProcessedMessageGenTimestamp ?: 0L)
         val userAliveDelay = timestamp - (producerRecoveryData.lastUserSessionAliveReceivedTimestamp ?: 0L)
 
-        return Math.abs(messageProcessingDelay) < maxInactivity && Math.abs(userAliveDelay) < maxInactivity
+        return abs(messageProcessingDelay) < maxInactivity && abs(userAliveDelay) < maxInactivity
     }
 }
 

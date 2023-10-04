@@ -3,10 +3,7 @@ package com.oddin.oddsfeedsdk.cache.market
 import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
-import com.oddin.oddsfeedsdk.api.factories.MarketDescription
-import com.oddin.oddsfeedsdk.api.factories.OutcomeDescription
-import com.oddin.oddsfeedsdk.api.factories.Specifier
-import com.oddin.oddsfeedsdk.api.factories.SpecifierImpl
+import com.oddin.oddsfeedsdk.api.factories.*
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
@@ -38,7 +35,7 @@ class CompositeKey(val marketId: Int, val variant: String?) {
 }
 
 interface MarketDescriptionCache {
-    fun getMarketDescriptions(locale: Locale): List<CompositeKey>
+    fun getMarketDescriptions(locale: Locale): Map<CompositeKey, LocalizedMarketDescription>
 
     fun getMarketDescription(
         marketId: Int,
@@ -67,15 +64,15 @@ class MarketDescriptionCacheImpl @Inject constructor(
             .newBuilder()
             .build<CompositeKey, LocalizedMarketDescription>()
 
-    override fun getMarketDescriptions(locale: Locale): List<CompositeKey> {
+    override fun getMarketDescriptions(locale: Locale): Map<CompositeKey, LocalizedMarketDescription> {
         return synchronized(lock) {
             val needReload = !loadedLocales.contains(locale)
 
             if (needReload) {
-                loadAndCacheItem(listOf(locale))
+                loadAndCacheItem(null, null, listOf(locale))
             }
 
-            return@synchronized internalCache.asMap().filter { it.value.loadedLocales.contains(locale) }.keys.toList()
+            return@synchronized internalCache.asMap().filter { it.value.loadedLocales.contains(locale) }
         }
     }
 
@@ -91,7 +88,7 @@ class MarketDescriptionCacheImpl @Inject constructor(
             val toFetchLocales = locales.filter { !localeSet.contains(it) }
 
             if (toFetchLocales.isNotEmpty()) {
-                loadAndCacheItem(toFetchLocales)
+                loadAndCacheItem(marketId, variant, toFetchLocales)
             }
 
             return@synchronized internalCache.getIfPresent(key)
@@ -106,20 +103,37 @@ class MarketDescriptionCacheImpl @Inject constructor(
         internalCache.invalidate(CompositeKey(marketId, variant))
     }
 
-    private fun loadAndCacheItem(locales: List<Locale>) {
+    private fun isMarketVariantWithDynamicOutcomes(marketVariant: String): Boolean {
+        return marketVariant.startsWith("od:dynamic_outcomes:")
+    }
+
+    private fun loadAndCacheItem(marketId: Int?, variant: String?, locales: List<Locale>) {
         runBlocking {
             locales.forEach { locale ->
-                val marketDescriptions = try {
-                    apiClient.fetchMarketDescriptions(locale)
-                } catch (e: Exception) {
-                    return@forEach
-                }
+
+                val marketDescriptions =
+                        when {
+                            marketId != null && variant != null && isMarketVariantWithDynamicOutcomes(variant) -> {
+                                try {
+                                    apiClient.fetchMarketDescriptionsWithDynamicOutcomes(marketId, variant, locale)
+                                } catch (e: Exception) {
+                                    return@forEach
+                                }
+                            }
+                            else -> {
+                                try {
+                                    apiClient.fetchMarketDescriptions(locale)
+                                } catch (e: Exception) {
+                                    return@forEach
+                                }
+                            }
+                        }
 
                 marketDescriptions.forEach {
                     try {
                         refreshOrInsertItem(it, locale)
                     } catch (e: Exception) {
-                        logger.error { "Failed to refresh or insert market" }
+                        logger.error { "Failed to refresh or insert market: $e" }
                     }
                 }
 
@@ -136,10 +150,19 @@ class MarketDescriptionCacheImpl @Inject constructor(
 
         if (item == null) {
             val outcomes =
-                marketDescription.outcomes.outcome.map { it.id to LocalizedOutcomeDescription() }.toMap()
+                    marketDescription.outcomes.outcome.associate { it.id to LocalizedOutcomeDescription() }
+
+            var outcomeType: OutcomeType? = null
+
+            if (marketDescription.outcomeType != null) {
+                outcomeType = OutcomeType.valueOf(marketDescription.outcomeType.uppercase())
+            }
+
             item = LocalizedMarketDescription(
-                marketDescription.refId,
-                ConcurrentHashMap(outcomes)
+                    marketDescription.refId,
+                    marketDescription.includesOutcomesOfType,
+                    outcomeType,
+                    ConcurrentHashMap(outcomes)
             )
         }
 
@@ -163,7 +186,9 @@ class MarketDescriptionCacheImpl @Inject constructor(
 
 data class LocalizedMarketDescription(
     val refId: Int?,
-    var outcomes: ConcurrentHashMap<Long, LocalizedOutcomeDescription>
+    val includesOutcomesOfType: String?,
+    val outcomeType: OutcomeType?,
+    var outcomes: ConcurrentHashMap<String, LocalizedOutcomeDescription>
 ) : LocalizedItem {
     var specifiers: List<SpecifierImpl>? = null
     var name = ConcurrentHashMap<Locale, String>()
@@ -179,11 +204,13 @@ class LocalizedOutcomeDescription {
 }
 
 class MarketDescriptionImpl(
-    override val id: Int,
-    override val variant: String?,
-    private val marketDescriptionCache: MarketDescriptionCache,
-    private val exceptionHandlingStrategy: ExceptionHandlingStrategy,
-    private val locales: Set<Locale>
+        override val id: Int,
+        override val includesOutcomesOfType: String?,
+        override val outcomeType: OutcomeType?,
+        override val variant: String?,
+        private val marketDescriptionCache: MarketDescriptionCache,
+        private val exceptionHandlingStrategy: ExceptionHandlingStrategy,
+        private val locales: Set<Locale>,
 ) : MarketDescription {
 
     override val refId: Int?
@@ -217,7 +244,7 @@ class MarketDescriptionImpl(
 }
 
 class OutcomeDescriptionImpl(
-    override val id: Long,
+    override val id: String,
     private val localizedOutcomeDescription: LocalizedOutcomeDescription
 ) : OutcomeDescription {
 

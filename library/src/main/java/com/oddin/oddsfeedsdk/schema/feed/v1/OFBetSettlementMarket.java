@@ -112,7 +112,7 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
      */
     public List<OFBetSettlementMarket.OFOutcome> getOutcome() {
         if (outcome == null) {
-            outcome = new ArrayList<OFBetSettlementMarket.OFOutcome>();
+            outcome = new ArrayList<>();
         }
         return this.outcome;
     }
@@ -304,7 +304,7 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
     public static class OFOutcome implements FeedMarketOutcome {
 
         @XmlAttribute(name = "id", required = true)
-        protected Long id;
+        protected String id;
         @XmlAttribute(name = "ref_id")
         protected Long refId;
         @XmlAttribute(name = "result", required = true)
@@ -331,7 +331,7 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
          *     {@link String }
          *     
          */
-        public Long getId() {
+        public String getId() {
             return id;
         }
 
@@ -343,7 +343,7 @@ public class OFBetSettlementMarket implements FeedMessageMarket {
          *     {@link String }
          *     
          */
-        public void setId(Long value) {
+        public void setId(String value) {
             this.id = value;
         }
 

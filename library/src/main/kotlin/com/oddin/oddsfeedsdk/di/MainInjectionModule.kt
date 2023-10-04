@@ -58,7 +58,9 @@ class MainInjectionModule(
         bind(MarketDescriptionManager::class.java).to(MarketDescriptionManagerImpl::class.java)
             .`in`(Singleton::class.java)
         bind(CompetitorCache::class.java).to(CompetitorCacheImpl::class.java)
-            .`in`(Singleton::class.java)
+                .`in`(Singleton::class.java)
+        bind(PlayerCache::class.java).to(PlayerCacheImpl::class.java)
+                .`in`(Singleton::class.java)
         bind(SportDataCache::class.java).to(
             SportDataCacheImpl::class.java
         ).`in`(Singleton::class.java)

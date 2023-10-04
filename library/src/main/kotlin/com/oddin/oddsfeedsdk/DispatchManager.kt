@@ -2,7 +2,6 @@ package com.oddin.oddsfeedsdk
 
 import com.google.common.util.concurrent.ThreadFactoryBuilder
 import com.google.inject.Inject
-import com.oddin.oddsfeedsdk.api.WhoAmIManager
 import com.oddin.oddsfeedsdk.mq.MessageInterest
 import com.oddin.oddsfeedsdk.mq.RoutingKeyInfo
 import com.oddin.oddsfeedsdk.mq.entities.BasicMessage

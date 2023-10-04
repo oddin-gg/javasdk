@@ -16,7 +16,6 @@ import com.rabbitmq.client.DefaultConsumer
 import com.rabbitmq.client.Envelope
 import mu.KotlinLogging
 import java.io.ByteArrayInputStream
-import java.nio.charset.Charset
 import java.util.regex.Pattern
 import javax.xml.bind.JAXBContext
 import javax.xml.bind.JAXBException

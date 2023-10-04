@@ -70,33 +70,32 @@ class ProducerManagerImpl @Inject constructor(
         logger.debug { "Fetched producer list - size ${producers.producer.size}" }
 
         _producers = producers
-            .producer
-            .map {
-                it.id to ProducerData(
-                    id = it.id,
-                    active = it.isActive,
-                    apiUrl = it.apiUrl,
-                    description = it.description,
-                    name = it.name,
-                    producerScopes = it.scope,
-                    statefulRecoveryWindowInMinutes = it.statefulRecoveryWindowInMinutes
-                )
-            }.toMap()
+                .producer.associate {
+                    it.id to ProducerData(
+                            id = it.id,
+                            active = it.isActive,
+                            apiUrl = it.apiUrl,
+                            description = it.description,
+                            name = it.name,
+                            producerScopes = it.scope,
+                            statefulRecoveryWindowInMinutes = it.statefulRecoveryWindowInMinutes
+                    )
+                }
 
         logger.debug { "Mapped producer list - ${_producers?.values}" }
     }
 
     override val availableProducers: Map<Long, Producer>
-        get() = producers.values.map { it.id to ProducerImpl(it) }.toMap()
+        get() = producers.values.associate { it.id to ProducerImpl(it) }
 
     override val activeProducers: Map<Long, Producer>
-        get() = producers.values.filter { it.active }.map {
+        get() = producers.values.filter { it.active }.associate {
             it.id to ProducerImpl(
-                it
+                    it
             )
-        }.toMap()
+        }
 
-    override fun getProducer(id: Long): Producer? {
+    override fun getProducer(id: Long): Producer {
         val producerData = producers[id]
         return if (producerData == null) {
             logger.warn("Creating unknown producer: $id")

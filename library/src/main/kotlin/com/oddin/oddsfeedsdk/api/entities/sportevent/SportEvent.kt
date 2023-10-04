@@ -7,6 +7,7 @@ import java.util.*
 
 interface SportEvent {
     val id: URN?
+    @Deprecated("This attribute is deprecated and will be removed in future.")
     val refId: URN?
     fun getName(locale: Locale): String?
     val sportId: URN?

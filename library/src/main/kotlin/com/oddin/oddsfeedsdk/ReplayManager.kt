@@ -5,7 +5,6 @@ import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.SportsInfoManager
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
-import com.oddin.oddsfeedsdk.mq.ExchangeNameProvider
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
