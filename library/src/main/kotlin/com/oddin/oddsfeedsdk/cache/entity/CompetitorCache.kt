@@ -142,7 +142,7 @@ class CompetitorCacheImpl @Inject constructor(
                 val urn = try {
                     URN.parse(id)
                 } catch (e: Exception) {
-                    val msg = "Failed to parse id [$id] to urn";
+                    val msg = "Failed to parse id [$id] to urn"
                     if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
                         throw ItemNotFoundException(msg, e)
                     } else {
@@ -154,7 +154,7 @@ class CompetitorCacheImpl @Inject constructor(
                 val data = try {
                     apiClient.fetchCompetitorProfile(urn, locale)
                 } catch (e: Exception) {
-                    val msg = "Failed to fetch competitor profile for id: [$id], locale: [$locale]";
+                    val msg = "Failed to fetch competitor profile for id: [$id], locale: [$locale]"
                     if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
                         throw ItemNotFoundException(msg, e)
                     } else {

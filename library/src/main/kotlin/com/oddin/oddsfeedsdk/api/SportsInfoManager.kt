@@ -125,6 +125,16 @@ interface SportsInfoManager {
      */
     fun getCompetitor(id: URN, locale: Locale): Competitor?
 
+
+    /**
+     * Fetch player for specific id with selected localization
+     *
+     * @param id - specific competitor id {@link com.oddin.oddsfeedsdk.schema.utils.URN} identifier
+     * @param locale - {@link Locale} for data
+     * @return - player with given id
+     */
+    fun getPlayer(id: URN, locale: Locale): Player?
+
     /**
      * Fetch the list of all fixtures that have changed in the last 24 hours
      *
@@ -226,11 +236,11 @@ class SportsInfoManagerImpl @Inject constructor(
         return sports?.flatMap { it.tournaments ?: emptyList() }
     }
 
-    override fun getActiveTournaments(sportName: String): List<Tournament>? {
+    override fun getActiveTournaments(sportName: String): List<Tournament> {
         return getActiveTournaments(sportName, oddsFeedConfiguration.defaultLocale)
     }
 
-    override fun getActiveTournaments(sportName: String, locale: Locale): List<Tournament>? {
+    override fun getActiveTournaments(sportName: String, locale: Locale): List<Tournament> {
         val sport = sports?.firstOrNull { it.getName(locale).equals(sportName, true) }
         return sport?.tournaments ?: emptyList()
     }
@@ -287,6 +297,14 @@ class SportsInfoManagerImpl @Inject constructor(
         }
 
         return wrapError(callable, "competitor")
+    }
+
+    override fun getPlayer(id: URN, locale: Locale): Player? {
+        val callable = {
+            entityFactory.buildPlayer(id, listOf(locale))
+        }
+
+        return wrapError(callable, "player")
     }
 
     override fun clearCompetitor(id: URN) {

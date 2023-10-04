@@ -1,7 +1,6 @@
 package com.oddin.oddsfeedsdk.schema.rest.v1;
 
 import javax.xml.bind.annotation.*;
-import java.util.List;
 
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(

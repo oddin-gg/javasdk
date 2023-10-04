@@ -74,12 +74,12 @@ class WhoAmIManagerImpl @Inject constructor(
         this._bookmakerDetail = BookMakerDetailImpl(bookmakerDetail)
     }
 
-    private fun validateBookmakerDetails(RABookmakerDetail: RABookmakerDetail) {
-        val errorMsg = when (RABookmakerDetail.responseCode) {
+    private fun validateBookmakerDetails(rABookmakerDetail: RABookmakerDetail) {
+        val errorMsg = when (rABookmakerDetail.responseCode) {
             RAResponseCode.OK -> null
-            RAResponseCode.NOT_FOUND -> "Problem with validating access token. [${RABookmakerDetail.responseCode}]"
-            RAResponseCode.FORBIDDEN -> "Access was denied. Access token is probably expired or invalid. [msg: ${RABookmakerDetail.responseCode}]"
-            else -> "Failed to validate book maker details [${RABookmakerDetail.responseCode}]"
+            RAResponseCode.NOT_FOUND -> "Problem with validating access token. [${rABookmakerDetail.responseCode}]"
+            RAResponseCode.FORBIDDEN -> "Access was denied. Access token is probably expired or invalid. [msg: ${rABookmakerDetail.responseCode}]"
+            else -> "Failed to validate book maker details [${rABookmakerDetail.responseCode}]"
         }
 
         if (errorMsg != null) {

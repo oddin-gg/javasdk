@@ -86,17 +86,17 @@ class OddsFeed {
         return _producerManager ?: throw IllegalStateException("Missing producer manager")
     }
 
-    fun getBookMakerDetail(): BookmakerDetail? {
+    fun getBookMakerDetail(): BookmakerDetail {
         init()
         return _bookmakerDetail ?: throw IllegalStateException("Missing book maker detail")
     }
 
-    fun getReplayManager(): ReplayManager? {
+    fun getReplayManager(): ReplayManager {
         init()
         return _replayManager ?: throw IllegalStateException("Missing replay manager")
     }
 
-    fun getRecoveryManager(): RecoveryManager? {
+    fun getRecoveryManager(): RecoveryManager {
         init()
         return _recoveryManager ?: throw IllegalStateException("Missing recovery manager")
     }
@@ -130,10 +130,9 @@ class OddsFeed {
         }
 
         val sessionRoutingKeys = generateKeys(
-            createdSessionData.map {
-                it.id to (it.messageInterest to it.eventIds)
-            }.toMap()
-            , oddsFeedConfiguration
+                createdSessionData.associate {
+                    it.id to (it.messageInterest to it.eventIds)
+                }, oddsFeedConfiguration
         )
 
         val hasReplay = createdSessionData.any { it.oddsFeedSession is ReplaySession }

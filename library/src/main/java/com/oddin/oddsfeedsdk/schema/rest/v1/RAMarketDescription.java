@@ -48,6 +48,10 @@ public class RAMarketDescription {
     protected int id;
     @XmlAttribute(name = "ref_id")
     protected int refId;
+    @XmlAttribute(name = "includes_outcomes_of_type")
+    protected String includesOutcomesOfType;
+    @XmlAttribute(name = "outcome_type")
+    protected String outcomeType;
     @XmlAttribute(name = "name", required = true)
     protected String name;
     @XmlAttribute(name = "variant")
@@ -61,6 +65,21 @@ public class RAMarketDescription {
         this.refId = refId;
     }
 
+    public String getIncludesOutcomesOfType() {
+        return includesOutcomesOfType;
+    }
+
+    public void setIncludesOutcomesOfType(String includesOutcomesOfType) {
+        this.includesOutcomesOfType = includesOutcomesOfType;
+    }
+
+    public String getOutcomeType() {
+        return outcomeType;
+    }
+
+    public void setOutcomeType(String outcomeType) {
+        this.outcomeType = outcomeType;
+    }
 
     /**
      * Gets the value of the outcomes property.

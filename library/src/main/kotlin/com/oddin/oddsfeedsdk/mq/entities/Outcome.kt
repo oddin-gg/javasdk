@@ -11,14 +11,14 @@ import java.math.MathContext
 import java.util.*
 
 interface Outcome {
-    val id: Long
+    val id: String
     val refId: Long?
     val name: String?
     fun getName(locale: Locale): String?
 }
 
 open class OutcomeImpl(
-    override val id: Long,
+    override val id: String,
     override val refId: Long?,
     private val marketData: MarketData,
     private val locale: Locale
@@ -40,7 +40,7 @@ interface OutcomeProbabilities : Outcome {
 open class OutcomeProbabilitiesImpl(
     override val probability: Double?,
     private val active: OFOutcomeActive?,
-    id: Long,
+    id: String,
     refId: Long?,
     marketData: MarketData,
     locale: Locale
@@ -80,7 +80,7 @@ open class OutcomeOddsImpl(
     private val odds: Double?,
     probability: Double?,
     active: OFOutcomeActive?,
-    id: Long,
+    id: String,
     refId: Long?,
     marketData: MarketData,
     locale: Locale,
@@ -129,7 +129,7 @@ class CompetitorOutcomeOddsImpl(
     odds: Double?,
     probability: Double?,
     active: OFOutcomeActive?,
-    id: Long,
+    id: String,
     refId: Long?,
     marketData: MarketData,
     locale: Locale,
@@ -168,7 +168,7 @@ interface OutcomeSettlement : Outcome {
 }
 
 class OutcomeSettlementImpl(
-    id: Long,
+    id: String,
     refId: Long?,
     marketData: MarketData,
     locale: Locale,

@@ -6,11 +6,12 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
+import com.oddin.oddsfeedsdk.schema.utils.URN
 import java.util.*
 
 interface MarketData {
     fun getMarketName(locale: Locale): String?
-    fun getOutcomeName(id: Long, locale: Locale): String?
+    fun getOutcomeName(id: String, locale: Locale): String?
 }
 
 interface MarketDataFactory {
@@ -59,9 +60,23 @@ class MarketDataImpl(
         }
     }
 
-    override fun getOutcomeName(id: Long, locale: Locale): String? {
+    override fun getOutcomeName(id: String, locale: Locale): String? {
         val marketDescription = marketDescriptionFactory.getMarketDescription(marketId, specifiers, listOf(locale))
-        val outcomeName = marketDescription?.outcomes?.firstOrNull { it.id == id }?.getName(locale)
+        var outcomeName = marketDescription?.outcomes?.firstOrNull { it.id == id }?.getName(locale)
+
+        if (outcomeName == null && marketDescription?.outcomeType != null) {
+            when (marketDescription.outcomeType) {
+                OutcomeType.PLAYER -> {
+                    val player = marketDescriptionFactory.playerCache.getPlayer(URN.parse(id), setOf(locale))
+                    outcomeName = player?.name?.values?.first()
+                }
+                OutcomeType.COMPETITOR -> {
+                    val competitor = marketDescriptionFactory.competitorCache.getCompetitor(URN.parse(id), setOf(locale))
+                    outcomeName = competitor?.name?.values?.first()
+                }
+                else -> {}
+            }
+        }
 
         return when {
             outcomeName == null && exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW -> throw ItemNotFoundException(
@@ -82,7 +97,7 @@ class MarketDataImpl(
     }
 
     private fun makeMarketName(marketName: String, locale: Locale): String {
-        if (specifiers.isNullOrEmpty()) return marketName
+        if (specifiers.isEmpty()) return marketName
 
         var template = marketName
         specifiers.forEach {

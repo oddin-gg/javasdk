@@ -45,10 +45,12 @@ interface ApiClient {
     suspend fun postEventStatefulRecovery(producerName: String, eventId: URN, requestId: Long, nodeId: Int?): Boolean
     suspend fun postRecovery(producerName: String, requestId: Long, nodeId: Int?, after: Long?): Boolean
     suspend fun fetchCompetitorProfile(id: URN, locale: Locale): RATeamExtended
+    suspend fun fetchPlayerProfile(id: URN, locale: Locale): RAPlayerProfileEndpoint.Player
     suspend fun fetchMatchSummary(id: URN, locale: Locale): RAMatchSummaryEndpoint
     suspend fun fetchLiveMatches(locale: Locale): List<RASportEvent>
     suspend fun fetchMatches(date: Date, locale: Locale): List<RASportEvent>
     suspend fun fetchMarketDescriptions(locale: Locale): List<RAMarketDescription>
+    suspend fun fetchMarketDescriptionsWithDynamicOutcomes(marketTypeId: Int, marketVariant: String, locale: Locale): List<RAMarketDescription>
     suspend fun fetchMarketVoidReasons(): List<RAMarketVoidReasons.VoidReason>
     suspend fun postReplayClear(nodeId: Int?): Boolean
     suspend fun postReplayStop(nodeId: Int?): Boolean
@@ -184,6 +186,12 @@ class ApiClientImpl @Inject constructor(
         return data.competitor
     }
 
+    override suspend fun fetchPlayerProfile(id: URN, locale: Locale): RAPlayerProfileEndpoint.Player {
+        val data: RAPlayerProfileEndpoint =
+                fetchData("/sports/${locale.language}/players/${id}/profile", locale)
+        return data.player
+    }
+
     override suspend fun fetchMatchSummary(id: URN, locale: Locale): RAMatchSummaryEndpoint {
         return fetchData("sports/${locale.language}/sport_events/$id/summary", locale)
     }
@@ -201,6 +209,11 @@ class ApiClientImpl @Inject constructor(
 
     override suspend fun fetchMarketDescriptions(locale: Locale): List<RAMarketDescription> {
         val data: RAMarketDescriptions = fetchData("/descriptions/${locale.language}/markets", locale)
+        return data.market
+    }
+
+    override suspend fun fetchMarketDescriptionsWithDynamicOutcomes(marketTypeId: Int, marketVariant: String, locale: Locale): List<RAMarketDescription> {
+        val data: RAMarketDescriptions = fetchData("/descriptions/${locale.language}/markets/${marketTypeId}/variant/${marketVariant}", locale)
         return data.market
     }
 

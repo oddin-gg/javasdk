@@ -34,7 +34,7 @@ class TournamentCacheImpl @Inject constructor(
 ) : TournamentCache {
 
     companion object {
-        private const val urnType = "match"
+        private const val URN_TYPE = "match"
     }
 
     private val lock = Any()
@@ -168,7 +168,7 @@ class TournamentCacheImpl @Inject constructor(
     }
 
     override fun getSupportedURNType(): String {
-        return urnType
+        return URN_TYPE
     }
 }
 
@@ -216,7 +216,7 @@ class TournamentImpl(
     override val scheduledEndTime: Date?
         get() = fetchTournament(locales)?.scheduledEndTime
 
-    override val liveOddsAvailability: LiveOddsAvailability?
+    override val liveOddsAvailability: LiveOddsAvailability
         get() = LiveOddsAvailability.NOT_AVAILABLE
 
     override val competitors: List<Competitor>?
@@ -228,7 +228,7 @@ class TournamentImpl(
     override val endDate: Date?
         get() = fetchTournament(locales)?.endDate
 
-    override val sport: SportSummary?
+    override val sport: SportSummary
         get() = fetchSport(locales)
 
     override val riskTier: Int?
@@ -244,7 +244,7 @@ class TournamentImpl(
         }
     }
 
-    private fun fetchSport(locales: Set<Locale>): Sport? {
+    private fun fetchSport(locales: Set<Locale>): Sport {
         return entityFactory.buildSport(sportId, locales.toList())
     }
 

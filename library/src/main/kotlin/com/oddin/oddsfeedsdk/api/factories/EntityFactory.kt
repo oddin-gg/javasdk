@@ -22,6 +22,9 @@ interface EntityFactory {
     fun buildCompetitor(id: URN, locales: List<Locale>): Competitor
     fun buildCompetitors(ids: List<URN>, locales: List<Locale>): List<Competitor>
 
+    fun buildPlayer(id: URN, locales: List<Locale>): Player
+    fun buildPlayers(ids: List<URN>, locales: List<Locale>): List<Player>
+
     fun buildFixture(id: URN, locales: List<Locale>): Fixture
 
     fun buildMatchStatus(id: URN, locales: List<Locale>): MatchStatus
@@ -30,6 +33,7 @@ interface EntityFactory {
 class EntityFactoryImpl @Inject constructor(
     private val oddsFeedConfiguration: OddsFeedConfiguration,
     private val competitorCache: CompetitorCache,
+    private val playerCache: PlayerCache,
     private val sportDataCache: SportDataCache,
     private val tournamentCache: TournamentCache,
     private val matchCache: MatchCache,
@@ -126,6 +130,26 @@ class EntityFactoryImpl @Inject constructor(
                 competitorCache,
                 oddsFeedConfiguration.exceptionHandlingStrategy,
                 locales.toSet(),
+            )
+        }
+    }
+
+    override fun buildPlayer(id: URN, locales: List<Locale>): Player {
+        return PlayerImpl(
+                id,
+                playerCache,
+                oddsFeedConfiguration.exceptionHandlingStrategy,
+                locales.toSet(),
+        )
+    }
+
+    override fun buildPlayers(ids: List<URN>, locales: List<Locale>): List<Player> {
+        return ids.map {
+            PlayerImpl(
+                    it,
+                    playerCache,
+                    oddsFeedConfiguration.exceptionHandlingStrategy,
+                    locales.toSet(),
             )
         }
     }

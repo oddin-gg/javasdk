@@ -52,7 +52,7 @@ class SportDataCacheImpl @Inject constructor(
                 val data = response.second ?: return@subscribe
 
                 val tournamentData = when (data) {
-                    is RATournamentSchedule -> data.tournament.map { it.id to it.sport }.toMap()
+                    is RATournamentSchedule -> data.tournament.associate { it.id to it.sport }
                     is RATournamentInfo -> mapOf(data.tournament.id to data.tournament.sport)
                     else -> null
                 }

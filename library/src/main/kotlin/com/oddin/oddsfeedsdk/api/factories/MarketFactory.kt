@@ -43,7 +43,7 @@ class MarketFactoryImpl @Inject constructor(
         }
     }
 
-    private fun buildOddsChangeMarket(event: SportEvent, market: OFOddsChangeMarket): MarketWithOdds? {
+    private fun buildOddsChangeMarket(event: SportEvent, market: OFOddsChangeMarket): MarketWithOdds {
         val specifiersMap = extractSpecifiers(market.specifiers)
         val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
         val outcomeOdds = buildOutcomes<OutcomeOdds>(
@@ -67,7 +67,7 @@ class MarketFactoryImpl @Inject constructor(
     private fun buildBetSettlementMarket(
         event: SportEvent,
         market: OFBetSettlementMarket
-    ): MarketWithSettlement? {
+    ): MarketWithSettlement {
         val specifiersMap = extractSpecifiers(market.specifiers)
         val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
         val outcomeSettlement = buildOutcomes<OutcomeSettlement>(
@@ -89,7 +89,7 @@ class MarketFactoryImpl @Inject constructor(
     private fun buildRollbackBetSettlementMarket(
         event: SportEvent,
         market: OFRollbackBetSettlementMarket
-    ): Market? {
+    ): Market {
         val specifiersMap = extractSpecifiers(market.specifiers)
         val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
 
@@ -102,7 +102,7 @@ class MarketFactoryImpl @Inject constructor(
         )
     }
 
-    private fun buildBetCancelMarket(event: SportEvent, market: OFMarket): MarketCancel? {
+    private fun buildBetCancelMarket(event: SportEvent, market: OFMarket): MarketCancel {
         val specifiersMap = extractSpecifiers(market.specifiers)
         val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
 
@@ -120,7 +120,7 @@ class MarketFactoryImpl @Inject constructor(
     private fun buildRollbackBetCancelMarket(
         event: SportEvent,
         market: OFRollbackBetCancelMarket
-    ): Market? {
+    ): Market {
         val specifiersMap = extractSpecifiers(market.specifiers)
         val marketData = marketDataFactory.buildMarketData(event, market.id, specifiersMap)
 
