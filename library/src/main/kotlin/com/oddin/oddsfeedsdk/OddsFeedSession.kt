@@ -152,6 +152,10 @@ open class OddsFeedSessionImpl @Inject constructor(
         messageInterest: MessageInterest,
         oddsFeedListener: OddsFeedListener?
     ) {
+        if (logger.isDebugEnabled && feedMessage.rawMessage != null) {
+            logger.debug { "xml feed message received: ${String(feedMessage.rawMessage)}" }
+        }
+
         val producerId = feedMessage.message?.getProduct()?.toLong() ?: return
         recoveryMessageProcessor.onMessageProcessingStarted(sessionId, producerId, System.currentTimeMillis())
 

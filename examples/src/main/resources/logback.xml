@@ -5,6 +5,9 @@
         </encoder>
     </appender>
 
+    <!-- uncomment line below to see received raw xml messages -->
+    <!-- <logger name="com.oddin.oddsfeedsdk" level="DEBUG"/> -->
+
     <root level="INFO">
         <appender-ref ref="STDOUT" />
     </root>
