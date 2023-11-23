@@ -47,6 +47,10 @@ public class RAScoreboard {
     protected Integer homePoints;
     @XmlAttribute(name = "away_points")
     protected Integer awayPoints;
+    @XmlAttribute(name = "home_games")
+    protected Integer homeGames;
+    @XmlAttribute(name = "away_games")
+    protected Integer awayGames;
     @XmlAttribute(name = "remaining_game_time")
     protected Integer remainingGameTime;
     @XmlAttribute(name = "home_runs")
@@ -224,6 +228,22 @@ public class RAScoreboard {
 
     public void setAwayPoints(Integer awayPoints) {
         this.awayPoints = awayPoints;
+    }
+
+    public Integer getHomeGames() {
+        return homeGames;
+    }
+
+    public void setHomeGames(Integer homeGames) {
+        this.homeGames = homeGames;
+    }
+
+    public Integer getAwayGames() {
+        return awayGames;
+    }
+
+    public void setAwayGames(Integer awayGames) {
+        this.awayGames = awayGames;
     }
 
     public Integer getRemainingGameTime() {
