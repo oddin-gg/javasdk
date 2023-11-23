@@ -61,6 +61,8 @@ data class Scoreboard(
     val currentDefenderTeam: Int?,
     val homePoints: Int?,
     val awayPoints: Int?,
+    val homeGames: Int?,
+    val awayGames: Int?,
     val remainingGameTime: Int?,
     val homeRuns: Int?,
     val awayRuns: Int?,

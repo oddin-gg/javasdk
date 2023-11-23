@@ -19,7 +19,7 @@ repositories {
 sourceCompatibility = 1.8
 
 wrapper {
-    gradleVersion = '7.4.1'
+    gradleVersion = '8.4'
 }
 
 repositories {
@@ -28,7 +28,7 @@ repositories {
 
 dependencies {
 
-    def oddsFeedVersion = '0.0.41' // here you can update version of lib
+    def oddsFeedVersion = '0.0.42' // here you can update version of lib
 
     implementation group: "com.oddin.oddsfeed", name: 'odds-feed', version: oddsFeedVersion
 
