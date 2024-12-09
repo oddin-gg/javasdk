@@ -22,6 +22,10 @@ public class OFRollbackBetCancel implements BasicMessage {
     protected String eventId;
     @XmlAttribute(name = "timestamp", required = true)
     protected long timestamp;
+    @XmlAttribute(name = "start_time")
+    protected Long startTime;
+    @XmlAttribute(name = "end_time")
+    protected Long endTime;
 
     public List<OFRollbackBetCancelMarket> getMarket() {
         if (market == null) {
@@ -85,4 +89,41 @@ public class OFRollbackBetCancel implements BasicMessage {
     public void setTimestamp(long value) {
         this.timestamp = value;
     }
+
+    /**
+     * Retrieves the start time of the event.
+     *
+     * @return the start time as a Long object, or null if not set
+     */
+    public Long getStartTime() {
+        return startTime;
+    }
+
+    /**
+     * Sets the start time of the event.
+     *
+     * @param startTime the start time to set as a Long object; can be null if not set
+     */
+    public void setStartTime(Long startTime) {
+        this.startTime = startTime;
+    }
+
+    /**
+     * Retrieves the end time of the event.
+     *
+     * @return the end time as a Long object, or null if not set
+     */
+    public Long getEndTime() {
+        return endTime;
+    }
+
+    /**
+     * Sets the end time of the event.
+     *
+     * @param endTime the end time to set as a Long object; can be null if not set
+     */
+    public void setEndTime(Long endTime) {
+        this.endTime = endTime;
+    }
+
 }

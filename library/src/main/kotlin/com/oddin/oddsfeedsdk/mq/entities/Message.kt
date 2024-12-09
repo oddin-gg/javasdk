@@ -149,6 +149,8 @@ interface RollbackBetSettlement<T : SportEvent> : MarketMessage<T> {
 }
 
 interface RollbackBetCancel<T : SportEvent> : MarketMessage<T> {
+    val startTime: Date?
+    val endTime: Date?
     override val markets: List<Market>
 }
 
@@ -215,6 +217,18 @@ class RollbackBetCancelImpl<T : SportEvent>(
             val markets = _markets ?: initMarkets(message.market, event, marketFactory)
             _markets = markets
             return markets
+        }
+
+    override val startTime: Date?
+        get() {
+            val time = message.startTime ?: return null
+            return Date(time)
+        }
+
+    override val endTime: Date?
+        get() {
+            val time = message.endTime ?: return null
+            return Date(time)
         }
 }
 
