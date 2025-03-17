@@ -57,8 +57,8 @@ class OddsFeedConfigurationBuilder internal constructor() {
     }
 
     fun selectTest(region: Region) = apply {
-        val mqHost =  "mq-test.integration."+ region.host +"oddin.gg"
-        val apiHost = "api-mq-test.integration."+ region.host +"oddin.gg"
+        val mqHost =  "mq-test.integration."+ region.host +"oddin.dev"
+        val apiHost = "api-mq-test.integration."+ region.host +"oddin.dev"
         selectedEnvironment = Environment(mqHost, apiHost, defaultMessagingPort)
     }
 
