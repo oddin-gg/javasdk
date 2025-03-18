@@ -100,14 +100,10 @@ class MatchCacheImpl @Inject constructor(
                     return@forEach
                 }
 
-                if (data.sportEvent.competitors.competitor.size != 2) {
-                    return@forEach
-                }
-
                 try {
                     refreshOrInsertItem(id, it, data.sportEvent)
                 } catch (e: Exception) {
-                    logger.error { "Failed to refresh or insert match" }
+                    logger.error { "Failed to refresh or insert match: ${e.message}" }
                 }
             }
         }
@@ -122,35 +118,43 @@ class MatchCacheImpl @Inject constructor(
 
     private fun refreshOrInsertItem(id: URN, locale: Locale, data: RASportEvent) {
         var item = internalCache.getIfPresent(id)
-        val homeTeamId = data.competitors?.competitor?.firstOrNull()?.id
-        val homeTeamQualifier = data.competitors?.competitor?.firstOrNull()?.qualifier
-        val awayTeamId = data.competitors?.competitor?.lastOrNull()?.id
-        val awayTeamQualifier = data.competitors?.competitor?.lastOrNull()?.qualifier
+        val competitors = data.competitors?.competitor?.map{ CompetitorID(URN.parse(it.id), it.qualifier) } ?: emptyList()
+
+        var sportFormat = SportFormat.CLASSIC
+        data.extraInfo.info.forEach { info ->
+            if (info.key == "sport_format") {
+                when (info.value) {
+                    SportFormat.CLASSIC.value -> sportFormat = SportFormat.CLASSIC
+                    SportFormat.RACE.value -> sportFormat = SportFormat.RACE
+                    else -> {
+                        throw IllegalArgumentException("Unknown sport format '$info.value' for match '$id'")
+                    }
+                }
+            }
+        }
 
         if (item == null) {
             item = LocalizedMatch(
                 id,
                 if (data.refId != null) URN.parse(data.refId) else null,
+                competitors,
                 Utils.parseDate(data.scheduled),
                 Utils.parseDate(data.scheduledEnd),
                 URN.parse(data.tournament.sport.id),
                 URN.parse(data.tournament.id),
-                if (homeTeamId != null) URN.parse(homeTeamId) else null,
-                if (awayTeamId != null) URN.parse(awayTeamId) else null,
-                homeTeamQualifier,
-                awayTeamQualifier,
-                fromApiEvent(data.liveodds)
+                fromApiEvent(data.liveodds),
+                sportFormat,
+                data.extraInfo.info.associate { it.key to it.value }
             )
         } else {
+            item.competitors = competitors
             item.scheduledTime = Utils.parseDate(data.scheduled)
             item.scheduledEndTime = Utils.parseDate(data.scheduledEnd)
             item.sportId = URN.parse(data.tournament.sport.id)
             item.tournamentId = URN.parse(data.tournament.id)
-            item.homeTeamId = if (homeTeamId != null) URN.parse(homeTeamId) else null
-            item.awayTeamId = if (awayTeamId != null) URN.parse(awayTeamId) else null
             item.liveOddsAvailability = fromApiEvent(data.liveodds)
-            item.homeTeamQualifier = homeTeamQualifier
-            item.awayTeamQualifier = awayTeamQualifier
+            item.sportFormat = sportFormat
+            item.extraInfo = data.extraInfo.info.associate { it.key to it.value }
         }
 
         item.name[locale] = data.name
@@ -164,18 +168,22 @@ class MatchCacheImpl @Inject constructor(
 
 }
 
+data class CompetitorID (
+    val id: URN,
+    val qualifier: String?
+)
+
 data class LocalizedMatch(
     val id: URN,
     val refId: URN?,
+    var competitors: List<CompetitorID>,
     var scheduledTime: Date?,
     var scheduledEndTime: Date?,
     var sportId: URN,
     var tournamentId: URN,
-    var homeTeamId: URN?,
-    var awayTeamId: URN?,
-    var homeTeamQualifier: String?,
-    var awayTeamQualifier: String?,
-    var liveOddsAvailability: LiveOddsAvailability?
+    var liveOddsAvailability: LiveOddsAvailability?,
+    var sportFormat: SportFormat,
+    var extraInfo: Map<String, String>?
 ) : LocalizedItem {
     val name = ConcurrentHashMap<Locale, String>()
 
@@ -201,36 +209,42 @@ class MatchImpl(
     override val tournament: Tournament?
         get() = fetchTournament()
 
-    override val homeCompetitor: TeamCompetitor?
+    override val competitors: List<Competitor>
         get() {
-            val match = fetchMatch(locales) ?: return null
-            val competitor = fetchCompetitor(match.homeTeamId)
+            val match = fetchMatch(locales) ?: return emptyList()
 
-            return if (competitor != null) {
-                TeamCompetitorImpl(match.homeTeamQualifier, competitor)
-            } else {
-                null
-            }
+            return match.competitors.map {
+                val competitor = fetchCompetitor(it.id)
+                val qualifier = it.qualifier
+
+                competitor?.let { TeamCompetitorImpl(qualifier, competitor) }
+            }.filterNotNull()
         }
 
+    override val homeCompetitor: TeamCompetitor?
+        get() {
+            return homeAwayCompetitor(true)
+        }
 
     override val awayCompetitor: TeamCompetitor?
         get() {
-            val match = fetchMatch(locales) ?: return null
-            val competitor = fetchCompetitor(match.awayTeamId)
+            return homeAwayCompetitor(false)
+        }
 
-            return if (competitor != null) {
-                TeamCompetitorImpl(match.awayTeamQualifier, competitor)
-            } else {
-                null
-            }
+    override val sportFormat: SportFormat?
+        get() {
+            val match = fetchMatch(locales) ?: return null
+            return match.sportFormat
+        }
+
+    override val extraInfo: Map<String, String>?
+        get() {
+            val match = fetchMatch(locales) ?: return null
+            return match.extraInfo
         }
 
     override val fixture: Fixture
         get() = entityFactory.buildFixture(id, locales.toList())
-
-    override val competitors: List<Competitor>
-        get() = listOfNotNull(homeCompetitor, awayCompetitor)
 
     override fun getName(locale: Locale): String? {
         return fetchMatch(setOf(locale))?.name?.get(locale)
@@ -247,6 +261,39 @@ class MatchImpl(
 
     override val liveOddsAvailability: LiveOddsAvailability?
         get() = fetchMatch(locales)?.liveOddsAvailability
+
+    private fun homeAwayCompetitor(home: Boolean): TeamCompetitor? {
+        val match = fetchMatch(locales) ?: return null
+
+        when {
+            match.sportFormat != SportFormat.CLASSIC -> {
+                val e = "Match ${match.id} is not a classic sport format"
+                logger.error { e }
+                if (exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                    throw IllegalArgumentException(e)
+                }
+                return null
+            }
+            match.competitors.size != 2 -> {
+                val e = "Match ${match.id} has ${match.competitors.size} competitors, only 2 required"
+                logger.error { e }
+                if (exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                    throw IllegalArgumentException(e)
+                }
+                return null
+            }
+        }
+
+        val team = if (home) match.competitors[0] else match.competitors[1]
+
+        val competitor = fetchCompetitor(team.id)
+
+        return if (competitor != null) {
+            TeamCompetitorImpl(team.qualifier, competitor)
+        } else {
+            null
+        }
+    }
 
     private fun fetchMatch(locales: Set<Locale>): LocalizedMatch? {
         val item = matchCache.getMatch(id, locales)

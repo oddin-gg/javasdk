@@ -8,12 +8,7 @@
 
 package com.oddin.oddsfeedsdk.schema.rest.v1;
 
-import javax.xml.bind.annotation.XmlAccessType;
-import javax.xml.bind.annotation.XmlAccessorType;
-import javax.xml.bind.annotation.XmlAttribute;
-import javax.xml.bind.annotation.XmlSchemaType;
-import javax.xml.bind.annotation.XmlSeeAlso;
-import javax.xml.bind.annotation.XmlType;
+import javax.xml.bind.annotation.*;
 import javax.xml.datatype.XMLGregorianCalendar;
 
 
@@ -43,7 +38,8 @@ import javax.xml.datatype.XMLGregorianCalendar;
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "sportEvent", propOrder = {
     "tournament",
-    "competitors"
+    "competitors",
+    "extraInfo"
 })
 @XmlSeeAlso({
     RAFixture.class
@@ -72,6 +68,8 @@ public class RASportEvent {
     @XmlAttribute(name = "scheduled_end")
     @XmlSchemaType(name = "dateTime")
     protected XMLGregorianCalendar scheduledEnd;
+    @XmlElement(name = "extra_info")
+    protected RAExtraInfo extraInfo;
 
     public String getRefId() {
         return refId;
@@ -325,4 +323,23 @@ public class RASportEvent {
         this.scheduledEnd = value;
     }
 
+    /**
+     * Gets the value of the extraInfo property.
+     *
+     * @return possible object is
+     * {@link RAExtraInfo }
+     */
+    public RAExtraInfo getExtraInfo() {
+        return extraInfo;
+    }
+
+    /**
+     * Sets the value of the extraInfo property.
+     *
+     * @param value allowed object is
+     *              {@link RAExtraInfo }
+     */
+    public void setExtraInfo(RAExtraInfo value) {
+        this.extraInfo = value;
+    }
 }

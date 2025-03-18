@@ -149,6 +149,14 @@ interface Match : Competition {
     val homeCompetitor: TeamCompetitor?
     val awayCompetitor: TeamCompetitor?
     val fixture: Fixture?
+    val sportFormat: SportFormat?
+    val extraInfo: Map<String, String>?
+}
+
+enum class SportFormat(val value: String) {
+    CLASSIC("classic"),
+    RACE("race"),
+    UNKNOWN("unknown")
 }
 
 enum class HomeAway(val value: Int) {

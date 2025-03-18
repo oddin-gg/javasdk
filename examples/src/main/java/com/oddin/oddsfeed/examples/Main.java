@@ -197,6 +197,16 @@ public class Main {
         // Feed needs to be opened to init session data
         oddsFeed.open();
 
+        // Racing events
+        Match race = sportsInfoManager.getMatch(URN.parse("od:match:6516"), Locale.getDefault());
+        System.out.println("Hello to race " + race.getName(Locale.getDefault()));
+        System.out.println("Sport format: " + race.getSportFormat());
+
+        List<Competitor> competitors = race.getCompetitors();
+        for (Competitor competitor : competitors) {
+            System.out.println("Hello to competitor " + competitor.getName(Locale.getDefault()));
+        }
+
         Player player = sportsInfoManager.getPlayer(URN.parse("od:player:111"), Locale.getDefault());
         assert player != null;
         System.out.println("Hello to player " + player.getFullName(Locale.getDefault()));
