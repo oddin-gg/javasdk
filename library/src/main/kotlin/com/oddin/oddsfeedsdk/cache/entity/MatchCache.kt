@@ -31,6 +31,8 @@ interface MatchCache : Closable, CacheLoader<LocalizedMatch> {
 
 private val logger = KotlinLogging.logger {}
 
+public const val EXTRA_INFO_KEY_SPORT_FORMAT = "sport_format"
+
 class MatchCacheImpl @Inject constructor(
     private val apiClient: ApiClient
 ) : MatchCache {
@@ -122,7 +124,7 @@ class MatchCacheImpl @Inject constructor(
 
         var sportFormat = SportFormat.CLASSIC
         data.extraInfo.info.forEach { info ->
-            if (info.key == "sport_format") {
+            if (info.key == EXTRA_INFO_KEY_SPORT_FORMAT) {
                 when (info.value) {
                     SportFormat.CLASSIC.value -> sportFormat = SportFormat.CLASSIC
                     SportFormat.RACE.value -> sportFormat = SportFormat.RACE
@@ -275,7 +277,7 @@ class MatchImpl(
                 return null
             }
             match.competitors.size != 2 -> {
-                val e = "Match ${match.id} has ${match.competitors.size} competitors, only 2 required"
+                val e = "Match ${match.id} has ${match.competitors.size} competitors, but only 2 are required"
                 logger.error { e }
                 if (exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
                     throw IllegalArgumentException(e)
