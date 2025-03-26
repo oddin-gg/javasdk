@@ -8,9 +8,12 @@
 
 package com.oddin.oddsfeedsdk.schema.rest.v1;
 
+import java.util.ArrayList;
+import java.util.List;
 import javax.xml.bind.annotation.*;
 import javax.xml.datatype.XMLGregorianCalendar;
-
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAPlayerProfileEndpoint.Player;
+import javax.annotation.Nullable;
 
 /**
  * <p>Java class for competitorProfileEndpoint complex type.
@@ -34,16 +37,21 @@ import javax.xml.datatype.XMLGregorianCalendar;
  */
 @XmlAccessorType(XmlAccessType.FIELD)
 @XmlType(name = "competitorProfileEndpoint", propOrder = {
-    "competitor"
+    "competitor",
+    "players"
 })
 @XmlRootElement(name = "competitor_profile")
-public class RACompetitorProfileEndpoint {
+public class RACompetitorProfileEndpoint implements RATeamable {
 
     @XmlElement(required = true)
     protected RATeamExtended competitor;
     @XmlAttribute(name = "generated_at")
     @XmlSchemaType(name = "dateTime")
     protected XMLGregorianCalendar generatedAt;
+    @Nullable
+    @XmlElementWrapper(name = "players")
+    @XmlElement(name = "player")
+    protected List<Player> players;
 
     /**
      * Gets the value of the competitor property.
@@ -93,4 +101,31 @@ public class RACompetitorProfileEndpoint {
         this.generatedAt = value;
     }
 
+    /**
+     * Gets the value of the players property.
+     * 
+     * @return
+     *     possible object is
+     *     {@link List<Player> }
+     *     
+     */
+    public List<Player> getPlayers() {
+        if (players == null) {
+            players = new ArrayList<>();
+        }
+
+        return players;
+    }
+
+    /**
+     * Sets the value of the players property.
+     *
+     * @param value
+     *     allowed object is
+     *     {@link List<Player> }
+     *
+     */
+    public void setPlayers(@Nullable List<Player> value) {
+        this.players = value;
+    }
 }

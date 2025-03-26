@@ -5,7 +5,9 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Competitor
+import com.oddin.oddsfeedsdk.api.entities.sportevent.Player
 import com.oddin.oddsfeedsdk.api.entities.sportevent.TeamCompetitor
+import com.oddin.oddsfeedsdk.api.factories.EntityFactory
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
@@ -19,10 +21,12 @@ import mu.KotlinLogging
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CopyOnWriteArrayList
 
 interface CompetitorCache : Closable {
     fun clearCacheItem(id: URN)
     fun getCompetitor(id: URN, locales: Set<Locale>): LocalizedCompetitor?
+    fun loadAndCacheItem(id: URN, locales: List<Locale>)
 }
 
 private val logger = KotlinLogging.logger {}
@@ -89,11 +93,11 @@ class CompetitorCacheImpl @Inject constructor(
         subscription.dispose()
     }
 
-    private fun loadAndCacheItem(id: URN, locales: List<Locale>) {
+    override fun loadAndCacheItem(id: URN, locales: List<Locale>) {
         runBlocking {
             locales.forEach {
                 val data = try {
-                    apiClient.fetchCompetitorProfile(id, it)
+                    apiClient.fetchCompetitorProfileWithPlayers(id, it)
                 } catch (e: Exception) {
                     return@forEach
                 }
@@ -107,30 +111,75 @@ class CompetitorCacheImpl @Inject constructor(
         }
     }
 
-    private fun refreshOrInsertItem(id: URN, locale: Locale, data: RATeamExtended) {
+    private fun refreshOrInsertItem(id: URN, locale: Locale, data: RATeamable) {
         var item = internalCache.getIfPresent(id)
+
+        data class Team(
+            val refId: String?,
+            val name: String,
+            val abbreviation: String?,
+            val country: String?,
+            val countryCode: String?,
+            val virtual: Boolean?,
+            val underage: Int,
+            var iconPath: String?,
+        )
+
+        val team = when (data) {
+            is RATeamExtended -> Team(
+                refId = data.refId,
+                name = data.name,
+                abbreviation = data.abbreviation,
+                country = data.country,
+                countryCode = data.countryCode,
+                virtual = data.isVirtual,
+                underage = data.underage,
+                iconPath = data.iconPath,
+            )
+            is RACompetitorProfileEndpoint -> Team(
+                refId = data.competitor.refId,
+                name = data.competitor.name,
+                abbreviation = data.competitor.abbreviation,
+                country = data.competitor.country,
+                countryCode = data.competitor.countryCode,
+                virtual = data.competitor.isVirtual,
+                underage = data.competitor.underage,
+                iconPath = data.competitor.iconPath,
+            )
+            else -> throw IllegalArgumentException("Unknown resource type: ${data::class.simpleName}")
+        }
 
         if (item == null) {
             item = LocalizedCompetitor(
                 id,
-                if (data.refId != null) URN.parse(data.refId) else null,
-                data.isVirtual,
-                data.countryCode,
-                data.underage,
-                data.iconPath,
+                if (team.refId != null) URN.parse(team.refId) else null,
+                team.virtual,
+                team.countryCode,
+                team.underage,
+                team.iconPath,
             )
         } else {
-            item.virtual = data.isVirtual
-            item.countryCode = data.countryCode
+            item.virtual = team.virtual
+            item.countryCode = team.countryCode
         }
 
-        item.name[locale] = data.name
-        if (data.abbreviation != null) {
-            item.abbreviation[locale] = data.abbreviation
+        item.name[locale] = team.name
+        if (team.abbreviation != null) {
+            item.abbreviation[locale] = team.abbreviation
         }
 
-        if (data.country != null) {
-            item.country[locale] = data.country
+        if (team.country != null) {
+            item.country[locale] = team.country
+        }
+
+        if (data is RACompetitorProfileEndpoint) {
+            val playerURNs = ArrayList<URN>(data.players.size)
+            data.players.forEach{ player ->
+                val playerURN = URN.parse(player.id)
+                playerURNs.add(playerURN)
+            }
+            item.playerIDs.clear()
+            item.playerIDs.addAll(playerURNs)
         }
 
         internalCache.put(id, item)
@@ -190,6 +239,7 @@ data class LocalizedCompetitor(
     val country = ConcurrentHashMap<Locale, String>()
     val name = ConcurrentHashMap<Locale, String>()
     val abbreviation = ConcurrentHashMap<Locale, String>()
+    val playerIDs = CopyOnWriteArrayList<URN>()
 
     override val loadedLocales: Set<Locale>
         get() {
@@ -206,6 +256,7 @@ data class LocalizedCompetitor(
 class CompetitorImpl(
     override val id: URN,
     private val competitorCache: CompetitorCache,
+    private val entityFactory: EntityFactory,
     private val exceptionHandlingStrategy: ExceptionHandlingStrategy,
     private val locales: Set<Locale>,
 ) : Competitor {
@@ -246,6 +297,19 @@ class CompetitorImpl(
         return fetchCompetitor(setOf(locale))?.name?.get(locale)
     }
 
+    override fun getPlayers(): List<Player?>? {
+        val competitor = fetchCompetitor(locales)
+
+        // If the competitor does not contain any players, try loading them.
+        if (competitor?.playerIDs.isNullOrEmpty()) {
+            competitorCache.loadAndCacheItem(id, locales.toList())
+        }
+
+        return competitor?.playerIDs?.map { playerID ->
+            fetchPlayer(playerID)
+        }
+    }
+
     private fun fetchCompetitor(locales: Set<Locale>): LocalizedCompetitor? {
         val item = competitorCache.getCompetitor(id, locales)
 
@@ -253,6 +317,17 @@ class CompetitorImpl(
             throw ItemNotFoundException("Competitor $id not found", null)
         } else {
             item
+        }
+    }
+
+    private fun fetchPlayer(id: URN?): Player? {
+        return when {
+            id == null && exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW -> throw ItemNotFoundException(
+                "Cannot fetch player",
+                null
+            )
+            id == null -> null
+            else -> entityFactory.buildPlayer(id, locales.toList())
         }
     }
 }
@@ -297,4 +372,7 @@ class TeamCompetitorImpl(override val qualifier: String?, private val competitor
         return competitor.getName(locale)
     }
 
+    override fun getPlayers(): List<Player?>? {
+        return competitor.getPlayers()
+    }
 }

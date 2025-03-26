@@ -211,6 +211,34 @@ public class Main {
         assert player != null;
         System.out.println("Hello to player " + player.getFullName(Locale.getDefault()));
 
+        Competitor competitor = sportsInfoManager.getCompetitor(URN.parse("od:competitor:300"));
+        System.out.println("Competitor Players:");
+        if (competitor != null) {
+            List<Player> competitorPlayers = competitor.getPlayers();
+            if (competitorPlayers != null) {
+                for (Player competitorPlayer : competitorPlayers) {
+                    System.out.println("    Localized name: " + competitorPlayer.getName(Locale.getDefault()));
+                    System.out.println("    Sport ID: " + competitorPlayer.getSportID(Locale.getDefault()));
+                }
+            }
+        }
+
+        List<Match> listOfMatches = sportsInfoManager.getListOfMatches(0, 2, Locale.getDefault());
+        if (listOfMatches != null && !listOfMatches.isEmpty()) {
+            Match match = listOfMatches.get(0);
+            Competitor homeCompetitor = match.getHomeCompetitor();
+            System.out.println("Home players:");
+            if (homeCompetitor != null) {
+                List<Player> homePlayers = homeCompetitor.getPlayers();
+                if (homePlayers != null) {
+                    for (Player competitorPlayer : homePlayers) {
+                        System.out.println("    Localized name: " + competitorPlayer.getName(Locale.getDefault()));
+                        System.out.println("    Sport ID: " + competitorPlayer.getSportID(Locale.getDefault()));
+                    }
+                }
+            }
+        }
+
         try {
             // Sleep for 30 minutes
             Thread.sleep(1000 * 30 * 60);

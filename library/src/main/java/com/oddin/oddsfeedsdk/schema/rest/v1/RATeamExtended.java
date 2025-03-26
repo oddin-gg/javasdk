@@ -40,6 +40,7 @@ import javax.xml.bind.annotation.XmlType;
 })
 public class RATeamExtended
     extends RATeam
+    implements RATeamable
 {
 
     protected RASport sport;
