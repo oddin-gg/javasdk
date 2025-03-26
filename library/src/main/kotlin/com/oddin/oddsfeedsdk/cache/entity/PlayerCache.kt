@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.cache.entity
 import com.google.common.cache.CacheBuilder
 import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
+import com.oddin.oddsfeedsdk.api.ApiResponse
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Player
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
@@ -11,6 +12,7 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import io.reactivex.disposables.Disposable
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
 import java.util.*
@@ -29,6 +31,7 @@ class PlayerCacheImpl @Inject constructor(
     private val oddsFeedConfiguration: OddsFeedConfiguration,
 ) : PlayerCache {
     private val lock = Any()
+    private val subscription: Disposable
 
     private val internalCache =
         CacheBuilder
@@ -36,6 +39,28 @@ class PlayerCacheImpl @Inject constructor(
             .expireAfterWrite(24L, TimeUnit.HOURS)
             .build<URN, LocalizedPlayer>()
 
+    init {
+        subscription = apiClient
+            .subscribeForClass(ApiResponse::class.java)
+            .map { it.locale to it.response }
+            .subscribe({ response ->
+                val locale = response.first ?: return@subscribe
+                val data = response.second ?: return@subscribe
+
+                val players = when (data) {
+                    is RACompetitorProfileEndpoint -> data.players
+                    else -> null
+                }
+
+                if (players != null) {
+                    synchronized(lock) {
+                        handlePlayersData(locale, players.map { it.id })
+                    }
+                }
+            }, {
+                logger.error { "Failed to process message in player cache - $it" }
+            })
+    }
 
     override fun clearCacheItem(id: URN) {
         internalCache.invalidate(id)
@@ -55,7 +80,9 @@ class PlayerCacheImpl @Inject constructor(
         }
     }
 
-    override fun close() {}
+    override fun close() {
+        subscription.dispose()
+    }
 
     private fun loadAndCacheItem(id: URN, locales: List<Locale>) {
         runBlocking {
@@ -85,9 +112,54 @@ class PlayerCacheImpl @Inject constructor(
         }
 
         item.name[locale] = data.name
-        item.fullName[locale] = data.fullName
+        if (data.fullName != null) {
+            item.fullName[locale] = data.fullName!!
+        }
+        item.sportID[locale] = data.sportID
 
         internalCache.put(id, item)
+    }
+
+    private fun handlePlayersData(locale: Locale, playersIDs: List<String>) {
+        runBlocking {
+            playersIDs.forEach { id ->
+                val urn = try {
+                    URN.parse(id)
+                } catch (e: Exception) {
+                    val msg = "Failed to parse id [$id] to urn"
+                    if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                        throw ItemNotFoundException(msg, e)
+                    } else {
+                        logger.error(e) { msg }
+                        return@forEach
+                    }
+                }
+
+                val data = try {
+                    apiClient.fetchPlayerProfile(urn, locale)
+                } catch (e: Exception) {
+                    val msg = "Failed to fetch player profile for id: [$id], locale: [$locale]"
+                    if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                        throw ItemNotFoundException(msg, e)
+                    } else {
+                        logger.error(e) { msg }
+                        return@forEach
+                    }
+                }
+
+                try {
+                    refreshOrInsertItem(urn, locale, data)
+                } catch (e: Exception) {
+                    val msg = "Failed to refresh or insert player for id: [$id], locale: [$locale]"
+                    if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
+                        throw ItemNotFoundException(msg, e)
+                    } else {
+                        logger.error(e) { msg }
+                        return@forEach
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -96,6 +168,7 @@ data class LocalizedPlayer(
 ) : LocalizedItem {
     val name = ConcurrentHashMap<Locale, String>()
     val fullName = ConcurrentHashMap<Locale, String>()
+    val sportID = ConcurrentHashMap<Locale, String>()
 
     override val loadedLocales: Set<Locale>
         get() {
@@ -103,6 +176,7 @@ data class LocalizedPlayer(
             // @TODO This can be tricky if I have different values in each locale cache
             locales.addAll(name.keys)
             locales.addAll(fullName.keys)
+            locales.addAll(sportID.keys)
 
             return locales
         }
@@ -126,6 +200,13 @@ class PlayerImpl(
 
     override fun getFullName(locale: Locale): String? {
         return fetchPlayer(setOf(locale))?.fullName?.get(locale)
+    }
+
+    override val sportIDs: Map<Locale, String>?
+        get() = fetchPlayer(locales)?.sportID
+
+    override fun getSportID(locale: Locale): String? {
+        return fetchPlayer(setOf(locale))?.sportID?.get(locale)
     }
 
     private fun fetchPlayer(locales: Set<Locale>): LocalizedPlayer? {

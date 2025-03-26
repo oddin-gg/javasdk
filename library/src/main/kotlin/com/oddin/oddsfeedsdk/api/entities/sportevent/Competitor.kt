@@ -18,6 +18,7 @@ interface Competitor {
 
     fun getCountry(locale: Locale): String?
     fun getAbbreviation(locale: Locale): String?
+    fun getPlayers(): List<Player?>?
 }
 
 interface TeamCompetitor: Competitor {

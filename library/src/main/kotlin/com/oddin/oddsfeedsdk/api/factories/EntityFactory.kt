@@ -118,6 +118,7 @@ class EntityFactoryImpl @Inject constructor(
         return CompetitorImpl(
             id,
             competitorCache,
+            this,
             oddsFeedConfiguration.exceptionHandlingStrategy,
             locales.toSet(),
         )
@@ -128,6 +129,7 @@ class EntityFactoryImpl @Inject constructor(
             CompetitorImpl(
                 it,
                 competitorCache,
+                this,
                 oddsFeedConfiguration.exceptionHandlingStrategy,
                 locales.toSet(),
             )

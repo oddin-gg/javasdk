@@ -45,6 +45,7 @@ interface ApiClient {
     suspend fun postEventStatefulRecovery(producerName: String, eventId: URN, requestId: Long, nodeId: Int?): Boolean
     suspend fun postRecovery(producerName: String, requestId: Long, nodeId: Int?, after: Long?): Boolean
     suspend fun fetchCompetitorProfile(id: URN, locale: Locale): RATeamExtended
+    suspend fun fetchCompetitorProfileWithPlayers(id: URN, locale: Locale): RACompetitorProfileEndpoint
     suspend fun fetchPlayerProfile(id: URN, locale: Locale): RAPlayerProfileEndpoint.Player
     suspend fun fetchMatchSummary(id: URN, locale: Locale): RAMatchSummaryEndpoint
     suspend fun fetchLiveMatches(locale: Locale): List<RASportEvent>
@@ -181,9 +182,14 @@ class ApiClientImpl @Inject constructor(
     }
 
     override suspend fun fetchCompetitorProfile(id: URN, locale: Locale): RATeamExtended {
+        val data: RACompetitorProfileEndpoint = fetchCompetitorProfileWithPlayers(id, locale)
+        return data.competitor
+    }
+
+    override suspend fun fetchCompetitorProfileWithPlayers(id: URN, locale: Locale): RACompetitorProfileEndpoint {
         val data: RACompetitorProfileEndpoint =
             fetchData("/sports/${locale.language}/competitors/${id}/profile", locale)
-        return data.competitor
+        return data
     }
 
     override suspend fun fetchPlayerProfile(id: URN, locale: Locale): RAPlayerProfileEndpoint.Player {
