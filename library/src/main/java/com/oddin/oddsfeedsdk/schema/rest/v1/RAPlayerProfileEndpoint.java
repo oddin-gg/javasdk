@@ -14,6 +14,7 @@ import javax.xml.bind.annotation.XmlAttribute;
 import javax.xml.bind.annotation.XmlElement;
 import javax.xml.bind.annotation.XmlRootElement;
 import javax.xml.bind.annotation.XmlType;
+import javax.annotation.Nullable;
 
 
 /**
@@ -130,12 +131,15 @@ public class RAPlayerProfileEndpoint {
     @XmlType(name = "")
     public static class Player {
 
-        @XmlAttribute(name = "id")
+        @XmlAttribute(name = "id", required = true)
         protected String id;
-        @XmlAttribute(name = "name")
+        @XmlAttribute(name = "name", required = true)
         protected String name;
+        @Nullable
         @XmlAttribute(name = "full_name")
         protected String fullName;
+        @XmlAttribute(name = "sport", required = true)
+        protected String sportID;
 
         /**
          * Gets the value of the id property.
@@ -193,7 +197,7 @@ public class RAPlayerProfileEndpoint {
          *     {@link String }
          *
          */
-        public String getFullName() {
+        public @Nullable String getFullName() {
             return fullName;
         }
 
@@ -205,9 +209,32 @@ public class RAPlayerProfileEndpoint {
          *     {@link String }
          *
          */
-        public void setFullName(String value) {
+        public void setFullName(@Nullable String value) {
             this.fullName = value;
         }
 
+        /**
+         * Gets the value of the sportID property.
+         *
+         * @return
+         *     possible object is
+         *     {@link String }
+         *
+         */
+        public String getSportID() {
+            return sportID;
+        }
+
+        /**
+         * Sets the value of the sportID property.
+         *
+         * @param value
+         *     allowed object is
+         *     {@link String }
+         *
+         */
+        public void setSportID(String value) {
+            this.sportID = value;
+        }
     }
 }
