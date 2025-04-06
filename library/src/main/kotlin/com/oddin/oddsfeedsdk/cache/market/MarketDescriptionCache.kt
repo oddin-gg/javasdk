@@ -162,7 +162,8 @@ class MarketDescriptionCacheImpl @Inject constructor(
                     marketDescription.refId,
                     marketDescription.includesOutcomesOfType,
                     outcomeType,
-                    ConcurrentHashMap(outcomes)
+                    ConcurrentHashMap(outcomes),
+                    marketDescription.groups?.split('|') ?: emptyList()
             )
         }
 
@@ -188,7 +189,8 @@ data class LocalizedMarketDescription(
     val refId: Int?,
     val includesOutcomesOfType: String?,
     val outcomeType: OutcomeType?,
-    var outcomes: ConcurrentHashMap<String, LocalizedOutcomeDescription>
+    var outcomes: ConcurrentHashMap<String, LocalizedOutcomeDescription>,
+    var groups: List<String>
 ) : LocalizedItem {
     var specifiers: List<SpecifierImpl>? = null
     var name = ConcurrentHashMap<Locale, String>()
@@ -231,6 +233,10 @@ class MarketDescriptionImpl(
 
     override val specifiers: List<Specifier>?
         get() = fetchMarketDescription(locales)?.specifiers
+
+
+    override val groups: List<String>
+        get() = fetchMarketDescription(locales)?.groups ?: emptyList()
 
     private fun fetchMarketDescription(locales: Set<Locale>): LocalizedMarketDescription? {
         val item = marketDescriptionCache.getMarketDescription(id, variant, locales.toList())

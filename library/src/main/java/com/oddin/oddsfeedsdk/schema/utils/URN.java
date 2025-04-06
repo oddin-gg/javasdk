@@ -11,6 +11,7 @@ public class URN {
 
     static public final String TypeMatch = "match";
     static public final String TypeTournament = "tournament";
+    static public final String TypePlayer = "player";
 
     URN(String prefix, String type, Long id) {
         this.prefix = prefix;

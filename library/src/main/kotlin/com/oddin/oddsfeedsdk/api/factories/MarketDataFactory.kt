@@ -5,6 +5,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Match
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
+import com.oddin.oddsfeedsdk.constants.MarketDescriptionGroup
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import java.util.*
@@ -56,7 +57,7 @@ class MarketDataImpl(
                 null
             )
             marketName == null -> null
-            else -> makeMarketName(marketName, locale)
+            else -> makeMarketName(marketName, locale, marketDescription.groups)
         }
     }
 
@@ -96,7 +97,7 @@ class MarketDataImpl(
         }
     }
 
-    private fun makeMarketName(marketName: String, locale: Locale): String {
+    private fun makeMarketName(marketName: String, locale: Locale, groups: List<String>): String {
         if (specifiers.isEmpty()) return marketName
 
         var template = marketName
@@ -106,15 +107,40 @@ class MarketDataImpl(
                 return@forEach
             }
 
-            val value = when (it.value) {
+            var value = when (it.value) {
                 "home" -> (sportEvent as? Match)?.homeCompetitor?.getName(locale)
                 "away" -> (sportEvent as? Match)?.awayCompetitor?.getName(locale)
                 else -> it.value
             } ?: it.value
 
+            if (isPropsMarket(value, groups)) {
+                value = getPropsSpecifierName(value, locale)
+            }
+
             template = template.replace(key, value)
         }
         return template
+    }
+
+    private fun isPropsMarket(id: String, groups: List<String>): Boolean {
+        if (!groups.contains(MarketDescriptionGroup.PlayerProps)) {
+            return false
+        }
+
+        try {
+            URN.parse(id)
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    private fun getPropsSpecifierName(id: String, locale: Locale): String {
+        val urn = URN.parse(id)
+        return when (urn.type) {
+            URN.TypePlayer -> marketDescriptionFactory.playerCache.getPlayer(urn, setOf(locale))?.name?.get(locale) ?: id
+            else -> id
+        }
     }
 
 }
