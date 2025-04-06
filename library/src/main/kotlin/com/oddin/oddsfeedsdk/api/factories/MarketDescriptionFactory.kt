@@ -39,6 +39,7 @@ interface MarketDescription {
     val specifiers: List<Specifier>?
     val includesOutcomesOfType: String?
     val outcomeType: OutcomeType?
+    val groups: List<String>
 }
 
 interface MarketVoidReason {
