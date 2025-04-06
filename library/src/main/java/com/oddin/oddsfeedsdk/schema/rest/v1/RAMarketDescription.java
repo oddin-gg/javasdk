@@ -56,6 +56,8 @@ public class RAMarketDescription {
     protected String name;
     @XmlAttribute(name = "variant")
     protected String variant;
+    @XmlAttribute(name = "groups")
+    protected String groups;
 
     public int getRefId() {
         return refId;
@@ -177,4 +179,7 @@ public class RAMarketDescription {
         this.specifiers = value;
     }
 
+    public String getGroups() {
+        return groups;
+    }
 }
