@@ -123,11 +123,11 @@ class MatchCacheImpl @Inject constructor(
         val competitors = data.competitors?.competitor?.map{ CompetitorID(URN.parse(it.id), it.qualifier) } ?: emptyList()
 
         var sportFormat = SportFormat.CLASSIC
-        data.extraInfo.info.forEach { info ->
+        data.extraInfo?.info?.forEach { info ->
             if (info.key == EXTRA_INFO_KEY_SPORT_FORMAT) {
-                when (info.value) {
-                    SportFormat.CLASSIC.value -> sportFormat = SportFormat.CLASSIC
-                    SportFormat.RACE.value -> sportFormat = SportFormat.RACE
+                sportFormat = when (info.value) {
+                    SportFormat.CLASSIC.value -> SportFormat.CLASSIC
+                    SportFormat.RACE.value -> SportFormat.RACE
                     else -> {
                         throw IllegalArgumentException("Unknown sport format '$info.value' for match '$id'")
                     }
@@ -146,7 +146,7 @@ class MatchCacheImpl @Inject constructor(
                 URN.parse(data.tournament.id),
                 fromApiEvent(data.liveodds),
                 sportFormat,
-                data.extraInfo.info.associate { it.key to it.value }
+                data.extraInfo?.info?.associate { it.key to it.value }
             )
         } else {
             item.competitors = competitors
@@ -156,7 +156,7 @@ class MatchCacheImpl @Inject constructor(
             item.tournamentId = URN.parse(data.tournament.id)
             item.liveOddsAvailability = fromApiEvent(data.liveodds)
             item.sportFormat = sportFormat
-            item.extraInfo = data.extraInfo.info.associate { it.key to it.value }
+            item.extraInfo = data.extraInfo?.info?.associate { it.key to it.value }
         }
 
         item.name[locale] = data.name
