@@ -247,6 +247,9 @@ public class OFOddsChangeMarket implements FeedMessageMarket {
      */
     @NotNull
     public String getSpecifiers() {
+        if (specifiers == null) {
+            return "";
+        }
         return specifiers;
     }
 
