@@ -219,7 +219,7 @@ class ApiClientImpl @Inject constructor(
     }
 
     override suspend fun fetchMarketDescriptionsWithDynamicOutcomes(marketTypeId: Int, marketVariant: String, locale: Locale): List<RAMarketDescription> {
-        val data: RAMarketDescriptions = fetchData("/descriptions/${locale.language}/markets/${marketTypeId}/variant/${marketVariant}", locale)
+        val data: RAMarketDescriptions = fetchData("/descriptions/${locale.language}/markets/${marketTypeId}/variants/${marketVariant}", locale)
         return data.market
     }
 
