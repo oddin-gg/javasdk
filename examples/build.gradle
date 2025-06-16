@@ -2,6 +2,7 @@ plugins {
     id 'java'
     id 'idea'
     id 'application'
+    id 'com.palantir.git-version' version '0.12.2'
 }
 
 application {
@@ -10,6 +11,9 @@ application {
 
 group 'com.oddin.oddsfeed'
 version '1.0-SNAPSHOT'
+
+def gitVersionDetails = versionDetails()
+version gitVersionDetails.lastTag.replace('v', '')
 
 repositories {
     mavenCentral()
@@ -24,13 +28,13 @@ wrapper {
 
 repositories {
     mavenCentral()
+    mavenLocal()
 }
 
 dependencies {
 
-    def oddsFeedVersion = '0.0.45' // here you can update version of lib
+    implementation group: "com.oddin.oddsfeed", name: 'odds-feed', version: version
 
-    implementation group: "com.oddin.oddsfeed", name: 'odds-feed', version: oddsFeedVersion
 
     // https://mvnrepository.com/artifact/ch.qos.logback/logback-classic
     implementation group: 'ch.qos.logback', name: 'logback-classic', version: '1.2.11'

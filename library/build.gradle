@@ -64,6 +64,7 @@ compileTestKotlin {
 publishing {
     publications {
         mavenJava(MavenPublication) {
+            artifactId = 'odds-feed'
             from components.java
         }
     }
