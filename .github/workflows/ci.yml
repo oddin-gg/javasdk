@@ -1,0 +1,65 @@
+name: Java SDK CI
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+      - 'develop'
+  push:
+    branches:
+      - 'main'
+      - 'develop'
+
+jobs:
+  build_and_test_library:
+    name: Build & Test Library
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 8 with Gradle Cache
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'corretto'
+          cache: 'gradle'
+
+      - name: Build and Install the Library
+        run: ./gradlew install
+        working-directory: ./library
+
+      - name: Upload to Local Maven Repository
+        uses: actions/upload-artifact@v4
+        with:
+          name: local-maven-repo
+          path: ~/.m2/repository
+
+  build_and_test_examples:
+    name: Build & Test Examples
+    needs: build_and_test_library
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 8 with Gradle Cache
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'corretto'
+          cache: 'gradle'
+
+      - name: Download Local Maven Repository Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: local-maven-repo
+          path: ~/.m2/repository
+
+      - name: Build and Test the Examples
+        run: ./gradlew build
+        working-directory: ./examples
