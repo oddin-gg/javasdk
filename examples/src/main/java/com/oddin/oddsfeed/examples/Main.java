@@ -201,6 +201,9 @@ public class Main {
         Match race = sportsInfoManager.getMatch(URN.parse("od:match:6516"), Locale.getDefault());
         System.out.println("Hello to race " + race.getName(Locale.getDefault()));
         System.out.println("Sport format: " + race.getSportFormat());
+        System.out.println("Extra info: "     + race.getExtraInfo());
+        System.out.println("Fixture extra info: "     + race.getFixture().getExtraInfo());
+
 
         List<Competitor> competitors = race.getCompetitors();
         for (Competitor competitor : competitors) {

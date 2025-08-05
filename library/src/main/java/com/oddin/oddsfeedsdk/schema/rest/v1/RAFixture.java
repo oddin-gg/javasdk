@@ -91,7 +91,11 @@ public class RAFixture
      * {@link RAExtraInfo }
      */
     public RAExtraInfo getExtraInfo() {
-        return extraInfo;
+        if (this.extraInfo != null){
+            return this.extraInfo;
+        }
+
+        return super.getExtraInfo();
     }
 
     /**
