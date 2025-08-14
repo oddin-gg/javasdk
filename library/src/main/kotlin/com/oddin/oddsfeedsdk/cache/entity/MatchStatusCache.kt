@@ -21,6 +21,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAScoreboard
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import io.reactivex.disposables.Disposable
+import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
 import java.util.*
@@ -48,6 +49,7 @@ class MatchStatusCacheImpl @Inject constructor(
         val disposable = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
                 val data = response.second ?: return@subscribe
 
