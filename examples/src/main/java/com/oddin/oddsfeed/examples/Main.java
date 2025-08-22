@@ -226,7 +226,7 @@ public class Main {
             }
         }
 
-        List<Match> listOfMatches = sportsInfoManager.getListOfMatches(0, 1000, Locale.getDefault());
+        List<Match> listOfMatches = sportsInfoManager.getListOfMatches(0, 100, Locale.getDefault());
         if (listOfMatches != null && !listOfMatches.isEmpty()) {
             Match match = listOfMatches.get(0);
             Competitor homeCompetitor = match.getHomeCompetitor();
