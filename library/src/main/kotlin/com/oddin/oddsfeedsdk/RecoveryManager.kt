@@ -268,7 +268,7 @@ class RecoveryManagerImpl @Inject constructor(
                 try {
                     callable(producerName, eventId, requestId, oddsFeedConfiguration.sdkNodeId)
                 } catch (e: Exception) {
-                    logger.error { "Event recovery failed with $e" }
+                    logger.error(e) { "Event recovery failed" }
                     false
                 }
             }
@@ -372,7 +372,7 @@ class RecoveryManagerImpl @Inject constructor(
                     recoverFrom?.toEpochMilli(),
                 )
             } catch (e: Exception) {
-                logger.error { "Recovery failed with $e" }
+                logger.error(e) { "Recovery failed" }
                 false
             }
         }

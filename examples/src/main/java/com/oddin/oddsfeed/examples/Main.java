@@ -242,6 +242,15 @@ public class Main {
             }
         }
 
+        List<Match> liveMatches = sportsInfoManager.getLiveMatches();
+        System.out.println(liveMatches);
+        if (liveMatches != null && !liveMatches.isEmpty()) {
+            Match match = liveMatches.get(0);
+            System.out.println("Live match: " + match.getName(Locale.getDefault()) + ", " + match.getId());
+            System.out.println("Match Status: " + match.getStatus());
+            System.out.println("Match Status 2 : " + match.getStatus().getStatus());
+        }
+
         try {
             // Sleep for 30 minutes
             Thread.sleep(1000 * 30 * 60);

@@ -107,7 +107,7 @@ class CompetitorCacheImpl @Inject constructor(
                 try {
                     refreshOrInsertItem(id, it, data)
                 } catch (e: Exception) {
-                    logger.error { "Failed to refresh or insert competitor" }
+                    logger.error(e) { "Failed to refresh or insert competitor" }
                 }
             }
         }

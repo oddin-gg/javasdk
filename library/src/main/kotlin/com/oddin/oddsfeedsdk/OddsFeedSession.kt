@@ -68,7 +68,7 @@ open class OddsFeedSessionImpl @Inject constructor(
                 try {
                     feedMessageReceived(it, messageInterest, oddsFeedListener)
                 } catch (e: Exception) {
-                    logger.error { "Failed to process message ${it.message}" }
+                    logger.error(e) { "Failed to process message ${it.message}" }
                     publishUnparsableMessage(it)
                 }
             }, {
@@ -225,7 +225,7 @@ open class OddsFeedSessionImpl @Inject constructor(
             val message = feedMessageFactory.buildUnparsableMessage<SportEvent>(feedMessage)
             dispatchManager.publish(message)
         } catch (e: Exception) {
-            logger.error { "Failed to publish unparsable message $e" }
+            logger.error(e) { "Failed to publish unparsable message" }
         }
     }
 }
