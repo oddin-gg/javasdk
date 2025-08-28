@@ -133,7 +133,7 @@ class MarketDescriptionCacheImpl @Inject constructor(
                     try {
                         refreshOrInsertItem(it, locale)
                     } catch (e: Exception) {
-                        logger.error { "Failed to refresh or insert market: $e" }
+                        logger.error(e) { "Failed to refresh or insert market" }
                     }
                 }
 

@@ -98,7 +98,7 @@ class PlayerCacheImpl @Inject constructor(
                 try {
                     refreshOrInsertItem(id, it, data)
                 } catch (e: Exception) {
-                    logger.error { "Failed to refresh or insert player" }
+                    logger.error(e) { "Failed to refresh or insert player" }
                 }
             }
         }

@@ -107,7 +107,7 @@ class MatchCacheImpl @Inject constructor(
                 try {
                     refreshOrInsertItem(id, it, data.sportEvent)
                 } catch (e: Exception) {
-                    logger.error { "Failed to refresh or insert match: ${e.message}" }
+                    logger.error(e) { "Failed to refresh or insert match" }
                 }
             }
         }

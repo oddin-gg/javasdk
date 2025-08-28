@@ -179,7 +179,7 @@ class OddsFeed {
             injector.getInstance(CacheManager::class.java).close()
             injector.getInstance(ApiClient::class.java).close()
         } catch (e: Exception) {
-            logger.error { "Failed to close with $e" }
+            logger.error(e) { "Failed to close" }
         }
 
         logger.debug { "Odds feed closed " }

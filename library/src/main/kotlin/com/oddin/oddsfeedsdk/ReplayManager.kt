@@ -53,7 +53,7 @@ class ReplayManagerImpl @Inject constructor(
             try {
                 apiClient.fetchReplaySetContent(oddsFeedConfiguration.sdkNodeId)
             } catch (e: Exception) {
-                logger.error { "Failed to fetch replay events with error $e" }
+                logger.error(e) { "Failed to fetch replay events" }
                 null
             }
         }
@@ -71,7 +71,7 @@ class ReplayManagerImpl @Inject constructor(
             try {
                 apiClient.putReplayEvent(id, oddsFeedConfiguration.sdkNodeId)
             } catch (e: Exception) {
-                logger.error { "Failed to add event id $id with error $e" }
+                logger.error(e) { "Failed to add event id $id" }
                 false
             }
         }
@@ -87,7 +87,7 @@ class ReplayManagerImpl @Inject constructor(
             try {
                 apiClient.deleteReplayEvent(id, oddsFeedConfiguration.sdkNodeId)
             } catch (e: Exception) {
-                logger.error { "Failed to add event id $id with error $e" }
+                logger.error(e) { "Failed to add event id $id" }
                 false
             }
         }
@@ -142,7 +142,7 @@ class ReplayManagerImpl @Inject constructor(
             try {
                 apiClient.postReplayStop(oddsFeedConfiguration.sdkNodeId)
             } catch (e: Exception) {
-                logger.error { "Failed to stop replay with $e" }
+                logger.error(e) { "Failed to stop replay" }
                 false
             }
         }
@@ -153,7 +153,7 @@ class ReplayManagerImpl @Inject constructor(
             try {
                 apiClient.postReplayClear(oddsFeedConfiguration.sdkNodeId)
             } catch (e: Exception) {
-                logger.error { "Failed to clear replay with $e" }
+                logger.error(e) { "Failed to clear replay" }
                 false
             }
         }
@@ -177,7 +177,7 @@ class ReplayManagerImpl @Inject constructor(
                     runParallel = runParallel
                 )
             } catch (e: Exception) {
-                logger.error { "Failed play replay with errror $e" }
+                logger.error(e) { "Failed play replay" }
                 false
             }
         }
