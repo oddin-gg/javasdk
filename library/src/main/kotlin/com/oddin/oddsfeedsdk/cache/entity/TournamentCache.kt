@@ -115,7 +115,7 @@ class TournamentCacheImpl @Inject constructor(
                 try {
                     refreshOrInsertItem(id, it, data)
                 } catch (e: Exception) {
-                    logger.error { "Failed to refresh or load tournament" }
+                    logger.error(e) { "Failed to refresh or load tournament" }
                 }
             }
         }
@@ -127,7 +127,7 @@ class TournamentCacheImpl @Inject constructor(
             try {
                 refreshOrInsertItem(id, locale, it)
             } catch (e: Exception) {
-                logger.error { "Failed to refresh or load tournament" }
+                logger.error(e) { "Failed to refresh or load tournament" }
             }
         }
     }

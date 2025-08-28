@@ -101,7 +101,7 @@ class MatchStatusCacheImpl @Inject constructor(
             try {
                 refreshOrInsertFeedItem(id, message.sportEventStatus)
             } catch (e: Exception) {
-                logger.error { "Failed to process message in match status cache - $message" }
+                logger.error(e) { "Failed to process message in match status cache - $message" }
             }
         }
     }
