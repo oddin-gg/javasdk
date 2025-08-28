@@ -110,7 +110,7 @@ class SportDataCacheImpl @Inject constructor(
                     try {
                         refreshOrInsertItem(id, locale, tournamentId = it)
                     } catch (e: Exception) {
-                        logger.error { "Failed to refresh or insert tournament to sport" }
+                        logger.error(e) { "Failed to refresh or insert tournament to sport" }
                     }
                 }
 
@@ -147,7 +147,7 @@ class SportDataCacheImpl @Inject constructor(
                     try {
                         refreshOrInsertItem(id, locale, sport = it)
                     } catch (e: Exception) {
-                        logger.error { "Failed to insert or refresh sport" }
+                        logger.error(e) { "Failed to insert or refresh sport" }
                     }
                 }
 
