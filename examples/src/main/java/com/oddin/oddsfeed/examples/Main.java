@@ -248,7 +248,7 @@ public class Main {
             Match match = liveMatches.get(0);
             System.out.println("Live match: " + match.getName(Locale.getDefault()) + ", " + match.getId());
             System.out.println("Match Status: " + match.getStatus());
-            System.out.println("Match Status 2 : " + match.getStatus().getStatus());
+            System.out.println("Event Status: " + match.getStatus().getStatus());
         }
 
         try {
