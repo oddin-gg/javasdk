@@ -87,7 +87,7 @@ class ReplayManagerImpl @Inject constructor(
             try {
                 apiClient.deleteReplayEvent(id, oddsFeedConfiguration.sdkNodeId)
             } catch (e: Exception) {
-                logger.error(e) { "Failed to add event id $id" }
+                logger.error(e) { "Failed to remove event id $id" }
                 false
             }
         }
@@ -177,7 +177,7 @@ class ReplayManagerImpl @Inject constructor(
                     runParallel = runParallel
                 )
             } catch (e: Exception) {
-                logger.error(e) { "Failed play replay" }
+                logger.error(e) { "Failed to play replay" }
                 false
             }
         }
