@@ -48,7 +48,6 @@ class SportDataCacheImpl @Inject constructor(
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
-            .observeOn(Schedulers.io())
             .subscribe({ response ->
                 val locale = response.first ?: return@subscribe
                 val data = response.second ?: return@subscribe
