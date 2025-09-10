@@ -330,8 +330,8 @@ class SportsInfoManagerImpl @Inject constructor(
     }
 
     override fun getListOfMatches(startIndex: Int, limit: Int, locale: Locale): List<Match>? {
-        check(startIndex >= 0 && limit <= 1000 && limit >= 1) {
-            "Requires startIndex >= 0 && limit <= 1000 && limit >= 1 "
+        check(startIndex >= 0 && limit <= 100 && limit >= 1) {
+            "Requires startIndex >= 0 && limit <= 100 && limit >= 1 "
         }
 
         val callable = {
