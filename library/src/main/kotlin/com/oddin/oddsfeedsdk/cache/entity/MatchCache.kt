@@ -53,7 +53,6 @@ class MatchCacheImpl @Inject constructor(
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
-            .observeOn(Schedulers.io())
             .subscribe({ response ->
                 val locale = response.first ?: return@subscribe
                 val data = response.second ?: return@subscribe
@@ -207,7 +206,7 @@ class MatchImpl(
     override val refId: URN?
         get() = fetchMatch(locales)?.refId
 
-    override val status: MatchStatus
+    override val status: MatchStatus?
         get() = entityFactory.buildMatchStatus(id, locales.toList())
 
     override val tournament: Tournament?
@@ -217,12 +216,12 @@ class MatchImpl(
         get() {
             val match = fetchMatch(locales) ?: return emptyList()
 
-            return match.competitors.map {
+            return match.competitors.mapNotNull {
                 val competitor = fetchCompetitor(it.id)
                 val qualifier = it.qualifier
 
                 competitor?.let { TeamCompetitorImpl(qualifier, competitor) }
-            }.filterNotNull()
+            }
         }
 
     override val homeCompetitor: TeamCompetitor?
