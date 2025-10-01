@@ -2,7 +2,6 @@ plugins {
     id 'java'
     id 'idea'
     id 'application'
-    id 'com.palantir.git-version' version '0.12.2'
 }
 
 application {
@@ -12,8 +11,8 @@ application {
 group 'com.oddin.oddsfeed'
 version '1.0-SNAPSHOT'
 
-def gitVersionDetails = versionDetails()
-version gitVersionDetails.lastTag.replace('v', '')
+def latestTag = 'git tag --sort=-v:refname'.execute().text.readLines().first()
+version = latestTag.replace("v", "")
 
 repositories {
     mavenCentral()
