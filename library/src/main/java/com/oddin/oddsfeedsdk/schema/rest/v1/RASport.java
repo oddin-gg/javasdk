@@ -45,6 +45,8 @@ public class RASport {
     protected String name;
     @XmlAttribute(name = "abbreviation", required = true)
     protected String abbreviation;
+    @XmlAttribute(name = "icon_path")
+    protected String iconPath;
 
     public String getRefId() {
         return refId;
@@ -124,6 +126,30 @@ public class RASport {
      */
     public void setAbbreviation(String value) {
         this.abbreviation = value;
+    }
+
+    /**
+     * Gets the value of the icon path property.
+     *
+     * @return
+     *     possible object is
+     *     {@link String }
+     *
+     */
+    public String getIconPath() {
+        return iconPath;
+    }
+
+    /**
+     * Sets the value of the icon path property.
+     *
+     * @param value
+     *     allowed object is
+     *     {@link String }
+     *
+     */
+    public void setIconPath(String value) {
+        this.iconPath = value;
     }
 
 }

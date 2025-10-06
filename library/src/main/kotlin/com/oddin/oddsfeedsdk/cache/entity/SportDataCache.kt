@@ -167,6 +167,7 @@ class SportDataCacheImpl @Inject constructor(
             localizedSport.name[locale] = sport.name
             localizedSport.abbreviation[locale] = sport.abbreviation
             localizedSport.refId = if (sport.refId != null) URN.parse(sport.refId) else null
+            localizedSport.iconPath = sport.iconPath
         }
 
         if (tournamentId != null) {
@@ -183,6 +184,7 @@ data class LocalizedSport(val id: URN, var refId: URN? = null) : LocalizedItem {
     var name = ConcurrentHashMap<Locale, String>()
     val abbreviation = ConcurrentHashMap<Locale, String>()
     var tournamentIds: MutableSet<URN>? = null
+    var iconPath: String? = null
 
     override val loadedLocales: Set<Locale>
         get() = name.keys
@@ -208,6 +210,10 @@ class SportImpl(
 
     override fun getAbbreviation(locale: Locale): String? {
         return fetchSport(setOf(locale))?.abbreviation?.get(locale)
+    }
+
+    override fun getIconPath(locale: Locale): String?{
+        return fetchSport(setOf(locale))?.iconPath
     }
 
     override val tournaments: List<Tournament>?

@@ -35,7 +35,7 @@ class TournamentCacheImpl @Inject constructor(
 ) : TournamentCache {
 
     companion object {
-        private const val URN_TYPE = "match"
+        private const val URN_TYPE = "tournament"
     }
 
     private val lock = Any()
