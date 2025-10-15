@@ -2,14 +2,13 @@ plugins {
     id 'java'
     id "org.jetbrains.kotlin.jvm" version "1.6.0"
     id 'java-library'
-    id 'com.palantir.git-version' version '0.12.2'
     id 'maven-publish'
 }
 
 group 'com.oddin.oddsfeed'
 
-def gitVersionDetails = versionDetails()
-version gitVersionDetails.lastTag.replace('v', '')
+def latestTag = 'git tag --sort=-v:refname'.execute().text.readLines().first()
+version = latestTag.replace("v", "")
 
 sourceCompatibility = 1.8
 
