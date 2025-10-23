@@ -54,11 +54,11 @@ class CompetitorCacheImpl @Inject constructor(
                 val data = response.second ?: return@subscribe
 
                 val teams = when (data) {
-                    is RAFixturesEndpoint -> data.fixture.competitors.competitor
-                    is RAMatchSummaryEndpoint -> data.sportEvent.competitors.competitor
-                    is RAScheduleEndpoint -> data.sportEvent.flatMap { it.competitors.competitor }
-                    is RATournamentSchedule -> data.tournament.flatMap { it.competitors.competitor }
-                    is RATournamentInfo -> data.competitors.competitor
+                    is RAFixturesEndpoint -> data.fixture.competitors?.competitor.orEmpty()
+                    is RAMatchSummaryEndpoint -> data.sportEvent.competitors?.competitor.orEmpty()
+                    is RAScheduleEndpoint -> data.sportEvent.flatMap { it.competitors?.competitor.orEmpty() }
+                    is RATournamentSchedule -> data.tournament.flatMap { it.competitors?.competitor.orEmpty() }
+                    is RATournamentInfo -> data.competitors?.competitor.orEmpty()
                     else -> null
                 }
 
