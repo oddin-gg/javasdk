@@ -158,11 +158,12 @@ class TournamentCacheImpl @Inject constructor(
         item.abbreviation[locale] = tournament.abbreviation
 
         if (tournament is RATournamentExtended) {
-            val ids = tournament.competitors.competitor.map { URN.parse(it.id) }
-            val competitorIds = item.competitorIds ?: mutableSetOf()
-            competitorIds.addAll(ids)
-
-            item.competitorIds = competitorIds
+            val ids = tournament.competitors?.competitor?.map { URN.parse(it.id) }.orEmpty()
+            if (ids.isNotEmpty()) {
+                val competitorIds = item.competitorIds ?: mutableSetOf()
+                competitorIds.addAll(ids)
+                item.competitorIds = competitorIds
+            }
         }
 
         internalCache.put(id, item)
