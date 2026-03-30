@@ -58,6 +58,7 @@ data class Scoreboard(
     val awayGoals: Int?,
     val time: Int?,
     val gameTime: Int?,
+    val elapsedTime: Int?,
     val currentDefenderTeam: Int?,
     val homePoints: Int?,
     val awayPoints: Int?,
