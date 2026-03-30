@@ -41,6 +41,8 @@ public class RAScoreboard {
     protected Integer time;
     @XmlAttribute(name = "game_time")
     protected Integer gameTime;
+    @XmlAttribute(name = "elapsed_time")
+    protected Integer elapsedTime;
     @XmlAttribute(name = "current_def_team")
     protected Integer currentDefenderTeam;
     @XmlAttribute(name = "home_points")
@@ -108,6 +110,14 @@ public class RAScoreboard {
 
     public void setGameTime(Integer gameTime) {
         this.gameTime = gameTime;
+    }
+
+    public Integer getElapsedTime() {
+        return elapsedTime;
+    }
+
+    public void setElapsedTime(Integer elapsedTime) {
+        this.elapsedTime = elapsedTime;
     }
 
     public Integer getCurrentCTTeam() {
