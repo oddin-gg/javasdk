@@ -68,6 +68,16 @@ publishing {
             from components.java
         }
     }
+    repositories {
+        maven {
+            name = "OddinGitHubPackages"
+            url = uri("https://maven.pkg.github.com/oddin-gg/javasdk")
+            credentials {
+                username = System.getenv("GITHUB_ACTOR")
+                password = System.getenv("GITHUB_TOKEN")
+            }
+        }
+    }
 }
 
 task install(dependsOn: publishToMavenLocal)
