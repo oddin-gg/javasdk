@@ -9,6 +9,8 @@ on:
     branches:
       - 'main'
       - 'develop'
+    tags:
+      - 'v*'
 
 jobs:
   build_and_test_library:
@@ -63,3 +65,30 @@ jobs:
       - name: Build and Test the Examples
         run: ./gradlew build
         working-directory: ./examples
+
+  publish_maven:
+    name: Publish to GitHub Packages
+    needs: [build_and_test_library, build_and_test_examples]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 8 with Gradle Cache
+        uses: actions/setup-java@v4
+        with:
+          java-version: '8'
+          distribution: 'corretto'
+          cache: 'gradle'
+
+      - name: Publish to GitHub Packages
+        run: ./gradlew publish
+        working-directory: ./library
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
