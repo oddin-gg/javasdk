@@ -30,7 +30,7 @@ jobs:
           cache: 'gradle'
 
       - name: Build and Install the Library
-        run: ./gradlew install
+        run: ./gradlew test jacocoTestReport install
         working-directory: ./library
 
       - name: Upload to Local Maven Repository
@@ -38,6 +38,13 @@ jobs:
         with:
           name: local-maven-repo
           path: ~/.m2/repository
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: library/build/reports/jacoco/test/jacocoTestReport.xml
+          if-no-files-found: warn
 
   build_and_test_examples:
     name: Build & Test Examples

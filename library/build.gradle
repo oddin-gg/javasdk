@@ -4,6 +4,7 @@ plugins {
     id 'java-library'
     id 'com.palantir.git-version' version '0.12.2'
     id 'maven-publish'
+    id 'jacoco'
 }
 
 group 'com.oddin.oddsfeed'
@@ -81,3 +82,21 @@ publishing {
 }
 
 task install(dependsOn: publishToMavenLocal)
+
+jacoco {
+    toolVersion = "0.8.8"
+}
+
+test {
+    useJUnit()
+    finalizedBy jacocoTestReport
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+        csv.required.set(false)
+    }
+}
