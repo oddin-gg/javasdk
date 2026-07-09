@@ -129,8 +129,10 @@ class MatchCacheImpl @Inject constructor(
                 sportFormat = when (info.value) {
                     SportFormat.CLASSIC.value -> SportFormat.CLASSIC
                     SportFormat.RACE.value -> SportFormat.RACE
+                    SportFormat.UNKNOWN.value -> SportFormat.UNKNOWN
                     else -> {
-                        throw IllegalArgumentException("Unknown sport format '$info.value' for match '$id'")
+                        logger.warn { "Unknown sport format '${info.value}' for match '$id'" }
+                        SportFormat.UNKNOWN
                     }
                 }
             }
@@ -271,7 +273,7 @@ class MatchImpl(
         when {
             match.sportFormat != SportFormat.CLASSIC -> {
                 val e = "Match ${match.id} is not a classic sport format"
-                logger.error { e }
+                logger.debug { e }
                 if (exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
                     throw IllegalArgumentException(e)
                 }

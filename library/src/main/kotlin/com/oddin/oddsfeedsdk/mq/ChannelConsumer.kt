@@ -207,7 +207,11 @@ class ChannelConsumerImpl @Inject constructor(
     }
 
     private fun publishUnparsableMessage(feedMessage: FeedMessage, dispatchManager: DispatchManager) {
-        val message = feedMessageFactory.buildUnparsableMessage<SportEvent>(feedMessage)
-        dispatchManager.publish(message)
+        try {
+            val message = feedMessageFactory.buildUnparsableMessage<SportEvent>(feedMessage)
+            dispatchManager.publish(message)
+        } catch (e: Exception) {
+            logger.warn(e) { "Failed to publish unparsable message from ${feedMessage.routingKey.fullRoutingKey}" }
+        }
     }
 }
