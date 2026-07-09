@@ -40,7 +40,6 @@ class FeedMessageFactoryImpl @Inject constructor(
     @Suppress("UNCHECKED_CAST")
     override fun <T : SportEvent> buildMessage(feedMessage: FeedMessage): EventMessage<T>? {
         requireNotNull(feedMessage.routingKey.eventId)
-        requireNotNull(feedMessage.routingKey.sportId)
         requireNotNull(feedMessage.rawMessage)
         requireNotNull(feedMessage.message)
 
@@ -53,7 +52,9 @@ class FeedMessageFactoryImpl @Inject constructor(
             ) as T
             URN.TypeTournament -> entityFactory.buildTournament(
                 feedMessage.routingKey.eventId,
-                feedMessage.routingKey.sportId,
+                requireNotNull(feedMessage.routingKey.sportId) {
+                    "tournament message ${feedMessage.routingKey.eventId} without sport in routing key"
+                },
                 listOf(config.defaultLocale)
             ) as T
             else -> {
@@ -128,7 +129,6 @@ class FeedMessageFactoryImpl @Inject constructor(
         feedMessage: FeedMessage
     ): UnparsableMessage<T> {
         requireNotNull(feedMessage.routingKey.eventId)
-        requireNotNull(feedMessage.routingKey.sportId)
         val timestamp = feedMessage.timestamp.copy(published = System.currentTimeMillis())
         val sportEvent = entityFactory.buildMatch(
             feedMessage.routingKey.eventId,

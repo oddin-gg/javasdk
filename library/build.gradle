@@ -53,6 +53,9 @@ dependencies {
 
     // https://mvnrepository.com/artifact/org.jetbrains.kotlin/kotlin-test
     testImplementation 'org.jetbrains.kotlin:kotlin-test:1.6.0'
+
+    // https://mvnrepository.com/artifact/io.mockk/mockk
+    testImplementation 'io.mockk:mockk:1.12.5'
 }
 
 compileKotlin {
