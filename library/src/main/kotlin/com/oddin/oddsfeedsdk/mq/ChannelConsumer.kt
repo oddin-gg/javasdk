@@ -173,12 +173,16 @@ class ChannelConsumerImpl @Inject constructor(
 
     private fun parseRoute(route: String): RoutingKeyInfo {
         val matcher = REGEX_PATTERN.matcher(route)
-        val find = matcher.find()
+        // Matcher.group throws IllegalStateException when the pattern did not
+        // match at all, which would propagate into the AMQP consumer thread.
+        if (!matcher.find()) {
+            return RoutingKeyInfo(route, null, null, true)
+        }
         val sportId = matcher.group(SPORT_NAME)
         val eventId = matcher.group(EVENT_ID_NAME)
         val hasId = sportId != EMPTY_POSITION || eventId != EMPTY_POSITION
 
-        return if (find && hasId) {
+        return if (hasId) {
             val sportIdUrn = if (sportId != EMPTY_POSITION) {
                 try {
                     URN.parse("$SPORT_ID_PREFIX${matcher.group("sportId")}")

@@ -273,7 +273,7 @@ class MatchImpl(
         when {
             match.sportFormat != SportFormat.CLASSIC -> {
                 val e = "Match ${match.id} is not a classic sport format"
-                logger.debug { e }
+                logger.info { e }
                 if (exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
                     throw IllegalArgumentException(e)
                 }
