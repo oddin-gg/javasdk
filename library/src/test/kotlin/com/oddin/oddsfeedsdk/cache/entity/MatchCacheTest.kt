@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.cache.entity
 
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportFormat
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAExtraInfo
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAInfo
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint
@@ -51,7 +52,10 @@ class MatchCacheTest {
             every { subscribeForClass(any<Class<Any>>()) } returns Observable.never()
             coEvery { fetchMatchSummary(matchId, any()) } returns summary(sportFormat)
         }
-        return MatchCacheImpl(apiClient)
+        val config = mockk<OddsFeedConfiguration> {
+            every { maxMatchCacheSize } returns OddsFeedConfiguration.DEFAULT_MAX_MATCH_CACHE_SIZE
+        }
+        return MatchCacheImpl(apiClient, config)
     }
 
     private fun cachedFormat(sportFormat: String?): SportFormat {

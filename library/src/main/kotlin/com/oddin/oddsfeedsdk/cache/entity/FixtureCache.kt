@@ -9,6 +9,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.TvChannel
 import com.oddin.oddsfeedsdk.api.entities.sportevent.TvChannelImpl
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.utils.Utils
@@ -22,13 +23,16 @@ interface FixtureCache : CacheLoader<LocalizedFixture> {
 }
 
 class FixtureCacheImpl @Inject constructor(
-    private val apiClient: ApiClient
+    private val apiClient: ApiClient,
+    private val oddsFeedConfiguration: OddsFeedConfiguration,
 ) : FixtureCache {
 
     private val lock = Any()
     private val internalCache = CacheBuilder
         .newBuilder()
         .expireAfterWrite(12L, TimeUnit.HOURS)
+        .maximumSize(oddsFeedConfiguration.maxFixtureCacheSize)
+        .softValues()
         .build<URN, LocalizedFixture>()
 
     override fun clearCacheItem(id: URN) {
