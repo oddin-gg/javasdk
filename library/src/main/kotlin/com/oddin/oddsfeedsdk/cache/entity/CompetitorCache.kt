@@ -43,6 +43,8 @@ class CompetitorCacheImpl @Inject constructor(
         CacheBuilder
             .newBuilder()
             .expireAfterWrite(24L, TimeUnit.HOURS)
+            .maximumSize(oddsFeedConfiguration.maxCompetitorCacheSize)
+            .softValues()
             .build<URN, LocalizedCompetitor>()
 
     init {
