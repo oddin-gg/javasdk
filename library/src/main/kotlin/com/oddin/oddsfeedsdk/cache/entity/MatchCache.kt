@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.api.factories.EntityFactory
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAFixturesEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAScheduleEndpoint
@@ -35,7 +36,8 @@ private val logger = KotlinLogging.logger {}
 public const val EXTRA_INFO_KEY_SPORT_FORMAT = "sport_format"
 
 class MatchCacheImpl @Inject constructor(
-    private val apiClient: ApiClient
+    private val apiClient: ApiClient,
+    private val oddsFeedConfiguration: OddsFeedConfiguration,
 ) : MatchCache {
 
     companion object {
@@ -47,6 +49,8 @@ class MatchCacheImpl @Inject constructor(
     private val internalCache = CacheBuilder
         .newBuilder()
         .expireAfterWrite(12L, TimeUnit.HOURS)
+        .maximumSize(oddsFeedConfiguration.maxMatchCacheSize)
+        .softValues()
         .build<URN, LocalizedMatch>()
 
     init {

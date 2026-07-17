@@ -38,6 +38,8 @@ class PlayerCacheImpl @Inject constructor(
         CacheBuilder
             .newBuilder()
             .expireAfterWrite(24L, TimeUnit.HOURS)
+            .maximumSize(oddsFeedConfiguration.maxPlayerCacheSize)
+            .softValues()
             .build<URN, LocalizedPlayer>()
 
     init {
