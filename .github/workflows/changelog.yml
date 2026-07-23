@@ -10,4 +10,5 @@ jobs:
     uses: oddin-gg/ragnar-notify/.github/workflows/release-changelog.yml@v0.0.6
     with:
       slack-username: javasdk
+      slack-icon-url: https://cdn.test.oddin.dev/ragnar-notify/javasdk.png
     secrets: inherit
