@@ -30,6 +30,8 @@ interface PeriodScore {
     val awayGoals: Int?
     val homePoints: Int?
     val awayPoints: Int?
+    val homeGames: Int?
+    val awayGames: Int?
     val homeRuns: Int?
     val awayRuns: Int?
     val homeWicketsFallen: Int?
@@ -93,6 +95,8 @@ data class PeriodScoreImpl(
         override val awayGoals: Int?,
         override val homePoints: Int?,
         override val awayPoints: Int?,
+        override val homeGames: Int?,
+        override val awayGames: Int?,
         override val homeRuns: Int?,
         override val awayRuns: Int?,
         override val homeWicketsFallen: Int?,
