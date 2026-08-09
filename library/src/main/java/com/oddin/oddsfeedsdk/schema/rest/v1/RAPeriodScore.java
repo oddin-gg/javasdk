@@ -43,6 +43,10 @@ public class RAPeriodScore extends RAPeriodScoreBase {
     protected Integer homePoints;
     @XmlAttribute(name = "away_points")
     protected Integer awayPoints;
+    @XmlAttribute(name = "home_games")
+    protected Integer homeGames;
+    @XmlAttribute(name = "away_games")
+    protected Integer awayGames;
     @XmlAttribute(name = "home_runs")
     protected Integer homeRuns;
     @XmlAttribute(name = "away_runs")
@@ -148,6 +152,22 @@ public class RAPeriodScore extends RAPeriodScoreBase {
 
     public void setAwayPoints(Integer awayPoints) {
         this.awayPoints = awayPoints;
+    }
+
+    public Integer getHomeGames() {
+        return homeGames;
+    }
+
+    public void setHomeGames(Integer homeGames) {
+        this.homeGames = homeGames;
+    }
+
+    public Integer getAwayGames() {
+        return awayGames;
+    }
+
+    public void setAwayGames(Integer awayGames) {
+        this.awayGames = awayGames;
     }
 
     public Integer getHomeRuns() {
