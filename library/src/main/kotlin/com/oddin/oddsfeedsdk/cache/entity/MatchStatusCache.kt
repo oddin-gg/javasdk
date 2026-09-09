@@ -49,6 +49,9 @@ class MatchStatusCacheImpl @Inject constructor(
         val disposable = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            // Never side-load on the thread that made the API call: it holds its own
+            // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
                 val data = response.second ?: return@subscribe
 
@@ -75,19 +78,31 @@ class MatchStatusCacheImpl @Inject constructor(
     }
 
     override fun getMatchStatus(id: URN): LocalizedMatchStatus? {
-        var matchStatus = internalCache.getIfPresent(id)
-        if (matchStatus == null) {
-            matchStatus = runBlocking {
+        internalCache.getIfPresent(id)?.let { return it }
+
+        val summary = runBlocking {
+            try {
+                apiClient.fetchMatchSummary(id, Locale.ENGLISH)
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to fetch match summary for $id" }
+                null
+            }
+        } ?: return internalCache.getIfPresent(id)
+
+        // Store the status from the response we just received instead of relying on
+        // the asynchronous ApiResponse observer having run already.
+        val status = summary.sportEventStatus
+        if (status != null) {
+            synchronized(lock) {
                 try {
-                    apiClient.fetchMatchSummary(id, Locale.ENGLISH)
-                    internalCache.getIfPresent(id)
+                    refreshOrInsertApiItem(id, status)
                 } catch (e: Exception) {
-                    null
+                    logger.error(e) { "Failed to store match status for $id" }
                 }
             }
         }
 
-        return matchStatus
+        return internalCache.getIfPresent(id)
     }
 
     override fun onFeedMessageReceived(id: URN, feedMessage: FeedMessage) {

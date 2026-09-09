@@ -59,10 +59,14 @@ open class OddsFeedSessionImpl @Inject constructor(
         val feedMessageDisposable = dispatchManager
             .listen(FeedMessage::class.java)
             .filter {
-                filterFeedMessage(it, messageInterest)
-            }
-            .filter {
-                filterFixtureChanges(it)
+                // A throwing filter would reach onError and dispose the subscription for
+                // good, silently stopping the session. Drop only the offending message.
+                try {
+                    filterFeedMessage(it, messageInterest) && filterFixtureChanges(it)
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to filter message ${it.message}, dropping it" }
+                    false
+                }
             }
             .subscribe({
                 try {
@@ -79,10 +83,14 @@ open class OddsFeedSessionImpl @Inject constructor(
         val unparsableMessageDisposable = dispatchManager.listen(UnparsableMessage::class.java)
             .subscribe({
                 @Suppress("UNCHECKED_CAST") val message = it as? UnparsableMessage<SportEvent> ?: return@subscribe
-                oddsFeedListener?.onUnparsableMessage(
-                    this@OddsFeedSessionImpl,
-                    message
-                )
+                try {
+                    oddsFeedListener?.onUnparsableMessage(
+                        this@OddsFeedSessionImpl,
+                        message
+                    )
+                } catch (e: Exception) {
+                    logger.error(e) { "Client onUnparsableMessage callback failed" }
+                }
             }, {
                 logger.error { "Exception during unparsable message client processing - $it" }
             })
@@ -93,12 +101,16 @@ open class OddsFeedSessionImpl @Inject constructor(
             val rawMessageDisposable = dispatchManager
                 .listen(RawFeedMessage::class.java)
                 .subscribe({
-                    oddsFeedExtListener.onRawFeedMessageReceived(
-                        it.message,
-                        it.messageInterest,
-                        it.routingKey,
-                        it.timestamp
-                    )
+                    try {
+                        oddsFeedExtListener.onRawFeedMessageReceived(
+                            it.message,
+                            it.messageInterest,
+                            it.routingKey,
+                            it.timestamp
+                        )
+                    } catch (e: Exception) {
+                        logger.error(e) { "Client onRawFeedMessageReceived callback failed" }
+                    }
                 }, {
                     logger.error { "Exception during raw message client processing - $it" }
                 })
