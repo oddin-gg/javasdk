@@ -32,7 +32,6 @@ class FixtureCacheImpl @Inject constructor(
         .newBuilder()
         .expireAfterWrite(12L, TimeUnit.HOURS)
         .maximumSize(oddsFeedConfiguration.maxFixtureCacheSize)
-        .softValues()
         .build<URN, LocalizedFixture>()
 
     override fun clearCacheItem(id: URN) {

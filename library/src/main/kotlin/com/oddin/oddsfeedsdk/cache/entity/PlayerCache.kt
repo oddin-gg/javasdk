@@ -39,13 +39,15 @@ class PlayerCacheImpl @Inject constructor(
             .newBuilder()
             .expireAfterWrite(24L, TimeUnit.HOURS)
             .maximumSize(oddsFeedConfiguration.maxPlayerCacheSize)
-            .softValues()
             .build<URN, LocalizedPlayer>()
 
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            // Never side-load on the thread that made the API call: it holds its own
+            // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
                 val locale = response.first ?: return@subscribe
                 val data = response.second ?: return@subscribe
