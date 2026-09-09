@@ -61,9 +61,15 @@ class MatchStatusCacheImpl @Inject constructor(
                 }
 
                 if (summary != null) {
-                    val id = URN.parse(summary.sportEvent.id)
-                    synchronized(lock) {
-                        refreshOrInsertApiItem(id, summary.sportEventStatus)
+                    try {
+                        // A scheduled event may carry no status yet.
+                        val status = summary.sportEventStatus ?: return@subscribe
+                        val id = URN.parse(summary.sportEvent.id)
+                        synchronized(lock) {
+                            refreshOrInsertApiItem(id, status)
+                        }
+                    } catch (e: Exception) {
+                        logger.error(e) { "Failed to side-load match status" }
                     }
                 }
             }, {
@@ -90,19 +96,19 @@ class MatchStatusCacheImpl @Inject constructor(
         } ?: return internalCache.getIfPresent(id)
 
         // Store the status from the response we just received instead of relying on
-        // the asynchronous ApiResponse observer having run already.
-        val status = summary.sportEventStatus
-        if (status != null) {
-            synchronized(lock) {
+        // the asynchronous ApiResponse observer having run already. Anything stored in
+        // the meantime (a feed update, or the observer) is at least as fresh, so keep it.
+        val status = summary.sportEventStatus ?: return internalCache.getIfPresent(id)
+        return synchronized(lock) {
+            if (internalCache.getIfPresent(id) == null) {
                 try {
                     refreshOrInsertApiItem(id, status)
                 } catch (e: Exception) {
                     logger.error(e) { "Failed to store match status for $id" }
                 }
             }
+            internalCache.getIfPresent(id)
         }
-
-        return internalCache.getIfPresent(id)
     }
 
     override fun onFeedMessageReceived(id: URN, feedMessage: FeedMessage) {

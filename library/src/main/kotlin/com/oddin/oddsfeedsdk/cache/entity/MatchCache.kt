@@ -71,8 +71,12 @@ class MatchCacheImpl @Inject constructor(
                 }
 
                 if (matches != null) {
-                    synchronized(lock) {
-                        handleMatchData(locale, matches)
+                    try {
+                        synchronized(lock) {
+                            handleMatchData(locale, matches)
+                        }
+                    } catch (e: Exception) {
+                        logger.error(e) { "Failed to side-load matches" }
                     }
                 }
             }, {

@@ -88,7 +88,8 @@ interface DispatchManager {
 class DispatchManagerImpl @Inject constructor() : DispatchManager {
     private val scheduler: Scheduler
     private val executor: ExecutorService
-    private val publisher = PublishSubject.create<Any>()
+    // Serialized: feed messages arrive from one thread per AMQP channel.
+    private val publisher = PublishSubject.create<Any>().toSerialized()
 
     init {
         val namedThreadFactory =
