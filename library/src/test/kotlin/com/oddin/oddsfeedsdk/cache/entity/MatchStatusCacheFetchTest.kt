@@ -57,6 +57,30 @@ class MatchStatusCacheFetchTest {
     }
 
     @Test
+    fun summaryWithoutStatusYieldsNullWithoutThrowing() {
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
+            coEvery { fetchMatchSummary(matchId, any()) } returns RAMatchSummaryEndpoint().apply {
+                sportEvent = RASportEvent().apply { id = matchId.toString() }
+            }
+        }
+
+        assertNull(MatchStatusCacheImpl(apiClient).getMatchStatus(matchId))
+    }
+
+    @Test
+    fun malformedWinnerIdIsContainedAndYieldsNull() {
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
+            coEvery { fetchMatchSummary(matchId, any()) } returns summary().apply {
+                sportEventStatus.winnerId = "not-a-urn"
+            }
+        }
+
+        assertNull(MatchStatusCacheImpl(apiClient).getMatchStatus(matchId))
+    }
+
+    @Test
     fun failedFetchYieldsNoStatusAndDoesNotThrow() {
         val apiClient = mockk<ApiClient> {
             every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()

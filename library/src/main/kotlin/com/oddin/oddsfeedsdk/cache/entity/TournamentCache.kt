@@ -69,8 +69,12 @@ class TournamentCacheImpl @Inject constructor(
                 }
 
                 if (tournaments != null) {
-                    synchronized(lock) {
-                        handleTournamentsData(locale, tournaments)
+                    try {
+                        synchronized(lock) {
+                            handleTournamentsData(locale, tournaments)
+                        }
+                    } catch (e: Exception) {
+                        logger.error(e) { "Failed to side-load tournaments" }
                     }
                 }
             }, {

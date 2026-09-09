@@ -58,8 +58,11 @@ class PlayerCacheImpl @Inject constructor(
                 }
 
                 if (players != null) {
-                    synchronized(lock) {
+                    // See CompetitorCache: HTTP outside the lock, write under it, never throw.
+                    try {
                         handlePlayersData(locale, players.map { it.id })
+                    } catch (e: Exception) {
+                        logger.error(e) { "Failed to side-load players" }
                     }
                 }
             }, {
@@ -153,7 +156,9 @@ class PlayerCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(urn, locale, data)
+                    synchronized(lock) {
+                        refreshOrInsertItem(urn, locale, data)
+                    }
                 } catch (e: Exception) {
                     val msg = "Failed to refresh or insert player for id: [$id], locale: [$locale]"
                     if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {

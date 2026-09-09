@@ -78,7 +78,9 @@ class ApiClientImpl @Inject constructor(
     oddsFeedConfiguration: OddsFeedConfiguration,
     private val dispatchManager: DispatchManager
 ) : ApiClient {
-    private val publisher = PublishSubject.create<Any>()
+    // Serialized: onNext is called from every thread that issues an API call, and
+    // the observeOn queues downstream are single-producer.
+    private val publisher = PublishSubject.create<Any>().toSerialized()
 
     companion object {
         private const val API_VERSION = "v1"

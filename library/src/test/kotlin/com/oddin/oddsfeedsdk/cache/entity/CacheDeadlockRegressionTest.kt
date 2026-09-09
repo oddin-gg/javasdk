@@ -11,12 +11,14 @@ import io.reactivex.subjects.PublishSubject
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.lang.management.ManagementFactory
 import java.net.URI
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 // Two cold loads running at the same time used to deadlock: loading a sport's
@@ -34,6 +36,7 @@ class CacheDeadlockRegressionTest {
 
     private val publisher = PublishSubject.create<Any>()
     private val bothInsideFetch = CountDownLatch(2)
+    private val overlapped = AtomicBoolean(true)
 
     private fun sport() = RASport().apply { id = "od:sport:1"; name = "Dota 2"; abbreviation = "DOTA" }
 
@@ -43,7 +46,7 @@ class CacheDeadlockRegressionTest {
 
         coEvery { api.fetchTournaments(any(), any()) } coAnswers {
             bothInsideFetch.countDown()
-            bothInsideFetch.await(5, TimeUnit.SECONDS)
+            if (!bothInsideFetch.await(5, TimeUnit.SECONDS)) overlapped.set(false)
             val response = RASportTournaments().apply {
                 sport = sport()
                 tournaments = RATournaments().apply {
@@ -58,7 +61,7 @@ class CacheDeadlockRegressionTest {
 
         coEvery { api.fetchTournament(any(), any()) } coAnswers {
             bothInsideFetch.countDown()
-            bothInsideFetch.await(5, TimeUnit.SECONDS)
+            if (!bothInsideFetch.await(5, TimeUnit.SECONDS)) overlapped.set(false)
             val response = RATournamentInfo().apply {
                 tournament = RATournamentExtended().apply {
                     id = "od:tournament:1"; name = "TI"; abbreviation = "TI"; sport = sport()
@@ -85,6 +88,7 @@ class CacheDeadlockRegressionTest {
         sportLoad.join(10_000)
         tournamentLoad.join(10_000)
 
+        assertTrue("the two loads never overlapped, the test proved nothing", overlapped.get())
         assertNull(
             "the sport and tournament caches must never hold each other's locks",
             ManagementFactory.getThreadMXBean().findDeadlockedThreads()

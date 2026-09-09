@@ -67,8 +67,13 @@ class CompetitorCacheImpl @Inject constructor(
                 }
 
                 if (teams != null) {
-                    synchronized(lock) {
+                    // The profile fan-out does HTTP; it must not hold the cache lock (a
+                    // reader on the delivery thread would wait for every call) and must
+                    // not throw out of the observer (that disposes the subscription).
+                    try {
                         handleTeamData(locale, teams.map { it.id })
+                    } catch (e: Exception) {
+                        logger.error(e) { "Failed to side-load competitors" }
                     }
                 }
             }, {
@@ -218,7 +223,9 @@ class CompetitorCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(urn, locale, data)
+                    synchronized(lock) {
+                        refreshOrInsertItem(urn, locale, data)
+                    }
                 } catch (e: Exception) {
                     val msg = "Failed to refresh or insert competitor for id: [$id], locale: [$locale]"
                     if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {
