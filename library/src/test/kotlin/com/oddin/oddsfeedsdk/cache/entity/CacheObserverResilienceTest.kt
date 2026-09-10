@@ -116,6 +116,28 @@ class CacheObserverResilienceTest {
     }
 
     @Test(timeout = 30_000)
+    fun sportBatchContinuesPastAMalformedElement() {
+        val sportId = URN.parse("od:sport:1")
+        val api = mockk<ApiClient>(relaxed = true) {
+            every { subscribeForClass(ApiResponse::class.java) } returns publisher.ofType(ApiResponse::class.java)
+            coEvery { fetchSports(any()) } throws RuntimeException("no direct load")
+        }
+        val cache = SportDataCacheImpl(api)
+        val sport = RASport().apply { id = sportId.toString(); name = "Dota 2"; abbreviation = "DOTA" }
+
+        // One response carrying a bad tournament id followed by a good one.
+        publish(RATournamentSchedule().apply {
+            tournament.add(RATournamentExtended().apply { id = "garbage"; name = "Broken"; this.sport = sport })
+            tournament.add(RATournamentExtended().apply { id = "od:tournament:2"; name = "Valid"; this.sport = sport })
+        })
+
+        // The bad element throws before its sport is stored; the good one that follows
+        // it in the same response must still be processed.
+        val stored = awaitNonNull { cache.getSport(sportId, setOf(en)) }
+        assertEquals("the element after the bad one was discarded", "Dota 2", stored.name[en])
+    }
+
+    @Test(timeout = 30_000)
     fun playerObserverSurvivesAThrowingResponseUnderThrowStrategy() {
         val config = mockk<OddsFeedConfiguration> {
             every { maxPlayerCacheSize } returns 50_000
