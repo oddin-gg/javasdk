@@ -20,6 +20,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAPeriodScore
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAScoreboard
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.Utils
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -53,24 +54,32 @@ class MatchStatusCacheImpl @Inject constructor(
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
             .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val data = response.second ?: return@subscribe
 
-                val summary = when (data) {
-                    is RAMatchSummaryEndpoint -> data
-                    else -> null
-                }
-
-                if (summary != null) {
-                    try {
-                        // A scheduled event may carry no status yet.
-                        val status = summary.sportEventStatus ?: return@subscribe
-                        val id = URN.parse(summary.sportEvent.id)
-                        synchronized(lock) {
-                            refreshOrInsertApiItem(id, status)
-                        }
-                    } catch (e: Exception) {
-                        logger.error(e) { "Failed to side-load match status" }
+                    val summary = when (data) {
+                        is RAMatchSummaryEndpoint -> data
+                        else -> return@subscribe
                     }
+                    // A scheduled event may carry no status yet.
+                    val status = summary.sportEventStatus ?: return@subscribe
+                    val id = URN.parse(summary.sportEvent.id)
+                    val generatedAt = Utils.parseDate(summary.generatedAt)?.time
+
+                    synchronized(lock) {
+                        val existing = internalCache.getIfPresent(id)
+                        // This response may have waited in the observer queue while the feed
+                        // already moved the status on. Never replace fresher feed data with
+                        // an older REST snapshot.
+                        if (existing != null && generatedAt != null && generatedAt < existing.lastFeedTimestamp) {
+                            return@synchronized
+                        }
+                        refreshOrInsertApiItem(id, status)
+                    }
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load match status" }
                 }
             }, {
                 logger.error { "Failed to process message in match status cache - $it" }
@@ -119,7 +128,7 @@ class MatchStatusCacheImpl @Inject constructor(
 
         synchronized(lock) {
             try {
-                refreshOrInsertFeedItem(id, message.sportEventStatus)
+                refreshOrInsertFeedItem(id, message.sportEventStatus, message.getTimestamp())
             } catch (e: Exception) {
                 logger.error(e) { "Failed to process message in match status cache - $message" }
             }
@@ -132,7 +141,7 @@ class MatchStatusCacheImpl @Inject constructor(
         }
     }
 
-    private fun refreshOrInsertFeedItem(id: URN, data: OFSportEventStatus) {
+    private fun refreshOrInsertFeedItem(id: URN, data: OFSportEventStatus, generatedAt: Long) {
         var item = internalCache.getIfPresent(id)
 
         if (item == null) {
@@ -159,6 +168,7 @@ class MatchStatusCacheImpl @Inject constructor(
             }
         }
 
+        item.lastFeedTimestamp = maxOf(item.lastFeedTimestamp, generatedAt)
         internalCache.put(id, item)
     }
 
@@ -349,7 +359,11 @@ data class LocalizedMatchStatus(
     var isScoreboardAvailable: Boolean,
     var scoreboard: Scoreboard?,
     var properties: MutableMap<String, Any?> = mutableMapOf()
-)
+) {
+    // Generation time of the newest feed message applied to this entry; API snapshots
+    // older than this are ignored by the side-loading observer.
+    var lastFeedTimestamp: Long = 0
+}
 
 class MatchStatusImpl(
     private val sportEventId: URN,

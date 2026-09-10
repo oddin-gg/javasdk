@@ -60,24 +60,24 @@ class MatchCacheImpl @Inject constructor(
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
             .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val matches = when (data) {
-                    is RAFixturesEndpoint -> listOf(data.fixture)
-                    is RAScheduleEndpoint -> data.sportEvent
-                    is RATournamentSchedule -> data.sportEvents.flatMap { it.sportEvent }
-                    else -> null
-                }
-
-                if (matches != null) {
-                    try {
-                        synchronized(lock) {
-                            handleMatchData(locale, matches)
-                        }
-                    } catch (e: Exception) {
-                        logger.error(e) { "Failed to side-load matches" }
+                    val matches = when (data) {
+                        is RAFixturesEndpoint -> listOf(data.fixture)
+                        is RAScheduleEndpoint -> data.sportEvent
+                        is RATournamentSchedule -> data.sportEvents.flatMap { it.sportEvent }
+                        else -> return@subscribe
                     }
+
+                    synchronized(lock) {
+                        handleMatchData(locale, matches)
+                    }
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load matches" }
                 }
             }, {
                 logger.error { "Failed to process message in match cache - $it" }
