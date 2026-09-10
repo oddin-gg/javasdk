@@ -142,57 +142,79 @@ class MatchStatusCacheImpl @Inject constructor(
         }
     }
 
-    // Feed messages are the live source: they always apply, and they move the entry's
-    // watermark forward. A message claiming to come from the future (skewed producer
-    // clock) must not be allowed to pin the entry against every later API snapshot.
+    // The feed is the live source and always applies: rejecting a feed message would
+    // risk freezing a live score if the producer clock and the API clock disagree.
+    // A message claiming to come from the future must not raise the watermark, or it
+    // would block every later API snapshot for this match.
     private fun applyFeedSnapshot(id: URN, data: OFSportEventStatus, messageTimestamp: Long) {
         val existing = internalCache.getIfPresent(id)
         val now = System.currentTimeMillis()
-        val fence = if (messageTimestamp > now + MAX_CLOCK_SKEW_MS) {
+        val stamp = if (messageTimestamp > now + MAX_CLOCK_SKEW_MS) {
             logger.warn { "Feed message for $id carries a future timestamp $messageTimestamp, using receive time" }
             now
         } else {
             messageTimestamp
         }
         val item = LocalizedMatchStatus(
+            // The feed never carries a winner; keep the one the API supplied.
             winnerId = existing?.winnerId,
             status = EventStatus.fromFeedEventStatus(data.status),
             periodScores = mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
             matchStatusId = data.matchStatus,
-            homeScore = data.homeScore,
-            awayScore = data.awayScore,
+            homeScore = data.homeScore ?: 0.0,
+            awayScore = data.awayScore ?: 0.0,
             isScoreboardAvailable = data.isScoreboardAvailable,
             // Update scoreboard only when ready
             scoreboard = if (data.scoreboard != null) makeFeedScoreboard(data.scoreboard) else existing?.scoreboard,
             properties = existing?.properties ?: mutableMapOf()
         )
-        item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, fence)
+        item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, stamp)
         internalCache.put(id, item)
     }
 
     // API snapshots may arrive late (the side-loading observer is asynchronous) and out
-    // of order. One is applied only when it is provably newer than what the entry
-    // already holds; a snapshot without a generation time cannot prove that.
-    // Entries are replaced, never mutated in place, so a reader holding the previous
-    // instance keeps a consistent snapshot.
+    // of order, so the fields the feed also owns are taken only from a snapshot that is
+    // provably newer than what the entry holds. The winner is different: no feed message
+    // carries one, so it is merged from every snapshot that has it. Entries are replaced,
+    // never mutated in place, so a reader holding the previous instance keeps a
+    // consistent snapshot.
     private fun applyApiSnapshot(id: URN, data: RASportEventStatus, generatedAt: Long?): Boolean {
         val existing = internalCache.getIfPresent(id)
-        if (existing != null && (generatedAt == null || generatedAt <= existing.lastUpdateTimestamp)) {
+        val now = System.currentTimeMillis()
+        val stamp = generatedAt?.let {
+            if (it > now + MAX_CLOCK_SKEW_MS) {
+                logger.warn { "Match summary for $id carries a future generation time $it, using receive time" }
+                now
+            } else {
+                it
+            }
+        }
+        val winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null
+
+        if (existing != null && (stamp == null || stamp <= existing.lastUpdateTimestamp)) {
+            // Older than what we hold, or undated and therefore unprovable: the live
+            // fields stay as they are, but the winner is still worth keeping.
+            if (winnerId != null && winnerId != existing.winnerId) {
+                val merged = existing.copy(winnerId = winnerId)
+                merged.lastUpdateTimestamp = existing.lastUpdateTimestamp
+                internalCache.put(id, merged)
+            }
             return false
         }
+
         val item = LocalizedMatchStatus(
-            winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null,
+            winnerId = winnerId ?: existing?.winnerId,
             status = EventStatus.fromApiEventStatus(data.status),
             periodScores = mapApiPeriodScores(data.periodScores?.periodScore ?: listOf()),
             matchStatusId = data.matchStatusCode,
-            homeScore = data.homeScore,
-            awayScore = data.awayScore,
+            homeScore = data.homeScore ?: 0.0,
+            awayScore = data.awayScore ?: 0.0,
             isScoreboardAvailable = data.isScoreboardAvailable,
             // Update scoreboard only when ready
             scoreboard = if (data.scoreboard != null) makeApiScoreboard(data.scoreboard) else existing?.scoreboard,
             properties = existing?.properties ?: mutableMapOf()
         )
-        item.lastUpdateTimestamp = generatedAt ?: 0
+        item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, stamp ?: 0)
         internalCache.put(id, item)
         return true
     }

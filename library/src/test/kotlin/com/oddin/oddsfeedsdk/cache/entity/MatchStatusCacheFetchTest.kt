@@ -6,6 +6,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEvent
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAScoreboard
 import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.mq.RoutingKeyInfo
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp
@@ -42,11 +43,12 @@ class MatchStatusCacheFetchTest {
 
     private val matchId = URN.parse("od:match:42")
 
-    private fun summary(homeScore: Double = 2.0): RAMatchSummaryEndpoint = RAMatchSummaryEndpoint().apply {
+    private fun summary(homeScore: Double = 2.0, winner: String? = null): RAMatchSummaryEndpoint = RAMatchSummaryEndpoint().apply {
         sportEvent = RASportEvent().apply { id = matchId.toString() }
         sportEventStatus = RASportEventStatus().apply {
             status = "live"
             matchStatusCode = 201
+            winnerId = winner
             this.homeScore = homeScore
             awayScore = 1.0
             isScoreboardAvailable = false
@@ -126,7 +128,8 @@ class MatchStatusCacheFetchTest {
             every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
             coEvery { fetchMatchSummary(matchId, any()) } coAnswers {
                 cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = 2_000))
-                summary() // home 2.0, older
+                // Dated, and older than the feed update that landed during the call.
+                summary(homeScore = 2.0).apply { generatedAt = generatedAt(1_000) }
             }
         }
         cache = MatchStatusCacheImpl(apiClient)
@@ -135,6 +138,90 @@ class MatchStatusCacheFetchTest {
 
         assertNotNull(status)
         assertEquals(3.0, status!!.homeScore, 0.0)
+    }
+
+    // The mirror of the case above: a summary generated after the concurrent feed
+    // update is the fresher one and must win, through the same direct-store path.
+    @Test
+    fun aSummaryNewerThanTheConcurrentFeedUpdateIsApplied() {
+        lateinit var cache: MatchStatusCacheImpl
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
+            coEvery { fetchMatchSummary(matchId, any()) } coAnswers {
+                cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = 1_000))
+                summary(homeScore = 2.0).apply { generatedAt = generatedAt(2_000) }
+            }
+        }
+        cache = MatchStatusCacheImpl(apiClient)
+
+        assertEquals(2.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
+    }
+
+    // The winner only ever comes from the API. A feed update that arrives afterwards
+    // rewrites the live fields, but must not drop the winner or a stored scoreboard.
+    @Test
+    fun aFeedUpdateKeepsTheWinnerAndScoreboardSuppliedByTheApi() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        publish(subject, summary(homeScore = 2.0, winner = "od:competitor:9").apply {
+            generatedAt = generatedAt(1_000)
+            sportEventStatus.scoreboard = RAScoreboard().apply { homeGoals = 7 }
+        })
+
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 4.0, timestamp = 2_000))
+
+        val status = cache.getMatchStatus(matchId)!!
+        assertEquals(4.0, status.homeScore, 0.0)
+        assertEquals(URN.parse("od:competitor:9"), status.winnerId)
+        assertEquals(7, status.scoreboard!!.homeGoals)
+    }
+
+    // A live match keeps pushing the watermark forward, so a summary fetched afterwards
+    // is always older. Its live fields are rightly ignored, but the winner it carries is
+    // the only source there is and must still reach the entry.
+    @Test
+    fun anOlderSummaryStillContributesTheWinner() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = 10_000))
+
+        publish(subject, summary(homeScore = 2.0, winner = "od:competitor:9").apply { generatedAt = generatedAt(5_000) })
+
+        val status = cache.getMatchStatus(matchId)!!
+        assertEquals("live fields must not roll back", 3.0, status.homeScore, 0.0)
+        assertEquals(URN.parse("od:competitor:9"), status.winnerId)
+    }
+
+    // An undated summary cannot prove it is newer, but it can still carry the winner.
+    @Test
+    fun anUndatedSummaryStillContributesTheWinner() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = 10_000))
+
+        publish(subject, summary(homeScore = 2.0, winner = "od:competitor:9"))
+
+        val status = cache.getMatchStatus(matchId)!!
+        assertEquals(3.0, status.homeScore, 0.0)
+        assertEquals(URN.parse("od:competitor:9"), status.winnerId)
+    }
+
+    // A summary with a status but no scores is the normal shape of a scheduled match;
+    // it must be cached, not dropped by an unboxing failure.
+    @Test
+    fun aStatusWithoutScoresIsStored() {
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
+            coEvery { fetchMatchSummary(matchId, any()) } returns RAMatchSummaryEndpoint().apply {
+                sportEvent = RASportEvent().apply { id = matchId.toString() }
+                sportEventStatus = RASportEventStatus().apply { status = "not_started"; matchStatusCode = 0 }
+            }
+        }
+
+        val status = MatchStatusCacheImpl(apiClient).getMatchStatus(matchId)
+
+        assertNotNull("a scheduled match carries no scores and must still be cached", status)
+        assertEquals(0.0, status!!.homeScore, 0.0)
     }
 
     // The side-loading observer runs asynchronously, so a REST snapshot can be
@@ -211,7 +298,9 @@ class MatchStatusCacheFetchTest {
         val now = System.currentTimeMillis()
         cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = now + 86_400_000))
 
-        publish(subject, summary(homeScore = 2.0).apply { generatedAt = generatedAt(now + 1_000) })
+        // Comfortably after the clamped watermark (the receive time), but still inside
+        // the skew allowance, so the assertion cannot race the clock.
+        publish(subject, summary(homeScore = 2.0).apply { generatedAt = generatedAt(now + 30_000) })
 
         assertEquals(2.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
     }

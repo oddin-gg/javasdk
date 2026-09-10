@@ -133,12 +133,15 @@ class TournamentCacheImpl @Inject constructor(
         }
     }
 
-    private fun handleTournamentsData(locale: Locale, tournaments: List<RATournament>) {
-        tournaments.forEach {
+    private fun handleTournamentsData(locale: Locale, tournaments: List<RATournament?>) {
+        tournaments.forEachIndexed { index, tournament ->
+            // An event in a schedule response may carry no tournament at all, so the
+            // failure log must not dereference the element that just failed.
             try {
-                refreshOrInsertItem(URN.parse(it.id), locale, it)
+                requireNotNull(tournament)
+                refreshOrInsertItem(URN.parse(tournament.id), locale, tournament)
             } catch (e: Exception) {
-                logger.error(e) { "Failed to refresh or load tournament ${it.id}" }
+                logger.error(e) { "Failed to refresh or load tournament at index $index" }
             }
         }
     }
