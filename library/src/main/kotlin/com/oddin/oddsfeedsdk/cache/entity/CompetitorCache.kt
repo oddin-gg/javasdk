@@ -15,6 +15,8 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -44,30 +46,47 @@ class CompetitorCacheImpl @Inject constructor(
             .newBuilder()
             .expireAfterWrite(24L, TimeUnit.HOURS)
             .maximumSize(oddsFeedConfiguration.maxCompetitorCacheSize)
-            .softValues()
             .build<URN, LocalizedCompetitor>()
+
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it competitor side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
 
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            // Never side-load on the thread that made the API call: it holds its own
+            // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { droppedResponses.record() }
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val teams = when (data) {
-                    is RAFixturesEndpoint -> data.fixture.competitors?.competitor.orEmpty()
-                    is RAMatchSummaryEndpoint -> data.sportEvent.competitors?.competitor.orEmpty()
-                    is RAScheduleEndpoint -> data.sportEvent.flatMap { it.competitors?.competitor.orEmpty() }
-                    is RATournamentSchedule -> data.tournament.flatMap { it.competitors?.competitor.orEmpty() }
-                    is RATournamentInfo -> data.competitors?.competitor.orEmpty()
-                    else -> null
-                }
-
-                if (teams != null) {
-                    synchronized(lock) {
-                        handleTeamData(locale, teams.map { it.id })
+                    val teams = when (data) {
+                        is RAFixturesEndpoint -> data.fixture.competitors?.competitor.orEmpty()
+                        is RAMatchSummaryEndpoint -> data.sportEvent.competitors?.competitor.orEmpty()
+                        is RAScheduleEndpoint -> data.sportEvent.flatMap { it.competitors?.competitor.orEmpty() }
+                        is RATournamentSchedule -> data.tournament.flatMap { it.competitors?.competitor.orEmpty() }
+                        is RATournamentInfo -> data.competitors?.competitor.orEmpty()
+                        else -> return@subscribe
                     }
+
+                    // The profile fan-out does HTTP; it must not hold the cache lock, or a
+                    // reader on the delivery thread would wait for every call.
+                    handleTeamData(locale, teams.map { it.id })
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load competitors" }
                 }
             }, {
                 logger.error { "Failed to process message in competitor cache - $it" }
@@ -106,7 +125,9 @@ class CompetitorCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(id, it, data)
+                    synchronized(lock) {
+                        refreshOrInsertItem(id, it, data)
+                    }
                 } catch (e: Exception) {
                     logger.error(e) { "Failed to refresh or insert competitor" }
                 }
@@ -216,7 +237,9 @@ class CompetitorCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(urn, locale, data)
+                    synchronized(lock) {
+                        refreshOrInsertItem(urn, locale, data)
+                    }
                 } catch (e: Exception) {
                     val msg = "Failed to refresh or insert competitor for id: [$id], locale: [$locale]"
                     if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {

@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
 import io.reactivex.Observable
+import io.reactivex.disposables.Disposable
 import io.reactivex.subjects.PublishSubject
 import mu.KotlinLogging
 import java.io.ByteArrayInputStream
@@ -78,7 +79,10 @@ class ApiClientImpl @Inject constructor(
     oddsFeedConfiguration: OddsFeedConfiguration,
     private val dispatchManager: DispatchManager
 ) : ApiClient {
-    private val publisher = PublishSubject.create<Any>()
+    // Serialized: onNext is called from every thread that issues an API call, and
+    // the observeOn queues downstream are single-producer.
+    private val publisher = PublishSubject.create<Any>().toSerialized()
+    private var rawDataSubscription: Disposable? = null
 
     companion object {
         private const val API_VERSION = "v1"
@@ -321,11 +325,16 @@ class ApiClientImpl @Inject constructor(
     override fun subscribeForData(oddsFeedExtListener: OddsFeedExtListener?) {
         val listener = oddsFeedExtListener ?: return
 
-        dispatchManager
+        rawDataSubscription = dispatchManager
             .listen(ApiResponse::class.java)
             .subscribe({
                 if (it.response != null) {
-                    listener.onRawApiDataReceived(it.uri, it.response)
+                    // A throwing client callback must not dispose this subscription.
+                    try {
+                        listener.onRawApiDataReceived(it.uri, it.response)
+                    } catch (e: Exception) {
+                        logger.error(e) { "Client onRawApiDataReceived callback failed" }
+                    }
                 }
             }, {
                 logger.error { "Failed to dispatch raw api data - $it" }
@@ -338,6 +347,7 @@ class ApiClientImpl @Inject constructor(
     }
 
     override fun close() {
+        rawDataSubscription?.dispose()
         publisher.onComplete()
         dispatchManager.close()
     }

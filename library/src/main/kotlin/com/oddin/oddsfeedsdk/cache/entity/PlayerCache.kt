@@ -12,6 +12,8 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -39,26 +41,42 @@ class PlayerCacheImpl @Inject constructor(
             .newBuilder()
             .expireAfterWrite(24L, TimeUnit.HOURS)
             .maximumSize(oddsFeedConfiguration.maxPlayerCacheSize)
-            .softValues()
             .build<URN, LocalizedPlayer>()
+
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it player side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
 
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            // Never side-load on the thread that made the API call: it holds its own
+            // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { droppedResponses.record() }
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val players = when (data) {
-                    is RACompetitorProfileEndpoint -> data.players
-                    else -> null
-                }
-
-                if (players != null) {
-                    synchronized(lock) {
-                        handlePlayersData(locale, players.map { it.id })
+                    val players = when (data) {
+                        is RACompetitorProfileEndpoint -> data.players
+                        else -> return@subscribe
                     }
+
+                    // HTTP outside the lock, write under it (see handlePlayersData).
+                    handlePlayersData(locale, players.map { it.id })
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load players" }
                 }
             }, {
                 logger.error { "Failed to process message in player cache - $it" }
@@ -97,7 +115,11 @@ class PlayerCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(id, it, data)
+                    // The only caller today already holds the lock (it is re-entrant), but
+                    // the write must be guarded here too so this never depends on that.
+                    synchronized(lock) {
+                        refreshOrInsertItem(id, it, data)
+                    }
                 } catch (e: Exception) {
                     logger.error(e) { "Failed to refresh or insert player" }
                 }
@@ -151,7 +173,9 @@ class PlayerCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(urn, locale, data)
+                    synchronized(lock) {
+                        refreshOrInsertItem(urn, locale, data)
+                    }
                 } catch (e: Exception) {
                     val msg = "Failed to refresh or insert player for id: [$id], locale: [$locale]"
                     if (oddsFeedConfiguration.exceptionHandlingStrategy == ExceptionHandlingStrategy.THROW) {

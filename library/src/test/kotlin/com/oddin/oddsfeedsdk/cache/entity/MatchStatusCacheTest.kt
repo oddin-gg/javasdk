@@ -11,6 +11,8 @@ import com.oddin.oddsfeedsdk.schema.utils.URN
 import io.mockk.every
 import io.mockk.mockk
 import io.reactivex.Observable
+import io.reactivex.plugins.RxJavaPlugins
+import io.reactivex.schedulers.Schedulers
 import io.reactivex.subjects.PublishSubject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -104,7 +106,14 @@ class MatchStatusCacheTest {
         val apiClient = mockk<ApiClient> {
             every { subscribeForClass(ApiResponse::class.java) } returns subject
         }
-        val cache = MatchStatusCacheImpl(apiClient)
+        // The observer hops to Schedulers.io(); run it inline so the assertion below
+        // does not race the side-load.
+        RxJavaPlugins.setIoSchedulerHandler { Schedulers.trampoline() }
+        val cache = try {
+            MatchStatusCacheImpl(apiClient)
+        } finally {
+            RxJavaPlugins.reset()
+        }
 
         subject.onNext(ApiResponse(summary, URI("http://localhost"), Locale.ENGLISH))
 

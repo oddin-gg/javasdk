@@ -18,7 +18,9 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAScheduleEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEvent
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentSchedule
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
 import com.oddin.oddsfeedsdk.utils.Utils
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -50,28 +52,45 @@ class MatchCacheImpl @Inject constructor(
         .newBuilder()
         .expireAfterWrite(12L, TimeUnit.HOURS)
         .maximumSize(oddsFeedConfiguration.maxMatchCacheSize)
-        .softValues()
         .build<URN, LocalizedMatch>()
+
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it match side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
 
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            // Never side-load on the thread that made the API call: it holds its own
+            // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { droppedResponses.record() }
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val matches = when (data) {
-                    is RAFixturesEndpoint -> listOf(data.fixture)
-                    is RAScheduleEndpoint -> data.sportEvent
-                    is RATournamentSchedule -> data.sportEvents.flatMap { it.sportEvent }
-                    else -> null
-                }
+                    val matches = when (data) {
+                        is RAFixturesEndpoint -> listOf(data.fixture)
+                        is RAScheduleEndpoint -> data.sportEvent
+                        is RATournamentSchedule -> data.sportEvents.flatMap { it.sportEvent }
+                        else -> return@subscribe
+                    }
 
-                if (matches != null) {
                     synchronized(lock) {
                         handleMatchData(locale, matches)
                     }
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load matches" }
                 }
             }, {
                 logger.error { "Failed to process message in match cache - $it" }
@@ -118,8 +137,12 @@ class MatchCacheImpl @Inject constructor(
 
     private fun handleMatchData(locale: Locale, tournaments: List<RASportEvent>) {
         tournaments.forEach {
-            val id = URN.parse(it.id)
-            refreshOrInsertItem(id, locale, it)
+            // One malformed element must not cost the rest of the batch.
+            try {
+                refreshOrInsertItem(URN.parse(it.id), locale, it)
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to refresh or insert match ${it.id}" }
+            }
         }
     }
 

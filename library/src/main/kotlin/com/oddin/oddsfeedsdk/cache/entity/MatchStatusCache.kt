@@ -20,6 +20,9 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAPeriodScore
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAScoreboard
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
+import com.oddin.oddsfeedsdk.utils.Utils
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -39,29 +42,63 @@ class MatchStatusCacheImpl @Inject constructor(
     private val apiClient: ApiClient
 ) : MatchStatusCache {
     private val lock = Any()
+
+    companion object {
+        private val MAX_CLOCK_SKEW_MS = TimeUnit.MINUTES.toMillis(1)
+    }
     private val subscriptions = mutableListOf<Disposable>()
     private val internalCache = CacheBuilder
         .newBuilder()
         .expireAfterWrite(20L, TimeUnit.MINUTES)
         .build<URN, LocalizedMatchStatus>()
 
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it match status side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
+
+    // A client clock running behind the producer's would otherwise warn on every single
+    // feed message, forever.
+    private val futureFeedTimestamps = ThrottledCounter {
+        "$it feed messages carried a timestamp ahead of this JVM's clock; using the receive time as the match status watermark"
+    }
+    private val futureSummaryTimestamps = ThrottledCounter {
+        "$it match summaries carried a generation time ahead of this JVM's clock; using the receive time as the match status watermark"
+    }
+
     init {
         val disposable = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            // Never side-load on the thread that made the API call: it holds its own
+            // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { droppedResponses.record() }
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val data = response.second ?: return@subscribe
 
-                val summary = when (data) {
-                    is RAMatchSummaryEndpoint -> data
-                    else -> null
-                }
-
-                if (summary != null) {
-                    val id = URN.parse(summary.sportEvent.id)
-                    synchronized(lock) {
-                        refreshOrInsertApiItem(id, summary.sportEventStatus)
+                    val summary = when (data) {
+                        is RAMatchSummaryEndpoint -> data
+                        else -> return@subscribe
                     }
+                    // A scheduled event may carry no status yet.
+                    val status = summary.sportEventStatus ?: return@subscribe
+                    val id = URN.parse(summary.sportEvent.id)
+                    val generatedAt = Utils.parseDate(summary.generatedAt)?.time
+
+                    synchronized(lock) {
+                        applyApiSnapshot(id, status, generatedAt)
+                    }
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load match status" }
                 }
             }, {
                 logger.error { "Failed to process message in match status cache - $it" }
@@ -75,19 +112,29 @@ class MatchStatusCacheImpl @Inject constructor(
     }
 
     override fun getMatchStatus(id: URN): LocalizedMatchStatus? {
-        var matchStatus = internalCache.getIfPresent(id)
-        if (matchStatus == null) {
-            matchStatus = runBlocking {
-                try {
-                    apiClient.fetchMatchSummary(id, Locale.ENGLISH)
-                    internalCache.getIfPresent(id)
-                } catch (e: Exception) {
-                    null
-                }
-            }
-        }
+        internalCache.getIfPresent(id)?.let { return it }
 
-        return matchStatus
+        val summary = runBlocking {
+            try {
+                apiClient.fetchMatchSummary(id, Locale.ENGLISH)
+            } catch (e: Exception) {
+                logger.warn(e) { "Failed to fetch match summary for $id" }
+                null
+            }
+        } ?: return internalCache.getIfPresent(id)
+
+        // Store the status from the response we just received instead of relying on
+        // the asynchronous ApiResponse observer having run already.
+        val status = summary.sportEventStatus ?: return internalCache.getIfPresent(id)
+        val generatedAt = Utils.parseDate(summary.generatedAt)?.time
+        return synchronized(lock) {
+            try {
+                applyApiSnapshot(id, status, generatedAt)
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to store match status for $id" }
+            }
+            internalCache.getIfPresent(id)
+        }
     }
 
     override fun onFeedMessageReceived(id: URN, feedMessage: FeedMessage) {
@@ -98,7 +145,7 @@ class MatchStatusCacheImpl @Inject constructor(
 
         synchronized(lock) {
             try {
-                refreshOrInsertFeedItem(id, message.sportEventStatus)
+                applyFeedSnapshot(id, message.sportEventStatus, message.getTimestamp())
             } catch (e: Exception) {
                 logger.error(e) { "Failed to process message in match status cache - $message" }
             }
@@ -111,66 +158,104 @@ class MatchStatusCacheImpl @Inject constructor(
         }
     }
 
-    private fun refreshOrInsertFeedItem(id: URN, data: OFSportEventStatus) {
-        var item = internalCache.getIfPresent(id)
-
-        if (item == null) {
-            item = LocalizedMatchStatus(
-                null,
-                EventStatus.fromFeedEventStatus(data.status),
-                mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
-                data.matchStatus,
-                data.homeScore,
-                data.awayScore,
-                data.isScoreboardAvailable,
-                makeFeedScoreboard(data.scoreboard)
-            )
+    // The feed is the live source and always applies: rejecting a feed message would
+    // risk freezing a live score if the producer clock and the API clock disagree.
+    // A message claiming to come from the future must not raise the watermark, or it
+    // would block every later API snapshot for this match.
+    private fun applyFeedSnapshot(id: URN, data: OFSportEventStatus, messageTimestamp: Long) {
+        val existing = internalCache.getIfPresent(id)
+        val now = System.currentTimeMillis()
+        val stamp = if (messageTimestamp > now + MAX_CLOCK_SKEW_MS) {
+            futureFeedTimestamps.record()
+            logger.debug { "Feed message for $id carries a future timestamp $messageTimestamp, using receive time" }
+            now
         } else {
-            item.status = EventStatus.fromFeedEventStatus(data.status)
-            item.periodScores = mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf())
-            item.matchStatusId = data.matchStatus
-            item.homeScore = data.homeScore
-            item.awayScore = data.awayScore
-            item.isScoreboardAvailable = data.isScoreboardAvailable
-            // Update scoreboard only when ready
-            if (data.scoreboard != null) {
-                item.scoreboard = makeFeedScoreboard(data.scoreboard)
-            }
+            messageTimestamp
         }
-
+        val item = LocalizedMatchStatus(
+            // The feed never carries a winner; keep the one the API supplied.
+            winnerId = existing?.winnerId,
+            status = EventStatus.fromFeedEventStatus(data.status),
+            periodScores = mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
+            matchStatusId = data.matchStatus,
+            // Scores are optional in the schema: a status-only message must leave the
+            // scores we already hold alone rather than reset the match to 0-0.
+            homeScore = data.homeScore ?: existing?.homeScore ?: 0.0,
+            awayScore = data.awayScore ?: existing?.awayScore ?: 0.0,
+            isScoreboardAvailable = data.isScoreboardAvailable,
+            // Update scoreboard only when ready
+            scoreboard = if (data.scoreboard != null) makeFeedScoreboard(data.scoreboard) else existing?.scoreboard,
+            properties = existing?.properties ?: mutableMapOf()
+        )
+        item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, stamp)
         internalCache.put(id, item)
     }
 
-    private fun refreshOrInsertApiItem(id: URN, data: RASportEventStatus) {
-        var item = internalCache.getIfPresent(id)
-
-        if (item == null) {
-            item = LocalizedMatchStatus(
-                if (data.winnerId != null) URN.parse(data.winnerId) else null,
-                EventStatus.fromApiEventStatus(data.status),
-                mapApiPeriodScores(data.periodScores?.periodScore ?: listOf()),
-                data.matchStatusCode,
-                data.homeScore,
-                data.awayScore,
-                data.isScoreboardAvailable,
-                makeApiScoreboard(data.scoreboard)
-            )
-        } else {
-            item.winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null
-            item.status = EventStatus.fromApiEventStatus(data.status)
-            item.periodScores = mapApiPeriodScores(data.periodScores?.periodScore ?: listOf())
-            item.matchStatusId = data.matchStatusCode
-            item.homeScore = data.homeScore
-            item.awayScore = data.awayScore
-            item.isScoreboardAvailable = data.isScoreboardAvailable
-
-            // Update scoreboard only when ready
-            if (data.scoreboard != null) {
-                item.scoreboard = makeApiScoreboard(data.scoreboard)
+    // API snapshots may arrive late (the side-loading observer is asynchronous) and out
+    // of order, so the fields the feed also owns are taken only from a snapshot that is
+    // provably newer than what the entry holds. The winner is different: no feed message
+    // carries one, so it is merged from every snapshot that has it. Entries are replaced,
+    // never mutated in place, so a reader holding the previous instance keeps a
+    // consistent snapshot.
+    private fun applyApiSnapshot(id: URN, data: RASportEventStatus, generatedAt: Long?): Boolean {
+        val existing = internalCache.getIfPresent(id)
+        val now = System.currentTimeMillis()
+        val stamp = generatedAt?.let {
+            if (it > now + MAX_CLOCK_SKEW_MS) {
+                futureSummaryTimestamps.record()
+                logger.debug { "Match summary for $id carries a future generation time $it, using receive time" }
+                now
+            } else {
+                it
             }
         }
+        // A malformed winner id must cost the winner, not the score, the status and the
+        // period scores that came with it in the same snapshot.
+        val winnerId = try {
+            data.winnerId?.let { URN.parse(it) }
+        } catch (e: Exception) {
+            logger.warn(e) { "Ignoring malformed winner id ${data.winnerId} for $id" }
+            null
+        }
 
+        // An entry inserted from an undated snapshot has watermark 0 and cannot order
+        // anything, so the next snapshot is let through rather than reduced to a winner
+        // merge until the entry expires.
+        if (existing != null && existing.lastUpdateTimestamp > 0 &&
+            (stamp == null || stamp <= existing.lastUpdateTimestamp)
+        ) {
+            // Older than what we hold, or undated and therefore unprovable: the live
+            // fields stay as they are, but the winner is still worth keeping.
+            logger.debug {
+                "Keeping match status for $id: snapshot generated at $stamp is not newer " +
+                    "than the stored ${existing.lastUpdateTimestamp}"
+            }
+            if (winnerId != null && winnerId != existing.winnerId) {
+                val merged = existing.copy(winnerId = winnerId)
+                merged.lastUpdateTimestamp = existing.lastUpdateTimestamp
+                internalCache.put(id, merged)
+            }
+            return false
+        }
+
+        val item = LocalizedMatchStatus(
+            // This snapshot is the newest thing we have seen, so it also decides that
+            // there is no winner: a voided match must not keep the one it had.
+            winnerId = winnerId,
+            status = EventStatus.fromApiEventStatus(data.status),
+            periodScores = mapApiPeriodScores(data.periodScores?.periodScore ?: listOf()),
+            matchStatusId = data.matchStatusCode,
+            // Scores are optional here too (see the feed path).
+            homeScore = data.homeScore ?: existing?.homeScore ?: 0.0,
+            awayScore = data.awayScore ?: existing?.awayScore ?: 0.0,
+            isScoreboardAvailable = data.isScoreboardAvailable,
+            // Update scoreboard only when ready
+            scoreboard = if (data.scoreboard != null) makeApiScoreboard(data.scoreboard) else existing?.scoreboard,
+            properties = existing?.properties ?: mutableMapOf()
+        )
+        item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, stamp ?: 0)
         internalCache.put(id, item)
+        return true
     }
 
     private fun mapApiPeriodScores(periodScores: List<RAPeriodScore>): List<PeriodScore> {
@@ -328,7 +413,11 @@ data class LocalizedMatchStatus(
     var isScoreboardAvailable: Boolean,
     var scoreboard: Scoreboard?,
     var properties: MutableMap<String, Any?> = mutableMapOf()
-)
+) {
+    // Generation time (feed message timestamp or API generated_at) of the data this
+    // entry holds. An API snapshot is applied only when it is newer than this.
+    var lastUpdateTimestamp: Long = 0
+}
 
 class MatchStatusImpl(
     private val sportEventId: URN,

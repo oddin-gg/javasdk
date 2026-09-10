@@ -13,7 +13,9 @@ import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
 import com.oddin.oddsfeedsdk.utils.Utils
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -47,28 +49,46 @@ class TournamentCacheImpl @Inject constructor(
         .expireAfterWrite(12L, TimeUnit.HOURS)
         .build<URN, LocalizedTournament>()
 
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it tournament side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
+
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
             .map { it.locale to it.response }
+            // Never side-load on the thread that made the API call: it holds its own
+            // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { droppedResponses.record() }
+            .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val tournaments = when (data) {
-                    is RAFixturesEndpoint -> listOf(data.fixture.tournament)
-                    is RATournaments -> data.tournament
-                    is RAMatchSummaryEndpoint -> listOf(data.sportEvent.tournament)
-                    is RAScheduleEndpoint -> data.sportEvent.map { it.tournament }
-                    is RATournamentSchedule -> data.tournament
-                    is RASportTournaments -> data.tournaments?.tournament
-                    else -> null
-                }
+                    val tournaments = when (data) {
+                        is RAFixturesEndpoint -> listOf(data.fixture.tournament)
+                        is RATournaments -> data.tournament
+                        is RAMatchSummaryEndpoint -> listOf(data.sportEvent.tournament)
+                        is RAScheduleEndpoint -> data.sportEvent.map { it.tournament }
+                        is RATournamentSchedule -> data.tournament
+                        is RASportTournaments -> data.tournaments?.tournament ?: return@subscribe
+                        else -> return@subscribe
+                    }
 
-                if (tournaments != null) {
                     synchronized(lock) {
                         handleTournamentsData(locale, tournaments)
                     }
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load tournaments" }
                 }
             }, {
                 logger.error { "Failed to process message in sport cache - $it" }
@@ -120,13 +140,15 @@ class TournamentCacheImpl @Inject constructor(
         }
     }
 
-    private fun handleTournamentsData(locale: Locale, tournaments: List<RATournament>) {
-        tournaments.forEach {
-            val id = URN.parse(it.id)
+    private fun handleTournamentsData(locale: Locale, tournaments: List<RATournament?>) {
+        tournaments.forEachIndexed { index, tournament ->
+            // An event in a schedule response may carry no tournament at all, so the
+            // failure log must not dereference the element that just failed.
             try {
-                refreshOrInsertItem(id, locale, it)
+                requireNotNull(tournament)
+                refreshOrInsertItem(URN.parse(tournament.id), locale, tournament)
             } catch (e: Exception) {
-                logger.error(e) { "Failed to refresh or load tournament" }
+                logger.error(e) { "Failed to refresh or load tournament at index $index" }
             }
         }
     }
@@ -160,7 +182,7 @@ class TournamentCacheImpl @Inject constructor(
         if (tournament is RATournamentExtended) {
             val ids = tournament.competitors?.competitor?.map { URN.parse(it.id) }.orEmpty()
             if (ids.isNotEmpty()) {
-                val competitorIds = item.competitorIds ?: mutableSetOf()
+                val competitorIds = item.competitorIds ?: ConcurrentHashMap.newKeySet<URN>()
                 competitorIds.addAll(ids)
                 item.competitorIds = competitorIds
             }
