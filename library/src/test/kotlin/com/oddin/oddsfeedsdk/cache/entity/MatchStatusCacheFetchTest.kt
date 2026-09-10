@@ -84,8 +84,10 @@ class MatchStatusCacheFetchTest {
         assertNull(MatchStatusCacheImpl(apiClient).getMatchStatus(matchId))
     }
 
+    // A winner id we cannot parse costs the winner and nothing else: the score, the
+    // status and the period scores arrived in the same snapshot and are still good.
     @Test
-    fun malformedWinnerIdIsContainedAndYieldsNull() {
+    fun malformedWinnerIdDoesNotDiscardTheRestOfTheStatus() {
         val apiClient = mockk<ApiClient> {
             every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
             coEvery { fetchMatchSummary(matchId, any()) } returns summary().apply {
@@ -93,7 +95,12 @@ class MatchStatusCacheFetchTest {
             }
         }
 
-        assertNull(MatchStatusCacheImpl(apiClient).getMatchStatus(matchId))
+        val status = MatchStatusCacheImpl(apiClient).getMatchStatus(matchId)
+
+        assertNotNull("the rest of the snapshot must survive a bad winner id", status)
+        assertEquals(2.0, status!!.homeScore, 0.0)
+        assertEquals(EventStatus.Live, status.status)
+        assertNull(status.winnerId)
     }
 
     private fun feedOddsChange(homeScore: Double, timestamp: Long): FeedMessage {
@@ -105,6 +112,25 @@ class MatchStatusCacheFetchTest {
                 matchStatus = 201
                 this.homeScore = homeScore
                 awayScore = 0.0
+                isScoreboardAvailable = false
+            }
+        }
+        return FeedMessage(
+            message, ByteArray(1),
+            RoutingKeyInfo("hi.live.-.odds_change.-.od:match.42", null, matchId, false),
+            MessageTimestamp(timestamp, timestamp, timestamp, timestamp)
+        )
+    }
+
+    // status and match_status are required in the feed schema, the scores are not:
+    // an odds_change can carry a status change on its own.
+    private fun feedStatusOnly(timestamp: Long): FeedMessage {
+        val message = OFOddsChange().apply {
+            setProduct(1)
+            setTimestamp(timestamp)
+            sportEventStatus = OFSportEventStatus().apply {
+                status = OFEventStatus.LIVE
+                matchStatus = 210
                 isScoreboardAvailable = false
             }
         }
@@ -222,6 +248,67 @@ class MatchStatusCacheFetchTest {
 
         assertNotNull("a scheduled match carries no scores and must still be cached", status)
         assertEquals(0.0, status!!.homeScore, 0.0)
+    }
+
+    // A feed message that only changes the status must not reset the match to 0-0.
+    // The scores were dropped by an unboxing failure before, which at least kept the
+    // old ones; storing zeros instead would be a wrong score, not a missing update.
+    @Test
+    fun aFeedStatusWithoutScoresKeepsTheScoresAlreadyStored() {
+        val cache = cacheWithInlineObserver(PublishSubject.create<Any>().toSerialized())
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = 1_000))
+
+        cache.onFeedMessageReceived(matchId, feedStatusOnly(timestamp = 2_000))
+
+        val status = cache.getMatchStatus(matchId)!!
+        assertEquals("a status-only message must not reset the score", 3.0, status.homeScore, 0.0)
+        assertEquals(210, status.matchStatusId)
+    }
+
+    // The same on the API path: RASportEventStatus has the same optional scores.
+    @Test
+    fun aSummaryWithoutScoresKeepsTheScoresAlreadyStored() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = 1_000))
+
+        publish(subject, RAMatchSummaryEndpoint().apply {
+            sportEvent = RASportEvent().apply { id = matchId.toString() }
+            sportEventStatus = RASportEventStatus().apply { status = "live"; matchStatusCode = 210 }
+            generatedAt = generatedAt(2_000)
+        })
+
+        val status = cache.getMatchStatus(matchId)!!
+        assertEquals(3.0, status.homeScore, 0.0)
+        assertEquals(210, status.matchStatusId)
+    }
+
+    // A match can settle with a winner and then be voided, after which the API stops
+    // sending one. A snapshot we accepted as the newest also decides there is none.
+    @Test
+    fun aNewerSummaryWithoutAWinnerClearsTheStoredOne() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        publish(subject, summary(winner = "od:competitor:9").apply { generatedAt = generatedAt(1_000) })
+        assertEquals(URN.parse("od:competitor:9"), cache.getMatchStatus(matchId)!!.winnerId)
+
+        publish(subject, summary().apply { generatedAt = generatedAt(2_000) })
+
+        assertNull("a retracted winner must not survive", cache.getMatchStatus(matchId)!!.winnerId)
+    }
+
+    // An entry inserted from an undated snapshot carries watermark 0. It must not lock
+    // the match into winner-only merges until the entry expires.
+    @Test
+    fun anUndatedEntryDoesNotBlockTheNextSummary() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        publish(subject, summary(homeScore = 2.0)) // no generated_at anywhere
+        assertEquals(2.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
+
+        publish(subject, summary(homeScore = 5.0))
+
+        assertEquals(5.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
     }
 
     // The side-loading observer runs asynchronously, so a REST snapshot can be

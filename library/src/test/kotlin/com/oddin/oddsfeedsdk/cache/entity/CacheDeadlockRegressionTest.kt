@@ -32,9 +32,14 @@ import kotlin.concurrent.thread
 // The fake ApiClient reproduces ApiClientImpl.fetchData: it publishes the
 // ApiResponse before returning, and a latch makes sure both loads are inside
 // their fetch at the same moment.
+//
+// The subject is deliberately a plain PublishSubject, the shape the released
+// versions had. A serialized subject makes the second publisher queue its item
+// and return instead of running the observer inline, which hides the deadlock on
+// its own: the test would then pass against the broken caches and prove nothing.
 class CacheDeadlockRegressionTest {
 
-    private val publisher = PublishSubject.create<Any>().toSerialized()
+    private val publisher = PublishSubject.create<Any>()
     private val bothInsideFetch = CountDownLatch(2)
     private val overlapped = AtomicBoolean(true)
 

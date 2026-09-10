@@ -20,6 +20,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAPeriodScore
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAScoreboard
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
 import com.oddin.oddsfeedsdk.utils.Utils
 import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
@@ -51,6 +52,21 @@ class MatchStatusCacheImpl @Inject constructor(
         .expireAfterWrite(20L, TimeUnit.MINUTES)
         .build<URN, LocalizedMatchStatus>()
 
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it match status side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
+
+    // A client clock running behind the producer's would otherwise warn on every single
+    // feed message, forever.
+    private val futureFeedTimestamps = ThrottledCounter {
+        "$it feed messages carried a timestamp ahead of this JVM's clock; using the receive time as the match status watermark"
+    }
+    private val futureSummaryTimestamps = ThrottledCounter {
+        "$it match summaries carried a generation time ahead of this JVM's clock; using the receive time as the match status watermark"
+    }
+
     init {
         val disposable = apiClient
             .subscribeForClass(ApiResponse::class.java)
@@ -61,7 +77,7 @@ class MatchStatusCacheImpl @Inject constructor(
             // limit. Side-loading only warms the cache; a dropped response is fetched on
             // demand later.
             .toFlowable(BackpressureStrategy.MISSING)
-            .onBackpressureDrop { logger.warn { "Dropping match status side-load response, the observer is behind" } }
+            .onBackpressureDrop { droppedResponses.record() }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the
@@ -150,7 +166,8 @@ class MatchStatusCacheImpl @Inject constructor(
         val existing = internalCache.getIfPresent(id)
         val now = System.currentTimeMillis()
         val stamp = if (messageTimestamp > now + MAX_CLOCK_SKEW_MS) {
-            logger.warn { "Feed message for $id carries a future timestamp $messageTimestamp, using receive time" }
+            futureFeedTimestamps.record()
+            logger.debug { "Feed message for $id carries a future timestamp $messageTimestamp, using receive time" }
             now
         } else {
             messageTimestamp
@@ -161,8 +178,10 @@ class MatchStatusCacheImpl @Inject constructor(
             status = EventStatus.fromFeedEventStatus(data.status),
             periodScores = mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
             matchStatusId = data.matchStatus,
-            homeScore = data.homeScore ?: 0.0,
-            awayScore = data.awayScore ?: 0.0,
+            // Scores are optional in the schema: a status-only message must leave the
+            // scores we already hold alone rather than reset the match to 0-0.
+            homeScore = data.homeScore ?: existing?.homeScore ?: 0.0,
+            awayScore = data.awayScore ?: existing?.awayScore ?: 0.0,
             isScoreboardAvailable = data.isScoreboardAvailable,
             // Update scoreboard only when ready
             scoreboard = if (data.scoreboard != null) makeFeedScoreboard(data.scoreboard) else existing?.scoreboard,
@@ -183,17 +202,34 @@ class MatchStatusCacheImpl @Inject constructor(
         val now = System.currentTimeMillis()
         val stamp = generatedAt?.let {
             if (it > now + MAX_CLOCK_SKEW_MS) {
-                logger.warn { "Match summary for $id carries a future generation time $it, using receive time" }
+                futureSummaryTimestamps.record()
+                logger.debug { "Match summary for $id carries a future generation time $it, using receive time" }
                 now
             } else {
                 it
             }
         }
-        val winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null
+        // A malformed winner id must cost the winner, not the score, the status and the
+        // period scores that came with it in the same snapshot.
+        val winnerId = try {
+            data.winnerId?.let { URN.parse(it) }
+        } catch (e: Exception) {
+            logger.warn(e) { "Ignoring malformed winner id ${data.winnerId} for $id" }
+            null
+        }
 
-        if (existing != null && (stamp == null || stamp <= existing.lastUpdateTimestamp)) {
+        // An entry inserted from an undated snapshot has watermark 0 and cannot order
+        // anything, so the next snapshot is let through rather than reduced to a winner
+        // merge until the entry expires.
+        if (existing != null && existing.lastUpdateTimestamp > 0 &&
+            (stamp == null || stamp <= existing.lastUpdateTimestamp)
+        ) {
             // Older than what we hold, or undated and therefore unprovable: the live
             // fields stay as they are, but the winner is still worth keeping.
+            logger.debug {
+                "Keeping match status for $id: snapshot generated at $stamp is not newer " +
+                    "than the stored ${existing.lastUpdateTimestamp}"
+            }
             if (winnerId != null && winnerId != existing.winnerId) {
                 val merged = existing.copy(winnerId = winnerId)
                 merged.lastUpdateTimestamp = existing.lastUpdateTimestamp
@@ -203,12 +239,15 @@ class MatchStatusCacheImpl @Inject constructor(
         }
 
         val item = LocalizedMatchStatus(
-            winnerId = winnerId ?: existing?.winnerId,
+            // This snapshot is the newest thing we have seen, so it also decides that
+            // there is no winner: a voided match must not keep the one it had.
+            winnerId = winnerId,
             status = EventStatus.fromApiEventStatus(data.status),
             periodScores = mapApiPeriodScores(data.periodScores?.periodScore ?: listOf()),
             matchStatusId = data.matchStatusCode,
-            homeScore = data.homeScore ?: 0.0,
-            awayScore = data.awayScore ?: 0.0,
+            // Scores are optional here too (see the feed path).
+            homeScore = data.homeScore ?: existing?.homeScore ?: 0.0,
+            awayScore = data.awayScore ?: existing?.awayScore ?: 0.0,
             isScoreboardAvailable = data.isScoreboardAvailable,
             // Update scoreboard only when ready
             scoreboard = if (data.scoreboard != null) makeApiScoreboard(data.scoreboard) else existing?.scoreboard,
