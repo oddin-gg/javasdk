@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
 import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
@@ -42,6 +43,12 @@ class PlayerCacheImpl @Inject constructor(
             .maximumSize(oddsFeedConfiguration.maxPlayerCacheSize)
             .build<URN, LocalizedPlayer>()
 
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it player side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
+
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
@@ -52,7 +59,7 @@ class PlayerCacheImpl @Inject constructor(
             // limit. Side-loading only warms the cache; a dropped response is fetched on
             // demand later.
             .toFlowable(BackpressureStrategy.MISSING)
-            .onBackpressureDrop { logger.warn { "Dropping player side-load response, the observer is behind" } }
+            .onBackpressureDrop { droppedResponses.record() }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the
@@ -108,7 +115,11 @@ class PlayerCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(id, it, data)
+                    // The only caller today already holds the lock (it is re-entrant), but
+                    // the write must be guarded here too so this never depends on that.
+                    synchronized(lock) {
+                        refreshOrInsertItem(id, it, data)
+                    }
                 } catch (e: Exception) {
                     logger.error(e) { "Failed to refresh or insert player" }
                 }

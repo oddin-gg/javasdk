@@ -18,6 +18,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAScheduleEndpoint
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEvent
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentSchedule
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
 import com.oddin.oddsfeedsdk.utils.Utils
 import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
@@ -53,6 +54,12 @@ class MatchCacheImpl @Inject constructor(
         .maximumSize(oddsFeedConfiguration.maxMatchCacheSize)
         .build<URN, LocalizedMatch>()
 
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it match side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
+
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
@@ -63,7 +70,7 @@ class MatchCacheImpl @Inject constructor(
             // limit. Side-loading only warms the cache; a dropped response is fetched on
             // demand later.
             .toFlowable(BackpressureStrategy.MISSING)
-            .onBackpressureDrop { logger.warn { "Dropping match side-load response, the observer is behind" } }
+            .onBackpressureDrop { droppedResponses.record() }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the

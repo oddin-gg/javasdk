@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.ThrottledCounter
 import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
@@ -47,6 +48,12 @@ class CompetitorCacheImpl @Inject constructor(
             .maximumSize(oddsFeedConfiguration.maxCompetitorCacheSize)
             .build<URN, LocalizedCompetitor>()
 
+    // Reports the running total at most once a minute instead of one line per drop:
+    // a single schedule load can outrun the observer by thousands of responses.
+    private val droppedResponses = ThrottledCounter {
+        "Dropped $it competitor side-load responses so far, the cache observer is behind; the data is fetched on demand instead"
+    }
+
     init {
         subscription = apiClient
             .subscribeForClass(ApiResponse::class.java)
@@ -57,7 +64,7 @@ class CompetitorCacheImpl @Inject constructor(
             // limit. Side-loading only warms the cache; a dropped response is fetched on
             // demand later.
             .toFlowable(BackpressureStrategy.MISSING)
-            .onBackpressureDrop { logger.warn { "Dropping competitor side-load response, the observer is behind" } }
+            .onBackpressureDrop { droppedResponses.record() }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the
