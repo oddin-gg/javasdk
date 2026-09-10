@@ -34,7 +34,7 @@ import kotlin.concurrent.thread
 // their fetch at the same moment.
 class CacheDeadlockRegressionTest {
 
-    private val publisher = PublishSubject.create<Any>()
+    private val publisher = PublishSubject.create<Any>().toSerialized()
     private val bothInsideFetch = CountDownLatch(2)
     private val overlapped = AtomicBoolean(true)
 

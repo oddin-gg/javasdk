@@ -52,23 +52,23 @@ class SportDataCacheImpl @Inject constructor(
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
             .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val tournamentData = when (data) {
-                    is RATournamentSchedule -> data.tournament.associate { it.id to it.sport }
-                    is RATournamentInfo -> mapOf(data.tournament.id to data.tournament.sport)
-                    else -> null
-                }
-
-                if (tournamentData != null) {
-                    try {
-                        synchronized(lock) {
-                            handleTournamentData(locale, tournamentData)
-                        }
-                    } catch (e: Exception) {
-                        logger.error(e) { "Failed to side-load tournamentData" }
+                    val tournamentData = when (data) {
+                        is RATournamentSchedule -> data.tournament.associate { it.id to it.sport }
+                        is RATournamentInfo -> mapOf(data.tournament.id to data.tournament.sport)
+                        else -> return@subscribe
                     }
+
+                    synchronized(lock) {
+                        handleTournamentData(locale, tournamentData)
+                    }
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load sports" }
                 }
             }, {
                 logger.error { "Failed to process message in sport cache - $it" }
@@ -178,7 +178,7 @@ class SportDataCacheImpl @Inject constructor(
         }
 
         if (tournamentId != null) {
-            val sportTournamentIds = localizedSport.tournamentIds ?: mutableSetOf()
+            val sportTournamentIds = localizedSport.tournamentIds ?: ConcurrentHashMap.newKeySet<URN>()
             sportTournamentIds.add(tournamentId)
             localizedSport.tournamentIds = sportTournamentIds
         }

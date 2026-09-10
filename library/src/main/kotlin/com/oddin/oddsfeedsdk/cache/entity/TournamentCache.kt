@@ -55,27 +55,27 @@ class TournamentCacheImpl @Inject constructor(
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
             .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val tournaments = when (data) {
-                    is RAFixturesEndpoint -> listOf(data.fixture.tournament)
-                    is RATournaments -> data.tournament
-                    is RAMatchSummaryEndpoint -> listOf(data.sportEvent.tournament)
-                    is RAScheduleEndpoint -> data.sportEvent.map { it.tournament }
-                    is RATournamentSchedule -> data.tournament
-                    is RASportTournaments -> data.tournaments?.tournament
-                    else -> null
-                }
-
-                if (tournaments != null) {
-                    try {
-                        synchronized(lock) {
-                            handleTournamentsData(locale, tournaments)
-                        }
-                    } catch (e: Exception) {
-                        logger.error(e) { "Failed to side-load tournaments" }
+                    val tournaments = when (data) {
+                        is RAFixturesEndpoint -> listOf(data.fixture.tournament)
+                        is RATournaments -> data.tournament
+                        is RAMatchSummaryEndpoint -> listOf(data.sportEvent.tournament)
+                        is RAScheduleEndpoint -> data.sportEvent.map { it.tournament }
+                        is RATournamentSchedule -> data.tournament
+                        is RASportTournaments -> data.tournaments?.tournament ?: return@subscribe
+                        else -> return@subscribe
                     }
+
+                    synchronized(lock) {
+                        handleTournamentsData(locale, tournaments)
+                    }
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load tournaments" }
                 }
             }, {
                 logger.error { "Failed to process message in sport cache - $it" }
@@ -167,7 +167,7 @@ class TournamentCacheImpl @Inject constructor(
         if (tournament is RATournamentExtended) {
             val ids = tournament.competitors?.competitor?.map { URN.parse(it.id) }.orEmpty()
             if (ids.isNotEmpty()) {
-                val competitorIds = item.competitorIds ?: mutableSetOf()
+                val competitorIds = item.competitorIds ?: ConcurrentHashMap.newKeySet<URN>()
                 competitorIds.addAll(ids)
                 item.competitorIds = competitorIds
             }

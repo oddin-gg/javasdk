@@ -54,27 +54,26 @@ class CompetitorCacheImpl @Inject constructor(
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
             .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val teams = when (data) {
-                    is RAFixturesEndpoint -> data.fixture.competitors?.competitor.orEmpty()
-                    is RAMatchSummaryEndpoint -> data.sportEvent.competitors?.competitor.orEmpty()
-                    is RAScheduleEndpoint -> data.sportEvent.flatMap { it.competitors?.competitor.orEmpty() }
-                    is RATournamentSchedule -> data.tournament.flatMap { it.competitors?.competitor.orEmpty() }
-                    is RATournamentInfo -> data.competitors?.competitor.orEmpty()
-                    else -> null
-                }
-
-                if (teams != null) {
-                    // The profile fan-out does HTTP; it must not hold the cache lock (a
-                    // reader on the delivery thread would wait for every call) and must
-                    // not throw out of the observer (that disposes the subscription).
-                    try {
-                        handleTeamData(locale, teams.map { it.id })
-                    } catch (e: Exception) {
-                        logger.error(e) { "Failed to side-load competitors" }
+                    val teams = when (data) {
+                        is RAFixturesEndpoint -> data.fixture.competitors?.competitor.orEmpty()
+                        is RAMatchSummaryEndpoint -> data.sportEvent.competitors?.competitor.orEmpty()
+                        is RAScheduleEndpoint -> data.sportEvent.flatMap { it.competitors?.competitor.orEmpty() }
+                        is RATournamentSchedule -> data.tournament.flatMap { it.competitors?.competitor.orEmpty() }
+                        is RATournamentInfo -> data.competitors?.competitor.orEmpty()
+                        else -> return@subscribe
                     }
+
+                    // The profile fan-out does HTTP; it must not hold the cache lock, or a
+                    // reader on the delivery thread would wait for every call.
+                    handleTeamData(locale, teams.map { it.id })
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load competitors" }
                 }
             }, {
                 logger.error { "Failed to process message in competitor cache - $it" }
@@ -113,7 +112,9 @@ class CompetitorCacheImpl @Inject constructor(
                 }
 
                 try {
-                    refreshOrInsertItem(id, it, data)
+                    synchronized(lock) {
+                        refreshOrInsertItem(id, it, data)
+                    }
                 } catch (e: Exception) {
                     logger.error(e) { "Failed to refresh or insert competitor" }
                 }

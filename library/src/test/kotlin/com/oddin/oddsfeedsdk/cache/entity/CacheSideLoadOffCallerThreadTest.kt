@@ -10,6 +10,7 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.reactivex.subjects.PublishSubject
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -18,6 +19,7 @@ import java.net.URI
 import java.util.*
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 // An API response that lists competitors or players makes the competitor and
@@ -27,7 +29,7 @@ import kotlin.concurrent.thread
 // flight, otherwise every reader of the cache waits for the whole fan-out.
 class CacheSideLoadOffCallerThreadTest {
 
-    private val publisher = PublishSubject.create<Any>()
+    private val publisher = PublishSubject.create<Any>().toSerialized()
     private val config = mockk<OddsFeedConfiguration> {
         every { maxCompetitorCacheSize } returns 20_000
         every { maxPlayerCacheSize } returns 50_000
@@ -70,6 +72,8 @@ class CacheSideLoadOffCallerThreadTest {
         coEvery { api.fetchCompetitorProfileWithPlayers(other, any()) } returns RACompetitorProfileEndpoint().apply {
             competitor = team("od:competitor:2", "Other")
         }
+        // A miss on the slow competitor must not be able to fill the cache itself.
+        coEvery { api.fetchCompetitorProfileWithPlayers(slow, any()) } throws RuntimeException("no direct load")
         val cache = CompetitorCacheImpl(api, config)
 
         val summary = RAMatchSummaryEndpoint().apply {
@@ -96,6 +100,19 @@ class CacheSideLoadOffCallerThreadTest {
         } finally {
             release.countDown()
         }
+
+        // Once released, the fan-out must have stored the profile it fetched.
+        assertEquals("Slow", awaitStored { cache.getCompetitor(slow, setOf(Locale.ENGLISH))?.name?.get(Locale.ENGLISH) })
+    }
+
+    private fun awaitStored(read: () -> String?): String? {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        var value = read()
+        while (value == null && System.nanoTime() < deadline) {
+            Thread.sleep(20)
+            value = read()
+        }
+        return value
     }
 
     @Test(timeout = 30_000)
@@ -105,7 +122,11 @@ class CacheSideLoadOffCallerThreadTest {
         val slow = URN.parse("od:player:1")
         val other = URN.parse("od:player:2")
         val api = api()
+        // Only the observer's call (the first one) returns data; a later miss must not
+        // be able to fill the cache itself, so a stored "Slow" proves the side-load.
+        val calls = AtomicInteger()
         coEvery { api.fetchPlayerProfile(slow, any()) } coAnswers {
+            if (calls.incrementAndGet() > 1) throw RuntimeException("no direct load")
             fetchStarted.countDown()
             release.await(10, TimeUnit.SECONDS)
             player("od:player:1", "Slow")
@@ -132,5 +153,7 @@ class CacheSideLoadOffCallerThreadTest {
         } finally {
             release.countDown()
         }
+
+        assertEquals("Slow", awaitStored { cache.getPlayer(slow, setOf(Locale.ENGLISH))?.name?.get(Locale.ENGLISH) })
     }
 }

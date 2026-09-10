@@ -49,21 +49,21 @@ class PlayerCacheImpl @Inject constructor(
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
             .observeOn(Schedulers.io())
             .subscribe({ response ->
-                val locale = response.first ?: return@subscribe
-                val data = response.second ?: return@subscribe
+                // Everything in here is guarded: an exception escaping onNext disposes the
+                // subscription and the cache would stop side-loading for good.
+                try {
+                    val locale = response.first ?: return@subscribe
+                    val data = response.second ?: return@subscribe
 
-                val players = when (data) {
-                    is RACompetitorProfileEndpoint -> data.players
-                    else -> null
-                }
-
-                if (players != null) {
-                    // See CompetitorCache: HTTP outside the lock, write under it, never throw.
-                    try {
-                        handlePlayersData(locale, players.map { it.id })
-                    } catch (e: Exception) {
-                        logger.error(e) { "Failed to side-load players" }
+                    val players = when (data) {
+                        is RACompetitorProfileEndpoint -> data.players
+                        else -> return@subscribe
                     }
+
+                    // HTTP outside the lock, write under it (see handlePlayersData).
+                    handlePlayersData(locale, players.map { it.id })
+                } catch (e: Exception) {
+                    logger.error(e) { "Failed to side-load players" }
                 }
             }, {
                 logger.error { "Failed to process message in player cache - $it" }
