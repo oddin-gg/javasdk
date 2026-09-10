@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RASport
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentInfo
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentSchedule
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -50,6 +51,11 @@ class SportDataCacheImpl @Inject constructor(
             .map { it.locale to it.response }
             // Never side-load on the thread that made the API call: it holds its own
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { logger.warn { "Dropping sport side-load response, the observer is behind" } }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the
@@ -131,11 +137,16 @@ class SportDataCacheImpl @Inject constructor(
 
     private fun handleTournamentData(locale: Locale, tournamentData: Map<String, RASport>) {
         tournamentData.forEach {
-            val tournamentId = URN.parse(it.key)
-            val sportId = URN.parse(it.value.id)
+            // One malformed element must not cost the rest of the batch.
+            try {
+                val tournamentId = URN.parse(it.key)
+                val sportId = URN.parse(it.value.id)
 
-            refreshOrInsertItem(sportId, locale, sport = it.value)
-            internalCache.getIfPresent(sportId)?.tournamentIds?.add(tournamentId)
+                refreshOrInsertItem(sportId, locale, sport = it.value)
+                internalCache.getIfPresent(sportId)?.tournamentIds?.add(tournamentId)
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to refresh or insert sport for tournament ${it.key}" }
+            }
         }
     }
 
@@ -149,9 +160,8 @@ class SportDataCacheImpl @Inject constructor(
                 }
 
                 sports.forEach {
-                    val id = URN.parse(it.id)
                     try {
-                        refreshOrInsertItem(id, locale, sport = it)
+                        refreshOrInsertItem(URN.parse(it.id), locale, sport = it)
                     } catch (e: Exception) {
                         logger.error(e) { "Failed to insert or refresh sport" }
                     }

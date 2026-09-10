@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus
 import io.reactivex.plugins.RxJavaPlugins
 import io.reactivex.schedulers.Schedulers
 import io.reactivex.subjects.PublishSubject
+import io.reactivex.subjects.Subject
 import java.net.URI
 import javax.xml.datatype.DatatypeFactory
 import java.util.GregorianCalendar
@@ -41,12 +42,12 @@ class MatchStatusCacheFetchTest {
 
     private val matchId = URN.parse("od:match:42")
 
-    private fun summary(): RAMatchSummaryEndpoint = RAMatchSummaryEndpoint().apply {
+    private fun summary(homeScore: Double = 2.0): RAMatchSummaryEndpoint = RAMatchSummaryEndpoint().apply {
         sportEvent = RASportEvent().apply { id = matchId.toString() }
         sportEventStatus = RASportEventStatus().apply {
             status = "live"
             matchStatusCode = 201
-            homeScore = 2.0
+            this.homeScore = homeScore
             awayScore = 1.0
             isScoreboardAvailable = false
         }
@@ -159,6 +160,74 @@ class MatchStatusCacheFetchTest {
 
         subject.onNext(ApiResponse(summary().apply { generatedAt = generatedAt(20_000) }, URI.create("http://test"), Locale.ENGLISH))
         assertEquals("newer API snapshot must be applied", 2.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
+    }
+
+    private fun cacheWithInlineObserver(subject: Subject<Any>): MatchStatusCacheImpl {
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns subject.ofType(ApiResponse::class.java)
+        }
+        RxJavaPlugins.setIoSchedulerHandler { Schedulers.trampoline() }
+        return try {
+            MatchStatusCacheImpl(apiClient)
+        } finally {
+            RxJavaPlugins.reset()
+        }
+    }
+
+    private fun publish(subject: Subject<Any>, response: Any) =
+        subject.onNext(ApiResponse(response, URI.create("http://test"), Locale.ENGLISH))
+
+    // Two summaries for the same match can be queued and drained in either order.
+    @Test
+    fun observerNeverAppliesAnApiSnapshotOlderThanTheOneAlreadyStored() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+
+        publish(subject, summary(homeScore = 2.0).apply { generatedAt = generatedAt(20_000) })
+        publish(subject, summary(homeScore = 5.0).apply { generatedAt = generatedAt(10_000) })
+
+        assertEquals(2.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
+    }
+
+    // Without a generation time the snapshot cannot prove it is newer, so an
+    // existing entry is kept.
+    @Test
+    fun observerSkipsAnUndatedApiSnapshotWhenTheEntryExists() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = 10_000))
+
+        publish(subject, summary(homeScore = 2.0)) // no generated_at
+
+        assertEquals(3.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
+    }
+
+    // A feed message with a far-future timestamp must not pin the entry against
+    // every later API snapshot (the API is the only source of the winner id).
+    @Test
+    fun aFutureFeedTimestampDoesNotPinTheEntry() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        val now = System.currentTimeMillis()
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 3.0, timestamp = now + 86_400_000))
+
+        publish(subject, summary(homeScore = 2.0).apply { generatedAt = generatedAt(now + 1_000) })
+
+        assertEquals(2.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
+    }
+
+    // Readers keep the instance they obtained; an update must produce a new one.
+    @Test
+    fun updatesReplaceTheEntryInsteadOfMutatingIt() {
+        val subject = PublishSubject.create<Any>().toSerialized()
+        val cache = cacheWithInlineObserver(subject)
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 1.0, timestamp = 1_000))
+        val before = cache.getMatchStatus(matchId)!!
+
+        cache.onFeedMessageReceived(matchId, feedOddsChange(homeScore = 4.0, timestamp = 2_000))
+
+        assertEquals(1.0, before.homeScore, 0.0)
+        assertEquals(4.0, cache.getMatchStatus(matchId)!!.homeScore, 0.0)
     }
 
     @Test

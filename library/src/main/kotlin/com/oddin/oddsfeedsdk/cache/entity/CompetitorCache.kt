@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -52,6 +53,11 @@ class CompetitorCacheImpl @Inject constructor(
             .map { it.locale to it.response }
             // Never side-load on the thread that made the API call: it holds its own
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { logger.warn { "Dropping competitor side-load response, the observer is behind" } }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the

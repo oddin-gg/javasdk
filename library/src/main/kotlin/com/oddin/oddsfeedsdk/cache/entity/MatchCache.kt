@@ -19,6 +19,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEvent
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentSchedule
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.utils.Utils
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -58,6 +59,11 @@ class MatchCacheImpl @Inject constructor(
             .map { it.locale to it.response }
             // Never side-load on the thread that made the API call: it holds its own
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { logger.warn { "Dropping match side-load response, the observer is behind" } }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the
@@ -124,8 +130,12 @@ class MatchCacheImpl @Inject constructor(
 
     private fun handleMatchData(locale: Locale, tournaments: List<RASportEvent>) {
         tournaments.forEach {
-            val id = URN.parse(it.id)
-            refreshOrInsertItem(id, locale, it)
+            // One malformed element must not cost the rest of the batch.
+            try {
+                refreshOrInsertItem(URN.parse(it.id), locale, it)
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to refresh or insert match ${it.id}" }
+            }
         }
     }
 
