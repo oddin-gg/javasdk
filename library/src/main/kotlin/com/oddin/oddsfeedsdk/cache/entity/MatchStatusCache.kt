@@ -21,6 +21,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAScoreboard
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.utils.Utils
+import io.reactivex.BackpressureStrategy
 import io.reactivex.disposables.Disposable
 import io.reactivex.schedulers.Schedulers
 import kotlinx.coroutines.runBlocking
@@ -40,6 +41,10 @@ class MatchStatusCacheImpl @Inject constructor(
     private val apiClient: ApiClient
 ) : MatchStatusCache {
     private val lock = Any()
+
+    companion object {
+        private val MAX_CLOCK_SKEW_MS = TimeUnit.MINUTES.toMillis(1)
+    }
     private val subscriptions = mutableListOf<Disposable>()
     private val internalCache = CacheBuilder
         .newBuilder()
@@ -52,6 +57,11 @@ class MatchStatusCacheImpl @Inject constructor(
             .map { it.locale to it.response }
             // Never side-load on the thread that made the API call: it holds its own
             // cache lock, so a synchronous observer nests cache locks and can deadlock.
+            // Bounded hand-off: a backlog is dropped and logged instead of buffered without
+            // limit. Side-loading only warms the cache; a dropped response is fetched on
+            // demand later.
+            .toFlowable(BackpressureStrategy.MISSING)
+            .onBackpressureDrop { logger.warn { "Dropping match status side-load response, the observer is behind" } }
             .observeOn(Schedulers.io())
             .subscribe({ response ->
                 // Everything in here is guarded: an exception escaping onNext disposes the
@@ -69,14 +79,7 @@ class MatchStatusCacheImpl @Inject constructor(
                     val generatedAt = Utils.parseDate(summary.generatedAt)?.time
 
                     synchronized(lock) {
-                        val existing = internalCache.getIfPresent(id)
-                        // This response may have waited in the observer queue while the feed
-                        // already moved the status on. Never replace fresher feed data with
-                        // an older REST snapshot.
-                        if (existing != null && generatedAt != null && generatedAt < existing.lastFeedTimestamp) {
-                            return@synchronized
-                        }
-                        refreshOrInsertApiItem(id, status)
+                        applyApiSnapshot(id, status, generatedAt)
                     }
                 } catch (e: Exception) {
                     logger.error(e) { "Failed to side-load match status" }
@@ -105,16 +108,14 @@ class MatchStatusCacheImpl @Inject constructor(
         } ?: return internalCache.getIfPresent(id)
 
         // Store the status from the response we just received instead of relying on
-        // the asynchronous ApiResponse observer having run already. Anything stored in
-        // the meantime (a feed update, or the observer) is at least as fresh, so keep it.
+        // the asynchronous ApiResponse observer having run already.
         val status = summary.sportEventStatus ?: return internalCache.getIfPresent(id)
+        val generatedAt = Utils.parseDate(summary.generatedAt)?.time
         return synchronized(lock) {
-            if (internalCache.getIfPresent(id) == null) {
-                try {
-                    refreshOrInsertApiItem(id, status)
-                } catch (e: Exception) {
-                    logger.error(e) { "Failed to store match status for $id" }
-                }
+            try {
+                applyApiSnapshot(id, status, generatedAt)
+            } catch (e: Exception) {
+                logger.error(e) { "Failed to store match status for $id" }
             }
             internalCache.getIfPresent(id)
         }
@@ -128,7 +129,7 @@ class MatchStatusCacheImpl @Inject constructor(
 
         synchronized(lock) {
             try {
-                refreshOrInsertFeedItem(id, message.sportEventStatus, message.getTimestamp())
+                applyFeedSnapshot(id, message.sportEventStatus, message.getTimestamp())
             } catch (e: Exception) {
                 logger.error(e) { "Failed to process message in match status cache - $message" }
             }
@@ -141,67 +142,59 @@ class MatchStatusCacheImpl @Inject constructor(
         }
     }
 
-    private fun refreshOrInsertFeedItem(id: URN, data: OFSportEventStatus, generatedAt: Long) {
-        var item = internalCache.getIfPresent(id)
-
-        if (item == null) {
-            item = LocalizedMatchStatus(
-                null,
-                EventStatus.fromFeedEventStatus(data.status),
-                mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
-                data.matchStatus,
-                data.homeScore,
-                data.awayScore,
-                data.isScoreboardAvailable,
-                makeFeedScoreboard(data.scoreboard)
-            )
+    // Feed messages are the live source: they always apply, and they move the entry's
+    // watermark forward. A message claiming to come from the future (skewed producer
+    // clock) must not be allowed to pin the entry against every later API snapshot.
+    private fun applyFeedSnapshot(id: URN, data: OFSportEventStatus, messageTimestamp: Long) {
+        val existing = internalCache.getIfPresent(id)
+        val now = System.currentTimeMillis()
+        val fence = if (messageTimestamp > now + MAX_CLOCK_SKEW_MS) {
+            logger.warn { "Feed message for $id carries a future timestamp $messageTimestamp, using receive time" }
+            now
         } else {
-            item.status = EventStatus.fromFeedEventStatus(data.status)
-            item.periodScores = mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf())
-            item.matchStatusId = data.matchStatus
-            item.homeScore = data.homeScore
-            item.awayScore = data.awayScore
-            item.isScoreboardAvailable = data.isScoreboardAvailable
-            // Update scoreboard only when ready
-            if (data.scoreboard != null) {
-                item.scoreboard = makeFeedScoreboard(data.scoreboard)
-            }
+            messageTimestamp
         }
-
-        item.lastFeedTimestamp = maxOf(item.lastFeedTimestamp, generatedAt)
+        val item = LocalizedMatchStatus(
+            winnerId = existing?.winnerId,
+            status = EventStatus.fromFeedEventStatus(data.status),
+            periodScores = mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
+            matchStatusId = data.matchStatus,
+            homeScore = data.homeScore,
+            awayScore = data.awayScore,
+            isScoreboardAvailable = data.isScoreboardAvailable,
+            // Update scoreboard only when ready
+            scoreboard = if (data.scoreboard != null) makeFeedScoreboard(data.scoreboard) else existing?.scoreboard,
+            properties = existing?.properties ?: mutableMapOf()
+        )
+        item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, fence)
         internalCache.put(id, item)
     }
 
-    private fun refreshOrInsertApiItem(id: URN, data: RASportEventStatus) {
-        var item = internalCache.getIfPresent(id)
-
-        if (item == null) {
-            item = LocalizedMatchStatus(
-                if (data.winnerId != null) URN.parse(data.winnerId) else null,
-                EventStatus.fromApiEventStatus(data.status),
-                mapApiPeriodScores(data.periodScores?.periodScore ?: listOf()),
-                data.matchStatusCode,
-                data.homeScore,
-                data.awayScore,
-                data.isScoreboardAvailable,
-                makeApiScoreboard(data.scoreboard)
-            )
-        } else {
-            item.winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null
-            item.status = EventStatus.fromApiEventStatus(data.status)
-            item.periodScores = mapApiPeriodScores(data.periodScores?.periodScore ?: listOf())
-            item.matchStatusId = data.matchStatusCode
-            item.homeScore = data.homeScore
-            item.awayScore = data.awayScore
-            item.isScoreboardAvailable = data.isScoreboardAvailable
-
-            // Update scoreboard only when ready
-            if (data.scoreboard != null) {
-                item.scoreboard = makeApiScoreboard(data.scoreboard)
-            }
+    // API snapshots may arrive late (the side-loading observer is asynchronous) and out
+    // of order. One is applied only when it is provably newer than what the entry
+    // already holds; a snapshot without a generation time cannot prove that.
+    // Entries are replaced, never mutated in place, so a reader holding the previous
+    // instance keeps a consistent snapshot.
+    private fun applyApiSnapshot(id: URN, data: RASportEventStatus, generatedAt: Long?): Boolean {
+        val existing = internalCache.getIfPresent(id)
+        if (existing != null && (generatedAt == null || generatedAt <= existing.lastUpdateTimestamp)) {
+            return false
         }
-
+        val item = LocalizedMatchStatus(
+            winnerId = if (data.winnerId != null) URN.parse(data.winnerId) else null,
+            status = EventStatus.fromApiEventStatus(data.status),
+            periodScores = mapApiPeriodScores(data.periodScores?.periodScore ?: listOf()),
+            matchStatusId = data.matchStatusCode,
+            homeScore = data.homeScore,
+            awayScore = data.awayScore,
+            isScoreboardAvailable = data.isScoreboardAvailable,
+            // Update scoreboard only when ready
+            scoreboard = if (data.scoreboard != null) makeApiScoreboard(data.scoreboard) else existing?.scoreboard,
+            properties = existing?.properties ?: mutableMapOf()
+        )
+        item.lastUpdateTimestamp = generatedAt ?: 0
         internalCache.put(id, item)
+        return true
     }
 
     private fun mapApiPeriodScores(periodScores: List<RAPeriodScore>): List<PeriodScore> {
@@ -360,9 +353,9 @@ data class LocalizedMatchStatus(
     var scoreboard: Scoreboard?,
     var properties: MutableMap<String, Any?> = mutableMapOf()
 ) {
-    // Generation time of the newest feed message applied to this entry; API snapshots
-    // older than this are ignored by the side-loading observer.
-    var lastFeedTimestamp: Long = 0
+    // Generation time (feed message timestamp or API generated_at) of the data this
+    // entry holds. An API snapshot is applied only when it is newer than this.
+    var lastUpdateTimestamp: Long = 0
 }
 
 class MatchStatusImpl(

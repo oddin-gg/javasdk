@@ -19,6 +19,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -35,6 +36,13 @@ class OddsFeedSessionResilienceTest {
     private val listener = mockk<OddsFeedListener>(relaxed = true)
     private val extListener = mockk<OddsFeedExtListener>(relaxed = true)
     private val dispatchManager = DispatchManagerImpl()
+    private var session: OddsFeedSessionImpl? = null
+
+    @After
+    fun tearDown() {
+        session?.close()
+        dispatchManager.close()
+    }
 
     private fun feedMessage(product: Int): FeedMessage {
         val message = OFOddsChange()
@@ -59,6 +67,7 @@ class OddsFeedSessionResilienceTest {
             ExchangeProviderImpl()
         )
         session.open(listOf("#"), MessageInterest.ALL, listener, if (withExtListener) extListener else null)
+        this.session = session
         return session
     }
 
