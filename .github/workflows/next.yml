@@ -1,0 +1,46 @@
+name: Java SDK 1.0 CI
+
+on:
+  pull_request:
+    branches:
+      - 'next'
+  push:
+    branches:
+      - 'next'
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'corretto'
+          cache: 'maven'
+          # Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
+          server-id: github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+
+      - name: Build and test
+        run: ./mvnw --batch-mode --no-transfer-progress verify
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: '**/target/surefire-reports/*.xml'
+          if-no-files-found: ignore
