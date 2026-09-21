@@ -31,16 +31,40 @@ jobs:
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 
-      - name: Check the Maven distribution is still pinned
-        # Without the pin the wrapper runs whatever the download URL returns, and this job
-        # hands that build a token. Guard the line so dropping it cannot pass unnoticed.
-        run: grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' .mvn/wrapper/maven-wrapper.properties
+      - name: Check the wrapper refuses a tampered distribution
+        # mvnw is vendored here, so a change to it could quietly drop the digest check, and this
+        # job hands the build a token. Point the wrapper at a wrong digest with an empty cache and
+        # require it to give up before Maven starts. The real pin is restored afterwards.
+        run: |
+          grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' .mvn/wrapper/maven-wrapper.properties
+          sed -i 's/^distributionSha256Sum=.*/distributionSha256Sum=0000000000000000000000000000000000000000000000000000000000000000/' \
+            .mvn/wrapper/maven-wrapper.properties
+          if MAVEN_USER_HOME="$(mktemp -d)" ./mvnw -v; then
+            echo "the wrapper ran Maven from a distribution that failed its checksum" >&2
+            exit 1
+          fi
+          git checkout -- .mvn/wrapper/maven-wrapper.properties
+          grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' .mvn/wrapper/maven-wrapper.properties
 
       - name: Build and test
         run: ./mvnw --batch-mode --no-transfer-progress verify
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check the integration tests ran
+        # BuildWiringIT is an *IT, so it cannot notice the failsafe binding disappearing from
+        # under it. The summary can: no file, or zero completed, means verify skipped them all.
+        run: |
+          summary=system-tests/target/failsafe-reports/failsafe-summary.xml
+          if [ ! -f "$summary" ]; then
+            echo "no failsafe summary: the integration tests did not run" >&2
+            exit 1
+          fi
+          if grep -q '<completed>0</completed>' "$summary"; then
+            echo "failsafe ran zero integration tests" >&2
+            exit 1
+          fi
 
       - name: Upload test reports
         if: always()
