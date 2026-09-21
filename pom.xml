@@ -54,6 +54,7 @@
     <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
     <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
     <jacoco-maven-plugin.version>0.8.13</jacoco-maven-plugin.version>
+    <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
   </properties>
 
   <dependencyManagement>
@@ -82,21 +83,6 @@
       </dependency>
     </dependencies>
   </dependencyManagement>
-
-  <repositories>
-    <!--
-      Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
-      Locally: a <server> with id "oddin-github" in ~/.m2/settings.xml, the same id the client setup guide uses (any GitHub token with read:packages).
-      CI: setup-java writes the same server entry from GITHUB_TOKEN.
-    -->
-    <repository>
-      <id>oddin-github</id>
-      <url>https://maven.pkg.github.com/oddin-gg/javasdk</url>
-      <snapshots>
-        <enabled>false</enabled>
-      </snapshots>
-    </repository>
-  </repositories>
 
   <build>
     <pluginManagement>
@@ -152,6 +138,36 @@
                 </requireJavaVersion>
               </rules>
             </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <!--
+          ${revision} is only a build-time property: without this the installed POM would still
+          say 1.0.0-SNAPSHOT while the artifact sits under the version CI passed in.
+          This rewrites the version and nothing else.
+        -->
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>flatten-maven-plugin</artifactId>
+        <version>${flatten-maven-plugin.version}</version>
+        <configuration>
+          <updatePomFile>true</updatePomFile>
+          <flattenMode>resolveCiFriendliesOnly</flattenMode>
+        </configuration>
+        <executions>
+          <execution>
+            <id>flatten</id>
+            <phase>process-resources</phase>
+            <goals>
+              <goal>flatten</goal>
+            </goals>
+          </execution>
+          <execution>
+            <id>flatten-clean</id>
+            <phase>clean</phase>
+            <goals>
+              <goal>clean</goal>
+            </goals>
           </execution>
         </executions>
       </plugin>
