@@ -27,7 +27,7 @@ jobs:
           distribution: 'corretto'
           cache: 'maven'
           # Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
-          server-id: github
+          server-id: oddin-github
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 
