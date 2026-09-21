@@ -25,6 +25,23 @@
     <maven.install.skip>true</maven.install.skip>
   </properties>
 
+  <repositories>
+    <!--
+      Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
+      Declared here, not in the parent: a POM repository is searched before Maven Central,
+      so only the module that actually needs it should carry it.
+      Locally: a <server> with id "oddin-github" in ~/.m2/settings.xml, the same id the client setup guide uses (any GitHub token with read:packages).
+      CI: setup-java writes the same server entry from GITHUB_TOKEN.
+    -->
+    <repository>
+      <id>oddin-github</id>
+      <url>https://maven.pkg.github.com/oddin-gg/javasdk</url>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+    </repository>
+  </repositories>
+
   <dependencies>
     <!-- The SDK under test, resolved by coordinate. -->
     <dependency>
@@ -77,6 +94,24 @@
           <!-- Nothing to run until the first scenarios land. -->
           <failIfNoTests>false</failIfNoTests>
         </configuration>
+      </plugin>
+      <plugin>
+        <!--
+          Scenarios that need a container or a fake server are named *IT and run in the
+          integration-test phase. Without this execution failsafe is versioned but never
+          runs, and `verify` would pass while skipping every one of them.
+        -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>integration-tests</id>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
