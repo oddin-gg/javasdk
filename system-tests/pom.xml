@@ -27,9 +27,21 @@
 
   <repositories>
     <!--
+      Central is named first on purpose. A repository declared in a POM is searched before the
+      one Maven inherits, so without this entry every junit/assertj/logback lookup would go to
+      the packages registry first and anyone able to publish there could shadow a public
+      artifact. In this order only odds-feed, which Central does not have, falls through.
+    -->
+    <repository>
+      <id>central</id>
+      <url>https://repo.maven.apache.org/maven2</url>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+    </repository>
+    <!--
       Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
-      Declared here, not in the parent: a POM repository is searched before Maven Central,
-      so only the module that actually needs it should carry it.
+      Declared here, not in the parent, so it covers only the module that needs it.
       Locally: a <server> with id "oddin-github" in ~/.m2/settings.xml, the same id the client setup guide uses (any GitHub token with read:packages).
       CI: setup-java writes the same server entry from GITHUB_TOKEN.
     -->
@@ -68,15 +80,12 @@
 
     <!--
       The 0.0.x jar targets Java 8 and uses javax.xml.bind, which modern JDKs no longer ship.
-      These two let the old SDK run on the JDK 25 toolchain. They are harmless for the new SDK,
-      and Maven 3 cannot switch them on by version prefix, so they stay unconditional.
+      This lets the old SDK run on the JDK 25 toolchain. It is harmless for the new SDK, and
+      Maven 3 cannot switch it on by version prefix, so it stays unconditional.
+      The API comes with the runtime (jakarta.xml.bind-api, which still holds the javax.xml.bind
+      classes); adding javax.xml.bind:jaxb-api on top would put two copies of the same package
+      on the classpath and leave the winner to classpath order. BuildWiringIT checks there is one.
     -->
-    <dependency>
-      <groupId>javax.xml.bind</groupId>
-      <artifactId>jaxb-api</artifactId>
-      <version>2.3.1</version>
-      <scope>test</scope>
-    </dependency>
     <dependency>
       <groupId>org.glassfish.jaxb</groupId>
       <artifactId>jaxb-runtime</artifactId>
