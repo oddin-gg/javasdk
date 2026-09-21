@@ -264,70 +264,78 @@ Performance is a requirement, not a follow-up.
 
 ## 10. Work breakdown
 
-Small tickets, one PR each, one to three days. Each has a visible result. Order
+Small tickets, one PR each, half a day to three days. Each has a visible result. Order
 matters where it says so, the rest can run in parallel.
 
 ### Phase 0 – Foundation
 
 1. This design doc approved.
 2. `next` branch, root POM, Maven wrapper, JDK 25, empty CI green. Only the
-   `system-tests` module exists.
-3. Fake REST server for tests, serving the schema fixtures.
-4. Fake AMQP feed for tests, replaying fixture messages.
-5. First system tests green against 0.0.56: open, receive an odds change, read a
-   match, close.
-6. Cut `release/0.x`, keep its Java 8 CI green, add the dual-line checkbox to the PR
-   template.
+   `system-tests` module exists. It depends on the SDK by coordinate, so switching
+   between the old and the new SDK is one version property.
+3. Pin the schema repo at a commit and unpack its fixtures and XSDs in the build.
+   Everything below reads them.
+4. Fake REST server for tests, serving the schema fixtures.
+5. Fake feed for tests: RabbitMQ in a container plus a publisher that replays fixture
+   messages. An in-process fake is not possible, the old SDK opens a real connection.
+6. First system tests green against 0.0.56: open, receive an odds change, read a
+   match, close. Includes the JAXB runtime the old jar needs on a modern JDK.
+7. Cut `release/0.x` once 0.0.56 is tagged, keep its Java 8 CI green, add the
+   dual-line checkbox to the PR template.
 
 ### Phase 1 – Contract and wire
 
-7. System tests: every feed message type and the callbacks it triggers.
-8. System tests: locales, invalidation, producer down and recovery, reconnect,
-   replay, exception strategy. Known differences from 0.0.x are listed, not fixed.
-9. `odds-feed` module with the whole public API as source-compatible declarations
-   and no behaviour. Old `examples` compile. Compatibility check runs in CI.
-10. Generated feed models plus golden decode tests. One ticket per message family.
-11. Generated REST models plus golden tests. One ticket per endpoint family.
-12. HTTP client: all endpoints, retry, timeouts, error mapping, API call events.
-13. Benchmark harness: corpus, JMH skeleton, CI budget check.
+8. System tests, batch two: every feed message type and the callbacks it triggers.
+9. System tests, batch three: locales, invalidation, producer down and recovery,
+   reconnect, replay, exception strategy, stale feed. Known differences from 0.0.x
+   are listed, not fixed.
+10. `odds-feed` module with the public entity and message types as source-compatible
+    declarations, no behaviour.
+11. The rest of the public API as declarations: managers, sessions, listeners,
+    configuration builder. Old `examples` compile. Compatibility check runs in CI.
+12. Generated feed models plus golden decode tests. One PR per message family.
+13. Generated REST models plus golden tests. One PR per endpoint family.
+14. HTTP client: all endpoints, retry, timeouts, error mapping, API call events.
+15. Benchmark harness: corpus, JMH skeleton, CI budget check.
 
 ### Phase 2 – Core
 
 Each ticket includes its concurrency and deadlock tests. System tests turn green
 group by group.
 
-14. Cache infrastructure: bounded, single-flight, per-locale fill-in, clear,
-    field ownership.
-15. Entity caches: match and fixture.
-16. Entity caches: competitor, player, tournament, sport.
-17. Catalog caches: market descriptions, void reasons, match status descriptions.
-18. Entity façades and factories with parallel multi-locale loading.
-19. AMQP layer: connection, reconnect, connection events, manual ack, prefetch,
+16. Cache infrastructure: bounded, single-flight, per-locale fill-in, clear,
+    field ownership, and the architectural test that fails on nested lock
+    acquisition across caches.
+17. Entity caches: match and fixture.
+18. Entity caches: competitor, player, tournament, sport.
+19. Catalog caches: market descriptions, void reasons, match status descriptions.
+20. Entity façades and factories with parallel multi-locale loading.
+21. AMQP layer: connection, reconnect, connection events, manual ack, prefetch,
     routing keys.
-20. Message factory, markets and outcomes, session dispatch.
-21. Producer manager and whoami.
-22. Recovery state machine, including re-issue on timeout and the stale-message
+22. Message factory, markets and outcomes, session dispatch.
+23. Producer manager and whoami.
+24. Recovery state machine, including re-issue on timeout and the stale-message
     safety net.
-23. Replay manager.
-24. `OddsFeed` façade, sessions, builder, idempotent lifecycle, watchdog.
+25. Replay manager.
+26. `OddsFeed` façade, sessions, builder, idempotent lifecycle, watchdog.
 
 ### Phase 3 – Parity and polish
 
-25. Field parity with the Go SDK, in small groups.
-26. Option and method parity.
-27. Telemetry headers and client properties.
-28. Logging cleanup. Noisy logs are a client complaint.
-29. README, examples, integration guide, FAQ update.
-30. Sweep the Go and .NET SDK history since this document for fixes to port.
+27. Field parity with the Go SDK, in small groups.
+28. Option and method parity.
+29. Telemetry headers and client properties.
+30. Logging cleanup. Noisy logs are a client complaint.
+31. README, examples, integration guide, FAQ update.
+32. Sweep the Go and .NET SDK history since this document for fixes to port.
 
 ### Phase 4 – Release
 
-31. Maven Central pipeline: namespace, signing, tag-driven publish.
-32. First release candidate, soak on the test environment, candidates to clients.
-33. Fix round.
-34. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released.
+33. Maven Central pipeline: namespace, signing, tag-driven publish.
+34. First release candidate, soak on the test environment, candidates to clients.
+35. Fix round.
+36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released.
 
-Critical path: 3 to 5, then 9, then 14, then 15 to 18, then 24, then 32. The
+Critical path: 3 to 6, then 10, then 16, then 17 to 20, then 26, then 34. The
 benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
 
 ---
@@ -350,7 +358,7 @@ benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
 
 1. Do the generated XML classes stay public, or do we only promise the raw bytes on
    the raw listener? Proposal: internal.
-2. JAXB or StAX for decoding? Decide with numbers from ticket 13.
+2. JAXB or StAX for decoding? Decide with numbers from ticket 15.
 3. Which clients test the release candidates? Needs an answer from customer success.
 4. Do the priority-split session interests keep exactly today's semantics? Proposal:
    yes, they are public API.
