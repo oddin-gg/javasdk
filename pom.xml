@@ -86,11 +86,11 @@
   <repositories>
     <!--
       Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
-      Locally: a <server> with id "github" in ~/.m2/settings.xml (any GitHub token with read:packages).
+      Locally: a <server> with id "oddin-github" in ~/.m2/settings.xml, the same id the client setup guide uses (any GitHub token with read:packages).
       CI: setup-java writes the same server entry from GITHUB_TOKEN.
     -->
     <repository>
-      <id>github</id>
+      <id>oddin-github</id>
       <url>https://maven.pkg.github.com/oddin-gg/javasdk</url>
       <snapshots>
         <enabled>false</enabled>
