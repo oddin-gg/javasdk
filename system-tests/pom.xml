@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.oddin.oddsfeed</groupId>
+    <artifactId>odds-feed-parent</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>system-tests</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Oddin Odds Feed SDK system tests</name>
+  <description>
+    Black-box tests that drive the SDK through its public API only, against a fake feed and a fake REST API.
+    They run unchanged against the old 0.0.x SDK and the new 1.0 SDK; the version is the sdk.version property.
+  </description>
+
+  <properties>
+    <!-- Not a library. Nothing here is published. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <maven.install.skip>true</maven.install.skip>
+  </properties>
+
+  <dependencies>
+    <!-- The SDK under test, resolved by coordinate. -->
+    <dependency>
+      <groupId>com.oddin.oddsfeed</groupId>
+      <artifactId>odds-feed</artifactId>
+      <version>${sdk.version}</version>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>ch.qos.logback</groupId>
+      <artifactId>logback-classic</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!--
+      The 0.0.x jar targets Java 8 and uses javax.xml.bind, which modern JDKs no longer ship.
+      These two let the old SDK run on the JDK 25 toolchain. They are harmless for the new SDK,
+      and Maven 3 cannot switch them on by version prefix, so they stay unconditional.
+    -->
+    <dependency>
+      <groupId>javax.xml.bind</groupId>
+      <artifactId>jaxb-api</artifactId>
+      <version>2.3.1</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-runtime</artifactId>
+      <version>2.3.9</version>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <!-- Nothing to run until the first scenarios land. -->
+          <failIfNoTests>false</failIfNoTests>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <!-- Tests only; there is no jar worth building. -->
+          <skipIfEmpty>true</skipIfEmpty>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
