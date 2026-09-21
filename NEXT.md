@@ -148,6 +148,10 @@ Four layers. Each one only talks to the one below.
 - Request ids are monotonic per process, never random.
 - Recovery that times out is re-issued. Alive gaps and processing delays are detected
   and recovered from without a restart.
+- Stale-message safety net. Message rates depend on what a client has booked, so the
+  SDK does not promise to keep up with every queue. It promises to notice when it has
+  not: if it finds itself consuming messages older than a configured age, it treats
+  the connection as unhealthy, reconnects and runs recovery.
 - Unknown producer ids are an error, not a fabricated producer.
 
 ### Connection
@@ -302,7 +306,8 @@ group by group.
     routing keys.
 20. Message factory, markets and outcomes, session dispatch.
 21. Producer manager and whoami.
-22. Recovery state machine, including re-issue on timeout.
+22. Recovery state machine, including re-issue on timeout and the stale-message
+    safety net.
 23. Replay manager.
 24. `OddsFeed` façade, sessions, builder, idempotent lifecycle, watchdog.
 
