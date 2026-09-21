@@ -58,8 +58,8 @@ Each decision has one line of reasoning. If you disagree, comment on the line.
 | 7 | `java.net.http.HttpClient` | Per instance, no global state, no dependency. |
 | 8 | XML models generated from the vendored schema, with the old class names kept | One source of truth for all SDKs. Golden tests from the schema fixtures. Existing casts in client code keep working. |
 | 9 | Manual ack after the listener callback returns, with prefetch | Backpressure that reaches the client code. A slow listener slows its own queue on the broker, not the JVM heap. |
-| 10 | No client callback ever runs on an AMQP or timer thread | Heartbeats, alive handling and timers can never be blocked by client code. |
-| 11 | No blocking wait of any kind under any lock | The only reliable way to not deadlock. Locks, single-flight waits and queue puts all count. |
+| 10 | No client callback ever runs on an AMQP, alive, recovery or timer thread | Heartbeats, alive handling, recovery and timers can never be blocked by client code. |
+| 11 | Caches never block. All waiting happens in loaders, never under a cache lock | The only reliable way to not deadlock, enforced by a dependency rule, not by convention. |
 | 12 | Old 0.0.x line stays supported until 31 March 2027 | Two clients are still on Java 8. Critical fixes and additive wire fields only. |
 | 13 | System tests first, before any new code | They run against the old and the new SDK. They are the proof that nothing broke. |
 | 14 | Sidecar is on hold | Some clients do not want to run our binary. Keep the API layer separable so it stays possible later. |
@@ -112,10 +112,17 @@ types in packages whose name contains `internal`.
    release notes. Both raw callbacks also get a new `default` method that delivers the
    raw XML bytes, which is what a raw listener should have offered from the start.
    The schema is vendored (section 9), so a shape change reaches this repo only
-   through our own pull request, never by surprise.
+   through our own pull request, never by surprise. Within the 1.x line a schema bump
+   that changes a public class's shape is not taken; additive schema changes are.
 5. Internal types move to `internal` packages. Client code that imported `*Impl`
    classes, the caches or the API client directly stops compiling. Those types were
    never meant to be used and the examples never touch them.
+6. The schema classes carry `jakarta.xml.bind` annotations instead of `javax.xml.bind`.
+   They are plain objects with getters and stay usable as such. Client code that
+   creates its own `JAXBContext` over them must move to Jakarta too.
+7. A replay session created next to live sessions on one `OddsFeed` no longer writes
+   replayed state into the live caches, producer liveness or recovery checkpoints. It
+   did, and that was a bug: replayed old scores overwrote live ones.
 
 ### Behaviour that stays, and that the implementation must not "fix"
 
@@ -123,6 +130,8 @@ types in packages whose name contains `internal`.
   synchronous and may fetch from REST when the cache is cold. They run on the caller's
   thread. A callback that touches a cold entity pays that latency on its own session
   only. Clients who want zero latency in callbacks use the preload options in section 5.
+  The same holds on the events dispatcher: a getter inside a producer-status callback
+  delays other events, which the documentation of that listener says.
 - `ExceptionHandlingStrategy` keeps its meaning. `THROW` propagates failures from
   getters to the caller, `CATCH` logs and returns null. Default stays `THROW`. A
   collection getter never returns a partial list: under `THROW` the first failed part
@@ -132,13 +141,14 @@ types in packages whose name contains `internal`.
 - Multi-session with the priority-split interests and the interest-combination
   validation stays exactly as today. A client may still create its own
   `SYSTEM_ALIVE_ONLY` session or a replay session next to live sessions.
-- Fixture-change deduplication across sessions stays: one `fixture_change` for the same
-  event and change timestamp reaches the client once within an hour, whichever session
-  carried it.
+- Fixture-change deduplication across sessions stays with today's key: producer, event
+  id and change timestamp, remembered for one hour.
 - Recovery messages are delivered to the client like any other message, on every
   session whose interest matches, as today.
 - Recovery methods keep returning the request id as a `Long`. A new status lookup by
   request id is added next to them, not instead of them.
+- `open()` is one-shot. After a fatal error the client closes the feed and creates a
+  new one. Same as today.
 - Delivery is at most once, as today. Exclusive queues die with the connection, so an
   unacknowledged message is never redelivered. The gap is closed by recovery, not by
   redelivery. Acking late buys backpressure, not at-least-once.
@@ -149,9 +159,10 @@ types in packages whose name contains `internal`.
 - A curated `api-usage` module calls every public signature once. It compiles against
   0.0.56 and against 1.0.0 in CI. This is the real source-compatibility gate.
 - A reflection test walks the public entry points, collects every reachable type, and
-  fails if one lives in an `internal` package or has no counterpart of the same name in
-  the 0.0.56 jar. This is what keeps "reachable" honest and keeps `api-usage` from
-  drifting: a type that appears in the walk but not in `api-usage` fails the test too.
+  fails if one lives in an `internal` package, or has no counterpart of the same name
+  in the 0.0.56 jar and is not on the **additions list**, a file in the repo that
+  names every type and method added in 1.x, reviewed like code. A reachable type
+  missing from `api-usage` fails the test too, so the curated module cannot drift.
 - A jar diff (japicmp) against 0.0.56 runs as an advisory report with an allowlist for
   the accepted differences. It answers binary questions, not source ones, so it does
   not gate.
@@ -163,11 +174,15 @@ types in packages whose name contains `internal`.
 
 ## 4. Architecture
 
-Four layers. Each one only talks to the one below.
+Four layers, describing what depends on what. Control flows in both directions
+through narrow interfaces: transport pushes connection events up, the recovery actor
+asks transport to replace a session channel through a `SessionTransport.reset()` call
+owned by ticket 21 and called by ticket 24, and wire classes travel to the extended
+listener because section 3 says they must.
 
 ```
  public API      OddsFeed, sessions, managers, entity interfaces
- core            entity façades, caches, recovery, producers, replay
+ core            entity façades, caches, loaders, recovery actor, producers, replay
  wire            feed decoder, REST client, generated XML models
  transport       AMQP connection, HTTP client
 ```
@@ -180,15 +195,26 @@ to one of them:
 | Group | Count | Runs | Never runs |
 |---|---|---|---|
 | AMQP I/O | owned by the AMQP client | frame reading, heartbeats | anything of ours |
-| AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues | decode, build, cache writes, client code |
-| Session dispatcher | one thread per session | decode, build, cache write, client callback, ack | nothing else |
-| Alive dispatcher | one thread | alive handling, clock offset, producer liveness | client code |
-| Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, API call events, recovery completion | message callbacks |
-| REST workers | virtual threads | HTTP calls | client code |
-| Timers | one scheduled executor | scheduling only, each tick hands off | blocking work, client code |
+| AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues; the alive hand-off | decode, build, cache writes, client code, anything blocking |
+| Session dispatcher | one thread per session | decode, build, cache write, client callback, ack, age sampling | nothing else |
+| Alive dispatcher | one thread | alive decode, clock offsets, posting liveness facts to the recovery actor | REST, client code |
+| Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision | REST calls (it posts them to REST workers and receives the result as a message), client code |
+| Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, fatal errors, listener exceptions, API call events, recovery completion | message callbacks |
+| REST workers | virtual threads | HTTP calls, posting results back to whoever asked | client code |
+| Timers | one scheduled executor | scheduling only, each tick posts a message to an actor or a worker | blocking work, client code |
 
 Decision 10 in one sentence: client code runs on a session dispatcher or on the events
-dispatcher, nowhere else.
+dispatcher, nowhere else. The recovery actor in one sentence: nobody touches producer
+or recovery state except by posting to it, so the state machine has one owner and no
+locks.
+
+The events dispatcher has two queues. The control queue carries connection state,
+producer status, fatal errors, health and recovery completion; it is bounded at 10 000
+and a full queue is counted and logged, never blocked on. The telemetry queue carries
+API call events and listener-exception reports; it is bounded at 1 000 and drops the
+oldest with a counter. A wedged events dispatcher is reported by the watchdog through
+`getHealth()` and the log, because the health event itself would queue behind the
+wedge.
 
 ### Delivery
 
@@ -196,92 +222,101 @@ dispatcher, nowhere else.
   as today. `basicQos(prefetch)` per channel. Prefetch is configurable in the range
   1 to 10 000, default 200. Zero is rejected, because the broker reads it as unlimited.
 - The SDK always runs its own alive consumer on its own channel, whatever sessions the
-  client created. It acks immediately and feeds the alive dispatcher. A client's
-  `SYSTEM_ALIVE_ONLY` session, if any, is an ordinary session and does not carry
-  producer liveness. The clock offset for the safety net is measured here, at
-  receipt, before any queue.
+  client created. Its consumer callback hands the raw alive to the alive dispatcher and
+  acks. A client's `SYSTEM_ALIVE_ONLY` session, if any, is an ordinary session and does
+  not carry producer liveness.
 - The consumer callback for a session channel does one thing: it puts the raw delivery
   (body bytes, envelope, delivery tag, channel epoch) into that session's queue. The
-  queue is bounded at the prefetch count. It cannot overflow, because the broker never
-  has more than `prefetch` unacknowledged messages on that channel. The hand-off never
-  blocks and the consumer executor is never busy for longer than a queue put, so one
-  session cannot delay another session's deliveries or the alive channel.
+  queue holds at most `prefetch` entries per epoch and is drained of old epochs before
+  a new channel's consumer is registered, so the broker's limit of `prefetch`
+  unacknowledged messages per channel is the queue's bound. The hand-off never blocks
+  and the consumer executor is never busy for longer than a queue put, so one session
+  cannot delay another session's deliveries or the alive channel.
+- A body larger than the configured maximum message size (default 1 MiB) is not
+  decoded. It is counted, reported as unparsable, and acked. The per-session memory
+  budget is therefore `prefetch` times the maximum message size, and the configuration
+  documentation says so.
 - The session dispatcher takes a raw delivery, decodes it, builds the message object,
   writes the feed data into the caches, runs the client callback, then acks. Order is
   preserved per session. A slow callback lets unacked messages pile up to `prefetch`
   on the broker, which then stops delivering to that queue and only that queue.
-- A callback that throws is caught. The exception is logged, counted, and reported
-  through a new `default` method on the global listener. The message is acked anyway:
-  processing is finished, the failure belongs to the client. The dispatcher survives.
-  This holds under both exception strategies.
-- Undecodable messages are delivered to the unparsable-message callback and then
-  acked. Nothing is ever nacked with requeue; that would loop a poison message.
-- Every raw delivery carries the epoch of the channel it came from. When a channel is
-  replaced (reconnect, safety-net reset, session close), the session queue is drained
-  and every entry from the old epoch is discarded without ack. Acking a tag on a
-  channel that did not issue it is a channel error, so the epoch check is what keeps a
-  reset from turning into a loop. The discarded messages were on a queue the broker
-  has already deleted; recovery covers them.
+- Failures inside the dispatcher pipeline have one policy for every step: the
+  exception is caught, counted, reported through the listener-exception hook on the
+  global listener with a flag saying whether it came from client code or from the SDK,
+  and the message is acked. A decode failure additionally reaches the
+  unparsable-message callback. A build or cache-write failure does not reach the
+  message callback, because there is no message object to deliver. The dispatcher
+  survives every case. Nothing is ever nacked with requeue; that would loop a poison
+  message.
+- Every raw delivery carries the epoch of the channel it came from. Channel
+  replacement (reconnect, safety-net reset, session close) follows one sequence, run
+  by the AMQP layer on request of the recovery actor or of the lifecycle: cancel the
+  old consumer, advance the epoch, remove every old-epoch entry from the session queue,
+  declare the new queue, register the new consumer. An ack for an old-epoch tag is
+  skipped. The discarded messages were on a queue the broker has already deleted;
+  recovery covers them.
 - When a session closes, its channel closes. Unacknowledged messages on that channel
   are dropped by the broker together with the exclusive queue. That is intended.
 - The broker's own queue length limit is set by the operator, not by the SDK. The SDK
-  does not declare `x-max-length`. What it does when a queue is behind is the safety
-  net below.
+  does not declare `x-max-length`. The operator's limit must be larger than the
+  configured prefetch, otherwise the broker drops the oldest ready messages silently
+  and the safety net cannot see it; the configuration documentation and the onboarding
+  checklist say so.
 
 ### REST
 
-- Two permit pools per `OddsFeed`. The control pool covers whoami, producers, recovery
-  requests and catalog refreshes, size 4, not configurable. The data pool covers entity
-  loading, default 16, configurable. Entity fan-out can never starve recovery.
+- Three permit pools per `OddsFeed`. The recovery pool covers recovery requests and
+  producer and whoami calls, size 2. The catalog pool covers market descriptions, void
+  reasons, status descriptions and sports, size 2. The data pool covers entity loading,
+  default 16, configurable. Nothing else can delay a recovery request behind it.
+- Every REST call runs under one deadline, the configured HTTP timeout, which covers
+  permit wait, the call, and every retry. Retries happen only inside the deadline. A
+  getter that fetches therefore waits at most the HTTP timeout, and that is the number
+  the configuration option documents.
 - A permit is held for one HTTP call only, never across a fan-out. A match load
   releases its permit before its competitor loads acquire theirs, so nested loads
   cannot hold every permit in parents while children wait.
-- Acquiring a permit waits at most the HTTP timeout. A getter therefore waits at most
-  twice the HTTP timeout, once for the permit and once for the call, and that bound is
-  documented on the configuration option.
 - Independent calls run in parallel on virtual threads, under the data pool.
-- Retries only for idempotent calls, with backoff. HTTP 429 and `Retry-After` are
-  honoured. 401 and 403 are permanent: the call fails at once, nothing retries, and a
-  fatal error event goes to the events dispatcher in addition to the caller's exception
-  or null, so a `CATCH` client is not left with silent nulls.
+- Retries only for idempotent calls, with backoff, inside the deadline. HTTP 429 and
+  `Retry-After` are honoured within the same deadline. 401 and 403 are permanent: the
+  call fails at once, nothing retries, and a fatal error event goes to the events
+  dispatcher in addition to the caller's exception or null.
 - Partial failure in a parallel fan-out: `THROW` fails the getter with the first error;
   `CATCH` returns null for the whole collection. Never a short list.
+- Startup: `open()` needs whoami and the producer list. It retries them inside a
+  startup deadline (default three times the HTTP timeout), then fails with a clear
+  exception. It never blocks indefinitely and never starts half-configured.
 
-### Caches
+### Caches and loaders
 
-Bounds:
+Structure:
+
+- A cache is a bounded map with values, per-key metadata and no I/O. It never calls
+  anything that can block. A **loader** owns the fetching: single-flight, permits,
+  deadlines, merging a response into one or more caches. Loaders call caches; caches
+  never call loaders. An architectural dependency test (ArchUnit or equivalent) fails
+  the build if the cache package depends on the loader, HTTP or AMQP packages. This
+  is the structural form of decision 11; the latch-based deadlock tests remain as a
+  second net.
+- Single-flight is in the loader. Concurrent misses for the same key wait for the one
+  fetch under the same deadline as the fetch itself plus a margin. Waiters that time
+  out fail with the exception strategy; they do not start their own fetch.
+- Side-loading queues never block the producer. When full, they drop and count.
+
+Bounds and freshness:
 
 - Caffeine. Entity caches have a maximum size and expire after write with the same
   ages as today: match, fixture and tournament 12 hours, competitor and player
-  24 hours, match status 20 minutes. Expire after write means a hot key is refreshed
-  from REST at least that often, which is also the path that corrects a value the SDK
-  got wrong. Nothing is unbounded. No soft references.
-- Catalog caches (market descriptions, void reasons, match status descriptions, sports
-  list) refresh after write. An expired entry is served while the refresh runs and
-  while it fails, up to a maximum staleness of 24 hours. Past that the entry is treated
-  as missing and the caller gets the exception strategy. Serving stale raises a health
-  state (section on watchdog). Failed refreshes back off per locale.
+  24 hours, match status 20 minutes. Freshness is tracked per locale block inside an
+  entry: each locale's data carries its own fetch time, and a locale older than the
+  entry's age is refetched on read even if another locale was written recently.
+  Nothing is unbounded. No soft references.
+- Catalog caches refresh after write. An expired entry is served while the refresh runs
+  and while it fails, up to a maximum staleness of 24 hours. Past that the entry is
+  treated as missing and the caller gets the exception strategy. Serving stale raises a
+  health state. Failed refreshes back off per locale.
 - The caches hold entities, statuses and catalogs. They do not hold market state or
-  odds; those live only in the messages the client receives. Eviction of a match
-  status loses nothing REST cannot restore, because status and scores are in the
-  summary.
-
-Blocking rule:
-
-- **No blocking wait of any kind while holding a lock.** Not a lock, not a
-  single-flight wait, not a permit, not a queue put, not I/O. Check the cache, release,
-  fetch, merge.
-- Concurrent misses for the same key wait for one fetch (single-flight). The wait is
-  bounded by the fetch's own bound, twice the HTTP timeout, plus a margin. Waiters that
-  time out fail with the exception strategy; they do not start their own fetch, so a
-  slow REST does not turn single-flight into a stampede.
-- A fetch never waits on another cache's fetch. Data another cache needs is either in
-  the response already, or loaded on demand later by whoever asks.
-- Side-loading queues never block the producer. When full, they drop and count. A
-  dropped side-load only means the data is fetched on demand later.
-- The architectural test for ticket 16 fails when a cache acquires another cache's
-  lock, joins another cache's single-flight, or blocks on a queue or permit while
-  holding its own lock. It runs every cache pair cold and concurrently with latches.
+  odds; those live only in the messages the client receives.
 
 Write rule:
 
@@ -289,56 +324,65 @@ Write rule:
   competitor the authoritative endpoint of its player list is the competitor profile;
   of its name per locale, the profile in that locale. For a match status it is the
   match summary. Ticket 16 carries the full table.
-- A response from the authoritative endpoint replaces the fields it is authoritative
-  for, verbatim, in the locale it was fetched for. A field the response omits is
-  cleared. That is how a retracted winner disappears from the summary.
-- A response from any other endpoint that happens to carry data for an entity (a
-  summary carrying competitor names, a schedule carrying tournaments) **fills only**:
-  it writes fields that are currently absent and never overwrites a present one. This
-  is what makes the summary useful without a profile fetch, and what keeps a partial
-  projection from erasing richer data.
+- An authoritative response replaces the fields it is authoritative for, in the locale
+  it was fetched for, and marks them **authoritatively written**. A field the response
+  omits is cleared and stays marked. That is how a retracted winner disappears from
+  the summary. Locale-independent fields are written by every authoritative response
+  regardless of locale; two parallel locale fetches carry the same server state, so
+  last writer wins is correct, and omission-clear applies to them only when the
+  endpoint always serialises the field when it exists.
+- A response from any other endpoint that happens to carry data for an entity **fills
+  only**: it writes fields that are absent and were never authoritatively written. It
+  never touches a field the authoritative endpoint has written or cleared, so a
+  cleared value cannot resurrect from a later schedule or summary. Fill-only writes
+  never set a loaded-locale mark; only an authoritative fetch for that locale does.
 - A write never starts a fetch. Writes are synchronous, short, and take only the lock
   of the cache being written.
-- Every cache key has a generation counter, kept in a bounded side map sized like the
-  cache and expiring after the cache's own age. Invalidation (a `fixture_change`, a
-  public clear) bumps it. An authoritative fetch remembers the generation it started
-  with and its result is discarded if the generation moved. Fill-only writes do not
-  check generations; they can only add what is absent, and a clear makes the entry
-  absent, so the worst case is a stale name that the next authoritative fetch corrects.
-  The stale-result path counts and the caller of a discarded fetch re-reads the cache,
-  which by then holds the fresh value or triggers a fresh fetch.
+- Every cache entry carries its generation. Invalidation (a `fixture_change`, a public
+  clear) bumps the generation and removes the value but keeps the entry as a
+  **tombstone** with the new generation, bounded by the cache's own size and age. An
+  authoritative fetch remembers the generation it started with and discards its result
+  if the entry's generation differs or the entry is gone; the caller re-reads, which
+  by then holds a fresh value or starts a fresh fetch. Fill-only writes do not check
+  generations; they can only add what is absent and unmarked.
 
 Ownership and ordering:
 
 - Feed messages own live status, scores, period scores and the match clock. REST owns
   everything else. Market state and odds are not cached.
-- Feed-owned fields carry a watermark per entity and producer: the `timestamp` of the
-  last feed message that wrote them. A message from the same producer with an older
+- The feed watermark is the `timestamp` of the last live feed message that wrote
+  feed-owned fields, kept per entity and producer in a bounded record with an age of
+  24 hours, longer than the status entry it protects, so an evicted status does not
+  forget how recent the feed was. A message from the same producer with an older
   timestamp does not write feed-owned fields. It is still built and delivered; the
   watermark orders cache writes, never delivery. Messages that carry no feed-owned
-  fields (settlements, cancels, bet stops) are not watermark-checked at all.
-- Feed and REST clocks are never compared. A REST snapshot writes feed-owned fields
-  only when the entry has no feed watermark, or when the last feed write is older
-  than the match status age (20 minutes) by the SDK's own clock. In other words, a live
-  match is owned by the feed; a match the feed has gone quiet on falls back to REST.
-  The `generated_at` attribute is optional on the wire and is not used for ordering.
+  fields (settlements, cancels, bet stops) are not watermark-checked at all. Snapshot
+  messages, recognisable by their recovery request id, write like live messages but
+  never advance checkpoints (see recovery).
+- Feed and REST clocks are never compared directly. Two rules replace the comparison:
+  - REST writes feed-owned fields only when the entity has no feed watermark, or when
+    the watermark is older than the match status age (20 minutes) by the SDK's own
+    receipt clock. A live match is owned by the feed; a match the feed has gone quiet
+    on falls back to REST.
+  - A feed message whose corrected age (section on the safety net) exceeds the same
+    20 minutes does not write feed-owned fields either. A message that old is a
+    delayed backlog message, and REST has since taken over. It is still delivered.
 - Within a feed message, a missing optional scalar means "keep what you have", never
   "reset to zero". Both schemas mark scores optional.
-- After eviction an entry is cold, has no watermark, and the next read takes REST as
-  authoritative. That is today's behaviour on a cache miss.
 - Fixture-change deduplication is one shared, concurrent map per `OddsFeed`, keyed by
-  event id and change timestamp, bounded in size and expiring after one hour. All
-  session dispatchers consult it before delivering.
-- Caches belong to one `OddsFeed` instance. A replay session created next to live
-  sessions on the same instance shares those caches and producer state, as today; the
-  isolation a client gets from a separate replay instance is documented as the
-  recommended setup, not enforced.
+  producer, event id and change timestamp, bounded in size and expiring after one
+  hour. Evictions before expiry are counted. All session dispatchers consult it before
+  delivering.
+- Caches, producer state and checkpoints belong to one `OddsFeed` instance. Replay
+  messages on an instance that also has live sessions do not write feed-owned fields,
+  do not advance checkpoints and do not feed producer liveness (difference 7). On a
+  replay-only instance they do all three.
 
 Locales and catalogs:
 
 - Loaded-locale marks are stored with the values they describe and share their
-  lifetime. A mark cannot outlive its values, and values cannot outlive their mark.
-  New sports, tournaments and markets show up without a restart.
+  lifetime. A mark is set only by an authoritative fetch for that locale. New sports,
+  tournaments and markets show up without a restart.
 - Catalog entries carry their provenance: bulk-listed or individually fetched. A
   refresh of a list endpoint replaces the bulk-listed entries for that locale and
   leaves individually fetched ones (dynamic market variants) alone; those expire on
@@ -348,50 +392,67 @@ Locales and catalogs:
 
 ### Recovery and producers
 
+All of this state lives in the recovery actor. Sessions, the alive dispatcher, timers
+and REST workers post facts to it; it decides and posts work out.
+
 - Recovery is a state machine per producer, with tests that drive it through every
   transition.
-- Request ids start from a random 31-bit seed per process, as today, and increase by
-  one. The seed avoids a restart within the same second reusing ids. Ids are scoped by
-  the configured node id. A completion for an id the SDK did not issue, or has already
-  closed, is ignored and logged. Two instances sharing one node id can still collide;
-  the documentation requires distinct node ids per instance and the SDK logs a warning
-  when a completion arrives for an id it issued but on a request it did not send.
-- The recovery checkpoint is kept **per producer and per session**: each session
-  records the timestamp of the last message it finished for each producer. A recovery
-  for a producer starts from the oldest checkpoint among the sessions that receive
-  that producer, so a session that lags behind never has its interval skipped. A
-  client-supplied recovery-from timestamp (existing setter) seeds all of them.
-- The recovery-from point is clamped to the producer's stateful recovery window, as
-  today. A cold start with no seed requests a full snapshot. A client-supplied
-  timestamp older than the window is clamped and logged.
+- Request ids start from a random 31-bit seed per process and increase by one; on
+  reaching the range end the actor reseeds. The random start makes a restart within
+  the same second unlikely to reuse ids. The actor keeps the set of ids it has in
+  flight; a completion for any other id is ignored and counted. Two instances sharing
+  one node id cannot be told apart by the SDK, so the documentation and the onboarding
+  checklist require distinct node ids per instance.
+- Checkpoints are kept **per producer and per session**. A session's checkpoint for a
+  producer is the running maximum of the `timestamp` of live (non-snapshot) messages
+  it has finished for that producer. When the alive dispatcher observes an alive for a
+  producer and a session's queue holds nothing for that producer, the session's
+  checkpoint advances to the alive timestamp, because everything sent before that
+  alive has been processed. Snapshot messages never advance a checkpoint, so a retry
+  after a partial snapshot starts from the same point as the first attempt.
+- A recovery for a producer starts from the oldest checkpoint among the sessions that
+  receive it. A client-supplied recovery-from timestamp (existing setter) seeds all of
+  them before `open()`. The point is clamped to the producer's stateful recovery
+  window, as today, and a cold start with no seed requests a full snapshot.
+- Session lifecycle: a session that closes leaves the checkpoint and completion sets
+  at once. A session that opens is seeded with the producer's current recovery-from
+  point and triggers a recovery for its interests, as today on `open()`.
 - Snapshot completion is tracked per message interest, as today: a producer is up
   again when every session that receives it has seen its `snapshot_complete`.
+- Requests for one producer are coalesced: while a recovery is in flight, further
+  triggers join it instead of issuing a second one, and their reasons are recorded.
 - Recovery that times out is re-issued with backoff, at most three times in a row.
   After that the producer stays down and the client gets a producer-status event with
-  the reason. The cap re-arms when an alive from that producer arrives after a gap, so
-  an outage longer than the retry window does not leave a producer down forever once
-  it is healthy again.
+  the reason. The cap re-arms after a cool-down of ten minutes, and immediately when an
+  alive arrives after a gap. Nothing stays down for the process lifetime without a
+  further attempt.
 - The safety net. Message rates depend on what a client has booked, and the SDK does
   not promise to keep up with every queue. Backpressure protects the JVM and the
   broker connection. The safety net bounds how far behind a client can fall: past a
   point, one recovery snapshot is cheaper than processing a long stale backlog message
-  by message. The rule, per session:
+  by message. The rule, decided by the recovery actor from facts the sessions post:
   - Age of a message is its producer timestamp against the SDK clock corrected by the
-    offset measured on the alive channel, which is never backpressured. Age is sampled
-    when the dispatcher takes the message, so it includes both broker backlog and the
-    session's own queue.
-  - When the age stays above the configured limit for the configured window, the
-    session's channel is replaced: a fresh exclusive queue, the old backlog dropped by
-    the broker, the session queue drained by epoch. Then a recovery is requested for
-    every producer the session receives, from the oldest checkpoint as above.
-  - The net is suspended for a session while a recovery it triggered is in progress,
-    and it ignores messages that carry a recovery request id, so a large snapshot
-    cannot trigger the net that asked for it.
-  - It backs off between resets and shares the recovery cap. When the cap is spent the
-    net stops resetting: messages keep flowing under backpressure, the producer is
-    marked down with reason "consumer too slow", and a health event is raised. That
-    is the arbitration between backpressure and the net: backpressure always wins in
-    the end, the net gets three tries to shortcut it.
+    offset measured for **that producer** on its own alives. If a producer's last alive
+    is older than two alive intervals, its offset is stale and the net is disabled for
+    that producer until alives resume. Age is sampled when the dispatcher takes the
+    message, so it includes both broker backlog and the session's own queue.
+  - Snapshot messages are excluded from the age sample on every session, and the net
+    is paused for a producer, on every session, while any recovery for that producer
+    is in flight. This stops one session's snapshot from tripping another session.
+  - When the age of live messages from a producer stays above the configured limit for
+    the configured window, the actor first requests a recovery for that producer from
+    the oldest checkpoint. Only when the request has been accepted does it ask the
+    AMQP layer to replace the session's channel. A rejected or failed request means no
+    reset: the actor backs off, counts, and raises an event. Data is never dropped
+    before its replacement is on the way.
+  - Each reset raises an event and increments counters (resets, messages dropped by
+    the reset, epoch discards), so an operator can see exactly when and why.
+  - The net backs off between resets and has its own cap of three per session per
+    cool-down. When spent, the net stops resetting: messages keep flowing under
+    backpressure, the session is marked "lagging" in `getHealth()` with a health event,
+    and the producer is **not** marked down, because a slow consumer on one session is
+    not a producer fault and other sessions may be healthy. Backpressure wins in the
+    end; the net gets three tries to shortcut it.
   - Recovery messages reach every session of the producer, not only the one that
     reset. Healthy sessions process them as ordinary messages, as today with any
     recovery.
@@ -404,21 +465,26 @@ Locales and catalogs:
   close.
 - Reconnect with backoff on network failures. Exclusive queues are always re-declared;
   whatever the broker buffered for the old queue is gone, and recovery covers it.
-- Authentication and authorisation failures and a wrong virtual host are permanent.
-  They stop the reconnect loop and surface as a fatal error event with the broker's
-  reason.
+- Authentication and authorisation failures and a wrong virtual host are treated as
+  permanent after three consecutive occurrences within one minute, because a single
+  refusal can be an auth backend blip. Permanent means the reconnect loop stops and a
+  fatal error event carries the broker's reason. The client's exit is `close()` and a
+  new `OddsFeed`; `open()` is one-shot, as today.
 - Broker resource limits (connections, queues) are transient. They are retried with a
   long backoff and surface as an error event each time, never as a silent hang.
+- `open()` is all or nothing. It creates the connection, the alive consumer and every
+  session's channel and queue; if any step fails, everything created so far is closed,
+  nothing has delivered a message, and `open()` throws. The client may call `open()`
+  on a fresh instance again.
 
 ### Wire
 
 - XML models are generated from the vendored schema. Binding customisations keep the
   old class names, packages and getters (section 3).
-- The decoder is the untrusted-input boundary. DTDs off, external entities off, and a
-  maximum document size that bounds parser work. The body has already been received
-  as one byte array by the time the decoder sees it; the AMQP frame limit and the
-  fact that only our own producers publish to these queues bound the allocation. One
-  malformed document costs one unparsable callback, nothing more.
+- The decoder is the untrusted-input boundary. DTDs off, external entities off. Body
+  size is bounded before decoding by the maximum message size from the delivery
+  section; the decoder's own limits bound parser work. One malformed document costs
+  one unparsable callback, nothing more.
 - Unknown enum values decode to an `UNKNOWN` constant, and the message keeps the raw
   string in a separate getter next to the enum getter. Unknown attributes and elements
   are ignored in production and fail the golden tests, so producer drift shows up in
@@ -427,26 +493,33 @@ Locales and catalogs:
 ### Watchdog and health
 
 The SDK checks itself. It watches the consumer executor, every session dispatcher, the
-events dispatcher, and `ThreadMXBean` for monitor deadlocks. A dispatcher inside one
-callback for longer than the configured limit, an executor that has not moved, or a
-reported deadlock produces a loud log line, a health event on the global listener (new
-`default` method), and a state change in `getHealth()`.
+alive dispatcher, the recovery actor, the events dispatcher, the timer executor, and
+`ThreadMXBean` for monitor deadlocks. Every internal blocking wait in the SDK has a
+deadline, so a wedge on a permit, a latch or a queue, which `ThreadMXBean` cannot see,
+turns into a timeout with a counter instead of a silent hang. A dispatcher inside one
+callback for longer than the configured limit, an executor whose queue has not moved
+while non-empty, or a reported deadlock produces a loud log line, a health event on the
+global listener (new `default` method), and a state change in `getHealth()`.
 
-`getHealth()` also exposes the degraded-but-running counters the design deliberately
-creates: dropped side-loads, catalogs served stale and for how long, unparsable
-messages, callback exceptions, discarded stale fetches, and per-session queue depth.
-Silent degradation is a log line plus a counter, never only a log line.
+`getHealth()` exposes the counters for every degradation the design deliberately
+allows: dropped side-loads, catalogs served stale and for how long, unparsable
+messages, oversized messages, callback and pipeline exceptions, discarded stale fetches,
+dedup evictions, safety-net resets and the messages they dropped, epoch discards,
+recovery requests issued, re-issued and failed, reconnects, events queue overflows,
+and per-session queue depth and lag state. Silent degradation is a log line plus a
+counter plus, for anything that discards data, an event.
 
 Remediation is limited and stated: the watchdog does not kill threads. A wedged
-dispatcher is reported; the session can be closed and rebuilt by the client, and
-`close()` on the feed uses the shutdown timeout so a wedged callback cannot block
-shutdown. A stall must never be silent again, but the SDK cannot unwedge client code.
+dispatcher is reported; the client's remedy is `close()` and a new `OddsFeed`, and
+`close()` uses the shutdown timeout so a wedged callback cannot block shutdown. A stall
+must never be silent again, but the SDK cannot unwedge client code.
 
 ---
 
 ## 5. New in 1.0
 
-Additive only. All of it exists in the Go SDK already.
+Additive only, and every addition is on the additions list (section 3). All of it
+exists in the Go SDK already.
 
 - Entities: `Category` on tournaments, reference ids on matches and tournaments,
   `Statistics` on match status, `IconPath` and `Abbreviation`, competitor ids on
@@ -455,11 +528,13 @@ Additive only. All of it exists in the Go SDK already.
   `ProducerStatus`, replay status, recovery status by request id, `getHealth()`.
 - Cache control: clear methods per entity type, reload of void reasons.
 - Configuration: default locale, preload locales, eager entity preload for messages,
-  HTTP timeout, prefetch, REST concurrency limit, max inactivity, max recovery time,
-  stale-message limit and window, exchange names, shutdown timeout, API call logging.
+  HTTP timeout, startup deadline, prefetch, maximum message size, REST concurrency
+  limit, max inactivity, max recovery time, stale-message limit and window, exchange
+  names, shutdown timeout, API call logging.
 - Events on the global listener, all as `default` methods: connection state changes,
-  health events, listener exceptions, fatal REST errors, API call events with method,
-  URL, status and latency, producer-status reasons that name the cause.
+  health events, listener and pipeline exceptions, fatal errors, safety-net resets,
+  API call events with method, URL, status and latency, producer-status reasons that
+  name the cause.
 - Raw data: `default` methods on the extended listener delivering raw XML bytes for
   feed messages and REST responses, and raw-string getters next to enum getters.
 - Telemetry: SDK version in the HTTP `User-Agent` and in AMQP client properties.
@@ -476,16 +551,19 @@ Things the Java SDK has and Go does not stay: multi-session with priority intere
 | Old | `release/0.x` | Kotlin, Gradle, Java 8 | 0.0.57+ | 31 March 2027 |
 | New | `next`, then `main` | Java 25, Maven | 1.0.0-rc.N, then 1.0.0 | ongoing |
 
-What the old line gets until its end date: critical fixes, and additive wire fields
-(a new XML attribute the producers start sending). Nothing else.
+What the old line gets until its end date: critical fixes, additive wire fields (a new
+XML attribute the producers start sending), and one retrofit in ticket 7: the vendored
+schema fixtures and a small golden decode test over them, so the old line has a pin and
+a test like the new one.
 
 How the two lines stay in sync on the wire: each line vendors the schema at a pinned
-commit and decodes its fixtures in its own tests, so a line that moves its pin proves
-it decodes the new fixture. A line that does not move its pin stays green on its old
-copy, so the pin itself needs watching: a scheduled CI job in this repo compares both
-lines' pinned commits with the schema repo's head and fails when either line lags by
-more than seven days. A schema bump is one PR per line, opened together. The PR
-template checkbox is a reminder; the drift job is the control.
+commit and decodes its fixtures in its own tests. A scheduled CI job in this repo reads
+both pins and fails when either lags the schema repo's head by more than seven days
+**for additive changes**; a shape change to a public class is never taken into 1.x
+(difference 4) and the job reports it as "needs a decision" instead of failing. A
+schema bump is one PR per line, opened together. The PR template checkbox is a
+reminder; the drift job is the control, and the person who opens the schema PR owns
+the two SDK PRs.
 
 Timeline we communicated: test builds in October and November 2026, release at the
 end of November or beginning of December 2026.
@@ -500,23 +578,25 @@ Three layers. No ticket is done without its tests.
    container with a publisher that replays fixture messages, and a fake REST server
    serving the schema fixtures. They assert what a client can observe: which callbacks
    fire, entity values, locale handling, invalidation on fixture change, producer down
-   and recovery, reconnect, REST outage, authentication failure, stale feed, a
-   callback that throws, replay, exception strategy. They run against 0.0.56 first, so
-   we know each test actually tests something. Then they run against 1.0.0. Same
-   tests, one version property. CI runs the suite twice, once per version, and the
-   1.0.0 run asserts the loaded jar's version through the telemetry getter, so a
-   misconfigured build can never pass by silently testing the downloaded old jar.
+   and recovery, reconnect, REST outage, REST down at startup, authentication failure,
+   stale feed, a callback that throws, replay, exception strategy. They run against
+   0.0.56 first, so we know each test actually tests something. Then they run against
+   1.0.0. Same tests, one version property. CI runs the suite twice, once per version,
+   and the 1.0.0 run asserts the loaded jar's version through the telemetry getter, so
+   a misconfigured build can never pass by silently testing the downloaded old jar.
    Resolving 0.0.56 needs a GitHub Packages token; CI has one.
 2. **Unit and concurrency tests with every ticket.** Golden decode tests for every
-   message and endpoint from the schema fixtures. Cache tests: expiry, eviction,
-   locale fill-in, clear, single-flight, generation counter, fill-only versus
-   authoritative writes, watermark ordering, REST fallback after feed silence. The
-   blocking-rule test from section 4. Deadlock tests: concurrent cold loads of every
-   cache pair with latches, asserting no deadlocked threads and completion in time.
-   Recovery state machine tests including per-session checkpoints, the caps and the
-   re-arm. Safety-net tests including the snapshot exemption and the cap arbitration.
-   Channel-epoch tests for every replacement path. Lifecycle races: open, close,
-   reconnect.
+   message and endpoint from the schema fixtures. Cache tests: expiry per locale,
+   eviction, locale marks, clear, tombstones and generations, authoritative versus
+   fill-only writes including a cleared field that must not resurrect, watermark
+   ordering with the long-lived watermark record, REST fallback after feed silence,
+   stale-message write suppression. The dependency test for caches versus loaders and
+   the latch-based deadlock tests. Recovery actor tests: per-session checkpoints,
+   alive-based advance, snapshot exemption, coalescing, caps and re-arm, session open
+   and close. Safety-net tests: per-producer offsets, stale offset, request-before-
+   reset ordering, rejected request, cap arbitration. Channel-epoch tests for every
+   replacement path including the drain-before-register order. Events dispatcher
+   bounds. `open()` rollback on partial failure. Lifecycle races.
 3. **Soak and client tests last.** Real test broker, replay of recorded traffic,
    release candidates to clients who volunteered.
 
@@ -531,7 +611,11 @@ Performance is a requirement, not a follow-up.
 
 - A benchmark harness in the repo: recorded production-shaped odds changes replayed
   through decode, cache and entity build, with JMH. Budgets per message for time and
-  allocation. Runs in CI as a regression check.
+  allocation. Runs in CI as a regression check. It has a **cold scenario** as well: a
+  restart-shaped run where every entity is a miss and eager preload is on, against the
+  fake REST server with realistic latency, with a budget on time-to-caught-up. The
+  cold path is the one that decides whether a client trips the safety net after a
+  restart.
 - Rules for the hot path: no copying of cached descriptions to read one field, one
   lookup per market and locale per message, names resolved lazily on first
   `getName()`, no `String.format` or boxing in loops.
@@ -553,7 +637,7 @@ Performance is a requirement, not a follow-up.
   copy. The build never reaches out to another repository. Old releases stay
   rebuildable. The drift job from section 6 watches the pin.
 - JDK 25 toolchain, JaCoCo, Surefire and Failsafe, Enforcer, the compatibility checks,
-  XML generation from the vendored schema.
+  the additions list, XML generation from the vendored schema.
 - Version from the git tag. GitHub Actions on `v1*` tags from `next` or `main`: build,
   compatibility checks, system tests against both versions, then a pipeline step that
   queries the target registry and fails if the version already exists, then sign and
@@ -585,61 +669,70 @@ matters where it says so, the rest can run in parallel.
    messages. An in-process fake is not possible, the old SDK opens a real connection.
 6. First system tests green against 0.0.56: open, receive an odds change, read a
    match, close. Includes the JAXB runtime the old jar needs on a modern JDK.
-7. Cut `release/0.x` once 0.0.56 is tagged, keep its Java 8 CI green, add the
-   dual-line checkbox to the PR template and the schema drift job.
+7. Cut `release/0.x` once 0.0.56 is tagged, keep its Java 8 CI green, vendor the
+   fixtures there with a golden decode test, add the dual-line checkbox to the PR
+   template and the schema drift job.
 
 ### Phase 1 – Contract and wire
 
 8. System tests, batch two: every feed message type and the callbacks it triggers.
 9. System tests, batch three: locales, invalidation, producer down and recovery,
-   reconnect, REST outage, authentication failure, throwing callback, replay,
-   exception strategy, stale feed. Known differences from 0.0.x are listed, not fixed.
+   reconnect, REST outage, REST down at startup, authentication failure, throwing
+   callback, replay, exception strategy, stale feed. Known differences from 0.0.x are
+   listed, not fixed.
 10. `odds-feed` module with the public entity and message types as source-compatible
     declarations, no behaviour.
 11. The rest of the public API as declarations: managers, sessions, listeners,
     configuration builder. Old `examples` compile. The `api-usage` module compiles
-    against both versions. The reachability test. Compatibility checks run in CI.
+    against both versions. The reachability test with the additions list.
+    Compatibility checks run in CI.
 12. Generated feed models with name-preserving bindings, decoder hardening, raw-string
     getters, plus golden decode tests. One PR per message family. Lists the types
     whose shape changed.
 13. Generated REST models with name-preserving bindings plus golden tests. One PR per
     endpoint family. Same list.
-14. HTTP client: all endpoints, two permit pools with acquire timeout, retry for
-    idempotent calls only, timeouts, error mapping including permanent failures with
-    the fatal event, 429 handling, API call events.
-15. Benchmark harness: corpus, JMH skeleton, CI budget check.
+14. HTTP client: all endpoints, three permit pools, one deadline per call covering
+    permit, call and retries, retry for idempotent calls only, error mapping including
+    permanent failures with the fatal event, 429 handling, startup deadline, API call
+    events.
+15. Benchmark harness: corpus, JMH skeleton, warm and cold scenarios, CI budget check.
 
 ### Phase 2 – Core
 
 Each ticket includes its concurrency and deadlock tests. System tests turn green
 group by group.
 
-16. Cache infrastructure: bounds and ages, single-flight with bounded wait, generation
-    counters in a bounded side map, authoritative versus fill-only writes with the
-    per-field endpoint table, per-locale fill-in with shared lifetime, clear, feed
-    watermarks per producer, REST fallback after feed silence, and the architectural
-    test for the blocking rule.
+16. Cache and loader infrastructure: caches as non-blocking maps, loaders with
+    single-flight and deadlines, the cache-versus-loader dependency test, bounds and
+    per-locale ages, generations with tombstones, authoritative versus fill-only
+    writes with the authoritatively-written marks and the per-field endpoint table,
+    locale marks, clear, the long-lived feed watermark record, REST fallback after
+    feed silence, stale-message write suppression, and the latch-based deadlock tests.
 17. Entity caches: match and fixture.
 18. Entity caches: competitor, player, tournament, sport.
 19. Catalog caches: market descriptions, void reasons, match status descriptions,
     provenance-aware refresh with stale serving and maximum staleness.
 20. Entity façades and factories with parallel multi-locale loading and the
     partial-failure rule.
-21. AMQP layer: connection, reconnect with permanent versus transient classification,
-    connection events, one channel per session, prefetch validation, raw hand-off into
-    bounded session queues, channel epochs, the SDK-owned alive consumer, unparsable
-    disposition.
-22. Session dispatchers: decode, build, cache write, callback, ack, throwing-callback
-    policy; message factory, markets and outcomes; fixture-change deduplication; the
-    events dispatcher.
+21. AMQP layer: connection, reconnect with permanent versus transient classification
+    and the three-strikes rule, connection events, one channel per session, prefetch
+    validation, maximum message size, raw hand-off into bounded session queues, the
+    channel replacement sequence with epochs and `SessionTransport.reset()`, the
+    SDK-owned alive consumer, unparsable disposition, `open()` rollback.
+22. Session dispatchers: decode, build, cache write, callback, ack, the one failure
+    policy for every step; message factory, markets and outcomes; fixture-change
+    deduplication with today's key; the events dispatcher with its two bounded queues.
 23. Producer manager and whoami.
-24. Recovery state machine: random-seeded ids, per-producer-per-session checkpoints,
-    window clamping, per-interest completion, re-issue with cap and re-arm, the safety
-    net with clock correction, snapshot exemption and cap arbitration, producer-status
-    reasons.
-25. Replay manager.
-26. `OddsFeed` façade, sessions, builder, idempotent lifecycle, watchdog, `getHealth()`
-    with the degradation counters.
+24. Recovery actor: single owner thread, random-seeded ids with reseed, per-producer-
+    per-session checkpoints with alive-based advance and snapshot exemption, window
+    clamping, per-interest completion, session open and close, coalescing, re-issue
+    with cap and re-arm, the safety net with per-producer offsets, stale-offset
+    disable, pause during recovery, request-before-reset, its own cap and the lagging
+    state, producer-status reasons.
+25. Replay manager, including the mixed-instance rule (difference 7).
+26. `OddsFeed` façade, sessions, builder, one-shot lifecycle with all-or-nothing
+    `open()`, watchdog over every thread group, `getHealth()` with the full counter
+    list.
 
 ### Phase 3 – Parity and polish
 
@@ -647,7 +740,8 @@ group by group.
 28. Option and method parity.
 29. Telemetry headers and client properties.
 30. Logging cleanup. Noisy logs are a client complaint.
-31. README, examples, integration guide, FAQ update.
+31. README, examples, integration guide with the onboarding checklist (distinct node
+    ids, prefetch versus queue limit), FAQ update.
 32. Sweep the Go and .NET SDK history since this document for fixes to port.
 
 ### Phase 4 – Release
@@ -658,7 +752,7 @@ group by group.
 35. Fix round.
 36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released.
 
-Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 26, then 34. The
+Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 34. The
 benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
 
 ---
@@ -681,8 +775,10 @@ benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
   class-file version; nothing runs on the wrong SDK. Release notes and the end-of-life
   notice say so.
 - **Shared node ids.** Two instances configured with the same node id can confuse each
-  other's recoveries. The SDK can warn, not prevent. Documentation and the client
-  onboarding checklist carry the rule.
+  other's recoveries. The SDK cannot detect it. Documentation and the onboarding
+  checklist carry the rule.
+- **Operator queue limit below prefetch.** Silent drop-head loss the SDK cannot see.
+  The onboarding checklist carries the rule.
 - **JAXB speed.** Measured in Phase 1. Fallback is a StAX reader.
 - **Two Java 8 clients.** They cannot use 1.0. The old line covers them until the
   end date. Anything beyond that is a business decision, not a technical one.
@@ -715,21 +811,31 @@ old names (section 3, difference 4).
   global REST semaphore, permanent-failure detection, decoder hardening, watchdog
   scope, public API by reachability, generated classes keep names, real
   source-compatibility gate, vendored schema, release gates.
-- 2026-09-21: second automated review of the revised text, 59 findings kept. The
-  delivery model now hands raw bytes off the consumer executor and does everything
-  else on the session dispatcher; the SDK owns the alive consumer; every client
-  callback has a named thread; throwing callbacks are acked; channel epochs fence
-  replaced channels; two REST permit pools with acquire timeouts and no nested
-  permits; authoritative versus fill-only cache writes replace "clear on absence";
-  feed and REST clocks are no longer compared, REST takes over after feed silence;
-  watermarks per producer and only for the fields a message carries; entity caches
-  expire after write again; catalog refresh respects provenance and has a maximum
-  staleness; generation counters live in a bounded side map; recovery checkpoints are
-  per producer and per session with window clamping and per-interest completion;
-  recovery ids are random-seeded again; the recovery cap re-arms; the safety net is
-  suspended during its own snapshot and yields to backpressure after the cap; broker
-  limits are transient; `UNKNOWN` enums get a raw-string getter; the size limit claim
-  is corrected; degradation counters are exposed through `getHealth()`; system tests
-  run against both versions and assert the loaded one; the dual-line control is a
-  drift job, not the fixtures alone; accepted difference 5 for internal package moves;
-  reflection test enforces reachability; risks for shared coordinates and node ids.
+- 2026-09-21: second automated review of the revised text, 59 findings kept. Raw
+  hand-off off the consumer executor, SDK-owned alive consumer, named thread groups,
+  throwing callbacks acked, channel epochs, two REST pools, authoritative versus
+  fill-only writes, no clock comparison, per-producer watermarks, expire after write,
+  provenance-aware catalogs, bounded generation map, per-session checkpoints, random
+  ids, re-arming cap, safety net suspended during its snapshot and yielding after the
+  cap, transient broker limits, raw-string getters, health counters, system tests on
+  both versions, drift job, difference 5, reachability test.
+- 2026-09-22: third automated review, 52 findings kept, none critical. The recovery
+  actor now owns all producer and recovery state; the events dispatcher has two bounded
+  queues; caches are non-blocking maps and loaders do the waiting, enforced by a
+  dependency test; one deadline per REST call covers permit, call and retries; three
+  permit pools; startup deadline; maximum message size and the per-session memory
+  budget; the channel replacement sequence drains before it registers; one failure
+  policy for every pipeline step; authoritatively-written marks stop cleared fields
+  from resurrecting; tombstones keep generations inside the cache; the feed watermark
+  outlives the status entry; stale delayed feed messages do not write after REST took
+  over; per-locale freshness; dedup key restored to today's; replay next to live no
+  longer writes live state (difference 7); checkpoints advance on alives when the
+  session is drained and never on snapshots; sessions leave and join the checkpoint
+  sets; requests coalesce per producer; the cap re-arms on a cool-down; the safety net
+  uses per-producer offsets, pauses on every session during a recovery, requests
+  before it resets, and marks a session lagging instead of a producer down; the
+  additions list; Jakarta annotations as difference 6; the old line gets vendored
+  fixtures; the drift job distinguishes additive from shape changes; `open()` is all
+  or nothing; auth refusals need three strikes; watchdog covers every thread group and
+  every internal wait has a deadline; the benchmark has a cold scenario; counters for
+  everything that discards data.
