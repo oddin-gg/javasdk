@@ -31,6 +31,11 @@ jobs:
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 
+      - name: Check the Maven distribution is still pinned
+        # Without the pin the wrapper runs whatever the download URL returns, and this job
+        # hands that build a token. Guard the line so dropping it cannot pass unnoticed.
+        run: grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' .mvn/wrapper/maven-wrapper.properties
+
       - name: Build and test
         run: ./mvnw --batch-mode --no-transfer-progress verify
         env:
@@ -42,5 +47,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-reports
-          path: '**/target/surefire-reports/*.xml'
+          path: |
+            **/target/surefire-reports/*.xml
+            **/target/failsafe-reports/*.xml
           if-no-files-found: ignore

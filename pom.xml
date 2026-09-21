@@ -30,7 +30,7 @@
   </modules>
 
   <properties>
-    <!-- Version of this build. CI sets it from the git tag. -->
+    <!-- Version of this build. Every build uses this default until a release workflow passes -Drevision. -->
     <revision>1.0.0-SNAPSHOT</revision>
 
     <!--
