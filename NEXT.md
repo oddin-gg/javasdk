@@ -3,8 +3,8 @@
 Status: draft, waiting for review.
 
 This document describes how we rebuild the Java SDK. The short version: same public
-API, same Maven coordinates, new insides. Pure Java 25, no Kotlin, no RxJava, tests
-everywhere, and a release on Maven Central.
+API, same packages, a new group id, new insides. Pure Java 25, no Kotlin, no RxJava,
+tests everywhere, and a release on Maven Central.
 
 There are two versions of this design. The short one lives in our internal design-doc
 space and is written for people. This file is the detailed one. It is written for
@@ -51,7 +51,7 @@ Each decision has one line of reasoning. If you disagree, comment on the line.
 |---|---|---|
 | 1 | Pure Java, target Java 25 | Latest LTS. Most clients are on 25 or can move. No Kotlin runtime to clash with. |
 | 2 | Source compatibility, not binary | Clients recompile anyway when they bump the version. Lets us use records and `default` methods. |
-| 3 | Same packages, same coordinates `com.oddin.oddsfeed:odds-feed` | Upgrade is a version bump. Docs and links keep working. |
+| 3 | Same packages, new group id `gg.oddin.oddsfeed:odds-feed` | Every import stays as it is, so no source changes. Central verifies a group id against the matching domain, and ours is `oddin.gg`, so the old group id cannot be published there. Clients change one line and drop the registry and token setup entirely. |
 | 4 | First version is 1.0.0 | Clear line between old and new. |
 | 5 | Maven, multi-module | POMs stay buildable for years. Central publishing and API checks are standard plugins. Nobody on the team lives in Gradle. |
 | 6 | No RxJava, no coroutines | Plain executors and virtual threads. Fewer concepts, fewer surprises. |
@@ -645,9 +645,10 @@ Performance is a requirement, not a follow-up.
   manual approval step before the Central release, because Central is irreversible.
   The GitHub Release with the jar and POM is created afterwards. Signing key and
   Central credentials live in repository secrets.
-- The new line publishes to Maven Central only. The old line publishes to GitHub
-  Packages only, from `release/0.x`. Each line's pre-release check queries its own
-  registry. Never two release tags on one commit.
+- The new line publishes `gg.oddin.oddsfeed:odds-feed` to Maven Central only. The old
+  line keeps publishing `com.oddin.oddsfeed:odds-feed` to GitHub Packages only, from
+  `release/0.x`. Each line's pre-release check queries its own registry. Never two
+  release tags on one commit.
 
 ---
 
@@ -661,7 +662,8 @@ matters where it says so, the rest can run in parallel.
 1. This design doc approved.
 2. `next` branch, root POM, Maven wrapper, JDK 25, empty CI green. Only the
    `system-tests` module exists. It depends on the SDK by coordinate, so switching
-   between the old and the new SDK is one version property.
+   between the old and the new SDK is a group id and a version property - the group id
+   changes with 1.0, so one property is not enough.
 3. Vendor the schema: copy XSDs and fixtures into the repo with the source commit
    recorded and a refresh script. Everything below reads them.
 4. Fake REST server for tests, serving the schema fixtures.
@@ -746,8 +748,10 @@ group by group.
 
 ### Phase 4 – Release
 
-33. Maven Central pipeline: namespace, signing, registry check step, tag-driven
-    publish with manual approval for finals.
+33. Maven Central pipeline: claim the `gg.oddin` namespace, signing, registry check
+    step, tag-driven publish with manual approval for finals. Also publish a last
+    0.0.x version whose POM only relocates to the new coordinates, so a client who
+    forgets to change the dependency is told by their own build.
 34. First release candidate, soak on the test environment, candidates to clients.
 35. Fix round.
 36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released.
@@ -770,10 +774,12 @@ benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
   release notes; the compatibility check cannot see casts.
 - **Transitive binary breaks.** Not promised, not detectable by our gate. Mitigated by
   the major version and by the fact that no intermediate library is known.
-- **Same coordinates on two registries.** Dependency tooling that watches Maven Central
-  will offer 1.0.0 to the Java 8 clients as an upgrade. Their build fails loudly on the
-  class-file version; nothing runs on the wrong SDK. Release notes and the end-of-life
-  notice say so.
+- **Both SDKs on one classpath.** The two lines now have different group ids but the
+  same packages, so a client who adds the new dependency without removing the old one
+  gets two jars carrying the same classes. Maven sees two unrelated artifacts and says
+  nothing; which one wins is classpath order. The relocation POM on the old line, the
+  release notes and a ready-made dependency ban in the upgrade guide are the answer.
+  The upside of the split: nothing offers 1.0.0 to a Java 8 client as a version bump.
 - **Shared node ids.** Two instances configured with the same node id can confuse each
   other's recoveries. The SDK cannot detect it. Documentation and the onboarding
   checklist carry the rule.
