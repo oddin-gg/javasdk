@@ -5,13 +5,19 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.IOException;
 import java.io.StringReader;
-import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import javax.xml.XMLConstants;
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.annotation.XmlRootElement;
+import javax.xml.parsers.DocumentBuilderFactory;
 import org.junit.jupiter.api.Test;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 
 /**
  * Checks the build itself, not the SDK: that the classpath the scenarios will use is sane
@@ -21,6 +27,9 @@ import org.junit.jupiter.api.Test;
  * binding would simply stop it being executed. The CI job checks the failsafe summary for that.
  */
 class BuildWiringIT {
+
+  private static final String CENTRAL = "https://repo.maven.apache.org/maven2";
+  private static final String PACKAGES = "https://maven.pkg.github.com/oddin-gg/javasdk";
 
   @Test
   void theSdkUnderTestIsOnTheClasspath() throws ClassNotFoundException {
@@ -49,17 +58,74 @@ class BuildWiringIT {
   }
 
   @Test
-  void centralIsSearchedBeforeThePackagesRepository() throws IOException {
-    String pom = Files.readString(Path.of("pom.xml"));
-    int central = pom.indexOf("<id>central</id>");
-    int packages = pom.indexOf("<id>oddin-github</id>");
+  void centralIsSearchedBeforeThePackagesRepository() throws Exception {
+    // by URL, not by id: an entry named "central" pointing somewhere else would not protect anything
+    List<String> urls = declaredRepositoryUrls(basedir("module.basedir").resolve("pom.xml"));
 
-    assertThat(central)
-        .as("Central must be declared, or the packages repository is searched first")
-        .isNotNegative();
-    assertThat(central)
+    assertThat(urls)
+        .as("Central must be declared here, or the packages repository is searched first")
+        .contains(CENTRAL);
+    assertThat(urls.indexOf(CENTRAL))
         .as("a repository declared earlier wins, and only odds-feed should come from packages")
-        .isLessThan(packages);
+        .isLessThan(urls.indexOf(PACKAGES));
+  }
+
+  @Test
+  void theRootPomDeclaresNoRepositories() throws Exception {
+    // a repository in the parent applies to every module, including ones that never touch the SDK
+    Document root = parse(basedir("root.basedir").resolve("pom.xml"));
+
+    assertThat(root.getElementsByTagName("repositories").getLength())
+        .as("the parent must stay free of repositories, or every future module inherits them")
+        .isZero();
+  }
+
+  private static Path basedir(String property) {
+    String value = System.getProperty(property);
+    // an unresolved property arrives as "", and Path.of("") is the working directory,
+    // which would quietly point this test at the wrong POM
+    assertThat(value)
+        .as("%s is passed by the failsafe configuration; do not run this test outside Maven", property)
+        .isNotBlank();
+    return Path.of(value);
+  }
+
+  /** The repository URLs the POM really declares, in order: comments and profiles do not count. */
+  private static List<String> declaredRepositoryUrls(Path pom) throws Exception {
+    Element repositories = onlyChild(parse(pom).getDocumentElement(), "repositories");
+    List<String> urls = new ArrayList<>();
+    if (repositories == null) {
+      return urls;
+    }
+    NodeList children = repositories.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++) {
+      Node child = children.item(i);
+      if (child instanceof Element element && "repository".equals(element.getTagName())) {
+        Element url = onlyChild(element, "url");
+        if (url != null) {
+          urls.add(url.getTextContent().trim());
+        }
+      }
+    }
+    return urls;
+  }
+
+  private static Element onlyChild(Element parent, String name) {
+    NodeList children = parent.getChildNodes();
+    for (int i = 0; i < children.getLength(); i++) {
+      Node child = children.item(i);
+      if (child instanceof Element element && name.equals(element.getTagName())) {
+        return element;
+      }
+    }
+    return null;
+  }
+
+  private static Document parse(Path pom) throws Exception {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+    factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+    factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+    return factory.newDocumentBuilder().parse(pom.toFile());
   }
 
   @XmlRootElement(name = "ping")

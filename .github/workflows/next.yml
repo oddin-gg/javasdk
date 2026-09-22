@@ -34,16 +34,27 @@ jobs:
       - name: Check the wrapper refuses a tampered distribution
         # mvnw is vendored here, so a change to it could quietly drop the digest check, and this
         # job hands the build a token. Point the wrapper at a wrong digest with an empty cache and
-        # require it to give up before Maven starts. The real pin is restored afterwards.
+        # require it to give up before Maven starts. A failure for any other reason - no network,
+        # no Java, no disk - does not count, so the checksum message itself has to appear.
         run: |
           grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' .mvn/wrapper/maven-wrapper.properties
           sed -i 's/^distributionSha256Sum=.*/distributionSha256Sum=0000000000000000000000000000000000000000000000000000000000000000/' \
             .mvn/wrapper/maven-wrapper.properties
-          if MAVEN_USER_HOME="$(mktemp -d)" ./mvnw -v; then
+          set +e
+          MAVEN_USER_HOME="$(mktemp -d)" ./mvnw -v >wrapper.log 2>&1
+          status=$?
+          set -e
+          cat wrapper.log
+          git checkout -- .mvn/wrapper/maven-wrapper.properties
+          if [ "$status" -eq 0 ]; then
             echo "the wrapper ran Maven from a distribution that failed its checksum" >&2
             exit 1
           fi
-          git checkout -- .mvn/wrapper/maven-wrapper.properties
+          if ! grep -q 'Failed to validate Maven distribution SHA-256' wrapper.log; then
+            echo "the wrapper failed, but not on the checksum - this check proved nothing" >&2
+            exit 1
+          fi
+          rm -f wrapper.log
           grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' .mvn/wrapper/maven-wrapper.properties
 
       - name: Build and test
@@ -75,3 +86,37 @@ jobs:
             **/target/surefire-reports/*.xml
             **/target/failsafe-reports/*.xml
           if-no-files-found: ignore
+
+  wrapper-windows:
+    # The Windows wrapper validates the same pin in its own PowerShell implementation
+    # (mvnw.cmd), which nothing else here runs. Only that path is checked - the build itself
+    # is covered on Linux.
+    name: Wrapper checksum (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'corretto'
+
+      - name: Check mvnw.cmd refuses a tampered distribution
+        shell: pwsh
+        run: |
+          $props = '.mvn/wrapper/maven-wrapper.properties'
+          (Get-Content $props) -replace '^distributionSha256Sum=.*', ('distributionSha256Sum=' + ('0' * 64)) |
+            Set-Content $props
+          $env:MAVEN_USER_HOME = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))).FullName
+          $output = & cmd /c "mvnw.cmd -v 2>&1"
+          $status = $LASTEXITCODE
+          $output | Write-Host
+          git checkout -- $props
+          if ($status -eq 0) {
+            Write-Error "the wrapper ran Maven from a distribution that failed its checksum"
+          }
+          if ($output -notmatch 'Failed to validate Maven distribution SHA-256') {
+            Write-Error "the wrapper failed, but not on the checksum - this check proved nothing"
+          }

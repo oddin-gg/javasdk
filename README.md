@@ -2,7 +2,8 @@ Java SDK
 ----------------
 
 > **Java SDK 1.0 is being built on the `next` branch.** The design is in [NEXT.md](NEXT.md).
-> The new build is Maven: `./mvnw verify` from the repo root. It needs JDK 25 and, for the
+> The new build is Maven: `./mvnw verify` from the repo root. It needs JDK 25, `unzip` (the
+> wrapper checks the distribution against a pinned checksum, and that pin is the zip's) and, for the
 > system tests against a published 0.0.x release, a GitHub token with `read:packages` in
 > `~/.m2/settings.xml` under the server id `oddin-github`, the same id clients use. The old 0.0.x SDK lives in `library/`
 > and still builds with Gradle on JDK 8.
