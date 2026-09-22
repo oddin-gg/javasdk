@@ -20,12 +20,14 @@ import java.util.List;
 import javax.xml.XMLConstants;
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.annotation.XmlRootElement;
+import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
 
 /**
  * Checks the build itself, not the SDK: that the classpath the scenarios will use is sane, that
@@ -42,22 +44,29 @@ class BuildWiringIT {
 
   @Test
   void theSdkUnderTestIsOnTheClasspath() throws ClassNotFoundException {
-    assertThat(Class.forName("com.oddin.oddsfeedsdk.OddsFeed")).isNotNull();
+    assertThat(sdkEntryPoint()).isNotNull();
   }
 
   @Test
-  void theSdkJarIsTheOneWeKnow() throws Exception {
+  void theSdkArtifactsAreTheOnesWeKnow() throws Exception {
     Path jar = resolvedSdkJar();
+    // the POM sits beside the jar in the local repository and is read first: it decides the
+    // transitive dependencies, so pinning only the jar would leave the graph open
+    Path pom = jar.resolveSibling(jar.getFileName().toString().replaceAll("\\.jar$", ".pom"));
     String version = property("sdk.version");
-    String expected = knownSdkDigests().getProperty(version);
+    Properties known = knownSdkDigests();
 
-    assertThat(expected)
-        .as("no digest recorded for odds-feed %s; add one to sdk-jar-checksums.properties "
-            + "after checking where the jar came from", version)
+    assertThat(known.getProperty(version + ".jar"))
+        .as("no digest recorded for odds-feed %s; add the jar and pom digests to "
+            + "sdk-jar-checksums.properties once you know where they came from", version)
         .isNotNull();
     assertThat(sha256(jar))
         .as("%s is not the odds-feed %s we know - check which repository served it", jar, version)
-        .isEqualTo(expected);
+        .isEqualTo(known.getProperty(version + ".jar"));
+    assertThat(pom).as("the POM Maven read to build the classpath").isRegularFile();
+    assertThat(sha256(pom))
+        .as("%s is not the POM we know: what it declares ends up on the classpath", pom)
+        .isEqualTo(known.getProperty(version + ".pom"));
   }
 
   @Test
@@ -121,6 +130,17 @@ class BuildWiringIT {
   }
 
   @Test
+  void nothingInDotMvnCanRedirectResolution() throws IOException {
+    // maven.config is prepended to the command line, so "-s .mvn/settings.xml" there could
+    // mirror every repository the POMs name; extensions.xml loads before the POM is even built
+    try (var entries = Files.walk(basedir("root.basedir").resolve(".mvn"))) {
+      assertThat(entries.filter(Files::isRegularFile).map(Path::getFileName).map(Path::toString))
+          .as(".mvn holds files that decide how Maven resolves, before any POM has a say")
+          .containsExactly("maven-wrapper.properties");
+    }
+  }
+
+  @Test
   void aPublishedPomWouldCarryAResolvedVersion() throws Exception {
     // ${revision} is a build-time property: unflattened, a POM published from a release build
     // would name a version the artifact is not filed under
@@ -137,10 +157,16 @@ class BuildWiringIT {
         .isEqualTo(version);
   }
 
+  /** Looked up without running it: initialising an unverified class is the thing to avoid. */
+  private static Class<?> sdkEntryPoint() throws ClassNotFoundException {
+    return Class.forName(
+        "com.oddin.oddsfeedsdk.OddsFeed", false, BuildWiringIT.class.getClassLoader());
+  }
+
   /** Where the SDK on the test classpath actually came from. */
   private static Path resolvedSdkJar() throws ClassNotFoundException, URISyntaxException {
-    Path location = Path.of(Class.forName("com.oddin.oddsfeedsdk.OddsFeed")
-        .getProtectionDomain().getCodeSource().getLocation().toURI());
+    Path location =
+        Path.of(sdkEntryPoint().getProtectionDomain().getCodeSource().getLocation().toURI());
 
     assertThat(location)
         .as("once odds-feed is built in this reactor the SDK is a directory of classes, "
@@ -208,7 +234,11 @@ class BuildWiringIT {
    * their repositories to the ones it searches.
    */
   private static List<Element> declared(Path pom, String tag) throws Exception {
-    NodeList all = parse(pom).getElementsByTagName(tag);
+    return declared(parse(pom), tag);
+  }
+
+  private static List<Element> declared(Document pom, String tag) {
+    NodeList all = pom.getElementsByTagName(tag);
     List<Element> found = new ArrayList<>();
     for (int i = 0; i < all.getLength(); i++) {
       Element element = (Element) all.item(i);
@@ -259,10 +289,57 @@ class BuildWiringIT {
   }
 
   private static Document parse(Path pom) throws Exception {
+    return builder().parse(pom.toFile());
+  }
+
+  private static Document parse(String xml) throws Exception {
+    return builder().parse(new InputSource(new StringReader(xml)));
+  }
+
+  private static DocumentBuilder builder() throws Exception {
     DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
     factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
     factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-    return factory.newDocumentBuilder().parse(pom.toFile());
+    return factory.newDocumentBuilder();
+  }
+
+  @Test
+  void repositoryPoliciesAreReadTheWayMavenReadsThem() throws Exception {
+    assertThat(enabled(repositoryFrom("<repository/>"), "releases"))
+        .as("a policy nobody wrote down")
+        .isTrue();
+    assertThat(enabled(repositoryFrom("<repository><releases><enabled>true</enabled>"
+        + "</releases></repository>"), "releases")).isTrue();
+
+    for (String no : List.of("false", "FALSE", "False", "yes", "")) {
+      assertThat(enabled(repositoryFrom("<repository><releases><enabled>" + no
+          + "</enabled></releases></repository>"), "releases"))
+          .as("<enabled>%s</enabled>", no)
+          .isFalse();
+    }
+  }
+
+  @Test
+  void repositoriesAreFoundWhereverTheyHide() throws Exception {
+    Document hidden = parse("""
+        <project>
+          <profiles><profile><id>ci</id>
+            <repositories><repository><url>https://hidden.example</url></repository></repositories>
+          </profile></profiles>
+          <distributionManagement>
+            <repository><url>https://deploy.example</url></repository>
+          </distributionManagement>
+        </project>
+        """);
+
+    assertThat(urlsOf(declared(hidden, "repository")))
+        .as("a profile can be active by default, and Maven searches what it declares")
+        .containsExactly("https://hidden.example");
+  }
+
+  private static Element repositoryFrom(String xml) throws Exception {
+    return declared(parse("<project><repositories>" + xml + "</repositories></project>"),
+        "repository").getFirst();
   }
 
   @XmlRootElement(name = "ping")
