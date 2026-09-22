@@ -4,7 +4,11 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>com.oddin.oddsfeed</groupId>
+  <!--
+    Maven Central verifies a group id against the matching domain, and ours is oddin.gg.
+    The 0.0.x line keeps com.oddin.oddsfeed on GitHub Packages; 1.0 publishes here.
+  -->
+  <groupId>gg.oddin.oddsfeed</groupId>
   <artifactId>odds-feed-parent</artifactId>
   <version>${revision}</version>
   <packaging>pom</packaging>
@@ -34,11 +38,12 @@
     <revision>1.0.0-SNAPSHOT</revision>
 
     <!--
-      Version of the SDK the system tests run against.
-      Default: the last published 0.0.x release. Override with -Dsdk.version=...
-      Maven only substitutes the in-reactor odds-feed module when the version matches,
-      so this one property decides whether the tests exercise the old or the new SDK.
+      Which SDK the system tests run against. Default: the last published 0.0.x release.
+      Maven substitutes the in-reactor odds-feed module only when the whole coordinate
+      matches, so these two properties together decide whether the tests exercise the
+      old SDK or the new one. The group id is part of it because 1.0 changes it.
     -->
+    <sdk.groupId>com.oddin.oddsfeed</sdk.groupId>
     <sdk.version>0.0.56-rc2</sdk.version>
 
     <maven.compiler.release>25</maven.compiler.release>

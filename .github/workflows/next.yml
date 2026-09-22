@@ -123,7 +123,7 @@ jobs:
         # and all, would be what a release publishes.
         run: |
           version=0.0.0-installed-pom-check
-          installed=~/.m2/repository/com/oddin/oddsfeed/odds-feed-parent/$version/odds-feed-parent-$version.pom
+          installed=~/.m2/repository/gg/oddin/oddsfeed/odds-feed-parent/$version/odds-feed-parent-$version.pom
           rm -rf "$(dirname "$installed")"
           ./mvnw --batch-mode --no-transfer-progress --non-recursive -Drevision=$version install
           if [ ! -f "$installed" ]; then
