@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>com.oddin.oddsfeed</groupId>
+    <groupId>gg.oddin.oddsfeed</groupId>
     <artifactId>odds-feed-parent</artifactId>
     <version>${revision}</version>
   </parent>
@@ -32,10 +32,12 @@
       the packages registry first and anyone able to publish there could shadow a public
       artifact. In this order only odds-feed, which Central does not have, falls through.
 
-      Note the other direction: Central is asked for odds-feed first as well, and that holds only
-      while nobody else can publish com.oddin.oddsfeed there. Nothing is published under that
-      namespace today, so it has to be registered before the 1.0 release - which releasing to
-      Central needs anyway.
+      Note the other direction: Central is asked for odds-feed first as well. The 0.0.x group id
+      is com.oddin.oddsfeed, which we cannot claim on Central - it is verified against a domain
+      that is not ours - so this cannot be closed by registering it. BuildWiringIT pins the jar
+      and POM digests instead, and CI fetches both from the registry before Maven resolves
+      anything. 1.0 publishes under gg.oddin.oddsfeed, which we can claim, and the question
+      goes away with it.
     -->
     <repository>
       <id>central</id>
@@ -60,9 +62,9 @@
   </repositories>
 
   <dependencies>
-    <!-- The SDK under test, resolved by coordinate. -->
+    <!-- The SDK under test, resolved by coordinate: see sdk.groupId and sdk.version. -->
     <dependency>
-      <groupId>com.oddin.oddsfeed</groupId>
+      <groupId>${sdk.groupId}</groupId>
       <artifactId>odds-feed</artifactId>
       <version>${sdk.version}</version>
     </dependency>
