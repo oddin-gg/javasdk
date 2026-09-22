@@ -4,10 +4,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.StringReader;
+import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.security.MessageDigest;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.Properties;
 import java.util.Collections;
 import java.util.List;
 import javax.xml.XMLConstants;
@@ -36,6 +43,21 @@ class BuildWiringIT {
   @Test
   void theSdkUnderTestIsOnTheClasspath() throws ClassNotFoundException {
     assertThat(Class.forName("com.oddin.oddsfeedsdk.OddsFeed")).isNotNull();
+  }
+
+  @Test
+  void theSdkJarIsTheOneWeKnow() throws Exception {
+    Path jar = resolvedSdkJar();
+    String version = property("sdk.version");
+    String expected = knownSdkDigests().getProperty(version);
+
+    assertThat(expected)
+        .as("no digest recorded for odds-feed %s; add one to sdk-jar-checksums.properties "
+            + "after checking where the jar came from", version)
+        .isNotNull();
+    assertThat(sha256(jar))
+        .as("%s is not the odds-feed %s we know - check which repository served it", jar, version)
+        .isEqualTo(expected);
   }
 
   @Test
@@ -70,12 +92,12 @@ class BuildWiringIT {
         .containsExactly(CENTRAL, PACKAGES);
     for (Element repository : repositories) {
       // a disabled release policy takes Central out of the running as surely as deleting it
-      assertThat(policy(repository, "releases"))
+      assertThat(enabled(repository, "releases"))
           .as("%s must serve releases, or Maven falls through to the next repository", url(repository))
-          .isNotEqualTo("false");
-      assertThat(policy(repository, "snapshots"))
+          .isTrue();
+      assertThat(enabled(repository, "snapshots"))
           .as("%s must not serve snapshots: nothing here depends on one", url(repository))
-          .isEqualTo("false");
+          .isFalse();
     }
   }
 
@@ -115,12 +137,47 @@ class BuildWiringIT {
         .isEqualTo(version);
   }
 
-  private static Path flattened(Path pom) {
+  /** Where the SDK on the test classpath actually came from. */
+  private static Path resolvedSdkJar() throws ClassNotFoundException, URISyntaxException {
+    Path location = Path.of(Class.forName("com.oddin.oddsfeedsdk.OddsFeed")
+        .getProtectionDomain().getCodeSource().getLocation().toURI());
+
+    assertThat(location)
+        .as("once odds-feed is built in this reactor the SDK is a directory of classes, "
+            + "and a digest of the published jar no longer says anything")
+        .isRegularFile();
+    return location;
+  }
+
+  private static Properties knownSdkDigests() throws IOException {
+    Properties digests = new Properties();
+    try (InputStream in =
+        BuildWiringIT.class.getResourceAsStream("/sdk-jar-checksums.properties")) {
+      assertThat(in).as("sdk-jar-checksums.properties is missing from the test resources").isNotNull();
+      digests.load(in);
+    }
+    return digests;
+  }
+
+  private static String sha256(Path file) throws Exception {
+    return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file)));
+  }
+
+  private static Path flattened(Path pom) throws IOException {
     Path file = pom.resolveSibling(".flattened-pom.xml");
     assertThat(file)
         .as("flatten-maven-plugin runs at process-resources; this should exist by now")
         .exists();
+    // it sits next to the POM rather than under target/, so without this a file left by an
+    // earlier build would answer for a flatten execution that is no longer there
+    assertThat(Files.getLastModifiedTime(file))
+        .as("%s is left over from an earlier build", file)
+        .isGreaterThanOrEqualTo(FileTime.from(buildStart().minusSeconds(2)));
     return file;
+  }
+
+  private static Instant buildStart() {
+    return Instant.parse(property("build.timestamp"));
   }
 
   private static Path modulePom() {
@@ -179,10 +236,11 @@ class BuildWiringIT {
     return text(firstChild(repository, "url"));
   }
 
-  /** "true", "false", or null when the repository does not say. */
-  private static String policy(Element repository, String kind) {
+  /** As Maven reads it: a policy nobody wrote down is enabled, and the value is not case-sensitive. */
+  private static boolean enabled(Element repository, String kind) {
     Element policy = firstChild(repository, kind);
-    return policy == null ? null : text(firstChild(policy, "enabled"));
+    String value = policy == null ? null : text(firstChild(policy, "enabled"));
+    return value == null || Boolean.parseBoolean(value);
   }
 
   private static Element firstChild(Element parent, String name) {
