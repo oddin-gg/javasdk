@@ -122,6 +122,7 @@
             <!-- BuildWiringIT reads both POMs; the working directory alone would not say which. -->
             <module.basedir>${project.basedir}</module.basedir>
             <root.basedir>${maven.multiModuleProjectDirectory}</root.basedir>
+            <project.version>${project.version}</project.version>
           </systemPropertyVariables>
         </configuration>
         <executions>
