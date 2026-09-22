@@ -2,11 +2,14 @@ Java SDK
 ----------------
 
 > **Java SDK 1.0 is being built on the `next` branch.** The design is in [NEXT.md](NEXT.md).
-> The new build is Maven: `./mvnw verify` from the repo root. It needs JDK 25, `unzip` (the
-> wrapper checks the distribution against a pinned checksum, and that pin is the zip's) and, for the
-> system tests against a published 0.0.x release, a GitHub token with `read:packages` in
-> `~/.m2/settings.xml` under the server id `oddin-github`, the same id clients use. The old 0.0.x SDK lives in `library/`
-> and still builds with Gradle on JDK 8.
+> The new build is Maven: run `./scripts/fetch-sdk.sh` once, then `./mvnw verify` from the repo
+> root. The script puts the published SDK the system tests run against into your local Maven
+> repository and checks it against the digests this repo records; running the build without it
+> still works, but leaves the check to the tests instead of doing it first. The build needs
+> JDK 25, `unzip` (the wrapper checks the distribution against a pinned checksum, and that pin
+> is the zip's) and a GitHub token with `read:packages` - in `GITHUB_TOKEN` for the script, and
+> in `~/.m2/settings.xml` under the server id `oddin-github` for Maven, the same id clients use.
+> The old 0.0.x SDK lives in `library/` and still builds with Gradle on JDK 8.
 
 Purpose of this SDK is to make integration process much smoother and easier. This SDK should take care of all connection, 
 data binding and other issues related to connection to API and Feed.
