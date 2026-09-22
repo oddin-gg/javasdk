@@ -114,9 +114,15 @@ jobs:
           $status = $LASTEXITCODE
           $output | Write-Host
           git checkout -- $props
+          # One string, single-spaced: PowerShell hands back an array of lines and wraps the
+          # error text across them, and -notmatch on an array filters instead of testing.
+          $joined = ($output | Out-String) -replace '\s+', ' '
           if ($status -eq 0) {
-            Write-Error "the wrapper ran Maven from a distribution that failed its checksum"
+            Write-Host "the wrapper ran Maven from a distribution that failed its checksum"
+            exit 1
           }
-          if ($output -notmatch 'Failed to validate Maven distribution SHA-256') {
-            Write-Error "the wrapper failed, but not on the checksum - this check proved nothing"
+          if (-not $joined.Contains('Failed to validate Maven distribution SHA-256')) {
+            Write-Host "the wrapper failed, but not on the checksum - this check proved nothing"
+            exit 1
           }
+          Write-Host "the wrapper refused the tampered distribution on its checksum"

@@ -31,6 +31,11 @@
       one Maven inherits, so without this entry every junit/assertj/logback lookup would go to
       the packages registry first and anyone able to publish there could shadow a public
       artifact. In this order only odds-feed, which Central does not have, falls through.
+
+      Note the other direction: Central is asked for odds-feed first as well, and that holds only
+      while nobody else can publish com.oddin.oddsfeed there. Nothing is published under that
+      namespace today, so it has to be registered before the 1.0 release - which releasing to
+      Central needs anyway.
     -->
     <repository>
       <id>central</id>

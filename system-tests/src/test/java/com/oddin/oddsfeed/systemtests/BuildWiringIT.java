@@ -59,21 +59,30 @@ class BuildWiringIT {
 
   @Test
   void centralIsSearchedBeforeThePackagesRepository() throws Exception {
-    // by URL, not by id: an entry named "central" pointing somewhere else would not protect anything
-    List<String> urls = declaredRepositoryUrls(basedir("module.basedir").resolve("pom.xml"));
+    // by URL, not by id: an entry named "central" pointing somewhere else would not protect
+    // anything. Exactly these two, in this order - a third entry in front would be searched first.
+    List<String> urls = declaredUrls(modulePom(), "repositories", "repository");
 
     assertThat(urls)
-        .as("Central must be declared here, or the packages repository is searched first")
-        .contains(CENTRAL);
-    assertThat(urls.indexOf(CENTRAL))
-        .as("a repository declared earlier wins, and only odds-feed should come from packages")
-        .isLessThan(urls.indexOf(PACKAGES));
+        .as("anything ahead of Central is searched before it, whatever it is called")
+        .containsExactly(CENTRAL, PACKAGES);
+  }
+
+  @Test
+  void pluginsAndExtensionsComeFromCentralOnly() throws Exception {
+    // pluginRepositories are a separate list with the same shadowing problem
+    assertThat(declaredUrls(modulePom(), "pluginRepositories", "pluginRepository"))
+        .as("a plugin repository ahead of Central would be searched first for every plugin")
+        .isEmpty();
+    assertThat(declaredUrls(rootPom(), "pluginRepositories", "pluginRepository"))
+        .as("a plugin repository in the parent applies to every module")
+        .isEmpty();
   }
 
   @Test
   void theRootPomDeclaresNoRepositories() throws Exception {
     // a repository in the parent applies to every module, including ones that never touch the SDK
-    Document root = parse(basedir("root.basedir").resolve("pom.xml"));
+    Document root = parse(rootPom());
 
     assertThat(root.getElementsByTagName("repositories").getLength())
         .as("the parent must stay free of repositories, or every future module inherits them")
@@ -90,17 +99,26 @@ class BuildWiringIT {
     return Path.of(value);
   }
 
-  /** The repository URLs the POM really declares, in order: comments and profiles do not count. */
-  private static List<String> declaredRepositoryUrls(Path pom) throws Exception {
-    Element repositories = onlyChild(parse(pom).getDocumentElement(), "repositories");
+  private static Path modulePom() {
+    return basedir("module.basedir").resolve("pom.xml");
+  }
+
+  private static Path rootPom() {
+    return basedir("root.basedir").resolve("pom.xml");
+  }
+
+  /** The URLs the POM really declares, in order: comments and profiles do not count. */
+  private static List<String> declaredUrls(Path pom, String listTag, String itemTag)
+      throws Exception {
+    Element list = onlyChild(parse(pom).getDocumentElement(), listTag);
     List<String> urls = new ArrayList<>();
-    if (repositories == null) {
+    if (list == null) {
       return urls;
     }
-    NodeList children = repositories.getChildNodes();
+    NodeList children = list.getChildNodes();
     for (int i = 0; i < children.getLength(); i++) {
       Node child = children.item(i);
-      if (child instanceof Element element && "repository".equals(element.getTagName())) {
+      if (child instanceof Element element && itemTag.equals(element.getTagName())) {
         Element url = onlyChild(element, "url");
         if (url != null) {
           urls.add(url.getTextContent().trim());
