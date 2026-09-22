@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 
 import java.io.IOException;
 import java.io.StringReader;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -20,8 +21,9 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 /**
- * Checks the build itself, not the SDK: that the classpath the scenarios will use is sane
- * and that the repository order which keeps public coordinates coming from Central is intact.
+ * Checks the build itself, not the SDK: that the classpath the scenarios will use is sane, that
+ * the repository setup which keeps public coordinates coming from Central is intact, and that a
+ * published POM would carry a real version.
  *
  * <p>It cannot prove that integration tests run at all - it is an *IT, so removing the failsafe
  * binding would simply stop it being executed. The CI job checks the failsafe summary for that.
@@ -61,20 +63,29 @@ class BuildWiringIT {
   void centralIsSearchedBeforeThePackagesRepository() throws Exception {
     // by URL, not by id: an entry named "central" pointing somewhere else would not protect
     // anything. Exactly these two, in this order - a third entry in front would be searched first.
-    List<String> urls = declaredUrls(modulePom(), "repositories", "repository");
+    List<Element> repositories = declared(modulePom(), "repository");
 
-    assertThat(urls)
+    assertThat(urlsOf(repositories))
         .as("anything ahead of Central is searched before it, whatever it is called")
         .containsExactly(CENTRAL, PACKAGES);
+    for (Element repository : repositories) {
+      // a disabled release policy takes Central out of the running as surely as deleting it
+      assertThat(policy(repository, "releases"))
+          .as("%s must serve releases, or Maven falls through to the next repository", url(repository))
+          .isNotEqualTo("false");
+      assertThat(policy(repository, "snapshots"))
+          .as("%s must not serve snapshots: nothing here depends on one", url(repository))
+          .isEqualTo("false");
+    }
   }
 
   @Test
   void pluginsAndExtensionsComeFromCentralOnly() throws Exception {
     // pluginRepositories are a separate list with the same shadowing problem
-    assertThat(declaredUrls(modulePom(), "pluginRepositories", "pluginRepository"))
+    assertThat(declared(modulePom(), "pluginRepository"))
         .as("a plugin repository ahead of Central would be searched first for every plugin")
         .isEmpty();
-    assertThat(declaredUrls(rootPom(), "pluginRepositories", "pluginRepository"))
+    assertThat(declared(rootPom(), "pluginRepository"))
         .as("a plugin repository in the parent applies to every module")
         .isEmpty();
   }
@@ -82,21 +93,34 @@ class BuildWiringIT {
   @Test
   void theRootPomDeclaresNoRepositories() throws Exception {
     // a repository in the parent applies to every module, including ones that never touch the SDK
-    Document root = parse(rootPom());
-
-    assertThat(root.getElementsByTagName("repositories").getLength())
+    assertThat(declared(rootPom(), "repository"))
         .as("the parent must stay free of repositories, or every future module inherits them")
-        .isZero();
+        .isEmpty();
   }
 
-  private static Path basedir(String property) {
-    String value = System.getProperty(property);
-    // an unresolved property arrives as "", and Path.of("") is the working directory,
-    // which would quietly point this test at the wrong POM
-    assertThat(value)
-        .as("%s is passed by the failsafe configuration; do not run this test outside Maven", property)
-        .isNotBlank();
-    return Path.of(value);
+  @Test
+  void aPublishedPomWouldCarryAResolvedVersion() throws Exception {
+    // ${revision} is a build-time property: unflattened, a POM published from a release build
+    // would name a version the artifact is not filed under
+    String version = property("project.version");
+
+    Element root = parse(flattened(rootPom())).getDocumentElement();
+    assertThat(text(firstChild(root, "version")))
+        .as("the parent POM that would be published")
+        .isEqualTo(version);
+
+    Element module = parse(flattened(modulePom())).getDocumentElement();
+    assertThat(text(firstChild(firstChild(module, "parent"), "version")))
+        .as("a module POM pointing at a parent version nobody published resolves to nothing")
+        .isEqualTo(version);
+  }
+
+  private static Path flattened(Path pom) {
+    Path file = pom.resolveSibling(".flattened-pom.xml");
+    assertThat(file)
+        .as("flatten-maven-plugin runs at process-resources; this should exist by now")
+        .exists();
+    return file;
   }
 
   private static Path modulePom() {
@@ -107,28 +131,61 @@ class BuildWiringIT {
     return basedir("root.basedir").resolve("pom.xml");
   }
 
-  /** The URLs the POM really declares, in order: comments and profiles do not count. */
-  private static List<String> declaredUrls(Path pom, String listTag, String itemTag)
-      throws Exception {
-    Element list = onlyChild(parse(pom).getDocumentElement(), listTag);
-    List<String> urls = new ArrayList<>();
-    if (list == null) {
-      return urls;
-    }
-    NodeList children = list.getChildNodes();
-    for (int i = 0; i < children.getLength(); i++) {
-      Node child = children.item(i);
-      if (child instanceof Element element && itemTag.equals(element.getTagName())) {
-        Element url = onlyChild(element, "url");
-        if (url != null) {
-          urls.add(url.getTextContent().trim());
-        }
-      }
-    }
-    return urls;
+  private static Path basedir(String name) {
+    return Path.of(property(name));
   }
 
-  private static Element onlyChild(Element parent, String name) {
+  private static String property(String name) {
+    String value = System.getProperty(name);
+    // an unresolved property arrives as "", and Path.of("") is the working directory,
+    // which would quietly point this test at the wrong file
+    assertThat(value)
+        .as("%s is passed by the failsafe configuration; do not run this test outside Maven", name)
+        .isNotBlank();
+    return value;
+  }
+
+  /**
+   * Every element with this tag anywhere in the POM except under distributionManagement, so a
+   * block hidden inside a profile counts too. Profiles can be active by default, and Maven adds
+   * their repositories to the ones it searches.
+   */
+  private static List<Element> declared(Path pom, String tag) throws Exception {
+    NodeList all = parse(pom).getElementsByTagName(tag);
+    List<Element> found = new ArrayList<>();
+    for (int i = 0; i < all.getLength(); i++) {
+      Element element = (Element) all.item(i);
+      if (!hasAncestor(element, "distributionManagement")) {
+        found.add(element);
+      }
+    }
+    return found;
+  }
+
+  private static boolean hasAncestor(Node node, String tag) {
+    for (Node parent = node.getParentNode(); parent != null; parent = parent.getParentNode()) {
+      if (parent instanceof Element element && tag.equals(element.getTagName())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private static List<String> urlsOf(List<Element> elements) {
+    return elements.stream().map(BuildWiringIT::url).toList();
+  }
+
+  private static String url(Element repository) {
+    return text(firstChild(repository, "url"));
+  }
+
+  /** "true", "false", or null when the repository does not say. */
+  private static String policy(Element repository, String kind) {
+    Element policy = firstChild(repository, kind);
+    return policy == null ? null : text(firstChild(policy, "enabled"));
+  }
+
+  private static Element firstChild(Element parent, String name) {
     NodeList children = parent.getChildNodes();
     for (int i = 0; i < children.getLength(); i++) {
       Node child = children.item(i);
@@ -137,6 +194,10 @@ class BuildWiringIT {
       }
     }
     return null;
+  }
+
+  private static String text(Element element) {
+    return element == null ? null : element.getTextContent().trim();
   }
 
   private static Document parse(Path pom) throws Exception {
