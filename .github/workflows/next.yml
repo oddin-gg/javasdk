@@ -50,6 +50,15 @@ jobs:
         # no Java, no disk - does not count, so the checksum message itself has to appear.
         run: |
           props=.mvn/wrapper/maven-wrapper.properties
+          # mvnw reads the file line by line and keeps the last value of each key, while a
+          # pattern check is happy with any line. Appending a second pair would have passed
+          # every check below while the wrapper fetched from somewhere else entirely.
+          for key in distributionUrl distributionSha256Sum; do
+            if [ "$(grep -c "^$key=" "$props")" != "1" ]; then
+              echo "$props must set $key exactly once" >&2
+              exit 1
+            fi
+          done
           grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' "$props"
           # a digest proves only that the download was not altered in flight; this says whose
           # download it is, so repointing the URL cannot pass by carrying its own matching digest
@@ -73,26 +82,10 @@ jobs:
           rm -f wrapper.log
           grep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' "$props"
 
-      - name: Fetch the SDK from the packages registry and check it
-        # Central is asked before the packages registry for every coordinate, and nobody has
-        # claimed com.oddin.oddsfeed there. Putting the verified artifacts in the local
-        # repository first settles it: Maven uses what is already there and never asks.
-        run: |
-          checksums=system-tests/src/test/resources/sdk-jar-checksums.properties
-          version=$(sed -n 's|.*<sdk.version>\(.*\)</sdk.version>.*|\1|p' pom.xml)
-          dir=~/.m2/repository/com/oddin/oddsfeed/odds-feed/$version
-          base=https://maven.pkg.github.com/oddin-gg/javasdk/com/oddin/oddsfeed/odds-feed/$version
-          mkdir -p "$dir"
-          for kind in jar pom; do
-            curl -fsSL -u "$GITHUB_ACTOR:$GITHUB_TOKEN" \
-              "$base/odds-feed-$version.$kind" -o "$dir/odds-feed-$version.$kind"
-            expected=$(sed -n "s/^$version\.$kind=//p" "$checksums")
-            if [ -z "$expected" ]; then
-              echo "no digest recorded for odds-feed $version.$kind" >&2
-              exit 1
-            fi
-            echo "$expected  $dir/odds-feed-$version.$kind" | sha256sum -c -
-          done
+      - name: Fetch the SDK and check it, before Maven resolves anything
+        # The same script the README tells developers to run, so both paths get the verified
+        # artifacts into the local repository before anything can resolve or execute them.
+        run: ./scripts/fetch-sdk.sh
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -182,6 +175,13 @@ jobs:
         shell: pwsh
         run: |
           $props = '.mvn/wrapper/maven-wrapper.properties'
+          # as on Linux: the wrapper keeps the last value of each key, a pattern check any line
+          foreach ($key in 'distributionUrl', 'distributionSha256Sum') {
+            if ((Select-String -Path $props -Pattern "^$key=").Count -ne 1) {
+              Write-Host "$props must set $key exactly once"
+              exit 1
+            }
+          }
           if (-not (Select-String -Path $props -Pattern '^distributionSha256Sum=[0-9a-f]{64}$' -Quiet)) {
             Write-Host "the distribution checksum is not pinned"
             exit 1
