@@ -10,7 +10,7 @@
   <packaging>pom</packaging>
 
   <name>Oddin Odds Feed SDK (parent)</name>
-  <description>Build for the Java SDK 1.0 line. See NEXT.md for the design.</description>
+  <description>Build for the Java SDK 1.0 line.</description>
   <url>https://github.com/oddin-gg/javasdk</url>
 
   <licenses>
