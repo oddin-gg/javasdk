@@ -41,75 +41,89 @@ class FakeFeedIT {
 
   @Test
   void theSdkReceivesAnOddsChangeFromTheFake() throws InterruptedException {
-    try (FakeRestServer rest = FakeRestServer.start(); FakeFeed feed = FakeFeed.start()) {
-      Received received = new Received();
-      OddsFeed sdk = sdkAgainst(rest, feed, new ConnectionEvents());
-      try {
-        sdk.getSessionBuilder().setListener(received).setMessageInterest(MessageInterest.ALL).build();
-        sdk.open();
+    Received received = new Received();
+    try (FakeRestServer rest = FakeRestServer.start();
+        FakeFeed feed = FakeFeed.start();
+        Sdk sdk = Sdk.against(rest, feed, new ConnectionEvents())) {
+      sdk.feed().getSessionBuilder().setListener(received).setMessageInterest(MessageInterest.ALL).build();
+      sdk.feed().open();
 
-        assertThat(feed.publishFixture(ODDS_CHANGE)).as("routed to the SDK's queue").isTrue();
+      assertThat(feed.publishFixture(ODDS_CHANGE)).as("routed to the SDK's queue").isTrue();
 
-        OddsChange<SportEvent> oddsChange = received.next();
-        assertThat(oddsChange).as("an odds change within " + DELIVERY).isNotNull();
-        assertThat(oddsChange.getEvent().getId()).isEqualTo(URN.parse("od:match:198314"));
-        assertThat(oddsChange.getProducer().getId()).isEqualTo(2);
-        assertThat(oddsChange.getMarkets()).hasSize(3);
-        assertThat(oddsChange.getTimestamp().getCreated())
-            .as("the fake stamps messages with the time they are sent")
-            .isCloseTo(System.currentTimeMillis(), within(60_000L));
+      OddsChange<SportEvent> oddsChange = received.next(DELIVERY);
+      assertThat(oddsChange).as("an odds change within " + DELIVERY).isNotNull();
+      assertThat(oddsChange.getEvent().getId()).isEqualTo(URN.parse("od:match:198314"));
+      assertThat(oddsChange.getProducer().getId()).isEqualTo(2);
+      assertThat(oddsChange.getMarkets()).hasSize(3);
+      assertThat(oddsChange.getTimestamp().getCreated())
+          .as("the fake stamps messages with the time they are sent")
+          .isCloseTo(System.currentTimeMillis(), within(60_000L));
 
-        assertThat(feed.logins()).as("the SDK logs in with the token to the bookmaker's virtual host")
-            .contains(new FakeFeed.Login(TOKEN, "/oddinfeed/" + FakeFeed.BOOKMAKER_ID));
-      } finally {
-        rest.awaitQuiet();
-        sdk.close();
-      }
+      assertThat(feed.logins()).as("the SDK logs in with the token to the bookmaker's virtual host")
+          .contains(new FakeFeed.Login(TOKEN, "/oddinfeed/" + FakeFeed.BOOKMAKER_ID));
     }
   }
 
   @Test
   void aPausedBrokerLooksLikeALostConnectionAndResumingRestoresIt() throws InterruptedException {
-    try (FakeRestServer rest = FakeRestServer.start(); FakeFeed feed = FakeFeed.start()) {
-      Received received = new Received();
-      ConnectionEvents events = new ConnectionEvents();
-      OddsFeed sdk = sdkAgainst(rest, feed, events);
-      try {
-        sdk.getSessionBuilder().setListener(received).setMessageInterest(MessageInterest.ALL).build();
-        sdk.open();
-        int loginsBefore = feed.logins().size();
+    Received received = new Received();
+    ConnectionEvents events = new ConnectionEvents();
+    try (FakeRestServer rest = FakeRestServer.start();
+        FakeFeed feed = FakeFeed.start();
+        Sdk sdk = Sdk.against(rest, feed, events)) {
+      sdk.feed().getSessionBuilder().setListener(received).setMessageInterest(MessageInterest.ALL).build();
+      sdk.feed().open();
+      int loginsBefore = feed.logins().size();
 
-        feed.pause();
-        assertThat(events.down.await(30, TimeUnit.SECONDS))
-            .as("the SDK reports the connection down while the broker is paused").isTrue();
+      feed.pause();
+      assertThat(events.down.await(30, TimeUnit.SECONDS))
+          .as("the SDK reports the connection down while the broker is paused").isTrue();
 
-        feed.resume();
-        long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
-        while (feed.logins().size() == loginsBefore && System.nanoTime() < deadline) {
-          Thread.sleep(200);
-        }
-        assertThat(feed.logins()).as("the SDK logs in again once the broker is back")
-            .hasSizeGreaterThan(loginsBefore);
-
-        // the reconnect has logged in; its queue and bindings may be a moment behind
-        deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-        while (!feed.publishFixture(ODDS_CHANGE) && System.nanoTime() < deadline) {
-          Thread.sleep(200);
-        }
-        assertThat(received.next()).as("an odds change after the reconnect").isNotNull();
-      } finally {
-        rest.awaitQuiet();
-        sdk.close();
+      feed.resume();
+      long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
+      while (feed.logins().size() == loginsBefore && System.nanoTime() < deadline) {
+        Thread.sleep(200);
       }
+      assertThat(feed.logins()).as("the SDK logs in again once the broker is back")
+          .hasSizeGreaterThan(loginsBefore);
+
+      // Logging in comes before the new queue is bound, and until the broker notices the old
+      // connection is gone its queue still takes messages - so "routed" proves nothing yet. Keep
+      // publishing until one actually arrives.
+      OddsChange<SportEvent> afterReconnect = null;
+      deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+      while (afterReconnect == null && System.nanoTime() < deadline) {
+        feed.publishFixture(ODDS_CHANGE);
+        afterReconnect = received.next(Duration.ofSeconds(1));
+      }
+      assertThat(afterReconnect).as("an odds change after the reconnect").isNotNull();
     }
   }
 
-  private static OddsFeed sdkAgainst(FakeRestServer rest, FakeFeed feed, GlobalEventsListener events) {
-    OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
-        .selectEnvironment(feed.host(), rest.apiHost(), feed.port())
-        .setAccessToken(TOKEN)
-        .build();
-    return new OddsFeed(events, configuration);
+  /**
+   * The SDK under test, closed as a try-with-resources resource so that a failure while closing
+   * is added to the test's own failure instead of replacing it. Background REST calls are let
+   * finish first (see {@link FakeRestServer#awaitQuiet}), and the SDK is closed even when they
+   * do not, so its reconnecting AMQP connection cannot outlive the test.
+   */
+  private record Sdk(OddsFeed feed, FakeRestServer rest) implements AutoCloseable {
+
+    static Sdk against(FakeRestServer rest, FakeFeed broker, GlobalEventsListener events) {
+      OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+          .selectEnvironment(broker.host(), rest.apiHost(), broker.port())
+          .setAccessToken(TOKEN)
+          .build();
+      return new Sdk(new OddsFeed(events, configuration), rest);
+    }
+
+    @Override
+    public void close() {
+      try {
+        rest.awaitQuiet();
+      } finally {
+        feed.close();
+      }
+    }
   }
 
   /** Collects odds changes; the other callbacks are not under test here. */
@@ -117,8 +131,8 @@ class FakeFeedIT {
 
     private final BlockingQueue<OddsChange<SportEvent>> oddsChanges = new LinkedBlockingQueue<>();
 
-    OddsChange<SportEvent> next() throws InterruptedException {
-      return oddsChanges.poll(DELIVERY.toMillis(), TimeUnit.MILLISECONDS);
+    OddsChange<SportEvent> next(Duration wait) throws InterruptedException {
+      return oddsChanges.poll(wait.toMillis(), TimeUnit.MILLISECONDS);
     }
 
     @Override
