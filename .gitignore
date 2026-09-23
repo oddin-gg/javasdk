@@ -27,3 +27,6 @@ build
 hs_err_pid*
 
 .DS_Store
+# Maven output left behind when switching from the 1.0 line
+target/
+.flattened-pom.xml
