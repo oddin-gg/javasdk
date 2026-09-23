@@ -6,7 +6,6 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -27,9 +26,10 @@ import java.util.regex.Pattern;
  *
  * <p>Every endpoint the SDK calls has a default answer from {@code vendor/oddsfeedschema}; the
  * same fixture comes back whatever id is asked for, so a test that cares about a particular
- * entity overrides that path with {@link #respond}. Anything without a route gets the API's
- * 404. Requests other than GET - recovery and replay control - are accepted with 202. Every
- * request is recorded, in order, for tests to check what the SDK asked for.
+ * entity overrides that path with {@link #respond}, typically with a body built from
+ * {@link Fixtures}. Anything without a route gets the API's 404. Requests other than GET -
+ * recovery and replay control - are accepted with 202. Every request is recorded, in order, for
+ * tests to check what the SDK asked for.
  *
  * <p>It speaks HTTPS because the old SDK allows nothing else, with a certificate the test JVM
  * trusts (see {@link TestTls}).
@@ -41,8 +41,6 @@ import java.util.regex.Pattern;
  * still slips through - so assert on the requests you expect rather than on the exact list.
  */
 public final class FakeRestServer implements AutoCloseable {
-
-  private static final String FIXTURES = "/oddsfeedschema/test/fixtures/";
 
   /** Paths as the SDK builds them, after the host; the language segment is any language. */
   private static final List<Route> ROUTES = List.of(
@@ -64,7 +62,7 @@ public final class FakeRestServer implements AutoCloseable {
       route("/v1/sports/{lang}/players/{id}/profile", "rest/player/player_profile.xml"),
       route("/v1/replay", "rest/replay_content/replay_set_content.xml"));
 
-  private static final Response NOT_FOUND = new Response(404, fixture("rest/error/not_found.xml"));
+  private static final Response NOT_FOUND = new Response(404, Fixtures.read("rest/error/not_found.xml"));
   private static final Response ACCEPTED = new Response(202, "");
 
   private final HttpsServer server;
@@ -109,18 +107,6 @@ public final class FakeRestServer implements AutoCloseable {
    */
   public List<RecordedRequest> requests() {
     return List.copyOf(requests);
-  }
-
-  /** A fixture from the vendored schema, for tests that build an override from one. */
-  public static String fixture(String name) {
-    try (InputStream in = FakeRestServer.class.getResourceAsStream(FIXTURES + name)) {
-      if (in == null) {
-        throw new IllegalArgumentException("no fixture " + name + " under " + FIXTURES);
-      }
-      return new String(in.readAllBytes(), UTF_8);
-    } catch (IOException e) {
-      throw new UncheckedIOException(e);
-    }
   }
 
   @Override
@@ -215,7 +201,7 @@ public final class FakeRestServer implements AutoCloseable {
     String regex = Pattern.quote(template)
         .replace("{lang}", "\\E[a-z]{2}\\Q")
         .replace("{id}", "\\E[^/]+\\Q");
-    return new Route(Pattern.compile(regex), new Response(200, fixture(fixture)));
+    return new Route(Pattern.compile(regex), new Response(200, Fixtures.read(fixture)));
   }
 
   private record Route(Pattern pattern, Response response) {}

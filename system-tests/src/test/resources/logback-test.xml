@@ -1,0 +1,16 @@
+<configuration>
+  <!-- Logback's own default - everything at DEBUG to the console - minus the Docker client's chatter. -->
+  <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} -- %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <!-- Testcontainers still says which containers it starts and why one fails. -->
+  <logger name="com.github.dockerjava" level="WARN"/>
+  <logger name="org.testcontainers" level="INFO"/>
+
+  <root level="DEBUG">
+    <appender-ref ref="CONSOLE"/>
+  </root>
+</configuration>
