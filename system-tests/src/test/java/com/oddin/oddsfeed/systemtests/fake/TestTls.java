@@ -8,6 +8,7 @@ import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
+import java.util.Base64;
 import java.util.stream.Stream;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.KeyManagerFactory;
@@ -20,36 +21,65 @@ import javax.net.ssl.X509TrustManager;
  * One self-signed certificate per test JVM, for the fake servers to present and for the SDK
  * under test to trust.
  *
- * <p>The old SDK hardcodes {@code https://} for the REST API, so the fake has to speak TLS. The
- * SDK makes its calls through the JVM defaults, and its HTTP client caches the socket factory on
- * first use for the whole JVM - hence one certificate, created once, rather than one per server.
- * The JDK's own trust stays in place next to it, so nothing else in the JVM loses HTTPS.
+ * <p>The old SDK hardcodes {@code https://} for the REST API and always connects to the feed over
+ * TLS, so both fakes speak it. (For the feed the old SDK accepts any certificate; presenting this
+ * one anyway keeps the fake right for an SDK that checks.) The SDK makes its REST calls through
+ * the JVM defaults, and its HTTP client caches the socket factory on first use for the whole JVM -
+ * hence one certificate, created once, rather than one per server. The JDK's own trust stays in
+ * place next to it, so nothing else in the JVM loses HTTPS.
  */
 final class TestTls {
 
-  private static final char[] PASSWORD = "fake-rest".toCharArray();
+  private static final String ALIAS = "fake-servers";
+  private static final char[] PASSWORD = "fake-servers".toCharArray();
+  private static KeyStore keyStore;
   private static SSLContext serverContext;
 
   private TestTls() {}
 
   static synchronized SSLContext serverContext() {
-    if (serverContext == null) {
-      serverContext = create();
-    }
+    create();
     return serverContext;
   }
 
-  private static SSLContext create() {
+  /**
+   * The same certificate and its private key as PEM, for a server outside this JVM to present:
+   * the broker behind the fake feed.
+   */
+  static synchronized Pem pem() {
+    create();
     try {
-      KeyStore keyStore = generate();
+      Base64.Encoder base64 = Base64.getMimeEncoder(64, "\n".getBytes(UTF_8));
+      return new Pem(
+          "-----BEGIN CERTIFICATE-----\n"
+              + base64.encodeToString(keyStore.getCertificate(ALIAS).getEncoded())
+              + "\n-----END CERTIFICATE-----\n",
+          "-----BEGIN PRIVATE KEY-----\n"
+              + base64.encodeToString(keyStore.getKey(ALIAS, PASSWORD).getEncoded())
+              + "\n-----END PRIVATE KEY-----\n");
+    } catch (Exception e) {
+      throw new IllegalStateException("could not export the fake servers' certificate", e);
+    }
+  }
+
+  /** A certificate and its PKCS#8 private key, both PEM-encoded. */
+  record Pem(String certificate, String privateKey) {}
+
+  private static void create() {
+    if (serverContext != null) {
+      return;
+    }
+    try {
+      KeyStore generated = generate();
 
       KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
-      keys.init(keyStore, PASSWORD);
+      keys.init(generated, PASSWORD);
       SSLContext server = SSLContext.getInstance("TLS");
       server.init(keys.getKeyManagers(), null, null);
 
-      trustInThisJvm(keyStore);
-      return server;
+      trustInThisJvm(generated);
+      keyStore = generated;
+      serverContext = server;
     } catch (Exception e) {
       throw new IllegalStateException("could not set up TLS for the fake servers", e);
     }
@@ -57,12 +87,12 @@ final class TestTls {
 
   /** keytool ships with every JDK and can write a SAN, which the JDK API cannot do without internals. */
   private static KeyStore generate() throws Exception {
-    Path dir = Files.createTempDirectory("fake-rest-tls");
-    Path file = dir.resolve("fake-rest.p12");
+    Path dir = Files.createTempDirectory("fake-servers-tls");
+    Path file = dir.resolve("fake-servers.p12");
     try {
       Process keytool = new ProcessBuilder(
           Path.of(System.getProperty("java.home"), "bin", "keytool").toString(),
-          "-genkeypair", "-alias", "fake-rest",
+          "-genkeypair", "-alias", ALIAS,
           "-keyalg", "RSA", "-keysize", "2048",
           "-dname", "CN=localhost",
           "-ext", "SAN=dns:localhost,ip:127.0.0.1",
