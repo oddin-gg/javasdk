@@ -29,6 +29,7 @@ import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import org.testcontainers.Testcontainers;
+import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.Transferable;
@@ -146,6 +147,30 @@ public final class FakeFeed implements AutoCloseable {
   /** Every connection the broker accepted so far, oldest first. A reconnect adds another. */
   public List<Login> logins() {
     return List.copyOf(logins);
+  }
+
+  /**
+   * The AMQP connections open on the broker right now, as the broker lists them. Unlike
+   * {@link #logins()} this shrinks when a client disconnects.
+   */
+  public List<Login> openConnections() {
+    try {
+      Container.ExecResult result = broker.execInContainer(
+          "rabbitmqctl", "list_connections", "--quiet", "--no-table-headers", "user", "vhost");
+      if (result.getExitCode() != 0) {
+        throw new IllegalStateException("rabbitmqctl list_connections failed: " + result.getStderr());
+      }
+      return result.getStdout().lines()
+          .filter(line -> !line.isBlank())
+          .map(line -> line.split("\t", 2))
+          .map(fields -> new Login(fields[0], fields.length > 1 ? fields[1] : ""))
+          .toList();
+    } catch (IOException e) {
+      throw new UncheckedIOException("could not list the broker's connections", e);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      throw new IllegalStateException("interrupted while listing the broker's connections", e);
+    }
   }
 
   /**
