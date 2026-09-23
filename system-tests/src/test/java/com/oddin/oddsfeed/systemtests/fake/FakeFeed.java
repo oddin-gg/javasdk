@@ -116,8 +116,7 @@ public final class FakeFeed implements AutoCloseable {
     try {
       broker.start();
     } catch (RuntimeException e) {
-      auth.stop(0);
-      executor.shutdownNow();
+      stopLocal();
       throw e;
     }
   }
@@ -270,6 +269,15 @@ public final class FakeFeed implements AutoCloseable {
         resume();
       }
       broker.stop();
+    } finally {
+      stopLocal();
+    }
+  }
+
+  /** What runs in this JVM: the auth server, its threads and the publisher's client. */
+  private void stopLocal() {
+    try {
+      http.close();
     } finally {
       auth.stop(0);
       executor.shutdownNow();
