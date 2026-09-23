@@ -1,0 +1,11 @@
+<odds_change product="3" event_id="od:match:198314" timestamp="1777832981632">
+    <sport_event_status home_score="2" away_score="1" status="1" scoreboard_available="true" match_status="0">
+        <period_scores>
+            <period_score type="game" number="1" match_status_code="0" home_score="11" away_score="7" home_points="11" away_points="7"/>
+            <period_score type="game" number="2" match_status_code="0" home_score="9" away_score="11" home_points="9" away_points="11"/>
+            <period_score type="game" number="3" match_status_code="0" home_score="11" away_score="4" home_points="11" away_points="4"/>
+        </period_scores>
+        <scoreboard home_games="2" away_games="1"/>
+    </sport_event_status>
+    <odds/>
+</odds_change>

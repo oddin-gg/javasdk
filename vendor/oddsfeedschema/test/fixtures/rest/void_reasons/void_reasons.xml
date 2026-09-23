@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<void_reasons response_code="OK">
+    <void_reason id="1" name="NOT_PLAYED" description="Match not played"/>
+    <void_reason id="4" name="LATE_START" description="Match started late" template="Late by {minutes} minutes">
+        <param name="minutes"/>
+    </void_reason>
+</void_reasons>

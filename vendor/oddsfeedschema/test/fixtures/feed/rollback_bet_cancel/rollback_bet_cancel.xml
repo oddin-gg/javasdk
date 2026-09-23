@@ -1,0 +1,3 @@
+<rollback_bet_cancel product="3" event_id="od:match:198314" timestamp="1777832981632" start_time="1777800000000" end_time="1777832981000">
+    <market id="1"/>
+</rollback_bet_cancel>

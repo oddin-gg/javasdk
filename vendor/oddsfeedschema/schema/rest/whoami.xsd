@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="types/response_code.xsd"/>
+
+    <xs:element name="bookmaker_details" type="bookmakerDetail"/>
+    <xs:complexType name="bookmakerDetail">
+        <xs:attribute type="response_code" name="response_code" use="required"/>
+        <xs:attribute type="xs:dateTime" name="expire_at" use="required"/>
+        <xs:attribute type="xs:integer" name="bookmaker_id" use="required"/>
+        <xs:attribute type="xs:string" name="virtual_host" use="required"/>
+    </xs:complexType>
+</xs:schema>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="types/sport.xsd"/>
+    <xs:include schemaLocation="types/tournament.xsd"/>
+
+    <xs:element name="sport_tournaments" type="sportTournaments"/>
+    <xs:complexType name="sportTournaments">
+        <xs:sequence>
+            <xs:element type="sport" name="sport"/>
+            <xs:element type="tournaments" name="tournaments" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute type="xs:dateTime" name="generated_at"/>
+    </xs:complexType>
+
+    <xs:complexType name="tournaments">
+        <xs:sequence>
+            <xs:element type="tournament" name="tournament" maxOccurs="unbounded" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+</xs:schema>

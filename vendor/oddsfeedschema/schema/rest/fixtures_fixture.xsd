@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="types/urn.xsd"/>
+    <xs:include schemaLocation="types/tournament.xsd"/>
+    <xs:include schemaLocation="types/team.xsd"/>
+    <xs:include schemaLocation="types/sport_event.xsd"/>
+
+    <xs:element name="fixtures_fixture" type="fixturesEndpoint"/>
+    <xs:complexType name="fixturesEndpoint">
+        <xs:sequence>
+            <xs:element type="fixture" name="fixture"/>
+        </xs:sequence>
+        <xs:attribute type="xs:dateTime" name="generated_at"/>
+    </xs:complexType>
+
+    <xs:complexType name="fixture">
+        <xs:complexContent>
+            <xs:extension base="sportEvent">
+                <xs:sequence>
+                    <xs:element type="tvChannels" name="tv_channels" minOccurs="0"/>
+                </xs:sequence>
+                <xs:attribute type="xs:dateTime" name="start_time" use="optional"/>
+            </xs:extension>
+        </xs:complexContent>
+    </xs:complexType>
+
+    <xs:complexType name="fixtureCompetitors">
+        <xs:sequence>
+            <xs:element type="teamCompetitor" name="competitor" maxOccurs="unbounded" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="tvChannels">
+        <xs:sequence>
+            <xs:element type="tvChannel" name="tv_channel" maxOccurs="unbounded" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="tvChannel">
+        <xs:attribute type="xs:string" name="name" use="required"/>
+        <xs:attribute type="xs:string" name="language" use="optional"/>
+        <xs:attribute type="xs:dateTime" name="start_time" use="optional"/>
+        <xs:attribute type="xs:string" name="stream_url" use="optional"/>
+    </xs:complexType>
+</xs:schema>

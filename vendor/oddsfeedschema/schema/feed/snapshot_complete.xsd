@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+    <xs:element name="snapshot_complete">
+        <xs:complexType>
+            <xs:attribute name="request_id" type="xs:long" use="required"/>
+            <xs:attribute name="product" type="xs:int" use="required"/>
+            <xs:attribute name="timestamp" type="xs:long" use="required"/>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>

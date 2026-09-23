@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<match_summary generated_at="2026-08-26T12:00:00">
+    <sport_event id="od:match:198314" name="Team Alpha vs Team Beta" scheduled="2026-08-26T18:00:00" status="closed">
+        <tournament id="od:tournament:1042" name="Test Tournament" abbreviation="TT" risk_tier="1"
+                    scheduled="2026-08-26T18:00:00" scheduled_end="2026-08-27T18:00:00">
+            <sport id="od:sport:23" name="PenaltyArena" abbreviation="PA"/>
+        </tournament>
+        <competitors>
+            <competitor id="od:competitor:47214" name="Team Alpha" abbreviation="TA" underage="-1" qualifier="home"/>
+            <competitor id="od:competitor:47215" name="Team Beta" abbreviation="TB" underage="-1" qualifier="away"/>
+        </competitors>
+    </sport_event>
+    <sport_event_status home_score="3" away_score="2" status="closed" scoreboard_available="true"
+                       match_status_code="1" winner_id="od:competitor:47214">
+        <period_scores>
+            <period_score type="round" number="1" match_status_code="0" home_score="1" away_score="0"/>
+            <period_score type="round" number="2" match_status_code="0" home_score="0" away_score="1"/>
+            <period_score type="round" number="3" match_status_code="0" home_score="1" away_score="0"/>
+            <period_score type="round" number="4" match_status_code="0" home_score="0" away_score="1"/>
+            <period_score type="round" number="5" match_status_code="0" home_score="1" away_score="0"/>
+        </period_scores>
+    </sport_event_status>
+</match_summary>

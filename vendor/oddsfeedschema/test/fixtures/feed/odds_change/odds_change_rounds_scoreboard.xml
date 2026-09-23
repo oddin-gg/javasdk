@@ -1,0 +1,11 @@
+<odds_change product="3" event_id="od:match:198314" timestamp="1777832981632">
+    <sport_event_status home_score="1" away_score="0" status="1" scoreboard_available="true" match_status="0">
+        <period_scores>
+            <period_score type="map" number="1" match_status_code="0" home_score="1" away_score="0"
+                          home_won_rounds="16" away_won_rounds="9"/>
+            <period_score type="map" number="2" match_status_code="0" home_score="0" away_score="0"/>
+        </period_scores>
+        <scoreboard current_ct_team="1" current_def_team="2" home_won_rounds="10" away_won_rounds="5" current_round="16"/>
+    </sport_event_status>
+    <odds/>
+</odds_change>
