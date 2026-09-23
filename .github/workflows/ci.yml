@@ -5,12 +5,16 @@ on:
     branches:
       - 'main'
       - 'develop'
+      - 'release/0.x'
   push:
     branches:
       - 'main'
       - 'develop'
+      - 'release/0.x'
     tags:
-      - 'v*'
+      # Only 0.x versions. The 1.0 line tags v1.* and publishes to Maven Central from its own
+      # workflow; this one must never publish a 1.x version to GitHub Packages.
+      - 'v0.*'
 
 jobs:
   build_and_test_library:
@@ -76,7 +80,7 @@ jobs:
   publish_maven:
     name: Publish to GitHub Packages
     needs: [build_and_test_library, build_and_test_examples]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v0.')
     runs-on: ubuntu-latest
     permissions:
       contents: read
