@@ -12,17 +12,34 @@
 #
 # Safe to run at any time: it verifies what is already there and downloads only what is missing
 # or wrong. Needs a GitHub token with read:packages.
+#
+# The coordinates and the local repository come from Maven itself, so they are the ones the build
+# will use: to test another SDK version, pass the same override to both, e.g.
+#   MAVEN_ARGS=-Dsdk.version=0.0.54 ./scripts/fetch-sdk.sh && ./mvnw verify -Dsdk.version=0.0.54
+# (Maven reads MAVEN_ARGS itself, so a settings file with its own localRepository works too.)
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 pom=$root/pom.xml
 checksums=$root/system-tests/src/test/resources/sdk-jar-checksums.properties
 
-value_of() { sed -n "s|.*<$1>\(.*\)</$1>.*|\1|p" "$pom"; }
+log=$(mktemp)
+trap 'rm -f "$log"' EXIT
 
-group=$(value_of sdk.groupId)
-version=$(value_of sdk.version)
-[ -n "$group" ] && [ -n "$version" ] || { echo "cannot read sdk.groupId/sdk.version from $pom" >&2; exit 1; }
+# Evaluates the root POM only (-N): it has no dependency on the SDK, so this resolves nothing but
+# the help plugin, from Central.
+evaluate() {
+  "$root/mvnw" -q -N -f "$pom" org.apache.maven.plugins:maven-help-plugin:3.5.2:evaluate \
+      -Dexpression="$1" -DforceStdout 2>"$log" \
+    || { cat "$log" >&2; echo "could not ask Maven for $1" >&2; exit 1; }
+}
+
+group=$(evaluate sdk.groupId)
+version=$(evaluate sdk.version)
+repository=$(evaluate settings.localRepository)
+case "$group:$version" in
+  *null*|:*|*:) echo "Maven did not report sdk.groupId/sdk.version (got '$group:$version')" >&2; exit 1 ;;
+esac
 
 # the 1.0 line is built here; there is nothing to fetch and nothing published to compare against
 if [ "$group" = "gg.oddin.oddsfeed" ]; then
@@ -37,7 +54,7 @@ digest() {
 }
 
 path=$(echo "$group" | tr . /)/odds-feed/$version
-dir=${MAVEN_USER_HOME:-$HOME/.m2}/repository/$path
+dir=$repository/$path
 base=https://maven.pkg.github.com/oddin-gg/javasdk/$path
 mkdir -p "$dir"
 

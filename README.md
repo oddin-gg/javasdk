@@ -11,7 +11,10 @@ Java SDK
 > in `~/.m2/settings.xml` under the server id `oddin-github` for Maven, the same id clients use.
 > The system tests also need Docker: they run the feed's message broker in a container through
 > Testcontainers (with colima, see Testcontainers' notes on `DOCKER_HOST` and
-> `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`). The old 0.0.x SDK lives in `library/` and still builds with Gradle on JDK 8.
+> `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`). To run them against another published SDK, give
+> the script and Maven the same version: `MAVEN_ARGS=-Dsdk.version=0.0.54 ./scripts/fetch-sdk.sh`,
+> then `./mvnw verify -Dsdk.version=0.0.54`. The old 0.0.x SDK lives in `library/` and still
+> builds with Gradle on JDK 8.
 
 Purpose of this SDK is to make integration process much smoother and easier. This SDK should take care of all connection, 
 data binding and other issues related to connection to API and Feed.

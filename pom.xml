@@ -44,7 +44,7 @@
       old SDK or the new one. The group id is part of it because 1.0 changes it.
     -->
     <sdk.groupId>com.oddin.oddsfeed</sdk.groupId>
-    <sdk.version>0.0.56-rc2</sdk.version>
+    <sdk.version>0.0.56</sdk.version>
 
     <maven.compiler.release>25</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
