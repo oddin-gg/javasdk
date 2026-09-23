@@ -19,6 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 /**
@@ -35,7 +36,9 @@ import java.util.regex.Pattern;
  *
  * <p>Closing waits until requests stop arriving. The old SDK side-loads related entities in the
  * background after a call has returned, and it keeps its API address in one place for the whole
- * JVM, so a late request from one test would otherwise land on the next test's fake.
+ * JVM, so a late request from one test would otherwise land on the next test's fake. Waiting for
+ * quiet narrows that window but cannot close it - a pause in the SDK longer than the quiet period
+ * still slips through - so assert on the requests you expect rather than on the exact list.
  */
 public final class FakeRestServer implements AutoCloseable {
 
@@ -47,6 +50,8 @@ public final class FakeRestServer implements AutoCloseable {
       route("/v1/descriptions/producers", "rest/producers/producers.xml"),
       route("/v1/descriptions/void_reasons", "rest/void_reasons/void_reasons.xml"),
       route("/v1/descriptions/{lang}/markets", "rest/markets/market_descriptions.xml"),
+      // the SDK reads variants into the same type as the plain list, so the same fixture fits
+      route("/v1/descriptions/{lang}/markets/{id}/variants/{id}", "rest/markets/market_descriptions.xml"),
       route("/v1/descriptions/{lang}/match_status", "rest/match_status/match_status_descriptions.xml"),
       route("/v1/sports/{lang}/sports", "rest/sports/sports.xml"),
       route("/v1/sports/{lang}/sports/{id}/tournaments", "rest/sport_tournaments/sport_tournaments.xml"),
@@ -66,7 +71,8 @@ public final class FakeRestServer implements AutoCloseable {
   private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
   private final List<RecordedRequest> requests = new CopyOnWriteArrayList<>();
   private final Map<String, Response> overrides = new ConcurrentHashMap<>();
-  private volatile long lastRequestAt = System.nanoTime();
+  private final AtomicInteger inFlight = new AtomicInteger();
+  private volatile long lastFinishedAt = System.nanoTime();
 
   private FakeRestServer() throws IOException {
     server = HttpsServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
@@ -97,7 +103,10 @@ public final class FakeRestServer implements AutoCloseable {
     overrides.put(path, new Response(status, body));
   }
 
-  /** Everything received so far, oldest first. */
+  /**
+   * Everything received so far, oldest first. It can include a late background request from an SDK
+   * an earlier test used, so check for what you expect instead of comparing the whole list.
+   */
   public List<RecordedRequest> requests() {
     return List.copyOf(requests);
   }
@@ -126,19 +135,31 @@ public final class FakeRestServer implements AutoCloseable {
    * test started finishes inside that test rather than being cut off by the shutdown.
    */
   public void awaitQuiet() {
-    awaitQuiet(Duration.ofMillis(300), Duration.ofSeconds(5));
+    awaitQuiet(Duration.ofMillis(500), Duration.ofSeconds(5));
   }
 
-  /** Until nothing has arrived for {@code quiet}, or {@code limit} has passed. */
+  /**
+   * Until no request is being answered and none has finished for {@code quiet}. Timed from the
+   * last response rather than the last arrival: the SDK's next side-load follows its handling of
+   * the previous answer, not the request.
+   */
   private void awaitQuiet(Duration quiet, Duration limit) {
     long deadline = System.nanoTime() + limit.toNanos();
-    while (System.nanoTime() < deadline) {
-      long silent = System.nanoTime() - lastRequestAt;
-      if (silent >= quiet.toNanos()) {
-        return;
+    while (true) {
+      long pause = Duration.ofMillis(20).toNanos();
+      if (inFlight.get() == 0) {
+        long silent = System.nanoTime() - lastFinishedAt;
+        if (silent >= quiet.toNanos()) {
+          return;
+        }
+        pause = quiet.toNanos() - silent;
+      }
+      if (System.nanoTime() + pause > deadline) {
+        throw new IllegalStateException("the SDK was still calling the fake after " + limit
+            + "; its background work would spill into whatever runs next");
       }
       try {
-        Thread.sleep(Duration.ofNanos(quiet.toNanos() - silent));
+        Thread.sleep(Duration.ofNanos(pause));
       } catch (InterruptedException e) {
         Thread.currentThread().interrupt();
         return;
@@ -147,8 +168,8 @@ public final class FakeRestServer implements AutoCloseable {
   }
 
   private void handle(HttpExchange exchange) throws IOException {
+    inFlight.incrementAndGet();
     try (exchange) {
-      lastRequestAt = System.nanoTime();
       String method = exchange.getRequestMethod();
       String path = exchange.getRequestURI().getPath();
       requests.add(new RecordedRequest(method, path, exchange.getRequestURI().getRawQuery(), headers(exchange)));
@@ -160,6 +181,10 @@ public final class FakeRestServer implements AutoCloseable {
       if (body.length > 0) {
         exchange.getResponseBody().write(body);
       }
+    } finally {
+      // in this order, so whoever sees nothing in flight also sees when it finished
+      lastFinishedAt = System.nanoTime();
+      inFlight.decrementAndGet();
     }
   }
 

@@ -96,6 +96,7 @@ class FakeRestServerIT {
         "/v1/descriptions/producers",
         "/v1/descriptions/void_reasons",
         "/v1/descriptions/en/markets",
+        "/v1/descriptions/en/markets/1/variants/od:dynamic_outcomes:1",
         "/v1/descriptions/en/match_status",
         "/v1/sports/en/sports",
         "/v1/sports/en/sports/od:sport:1/tournaments",
