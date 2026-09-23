@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="types/sport.xsd"/>
+    <xs:include schemaLocation="types/player.xsd"/>
+    <xs:include schemaLocation="types/team.xsd"/>
+
+    <xs:element name="competitor_profile" type="competitorProfileEndpoint"/>
+    <xs:complexType name="competitorProfileEndpoint">
+        <xs:sequence>
+            <xs:element type="teamExtended" name="competitor" minOccurs="1" maxOccurs="1"/>
+            <xs:element name="players">
+                <xs:complexType>
+                    <xs:sequence>
+                        <xs:element type="player" name="player" maxOccurs="unbounded" minOccurs="0"/>
+                    </xs:sequence>
+                </xs:complexType>
+            </xs:element>
+        </xs:sequence>
+    </xs:complexType>
+</xs:schema>

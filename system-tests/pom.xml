@@ -102,6 +102,20 @@
   </dependencies>
 
   <build>
+    <testResources>
+      <testResource>
+        <directory>src/test/resources</directory>
+      </testResource>
+      <testResource>
+        <!--
+          The schema and fixtures vendored from the oddsfeedschema repository, see
+          vendor/oddsfeedschema/SOURCE. Tests read them from the classpath under oddsfeedschema/;
+          the build never fetches them from anywhere.
+        -->
+        <directory>${project.basedir}/../vendor/oddsfeedschema</directory>
+        <targetPath>oddsfeedschema</targetPath>
+      </testResource>
+    </testResources>
     <plugins>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

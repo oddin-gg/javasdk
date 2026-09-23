@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<match_status_descriptions response_code="OK">
+    <match_status id="0" description="Not started"/>
+    <match_status id="1" description="Ended"/>
+</match_status_descriptions>

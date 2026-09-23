@@ -1,0 +1,10 @@
+<odds_change product="2" event_id="od:match:198314" timestamp="1777832981632">
+    <sport_event_status status="4" match_status="1" winner_id="od:competitor:47214" home_score="3" away_score="2"
+                        scoreboard_available="false">
+        <period_scores>
+            <period_score type="round" number="1" match_status_code="0" home_score="1" away_score="0"/>
+            <period_score type="round" number="2" match_status_code="0" home_score="0" away_score="1"/>
+        </period_scores>
+    </sport_event_status>
+    <odds/>
+</odds_change>

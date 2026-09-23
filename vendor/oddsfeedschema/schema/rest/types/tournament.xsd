@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="urn.xsd"/>
+    <xs:include schemaLocation="sport.xsd"/>
+    <xs:include schemaLocation="team.xsd"/>
+
+    <xs:complexType name="tournament">
+        <xs:sequence>
+            <xs:element type="tournamentLength" name="tournament_length" minOccurs="0"/>
+            <xs:element type="sport" name="sport"/>
+        </xs:sequence>
+        <xs:attribute type="tournamentUrn" name="id" use="required"/>
+        <xs:attribute type="xs:string" name="name" use="required"/>
+        <xs:attribute type="xs:int" name="risk_tier" use="required"/>
+        <xs:attribute type="xs:dateTime" name="scheduled" use="optional"/>
+        <xs:attribute type="xs:dateTime" name="scheduled_end" use="optional"/>
+        <xs:attribute type="xs:string" name="abbreviation" use="optional"/>
+    </xs:complexType>
+    <xs:complexType name="tournamentLength">
+        <xs:attribute type="xs:date" name="start_date" use="optional"/>
+        <xs:attribute type="xs:date" name="end_date" use="optional"/>
+    </xs:complexType>
+
+    <xs:complexType name="tournamentExtended">
+        <xs:complexContent>
+            <xs:extension base="tournament">
+                <xs:sequence>
+                    <xs:element type="competitors" name="competitors" minOccurs="0"/>
+                </xs:sequence>
+                <xs:attribute type="xs:string" name="icon_path" use="optional"/>
+            </xs:extension>
+        </xs:complexContent>
+    </xs:complexType>
+
+    <xs:complexType name="competitors">
+        <xs:sequence>
+            <xs:element type="team" name="competitor" maxOccurs="unbounded" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+</xs:schema>

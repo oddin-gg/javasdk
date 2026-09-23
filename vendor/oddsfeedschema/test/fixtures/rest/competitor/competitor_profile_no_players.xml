@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<competitor_profile>
+    <competitor id="od:competitor:47214" name="Team Alpha" abbreviation="" underage="-1">
+        <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
+    </competitor>
+    <players/>
+</competitor_profile>

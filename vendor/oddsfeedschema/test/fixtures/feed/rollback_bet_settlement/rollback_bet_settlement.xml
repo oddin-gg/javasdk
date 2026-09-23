@@ -1,0 +1,4 @@
+<rollback_bet_settlement product="3" event_id="od:match:198314" timestamp="1777832981632">
+    <market id="1"/>
+    <market id="2" specifiers="mapnr=2"/>
+</rollback_bet_settlement>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<match_summary generated_at="2026-08-26T12:00:00">
+    <sport_event id="od:match:198320" name="Team Alpha vs Team Beta" scheduled="2026-08-26T18:00:00" status="live">
+        <tournament id="od:tournament:1042" name="Rush Cricket" abbreviation="RC" risk_tier="1">
+            <sport id="od:sport:31" name="Rush Cricket" abbreviation="RC"/>
+        </tournament>
+    </sport_event>
+    <sport_event_status home_score="156" away_score="120" status="live" scoreboard_available="true" match_status_code="0">
+        <period_scores>
+            <period_score type="inning" number="1" match_status_code="0" home_score="156" away_score="120"
+                          home_runs="156" away_runs="120" home_wickets_fallen="4" away_wickets_fallen="6"
+                          home_overs_played="15" away_overs_played="18" home_balls_played="3" away_balls_played="2"
+                          home_won_coin_toss="true"/>
+        </period_scores>
+        <scoreboard home_runs="156" away_runs="120" home_wickets_fallen="4" away_wickets_fallen="6"
+                    home_overs_played="15" home_balls_played="3" away_overs_played="18" away_balls_played="2"
+                    home_won_coin_toss="true" home_batting="true" away_batting="false" inning="1"
+                    time="1800" game_time="1800" elapsed_time="1800"/>
+    </sport_event_status>
+</match_summary>

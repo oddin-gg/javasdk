@@ -1,0 +1,15 @@
+<odds_change product="2" event_id="od:match:198314" timestamp="1777832981632" request_id="101">
+    <sport_event_status home_score="1" away_score="0" status="1" scoreboard_available="true" match_status="0">
+        <period_scores>
+            <period_score type="half" number="1" match_status_code="0" home_score="1" away_score="0" home_goals="1" away_goals="0"/>
+            <period_score type="half" number="2" match_status_code="0" home_score="0" away_score="0"/>
+        </period_scores>
+        <scoreboard home_goals="1" away_goals="0" time="65" game_time="120" elapsed_time="0"/>
+    </sport_event_status>
+    <odds>
+        <market id="1" specifiers="variant=way:two|way=two" status="1">
+            <outcome id="1" odds="1.85" active="1"/>
+            <outcome id="2" odds="1.85" active="1"/>
+        </market>
+    </odds>
+</odds_change>

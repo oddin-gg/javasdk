@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schedule generated_at="2026-08-26T12:00:00">
+    <sport_event id="od:match:198314" name="Team Alpha vs Team Beta" scheduled="2026-08-26T18:00:00" status="not_started">
+        <tournament id="od:tournament:1042" name="Test Tournament" abbreviation="TT" risk_tier="1"
+                    scheduled="2026-08-16T18:00:00" scheduled_end="2026-09-05T18:00:00">
+            <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
+        </tournament>
+        <competitors>
+            <competitor id="od:competitor:47214" name="Team Alpha" abbreviation="TA" underage="-1" qualifier="home"/>
+            <competitor id="od:competitor:47215" name="Team Beta" abbreviation="TB" underage="-1" qualifier="away"/>
+        </competitors>
+    </sport_event>
+    <sport_event id="od:match:198315" name="Team Gamma vs Team Delta" type="match" scheduled="2026-08-26T20:00:00"
+                 scheduled_end="2026-08-26T22:00:00" start_time_tbd="false" liveodds="booked" status="live">
+        <tournament id="od:tournament:1042" name="Test Tournament" abbreviation="TT" risk_tier="1">
+            <tournament_length start_date="2026-08-16" end_date="2026-09-05"/>
+            <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
+        </tournament>
+        <competitors>
+            <competitor id="od:competitor:47216" name="Team Gamma" abbreviation="TG" underage="-1"
+                        country="Czechia" country_code="CZE" virtual="false" qualifier="home"/>
+            <competitor id="od:competitor:47217" name="Team Delta" abbreviation="TD" underage="-1"
+                        virtual="true" qualifier="away"/>
+        </competitors>
+        <extra_info>
+            <info key="sport_format" value="esports"/>
+        </extra_info>
+    </sport_event>
+</schedule>

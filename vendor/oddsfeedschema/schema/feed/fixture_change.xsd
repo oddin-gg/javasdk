@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+    <xs:include schemaLocation="types.xsd"/>
+    <xs:element name="fixture_change">
+        <xs:complexType>
+            <xs:attributeGroup ref="messageAttributes"/>
+            <xs:attribute name="change_type" type="changeType" use="optional"/>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>

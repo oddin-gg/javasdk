@@ -68,6 +68,27 @@ class BuildWiringIT {
   }
 
   @Test
+  void theVendoredSchemaAndFixturesAreOnTheTestClasspath() throws IOException {
+    String source;
+    try (InputStream in = BuildWiringIT.class.getResourceAsStream("/oddsfeedschema/SOURCE")) {
+      assertThat(in).as("vendor/oddsfeedschema is not on the test classpath").isNotNull();
+      source = new String(in.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+    }
+    assertThat(source)
+        .as("SOURCE records which schema commit the copy came from")
+        .containsPattern("(?m)^commit [0-9a-f]{40}$");
+
+    // one of each kind the fakes and the golden tests will read
+    for (String resource : List.of(
+        "/oddsfeedschema/schema/feed/odds_change.xsd",
+        "/oddsfeedschema/schema/rest/match_summary.xsd",
+        "/oddsfeedschema/test/fixtures/feed/odds_change/odds_change_markets_only.xml",
+        "/oddsfeedschema/test/fixtures/rest/match_summary/match_summary.xml")) {
+      assertThat(BuildWiringIT.class.getResource(resource)).as(resource).isNotNull();
+    }
+  }
+
+  @Test
   void onlyOneArtifactProvidesTheJaxbApi() throws IOException {
     List<?> providers = Collections.list(
         getClass().getClassLoader().getResources("javax/xml/bind/JAXBContext.class"));
