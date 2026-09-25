@@ -140,6 +140,9 @@ public class RAPlayerProfileEndpoint {
         protected String fullName;
         @XmlAttribute(name = "sport", required = true)
         protected String sportID;
+        @Nullable
+        @XmlAttribute(name = "underage")
+        protected Integer underage;
 
         /**
          * Gets the value of the id property.
@@ -235,6 +238,31 @@ public class RAPlayerProfileEndpoint {
          */
         public void setSportID(String value) {
             this.sportID = value;
+        }
+
+        /**
+         * Gets the value of the underage property: -1 unknown, 0 not underage, 1 underage.
+         *
+         * @return
+         *     possible object is
+         *     {@link Integer }, null when the producer did not send it
+         *
+         */
+        @Nullable
+        public Integer getUnderage() {
+            return underage;
+        }
+
+        /**
+         * Sets the value of the underage property.
+         *
+         * @param value
+         *     allowed object is
+         *     {@link Integer }
+         *
+         */
+        public void setUnderage(@Nullable Integer value) {
+            this.underage = value;
         }
     }
 }
