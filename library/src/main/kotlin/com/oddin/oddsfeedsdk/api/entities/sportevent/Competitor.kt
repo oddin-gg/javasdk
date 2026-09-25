@@ -13,7 +13,10 @@ interface Competitor {
     val abbreviations: Map<Locale, String>?
     val virtual: Boolean?
     val countryCode: String?
+    @Deprecated("Raw wire value; use underageStatus", ReplaceWith("underageStatus"))
     val underage: Int?
+    val underageStatus: UnderageStatus
+        get() = UnderageStatus.fromValue(underage)
     val iconPath: String?
 
     fun getCountry(locale: Locale): String?

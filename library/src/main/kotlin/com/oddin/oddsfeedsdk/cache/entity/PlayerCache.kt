@@ -142,7 +142,7 @@ class PlayerCacheImpl @Inject constructor(
             item.fullName[locale] = data.fullName!!
         }
         item.sportID[locale] = data.sportID
-        item.underage = UnderageStatus.fromValue(data.underage)
+        data.underage?.let { item.underage = UnderageStatus.fromValue(it) }
 
         internalCache.put(id, item)
     }
