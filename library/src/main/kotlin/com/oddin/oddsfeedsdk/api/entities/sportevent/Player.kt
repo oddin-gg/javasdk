@@ -11,4 +11,5 @@ interface Player {
     fun getFullName(locale: Locale): String?
     val sportIDs: Map<Locale, String>?
     fun getSportID(locale: Locale): String?
+    val underage: UnderageStatus?
 }

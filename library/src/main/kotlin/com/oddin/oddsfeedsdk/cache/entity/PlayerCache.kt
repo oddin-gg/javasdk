@@ -5,6 +5,7 @@ import com.google.inject.Inject
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Player
+import com.oddin.oddsfeedsdk.api.entities.sportevent.UnderageStatus
 import com.oddin.oddsfeedsdk.cache.Closable
 import com.oddin.oddsfeedsdk.cache.LocalizedItem
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy
@@ -141,6 +142,7 @@ class PlayerCacheImpl @Inject constructor(
             item.fullName[locale] = data.fullName!!
         }
         item.sportID[locale] = data.sportID
+        item.underage = UnderageStatus.fromValue(data.underage)
 
         internalCache.put(id, item)
     }
@@ -196,6 +198,7 @@ data class LocalizedPlayer(
     val name = ConcurrentHashMap<Locale, String>()
     val fullName = ConcurrentHashMap<Locale, String>()
     val sportID = ConcurrentHashMap<Locale, String>()
+    @Volatile var underage: UnderageStatus = UnderageStatus.UNKNOWN
 
     override val loadedLocales: Set<Locale>
         get() {
@@ -235,6 +238,9 @@ class PlayerImpl(
     override fun getSportID(locale: Locale): String? {
         return fetchPlayer(setOf(locale))?.sportID?.get(locale)
     }
+
+    override val underage: UnderageStatus?
+        get() = fetchPlayer(locales)?.underage
 
     private fun fetchPlayer(locales: Set<Locale>): LocalizedPlayer? {
         val item = playerCache.getPlayer(id, locales)
