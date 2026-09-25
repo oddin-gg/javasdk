@@ -2,6 +2,8 @@
 .idea
 .gradle
 build
+# VS Code's Java extension compiles into bin/ next to each module
+bin/
 
 # Compiled class file
 *.class
