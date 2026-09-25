@@ -10,7 +10,9 @@ import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import java.io.ByteArrayInputStream
 import java.util.Locale
+import javax.xml.bind.JAXBContext
 
 class PlayerCacheUnderageTest {
     private val config = mockk<OddsFeedConfiguration> {
@@ -45,5 +47,39 @@ class PlayerCacheUnderageTest {
 
         assertEquals(UnderageStatus.YES, cache.getPlayer(yes, setOf(Locale.ENGLISH))?.underage)
         assertEquals(UnderageStatus.UNKNOWN, cache.getPlayer(missing, setOf(Locale.ENGLISH))?.underage)
+    }
+
+    private val restContext = JAXBContext.newInstance("com.oddin.oddsfeedsdk.schema.rest.v1")
+
+    private fun unmarshal(playerAttrs: String): RAPlayerProfileEndpoint.Player {
+        val raw = """<?xml version="1.0" encoding="UTF-8"?>
+            <player_profile generated_at="2026-09-25T12:00:00">
+                <player id="od:player:1" name="P" sport="od:sport:1" $playerAttrs/>
+            </player_profile>"""
+        val endpoint = restContext.createUnmarshaller()
+            .unmarshal(ByteArrayInputStream(raw.toByteArray())) as RAPlayerProfileEndpoint
+        return endpoint.player
+    }
+
+    @Test
+    fun `JAXB binds the underage attribute and leaves it null when absent`() {
+        assertEquals(1, unmarshal("""underage="1"""").underage)
+        assertEquals(0, unmarshal("""underage="0"""").underage)
+        assertEquals(-1, unmarshal("""underage="-1"""").underage)
+        assertEquals(null, unmarshal("").underage)
+    }
+
+    @Test
+    fun `a payload without the attribute keeps a known value, an explicit -1 retracts it`() {
+        val api = mockk<ApiClient>(relaxed = true)
+        val id = URN.parse("od:player:1")
+        coEvery { api.fetchPlayerProfile(id, Locale.ENGLISH) } returns player("od:player:1", 1)
+        coEvery { api.fetchPlayerProfile(id, Locale.GERMAN) } returns player("od:player:1", null)
+        coEvery { api.fetchPlayerProfile(id, Locale.FRENCH) } returns player("od:player:1", -1)
+        val cache = PlayerCacheImpl(api, config)
+
+        assertEquals(UnderageStatus.YES, cache.getPlayer(id, setOf(Locale.ENGLISH))?.underage)
+        assertEquals(UnderageStatus.YES, cache.getPlayer(id, setOf(Locale.GERMAN))?.underage)
+        assertEquals(UnderageStatus.UNKNOWN, cache.getPlayer(id, setOf(Locale.FRENCH))?.underage)
     }
 }
