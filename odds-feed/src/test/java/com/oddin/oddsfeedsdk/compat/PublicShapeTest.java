@@ -148,6 +148,7 @@ class PublicShapeTest {
     private static final String JETBRAINS_NULLABLE = "Lorg/jetbrains/annotations/Nullable;";
     private static final String JETBRAINS_NOT_NULL = "Lorg/jetbrains/annotations/NotNull;";
     private static final String JSPECIFY_NULLABLE = "Lorg/jspecify/annotations/Nullable;";
+    private static final String JSPECIFY_NULL_MARKED = "Lorg/jspecify/annotations/NullMarked;";
 
     private static Map<String, ClassModel> baseline;
     private static Map<String, ClassModel> current;
@@ -191,6 +192,24 @@ class PublicShapeTest {
             }
         }
         assertThat(extra).as("public types without a baseline counterpart").isEmpty();
+    }
+
+    /**
+     * The nullability comparison reads a missing {@code @Nullable} as not null, which holds only
+     * inside a {@code @NullMarked} package. Without it Kotlin callers would see platform types
+     * everywhere while every comparison above still passed. {@code schema/utils} is the exception:
+     * URN was Java already, so its callers saw platform types before too.
+     */
+    @Test
+    void everyPackageThatWasKotlinIsNullMarked() {
+        String unmarked = ROOT + "schema/utils";
+        for (String pkg : PACKAGES) {
+            ClassModel info = current.get(pkg + "/package-info");
+            boolean marked = info != null && info.findAttribute(Attributes.runtimeVisibleAnnotations())
+                    .map(a -> a.annotations().stream().anyMatch(an -> an.className().stringValue().equals(JSPECIFY_NULL_MARKED)))
+                    .orElse(false);
+            assertThat(marked).as("%s is @NullMarked", relative(pkg)).isEqualTo(!pkg.equals(unmarked));
+        }
     }
 
     @Test

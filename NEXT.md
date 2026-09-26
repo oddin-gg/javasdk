@@ -98,7 +98,10 @@ types in packages whose name contains `internal`.
 ### Things we know are different and accept
 
 1. Kotlin `data class` extras (`copy()`, `componentN()`) disappear. Nobody should be
-   using them from Java.
+   using them from Java. Kotlin callers also lose named arguments: Kotlin allows them
+   only on Kotlin functions, so a call such as `Scoreboard(homeGoals = 1, ...)` or
+   `match.getName(locale = english)` has to pass its arguments by position. Positional
+   calls compile as before.
 2. `MarketMessage.getMarkets()` becomes `List<? extends Market>`. Kotlin allowed the
    covariant override, Java does not. Code that assigns the result to `List<Market>`
    needs one cast.
