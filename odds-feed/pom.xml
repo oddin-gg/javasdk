@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>gg.oddin.oddsfeed</groupId>
+    <artifactId>odds-feed-parent</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>odds-feed</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Oddin Odds Feed SDK</name>
+  <description>Java SDK for the Oddin odds feed.</description>
+
+  <properties>
+    <!--
+      The release whose public API this one keeps source-compatible. PublicShapeTest reads its jar
+      from the local repository, where scripts/fetch-sdk.sh puts it after checking its digest, and
+      compares every public type against it. It is never put on a classpath: its classes have the
+      same names as ours.
+    -->
+    <api.baseline.groupPath>com/oddin/oddsfeed</api.baseline.groupPath>
+    <api.baseline.version>0.0.56</api.baseline.version>
+  </properties>
+
+  <dependencies>
+    <!--
+      Nullness annotations. The 0.0.x line was Kotlin, and Kotlin callers read its nullability from
+      the metadata; these carry the same information, so a Kotlin client sees the same types.
+    -->
+    <dependency>
+      <groupId>org.jspecify</groupId>
+      <artifactId>jspecify</artifactId>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <baseline.jar>${settings.localRepository}/${api.baseline.groupPath}/odds-feed/${api.baseline.version}/odds-feed-${api.baseline.version}.jar</baseline.jar>
+            <baseline.version>${api.baseline.version}</baseline.version>
+            <!-- the same pins the system tests check the SDK they run against with -->
+            <baseline.checksums>${maven.multiModuleProjectDirectory}/system-tests/src/test/resources/sdk-jar-checksums.properties</baseline.checksums>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+</project>
