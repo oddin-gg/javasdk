@@ -109,6 +109,28 @@ public final class FakeRestServer implements AutoCloseable {
     return List.copyOf(requests);
   }
 
+  /**
+   * The first request with this method and path, waiting up to ten seconds for it; for calls the
+   * SDK makes on its own, such as a recovery request after an alive.
+   *
+   * @throws AssertionError if it never arrives, naming the paths that did
+   */
+  public RecordedRequest awaitRequest(String method, String path) throws InterruptedException {
+    long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+    while (true) {
+      for (RecordedRequest request : requests) {
+        if (request.method().equals(method) && request.path().equals(path)) {
+          return request;
+        }
+      }
+      if (System.nanoTime() > deadline) {
+        throw new AssertionError("no " + method + " " + path + " within 10 s; the SDK asked for "
+            + requests.stream().map(request -> request.method() + " " + request.path()).toList());
+      }
+      Thread.sleep(50);
+    }
+  }
+
   @Override
   public void close() {
     awaitQuiet();
