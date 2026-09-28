@@ -23,6 +23,11 @@ import org.jspecify.annotations.Nullable;
  * does not break decoding. In strict mode, which the tests use, the same document is also validated
  * against the schema and anything JAXB could not place fails it, so that drift shows up in CI.
  *
+ * <p>Outside strict mode it does not validate, as 0.0.x did not: validating every message would
+ * refuse the new content the skipping exists for. A required attribute a message lacks reads as
+ * absent - null for the enums and their numbers, the type's default for the other numbers, as in
+ * 0.0.x - and building the message from it is where a message that lacks what it needs is refused.
+ *
  * <p>Safe for concurrent use; each call gets its own unmarshaller.
  */
 public final class FeedDecoder {
@@ -42,7 +47,9 @@ public final class FeedDecoder {
         }
         this.maxBytes = maxBytes;
         this.schema = schema;
-        this.inputs = XMLInputFactory.newFactory();
+        // the JDK's own parser, not whichever StAX provider the application brings: the settings
+        // below are the JDK's, and another provider could reject or ignore them
+        this.inputs = XMLInputFactory.newDefaultFactory();
         inputs.setProperty(XMLInputFactory.SUPPORT_DTD, false);
         inputs.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
         inputs.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");

@@ -65,7 +65,10 @@ class FeedGoldenTest {
     void everyFixtureDecodesStrictlyToItsClass() throws IOException, DecodeException {
         var decoded = new ArrayList<String>();
         for (var entry : CLASSES.entrySet()) {
-            for (Path fixture : xmlFiles(fixtures.resolve(entry.getKey()))) {
+            List<Path> files = xmlFiles(fixtures.resolve(entry.getKey()));
+            // an emptied directory would skip its message family without a word
+            assertThat(files).as("fixtures of %s", entry.getKey()).isNotEmpty();
+            for (Path fixture : files) {
                 byte[] body = Files.readAllBytes(fixture);
                 UnparsedMessage message = strict.decode(body);
                 assertThat(message).as(fixture.getFileName().toString()).isInstanceOf(entry.getValue());

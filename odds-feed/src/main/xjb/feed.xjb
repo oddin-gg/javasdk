@@ -212,7 +212,10 @@
       </ci:code>
     </jaxb:bindings>
     <jaxb:bindings node="//xs:complexType[@name='betSettlementMarket']//xs:element[@name='outcome']//xs:attribute[@name='result']">
-      <jaxb:property name="resultRaw"/>
+      <!-- required, but nullable like every raw enum: an outcome without it must not read as LOST -->
+      <jaxb:property name="resultRaw">
+        <jaxb:baseType name="java.lang.Integer"/>
+      </jaxb:property>
     </jaxb:bindings>
 
     <jaxb:bindings node="//xs:complexType[@name='sportEventStatus']">
@@ -235,7 +238,10 @@
       </ci:code>
     </jaxb:bindings>
     <jaxb:bindings node="//xs:complexType[@name='sportEventStatus']/xs:attribute[@name='status']">
-      <jaxb:property name="statusRaw"/>
+      <!-- required, but nullable like every raw enum: a message without it must not read as NOT_STARTED -->
+      <jaxb:property name="statusRaw">
+        <jaxb:baseType name="java.lang.Integer"/>
+      </jaxb:property>
     </jaxb:bindings>
 
     <jaxb:bindings node="//xs:complexType[@name='scoreboard']">
