@@ -1,0 +1,10 @@
+<odds_change product="3" event_id="od:match:198314" timestamp="1777832981632">
+    <sport_event_status home_score="92" away_score="88" status="1" scoreboard_available="true" match_status="0">
+        <period_scores>
+            <period_score type="quarter" number="4" match_status_code="0" home_score="21" away_score="14"
+                          home_points="21" away_points="14"/>
+        </period_scores>
+        <scoreboard home_points="92" away_points="88" remaining_game_time="45" elapsed_time="675"/>
+    </sport_event_status>
+    <odds/>
+</odds_change>

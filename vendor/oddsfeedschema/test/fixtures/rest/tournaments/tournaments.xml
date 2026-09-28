@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tournaments generated_at="2026-08-26T12:00:00">
+    <tournament id="od:tournament:1042" name="Test Tournament" abbreviation="TT" risk_tier="1"
+                scheduled="2026-08-26T18:00:00" scheduled_end="2026-08-27T18:00:00" icon_path="/icons/tt.svg">
+        <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
+        <competitors>
+            <competitor id="od:competitor:47214" name="Team Alpha" abbreviation="TA" underage="-1"/>
+        </competitors>
+    </tournament>
+</tournaments>

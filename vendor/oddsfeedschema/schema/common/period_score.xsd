@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The single authoritative attribute list for the <period_score> element.
+
+    <period_score> appears both inside the AMQP <odds_change>/<sport_event_status>
+    message and inside the REST match_summary <sport_event_status> response. The
+    producer serialises both from the same model, so both schemas reference this
+    one group instead of keeping their own copy.
+
+    As with <scoreboard>, the sport decides which of the optional per-period
+    attributes are present; type/number/match_status_code and the two scores are
+    always sent.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+    <xs:attributeGroup name="periodScoreAttributes">
+        <xs:attribute name="type" type="xs:string" use="required"/>
+        <xs:attribute name="number" type="xs:int" use="required"/>
+        <xs:attribute name="match_status_code" type="xs:int" use="required"/>
+        <xs:attribute name="home_score" type="xs:double" use="required"/>
+        <xs:attribute name="away_score" type="xs:double" use="required"/>
+        <!-- round based sports (CS2, Valorant, ...) -->
+        <xs:attribute name="home_won_rounds" type="xs:int" use="optional"/>
+        <xs:attribute name="away_won_rounds" type="xs:int" use="optional"/>
+        <!-- MOBA (League of Legends, King of Glory, Mobile Legends, Dota) -->
+        <xs:attribute name="home_kills" type="xs:int" use="optional"/>
+        <xs:attribute name="away_kills" type="xs:int" use="optional"/>
+        <!-- goal based sports (rush / virtual soccer) -->
+        <xs:attribute name="home_goals" type="xs:int" use="optional"/>
+        <xs:attribute name="away_goals" type="xs:int" use="optional"/>
+        <!-- point based sports (rush / virtual basketball, table tennis, ...) -->
+        <xs:attribute name="home_points" type="xs:int" use="optional"/>
+        <xs:attribute name="away_points" type="xs:int" use="optional"/>
+        <!--
+            Per-set games won, sent for set based classic sports (tennis and
+            friends). Not emitted by the esports feed, where a table tennis
+            period IS a game and games-won lives on <scoreboard> instead.
+        -->
+        <xs:attribute name="home_games" type="xs:int" use="optional"/>
+        <xs:attribute name="away_games" type="xs:int" use="optional"/>
+        <!-- rush cricket -->
+        <xs:attribute name="home_runs" type="xs:int" use="optional"/>
+        <xs:attribute name="away_runs" type="xs:int" use="optional"/>
+        <xs:attribute name="home_wickets_fallen" type="xs:int" use="optional"/>
+        <xs:attribute name="away_wickets_fallen" type="xs:int" use="optional"/>
+        <xs:attribute name="home_overs_played" type="xs:int" use="optional"/>
+        <xs:attribute name="away_overs_played" type="xs:int" use="optional"/>
+        <xs:attribute name="home_balls_played" type="xs:int" use="optional"/>
+        <xs:attribute name="away_balls_played" type="xs:int" use="optional"/>
+        <xs:attribute name="home_won_coin_toss" type="xs:boolean" use="optional"/>
+    </xs:attributeGroup>
+</xs:schema>

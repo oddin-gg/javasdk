@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<producers response_code="OK">
+    <producer id="1" name="pre" description="Prematch feed" api_url="https://api.example.invalid/v1/pre"
+              active="true" scope="prematch" stateful_recovery_window_in_minutes="4320"/>
+    <producer id="2" name="live" description="Live feed" api_url="https://api.example.invalid/v1/live"
+              active="true" scope="live" stateful_recovery_window_in_minutes="4320"/>
+</producers>

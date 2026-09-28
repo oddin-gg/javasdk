@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<competitor_profile>
+    <competitor id="od:competitor:47214" name="Team Alpha" abbreviation="TA" underage="-1"
+                country="Czechia" country_code="CZE" virtual="false" icon_path="/icons/alpha.svg">
+        <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
+    </competitor>
+    <players>
+        <player id="od:player:9001" name="Player One" sport="od:sport:1" full_name="Player One Full"/>
+    </players>
+</competitor_profile>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="types/response_code.xsd"/>
+
+    <xs:element name="match_status_descriptions">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="match_status" type="match_status_description" minOccurs="1" maxOccurs="unbounded"/>
+            </xs:sequence>
+            <xs:attribute name="response_code" type="response_code"/>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:complexType name="match_status_description">
+        <xs:attribute name="id" type="xs:long" use="required"/>
+        <xs:attribute name="description" type="xs:string" use="required"/>
+    </xs:complexType>
+</xs:schema>

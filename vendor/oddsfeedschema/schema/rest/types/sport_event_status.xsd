@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="urn.xsd"/>
+    <xs:include schemaLocation="../../common/period_score.xsd"/>
+    <xs:include schemaLocation="../../common/scoreboard.xsd"/>
+
+    <!--
+        The REST copy of <sport_event_status> is deliberately NOT the same type as
+        the AMQP one in schema/feed/types.xsd: the REST API spells the status out
+        ("live", "closed", ...) and carries match_status_code, while the AMQP feed
+        sends the numeric status plus match_status. Only the two child elements
+        below are shared, and they come from schema/common.
+    -->
+    <xs:complexType name="sportEventStatus">
+        <xs:sequence>
+            <xs:element type="periodScores" name="period_scores" minOccurs="0"/>
+            <xs:element type="scoreboard" name="scoreboard" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute type="xs:string" name="status" use="required"/>
+        <xs:attribute type="xs:int" name="match_status_code" use="optional"/>
+        <xs:attribute type="competitorUrn" name="winner_id" use="optional"/>
+        <xs:attribute type="xs:double" name="home_score" use="optional"/>
+        <xs:attribute type="xs:double" name="away_score" use="optional"/>
+        <xs:attribute type="xs:boolean" name="scoreboard_available" use="optional"/>
+        <!--
+            Legacy, from the original code generation. No Oddin producer emits
+            these and no SDK reads them; they are kept declared so existing
+            generated bindings keep compiling. Do not build on them.
+            See NOTES.md.
+        -->
+        <xs:attribute type="xs:int" name="status_code" use="optional"/>
+        <xs:attribute type="xs:double" name="aggregate_home_score" use="optional"/>
+        <xs:attribute type="xs:double" name="aggregate_away_score" use="optional"/>
+        <xs:attribute type="competitorUrn" name="aggregate_winner_id" use="optional"/>
+    </xs:complexType>
+
+    <xs:complexType name="periodScores">
+        <xs:sequence>
+            <xs:element type="periodScore" name="period_score" maxOccurs="unbounded" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="periodScore">
+        <xs:attributeGroup ref="periodScoreAttributes"/>
+    </xs:complexType>
+
+    <xs:complexType name="scoreboard">
+        <xs:attributeGroup ref="scoreboardAttributes"/>
+    </xs:complexType>
+</xs:schema>

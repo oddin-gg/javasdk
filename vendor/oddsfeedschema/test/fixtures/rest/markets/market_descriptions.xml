@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<market_descriptions response_code="OK">
+    <market id="1" name="Winner" groups="all|regular_play">
+        <outcomes>
+            <outcome id="1" name="Team Alpha"/>
+            <outcome id="2" name="Team Beta"/>
+        </outcomes>
+        <specifiers>
+            <specifier name="variant" type="variable_text" description="market variant"/>
+        </specifiers>
+    </market>
+    <market id="768" name="Player to Score" variant="od:dynamic_outcomes:770"
+            includes_outcomes_of_type="od:player" outcome_type="player">
+        <outcomes>
+            <outcome id="od:player:9001" name="Player One"/>
+        </outcomes>
+        <specifiers>
+            <specifier name="variant" type="variable_text"/>
+        </specifiers>
+    </market>
+</market_descriptions>

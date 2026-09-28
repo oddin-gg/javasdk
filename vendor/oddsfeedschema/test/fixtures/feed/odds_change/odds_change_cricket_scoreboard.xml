@@ -1,0 +1,14 @@
+<odds_change product="3" event_id="od:match:198314" timestamp="1777832981632">
+    <sport_event_status home_score="0" away_score="0" status="1" scoreboard_available="true" match_status="0">
+        <period_scores>
+            <period_score type="inning" number="1" match_status_code="0" home_score="156" away_score="120"
+                          home_runs="156" away_runs="120" home_wickets_fallen="4" away_wickets_fallen="6"
+                          home_overs_played="15" away_overs_played="18" home_balls_played="3" away_balls_played="2"
+                          home_won_coin_toss="true"/>
+        </period_scores>
+        <scoreboard home_runs="156" away_runs="120" home_wickets_fallen="4" away_wickets_fallen="6"
+                    home_overs_played="15" home_balls_played="3" away_overs_played="18" away_balls_played="2"
+                    home_won_coin_toss="true" home_batting="true" away_batting="false" inning="1"/>
+    </sport_event_status>
+    <odds/>
+</odds_change>

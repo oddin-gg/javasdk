@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="urn.xsd"/>
+    <xs:include schemaLocation="tournament.xsd"/>
+    <xs:include schemaLocation="team.xsd"/>
+
+    <xs:complexType name="sportEvent">
+        <xs:sequence>
+            <xs:element type="tournament" name="tournament" minOccurs="0"/>
+            <xs:element type="sportEventCompetitors" name="competitors" minOccurs="0"/>
+            <xs:element type="extraInfo" name="extra_info" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attributeGroup ref="sportEventAttributes"/>
+        <xs:attribute type="xs:string" name="liveodds" use="optional"/>
+        <xs:attribute type="xs:string" name="status" use="optional"/>
+    </xs:complexType>
+
+    <xs:complexType name="sportEventCompetitors">
+        <xs:sequence>
+            <xs:element type="teamCompetitor" name="competitor" maxOccurs="unbounded" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="extraInfo">
+        <xs:sequence>
+            <xs:element type="info" name="info" maxOccurs="unbounded" minOccurs="0"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="info">
+        <xs:attribute type="xs:string" name="key" use="required"/>
+        <xs:attribute type="xs:string" name="value" use="required"/>
+    </xs:complexType>
+
+    <xs:attributeGroup name="sportEventAttributes">
+        <xs:attribute name="id" type="sportEventUrn"/>
+        <xs:attribute name="name" type="xs:string"/>
+        <xs:attribute type="xs:string" name="type" use="optional"/>
+        <xs:attribute type="xs:dateTime" name="scheduled" use="optional"/>
+        <xs:attribute type="xs:dateTime" name="scheduled_end" use="optional"/>
+        <xs:attribute type="xs:boolean" name="start_time_tbd" use="optional"/>
+    </xs:attributeGroup>
+</xs:schema>

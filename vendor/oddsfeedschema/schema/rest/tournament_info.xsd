@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:include schemaLocation="types/tournament.xsd"/>
+
+    <xs:element name="tournament_info" type="tournamentInfo"/>
+    <xs:complexType name="tournamentInfo">
+        <xs:sequence>
+            <xs:element type="tournamentExtended" name="tournament" minOccurs="1"/>
+            <xs:element type="competitors" name="competitors" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute type="xs:dateTime" name="generated_at"/>
+    </xs:complexType>
+</xs:schema>

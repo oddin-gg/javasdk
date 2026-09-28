@@ -93,6 +93,9 @@ jacoco {
 test {
     useJUnit()
     finalizedBy jacocoTestReport
+    // SchemaFixturesDecodeTest reads the schema fixtures vendored at the repository root
+    systemProperty 'schema.fixtures', file('../vendor/oddsfeedschema/test/fixtures').absolutePath
+    inputs.dir('../vendor/oddsfeedschema')
 }
 
 jacocoTestReport {

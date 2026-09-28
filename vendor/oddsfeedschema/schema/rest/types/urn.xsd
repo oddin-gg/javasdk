@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:simpleType name="tournamentUrn">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="od:tournament:[0-9]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="competitorUrn">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="od:competitor:[0-9]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="playerUrn">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="od:player:[0-9]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="teamUrn">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="od:team:[0-9]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="sportUrn">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="od:sport:[0-9]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="sportEventUrn">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="od:match:[0-9]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <xs:simpleType name="fixtureChangeUrn">
+        <xs:restriction base="xs:string">
+            <xs:pattern value="od:(match|tournament):[0-9]+"/>
+        </xs:restriction>
+    </xs:simpleType>
+</xs:schema>
