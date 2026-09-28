@@ -489,7 +489,8 @@ and REST workers post facts to it; it decides and posts work out.
   section; the decoder's own limits bound parser work. One malformed document costs
   one unparsable callback, nothing more.
 - Unknown enum values decode to an `UNKNOWN` constant, and the message keeps the raw
-  string in a separate getter next to the enum getter. Unknown attributes and elements
+  value in a separate getter next to the enum getter (`getStatus()` and `getStatusRaw()`;
+  the feed's enums are numbers, so the raw value is the number as decoded). Unknown attributes and elements
   are ignored in production and fail the golden tests, so producer drift shows up in
   CI, not at a client.
 

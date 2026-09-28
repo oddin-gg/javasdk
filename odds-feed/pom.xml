@@ -27,6 +27,23 @@
     <api.baseline.version>0.0.56</api.baseline.version>
   </properties>
 
+  <dependencyManagement>
+    <dependencies>
+      <!--
+        The Jakarta XML Binding API and its reference runtime, in versions made for each other.
+        Imported here, not in the parent: the system tests run the 0.0.x SDK on the javax runtime,
+        and a parent import would move that runtime's own dependencies to these versions.
+      -->
+      <dependency>
+        <groupId>org.glassfish.jaxb</groupId>
+        <artifactId>jaxb-bom</artifactId>
+        <version>${jaxb.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
   <dependencies>
     <!--
       Nullness annotations. The 0.0.x line was Kotlin, and Kotlin callers read its nullability from
@@ -35,6 +52,17 @@
     <dependency>
       <groupId>org.jspecify</groupId>
       <artifactId>jspecify</artifactId>
+    </dependency>
+
+    <!-- The feed and REST XML classes are Jakarta XML Binding classes; the runtime decodes them. -->
+    <dependency>
+      <groupId>jakarta.xml.bind</groupId>
+      <artifactId>jakarta.xml.bind-api</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-runtime</artifactId>
+      <scope>runtime</scope>
     </dependency>
 
     <dependency>
@@ -50,7 +78,62 @@
   </dependencies>
 
   <build>
+    <testResources>
+      <testResource>
+        <directory>src/test/resources</directory>
+      </testResource>
+      <testResource>
+        <!-- the vendored schema and fixtures, for the golden tests; see vendor/oddsfeedschema/SOURCE -->
+        <directory>${project.basedir}/../vendor/oddsfeedschema</directory>
+        <targetPath>oddsfeedschema</targetPath>
+      </testResource>
+    </testResources>
     <plugins>
+      <plugin>
+        <!--
+          Generates the feed XML classes from the vendored schema at every build; nothing generated
+          is committed. src/main/xjb keeps the 0.0.x class names and interfaces.
+        -->
+        <groupId>org.jvnet.jaxb</groupId>
+        <artifactId>jaxb-maven-plugin</artifactId>
+        <version>${jaxb-maven-plugin.version}</version>
+        <configuration>
+          <extension>true</extension>
+          <noFileHeader>true</noFileHeader>
+          <args>
+            <arg>-Xinheritance</arg>
+            <arg>-Xinject-code</arg>
+            <!-- Boolean getters as getX(), which is what 0.0.x had -->
+            <arg>-enableIntrospection</arg>
+          </args>
+          <plugins>
+            <plugin>
+              <groupId>org.jvnet.jaxb</groupId>
+              <artifactId>jaxb-plugins</artifactId>
+              <version>${jaxb-maven-plugin.version}</version>
+            </plugin>
+          </plugins>
+        </configuration>
+        <executions>
+          <execution>
+            <id>feed</id>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+            <configuration>
+              <schemaDirectory>${project.basedir}/../vendor/oddsfeedschema/schema/feed</schemaDirectory>
+              <schemaIncludes>
+                <include>*.xsd</include>
+              </schemaIncludes>
+              <bindingDirectory>${project.basedir}/src/main/xjb</bindingDirectory>
+              <bindingIncludes>
+                <include>feed.xjb</include>
+              </bindingIncludes>
+              <generateDirectory>${project.build.directory}/generated-sources/xjc-feed</generateDirectory>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>

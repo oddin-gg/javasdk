@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keeps the feed XML classes under the names, package and interfaces 0.0.x had, so client code that
+  casts a raw message to one of them still compiles. Every class name here is that of a 0.0.x class.
+  What the schema no longer has, the generated classes do not have either; PublicShapeTest lists it.
+-->
+<jaxb:bindings version="3.0"
+               xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+               xmlns:xs="http://www.w3.org/2001/XMLSchema"
+               xmlns:inheritance="urn:jaxb.jvnet.org:plugin:inheritance"
+               xmlns:ci="http://jaxb.dev.java.net/plugin/code-injector"
+               jaxb:extensionBindingPrefixes="inheritance ci">
+
+  <jaxb:globalBindings generateElementProperty="false"/>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/alive.xsd">
+    <jaxb:schemaBindings>
+      <jaxb:package name="com.oddin.oddsfeedsdk.schema.feed.v1"/>
+    </jaxb:schemaBindings>
+    <jaxb:bindings node="//xs:element[@name='alive']">
+      <jaxb:class name="OFAlive"/>
+      <jaxb:factoryMethod name="Alive"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/snapshot_complete.xsd">
+    <jaxb:bindings node="//xs:element[@name='snapshot_complete']">
+      <jaxb:class name="OFSnapshotComplete"/>
+      <jaxb:factoryMethod name="SnapshotComplete"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/odds_change.xsd">
+    <jaxb:bindings node="//xs:element[@name='odds_change']">
+      <jaxb:class name="OFOddsChange"/>
+      <jaxb:factoryMethod name="OddsChange"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.IdMessage</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='odds_change']//xs:element[@name='odds']/xs:complexType">
+      <jaxb:class name="Odds"/>
+      <jaxb:factoryMethod name="OddsChangeOdds"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/bet_stop.xsd">
+    <jaxb:bindings node="//xs:element[@name='bet_stop']">
+      <jaxb:class name="OFBetStop"/>
+      <jaxb:factoryMethod name="BetStop"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+          <ci:code>
+        /** {@link OFMarketStatus#UNKNOWN} for a value this SDK does not know; {@link #getMarketStatusRaw()} keeps the number. */
+        public OFMarketStatus getMarketStatus() {
+            return OFMarketStatus.fromRaw(this.marketStatusRaw);
+        }
+
+        public void setMarketStatus(OFMarketStatus value) {
+            this.marketStatusRaw = OFMarketStatus.toRaw(value);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='bet_stop']//xs:attribute[@name='market_status']">
+      <jaxb:property name="marketStatusRaw"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/bet_settlement.xsd">
+    <jaxb:bindings node="//xs:element[@name='bet_settlement']">
+      <jaxb:class name="OFBetSettlement"/>
+      <jaxb:factoryMethod name="BetSettlement"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='bet_settlement']//xs:element[@name='outcomes']/xs:complexType">
+      <jaxb:class name="OFOutcomes"/>
+      <jaxb:factoryMethod name="BetSettlementOutcomes"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/rollback_bet_settlement.xsd">
+    <jaxb:bindings node="//xs:element[@name='rollback_bet_settlement']">
+      <jaxb:class name="OFRollbackBetSettlement"/>
+      <jaxb:factoryMethod name="RollbackBetSettlement"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='rollback_bet_settlement']//xs:element[@name='market']/xs:complexType">
+      <jaxb:class name="OFRollbackBetSettlementMarket"/>
+      <jaxb:factoryMethod name="RollbackBetSettlementMarket"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/bet_cancel.xsd">
+    <jaxb:bindings node="//xs:element[@name='bet_cancel']">
+      <jaxb:class name="OFBetCancel"/>
+      <jaxb:factoryMethod name="BetCancel"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/rollback_bet_cancel.xsd">
+    <jaxb:bindings node="//xs:element[@name='rollback_bet_cancel']">
+      <jaxb:class name="OFRollbackBetCancel"/>
+      <!-- sic: 0.0.x named this one after the class -->
+      <jaxb:factoryMethod name="OFRollbackBetCancel"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='rollback_bet_cancel']//xs:element[@name='market']/xs:complexType">
+      <jaxb:class name="OFRollbackBetCancelMarket"/>
+      <jaxb:factoryMethod name="RollbackBetCancelMarket"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/fixture_change.xsd">
+    <jaxb:bindings node="//xs:element[@name='fixture_change']">
+      <jaxb:class name="OFFixtureChange"/>
+      <jaxb:factoryMethod name="FixtureChange"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.BasicMessage</inheritance:implements>
+      <inheritance:implements>com.oddin.oddsfeedsdk.mq.entities.IdMessage</inheritance:implements>
+          <ci:code>
+        /** {@link OFChangeType#UNKNOWN} for a value this SDK does not know; {@link #getChangeTypeRaw()} keeps the number. */
+        public OFChangeType getChangeType() {
+            return OFChangeType.fromRaw(this.changeTypeRaw);
+        }
+
+        public void setChangeType(OFChangeType value) {
+            this.changeTypeRaw = OFChangeType.toRaw(value);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='fixture_change']//xs:attribute[@name='change_type']">
+      <jaxb:property name="changeTypeRaw"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/types.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='market']">
+      <jaxb:class name="OFMarket"/>
+      <jaxb:factoryMethod name="Market"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+    </jaxb:bindings>
+
+    <jaxb:bindings node="//xs:complexType[@name='oddsChangeMarket']">
+      <jaxb:class name="OFOddsChangeMarket"/>
+      <jaxb:factoryMethod name="OddsChangeMarket"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+      <ci:code>
+        /** {@link OFMarketStatus#UNKNOWN} for a value this SDK does not know; {@link #getStatusRaw()} keeps the number. */
+        public OFMarketStatus getStatus() {
+            return OFMarketStatus.fromRaw(this.statusRaw);
+        }
+
+        public void setStatus(OFMarketStatus value) {
+            this.statusRaw = OFMarketStatus.toRaw(value);
+        }
+
+        /** {@link OFFavourite#UNKNOWN} for a value this SDK does not know; {@link #getFavouriteRaw()} keeps the number. */
+        public OFFavourite getFavourite() {
+            return OFFavourite.fromRaw(this.favouriteRaw);
+        }
+
+        public void setFavourite(OFFavourite value) {
+            this.favouriteRaw = OFFavourite.toRaw(value);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='oddsChangeMarket']/xs:attribute[@name='status']">
+      <jaxb:property name="statusRaw"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='oddsChangeMarket']/xs:attribute[@name='favourite']">
+      <jaxb:property name="favouriteRaw"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='oddsChangeMarket']//xs:element[@name='outcome']/xs:complexType">
+      <jaxb:class name="OFOutcome"/>
+      <jaxb:factoryMethod name="OddsChangeMarketOutcome"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMarketOutcome</inheritance:implements>
+      <ci:code>
+        /** {@link OFOutcomeActive#UNKNOWN} for a value this SDK does not know; {@link #getActiveRaw()} keeps the number. */
+        public OFOutcomeActive getActive() {
+            return OFOutcomeActive.fromRaw(this.activeRaw);
+        }
+
+        public void setActive(OFOutcomeActive value) {
+            this.activeRaw = OFOutcomeActive.toRaw(value);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='oddsChangeMarket']//xs:element[@name='outcome']//xs:attribute[@name='active']">
+      <jaxb:property name="activeRaw"/>
+    </jaxb:bindings>
+
+    <jaxb:bindings node="//xs:complexType[@name='betSettlementMarket']">
+      <jaxb:class name="OFBetSettlementMarket"/>
+      <jaxb:factoryMethod name="BetSettlementMarket"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='betSettlementMarket']//xs:element[@name='outcome']/xs:complexType">
+      <jaxb:class name="OFOutcome"/>
+      <jaxb:factoryMethod name="BetSettlementMarketOutcome"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMarketOutcome</inheritance:implements>
+      <ci:code>
+        /** {@link OFResult#UNKNOWN} for a value this SDK does not know; {@link #getResultRaw()} keeps the number. */
+        public OFResult getResult() {
+            return OFResult.fromRaw(this.resultRaw);
+        }
+
+        public void setResult(OFResult value) {
+            this.resultRaw = OFResult.toRaw(value);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='betSettlementMarket']//xs:element[@name='outcome']//xs:attribute[@name='result']">
+      <jaxb:property name="resultRaw"/>
+    </jaxb:bindings>
+
+    <jaxb:bindings node="//xs:complexType[@name='sportEventStatus']">
+      <jaxb:class name="OFSportEventStatus"/>
+      <jaxb:factoryMethod name="SportEventStatus"/>
+      <ci:code>
+        /** {@link OFEventStatus#UNKNOWN} for a value this SDK does not know; {@link #getStatusRaw()} keeps the number. */
+        public OFEventStatus getStatus() {
+            return OFEventStatus.fromRaw(this.statusRaw);
+        }
+
+        public void setStatus(OFEventStatus value) {
+            this.statusRaw = OFEventStatus.toRaw(value);
+        }
+
+        /** False when the feed does not say; {@link #getScoreboardAvailable()} tells the two apart. */
+        public boolean isScoreboardAvailable() {
+            return Boolean.TRUE.equals(this.scoreboardAvailable);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='sportEventStatus']/xs:attribute[@name='status']">
+      <jaxb:property name="statusRaw"/>
+    </jaxb:bindings>
+
+    <jaxb:bindings node="//xs:complexType[@name='scoreboard']">
+      <jaxb:class name="OFScoreboard"/>
+      <jaxb:factoryMethod name="Scoreboard"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='periodscoresType']">
+      <jaxb:class name="OFPeriodscoresType"/>
+      <jaxb:factoryMethod name="PeriodscoresType"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='periodScoreType']">
+      <jaxb:class name="OFPeriodScoreType"/>
+      <jaxb:factoryMethod name="PeriodScoreType"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/common/scoreboard.xsd">
+    <!-- 0.0.x spelled these two its own way -->
+    <jaxb:bindings node="//xs:attribute[@name='current_ct_team']">
+      <jaxb:property name="currentCTTeam"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:attribute[@name='current_def_team']">
+      <jaxb:property name="currentDefenderTeam"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+</jaxb:bindings>
