@@ -24,4 +24,16 @@ public final class Fixtures {
       throw new UncheckedIOException(e);
     }
   }
+
+  /**
+   * {@code fixture} with {@code from} replaced by {@code to}, for a scenario that needs the
+   * fixture changed in one place. Fails when there is no {@code from}, so a fixture refresh cannot
+   * quietly turn the scenario into one that sends something else.
+   */
+  public static String replace(String fixture, String from, String to) {
+    if (!fixture.contains(from)) {
+      throw new IllegalArgumentException("no " + from + " in " + fixture);
+    }
+    return fixture.replace(from, to);
+  }
 }
