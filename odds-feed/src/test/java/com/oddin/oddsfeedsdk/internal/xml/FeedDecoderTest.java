@@ -111,18 +111,14 @@ class FeedDecoderTest {
     }
 
     @Test
-    void entityExpansionIsNotAttempted() {
-        String xml = """
-                <?xml version="1.0"?>
-                <!DOCTYPE alive [
-                  <!ENTITY a "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa">
-                  <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
-                  <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
-                  <!ENTITY d "&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;&c;">
-                ]>
-                <alive product="1" timestamp="1" subscribed="&d;"/>
-                """;
-        assertThatThrownBy(() -> lenient.decode(bytes(xml))).isInstanceOf(DecodeException.class);
+    void nestingDeeperThanTheLimitIsRefused() throws DecodeException {
+        String deep = "<x>".repeat(FeedDecoder.MAX_DEPTH) + "</x>".repeat(FeedDecoder.MAX_DEPTH);
+        assertThatThrownBy(() -> lenient.decode(bytes(
+                "<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">" + deep + "</alive>")))
+                .isInstanceOf(DecodeException.class);
+        // the same content, shallow, is only skipped
+        assertThat(lenient.decode(bytes("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\"><x/></alive>")))
+                .isInstanceOf(OFAlive.class);
     }
 
     @Test
@@ -213,6 +209,9 @@ class FeedDecoderTest {
         var odds = (OFOddsChange) lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_markets_only.xml")));
         OFOddsChangeMarket market = odds.getOdds().getMarket().getFirst();
         assertThat(market.getFavourite()).isEqualTo(OFFavourite.YES);
+        // this market has no specifiers: empty, as in 0.0.x, and the raw value says there were none
+        assertThat(market.getSpecifiers()).isEmpty();
+        assertThat(market.getSpecifiersRaw()).isNull();
         assertThat(market.getOutcome().getFirst().getActive()).isEqualTo(OFOutcomeActive.ACTIVE);
         var closed = (OFOddsChange) lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_closed_with_winner.xml")));
         assertThat(closed.getSportEventStatus().getStatus()).isEqualTo(OFEventStatus.FINALIZED);

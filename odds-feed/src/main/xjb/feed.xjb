@@ -88,6 +88,15 @@
       <jaxb:class name="OFRollbackBetSettlementMarket"/>
       <jaxb:factoryMethod name="RollbackBetSettlementMarket"/>
       <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+      <ci:code>
+        public String getSpecifiers() {
+            return this.specifiersRaw;
+        }
+
+        public void setSpecifiers(String value) {
+            this.specifiersRaw = value;
+        }
+      </ci:code>
     </jaxb:bindings>
   </jaxb:bindings>
 
@@ -110,6 +119,15 @@
       <jaxb:class name="OFRollbackBetCancelMarket"/>
       <jaxb:factoryMethod name="RollbackBetCancelMarket"/>
       <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+      <ci:code>
+        public String getSpecifiers() {
+            return this.specifiersRaw;
+        }
+
+        public void setSpecifiers(String value) {
+            this.specifiersRaw = value;
+        }
+      </ci:code>
     </jaxb:bindings>
   </jaxb:bindings>
 
@@ -136,10 +154,24 @@
   </jaxb:bindings>
 
   <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/feed/types.xsd">
+    <!-- every market type takes specifiers from this group; each keeps its 0.0.x getSpecifiers() -->
+    <jaxb:bindings node="//xs:attributeGroup[@name='marketAttributes']/xs:attribute[@name='specifiers']">
+      <jaxb:property name="specifiersRaw"/>
+    </jaxb:bindings>
+
     <jaxb:bindings node="//xs:complexType[@name='market']">
       <jaxb:class name="OFMarket"/>
       <jaxb:factoryMethod name="Market"/>
       <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+      <ci:code>
+        public String getSpecifiers() {
+            return this.specifiersRaw;
+        }
+
+        public void setSpecifiers(String value) {
+            this.specifiersRaw = value;
+        }
+      </ci:code>
     </jaxb:bindings>
 
     <jaxb:bindings node="//xs:complexType[@name='oddsChangeMarket']">
@@ -163,6 +195,15 @@
 
         public void setFavourite(OFFavourite value) {
             this.favouriteRaw = OFFavourite.toRaw(value);
+        }
+
+        /** Empty, not null, for a market without specifiers, as in 0.0.x; {@link #getSpecifiersRaw()} tells the two apart. */
+        public String getSpecifiers() {
+            return this.specifiersRaw == null ? "" : this.specifiersRaw;
+        }
+
+        public void setSpecifiers(String value) {
+            this.specifiersRaw = value;
         }
       </ci:code>
     </jaxb:bindings>
@@ -195,6 +236,15 @@
       <jaxb:class name="OFBetSettlementMarket"/>
       <jaxb:factoryMethod name="BetSettlementMarket"/>
       <inheritance:implements>com.oddin.oddsfeedsdk.api.factories.FeedMessageMarket</inheritance:implements>
+      <ci:code>
+        public String getSpecifiers() {
+            return this.specifiersRaw;
+        }
+
+        public void setSpecifiers(String value) {
+            this.specifiersRaw = value;
+        }
+      </ci:code>
     </jaxb:bindings>
     <jaxb:bindings node="//xs:complexType[@name='betSettlementMarket']//xs:element[@name='outcome']/xs:complexType">
       <jaxb:class name="OFOutcome"/>
