@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.lang.classfile.Annotation;
 import java.lang.classfile.Attributes;
 import java.lang.classfile.ClassFile;
@@ -15,6 +16,7 @@ import java.lang.classfile.TypeAnnotation;
 import java.lang.classfile.constantpool.ClassEntry;
 import java.lang.reflect.AccessFlag;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -45,8 +47,9 @@ import org.junit.jupiter.api.Test;
  * matters because Kotlin clients read it: the baseline carries it as JetBrains annotations, this
  * module as JSpecify ones.
  *
- * <p>Every difference the design accepts is named in one of the lists below, so a reviewer sees each
- * of them, and a new one fails the build until someone adds it on purpose.
+ * <p>Every difference the design accepts is a line in {@code api/differences.txt}, so a reviewer sees
+ * each of them and the release notes can list them, and a new one fails the build until someone adds
+ * it there on purpose.
  */
 class PublicShapeTest {
 
@@ -61,7 +64,11 @@ class PublicShapeTest {
             ROOT + "exceptions",
             ROOT + "mq",
             ROOT + "mq/entities",
+            ROOT + "schema/feed/v1",
             ROOT + "schema/utils");
+
+    /** Packages that were Java in 0.0.x already: their callers never had nullability to keep. */
+    private static final Set<String> UNMARKED = Set.of(ROOT + "schema/feed/v1", ROOT + "schema/utils");
 
     /**
      * Kotlin compiler output that has no Java counterpart and that no client code names: interface
@@ -72,74 +79,29 @@ class PublicShapeTest {
             ".*(\\$DefaultImpls|\\$WhenMappings.*|Kt|Kt\\$.*|\\$\\d+|\\$[a-z][A-Za-z]*\\$\\d+.*)"
                     + "|.*Impl(\\$.*)?");
 
-    /** Public types of the baseline in these packages that are not declared here, and why. */
-    private static final Map<String, String> NOT_HERE = Map.ofEntries(
-            Map.entry("api/entities/ProducerData", "producer manager state, internal"),
-            Map.entry("api/entities/ProducerData$Companion", "producer manager state, internal"),
-            Map.entry("api/factories/EntityFactory", "internal factory"),
-            Map.entry("api/factories/MarketData", "internal factory"),
-            Map.entry("api/factories/MarketDataFactory", "internal factory"),
-            Map.entry("api/factories/MarketDescriptionFactory", "internal factory"),
-            Map.entry("api/factories/MarketFactory", "internal factory"),
-            Map.entry("api/factories/FeedMessageMarket", "implemented by the feed XML models, arrives with them"),
-            Map.entry("api/factories/FeedMarketOutcome", "implemented by the feed XML models, arrives with them"),
-            Map.entry("exceptions/ApiException", "takes the REST error model, arrives with it"),
-            Map.entry("mq/ChannelConsumer", "internal AMQP consumer"),
-            Map.entry("mq/ExchangeNameProvider", "internal AMQP consumer"),
-            Map.entry("mq/FeedMessageFactory", "internal message building"),
-            Map.entry("mq/MessageInterest", "session API, arrives with the sessions"),
-            Map.entry("mq/entities/MarketInitializer", "internal message building"),
-            Map.entry("mq/entities/MarketStatus$Companion", "maps a feed XML type, arrives with the feed XML models"),
-            Map.entry("mq/entities/FixtureChangeType$Companion", "maps a feed XML type, arrives with the feed XML models"));
-
     /** In the cache package only the static data types are reachable from the entities; the rest is the cache itself. */
     private static final Set<String> CACHE_TYPES = Set.of(ROOT + "cache/StaticData", ROOT + "cache/LocalizedStaticData");
 
-    /** Public members of the baseline that are not declared here yet, and why. Keys are {@code type.name descriptor}. */
-    private static final Map<String, String> MEMBERS_NOT_HERE = Map.of(
-            "api/entities/sportevent/EventStatus$Companion.fromFeedEventStatus"
-                    + " (Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus;",
-            "maps a feed XML type, arrives with the feed XML models",
-            "mq/entities/MarketStatus.Companion Lcom/oddin/oddsfeedsdk/mq/entities/MarketStatus$Companion;",
-            "maps a feed XML type, arrives with the feed XML models",
-            "mq/entities/FixtureChangeType.Companion Lcom/oddin/oddsfeedsdk/mq/entities/FixtureChangeType$Companion;",
-            "maps a feed XML type, arrives with the feed XML models");
+    /** The accepted differences, from {@code api/differences.txt}; see its header. */
+    private static final Differences DIFFERENCES = Differences.read("/api/differences.txt");
 
-    /**
-     * Generic signatures that differ on purpose. Kotlin let {@code OddsChange.getMarkets()} narrow
-     * {@code List<Market>}; Java allows that only when the parent says {@code List<? extends Market>}.
-     * The erased signature is unchanged.
-     */
-    private static final Map<String, String> SIGNATURE_CHANGES = Map.of(
-            "mq/entities/MarketMessage.getMarkets ()Ljava/util/List;",
-            "()Ljava/util/List<+Lcom/oddin/oddsfeedsdk/mq/entities/Market;>;");
+    /** Public types of the baseline that are not here, and why. */
+    private static final Map<String, String> NOT_HERE = DIFFERENCES.types("gone");
 
-    /** Getters for values the feed never sends. They stay, and are deprecated here. */
-    private static final Set<String> NEWLY_DEPRECATED = Set.of(
-            "mq/entities/Market.getRefId ()Ljava/lang/Integer;",
-            "mq/entities/Outcome.getRefId ()Ljava/lang/Long;",
-            "mq/entities/OddsChange.getBetStopReasonData ()Lcom/oddin/oddsfeedsdk/cache/StaticData;",
-            "mq/entities/OddsChange.getBetStopReason ()Ljava/lang/String;",
-            "mq/entities/OddsChange.getBettingStatusData ()Lcom/oddin/oddsfeedsdk/cache/StaticData;",
-            "mq/entities/OddsChange.getBettingStatus ()Ljava/lang/String;",
-            "mq/entities/BetSettlement.getCertainty ()Lcom/oddin/oddsfeedsdk/mq/entities/BetSettlementCertainty;",
-            "mq/entities/BetCancel.getSupercededBy ()Ljava/lang/String;",
-            "mq/entities/FixtureChange.getNextLiveTime ()Ljava/util/Date;",
-            "mq/entities/FixtureChange.getStartTime ()Ljava/util/Date;",
-            "mq/entities/OutcomeSettlement.getDeadHeatFactor ()Ljava/lang/Double;",
-            "mq/entities/OutcomeOdds.getAdditionalProbabilities ()Lcom/oddin/oddsfeedsdk/mq/entities/AdditionalProbabilities;",
-            "mq/entities/CompetitorOutcomeOdds.getHomeOrAwayTeam ()Lcom/oddin/oddsfeedsdk/api/entities/sportevent/HomeAway;",
-            "mq/entities/CompetitorOutcomeOdds.getTeam ()Lcom/oddin/oddsfeedsdk/api/entities/sportevent/Competitor;");
+    /** Public members of the baseline that are not here, and why. Keys are {@code type.name descriptor}. */
+    private static final Map<String, String> MEMBERS_NOT_HERE = DIFFERENCES.members("gone");
 
-    /**
-     * Public members that the baseline did not have. Kotlin code called a companion function as
-     * {@code EventStatus.fromApiEventStatus(...)}; against a Java enum that needs a static method.
-     */
-    private static final Set<String> ADDITIONS = Set.of(
-            "api/entities/sportevent/EventStatus.fromApiEventStatus"
-                    + " (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus;",
-            "api/entities/sportevent/LiveOddsAvailability.fromApiEvent"
-                    + " (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/LiveOddsAvailability;");
+    /** Public types here that the baseline did not have. */
+    private static final Set<String> ADDED_TYPES = DIFFERENCES.types("added").keySet();
+
+    /** Public members here that the baseline did not have. */
+    private static final Set<String> ADDITIONS = DIFFERENCES.members("added").keySet();
+
+    /** Generic signatures that differ on purpose, member to its new signature. */
+    private static final Map<String, String> SIGNATURE_CHANGES = DIFFERENCES.signatures();
+
+    /** Members deprecated here that the baseline did not deprecate. */
+    private static final Set<String> NEWLY_DEPRECATED = DIFFERENCES.members("deprecated").keySet();
 
     /** Kotlin data class members Java has no use for; the design accepts losing them. */
     private static final Pattern DATA_CLASS_EXTRAS = Pattern.compile("component\\d+|copy|copy\\$default");
@@ -187,7 +149,9 @@ class PublicShapeTest {
         Set<String> extra = new TreeSet<>();
         for (ClassModel now : current.values()) {
             String name = now.thisClass().asInternalName();
-            if (isPublic(now) && !name.endsWith("/package-info") && !baseline.containsKey(name)) {
+            // internal packages are never public API, whatever their classes' modifiers say
+            if (isPublic(now) && !name.endsWith("/package-info") && !name.contains("/internal/")
+                    && !baseline.containsKey(name) && !ADDED_TYPES.contains(relative(name))) {
                 extra.add(relative(name));
             }
         }
@@ -197,18 +161,17 @@ class PublicShapeTest {
     /**
      * The nullability comparison reads a missing {@code @Nullable} as not null, which holds only
      * inside a {@code @NullMarked} package. Without it Kotlin callers would see platform types
-     * everywhere while every comparison above still passed. {@code schema/utils} is the exception:
-     * URN was Java already, so its callers saw platform types before too.
+     * everywhere while every comparison above still passed. The packages that were Java already are
+     * the exception: their callers saw platform types before too.
      */
     @Test
     void everyPackageThatWasKotlinIsNullMarked() {
-        String unmarked = ROOT + "schema/utils";
         for (String pkg : PACKAGES) {
             ClassModel info = current.get(pkg + "/package-info");
             boolean marked = info != null && info.findAttribute(Attributes.runtimeVisibleAnnotations())
                     .map(a -> a.annotations().stream().anyMatch(an -> an.className().stringValue().equals(JSPECIFY_NULL_MARKED)))
                     .orElse(false);
-            assertThat(marked).as("%s is @NullMarked", relative(pkg)).isEqualTo(!pkg.equals(unmarked));
+            assertThat(marked).as("%s is @NullMarked", relative(pkg)).isEqualTo(!UNMARKED.contains(pkg));
         }
     }
 
@@ -217,6 +180,8 @@ class PublicShapeTest {
         // A stale entry would quietly allow a difference nobody still needs.
         assertThat(NOT_HERE.keySet()).allSatisfy(name -> assertThat(baseline).containsKey(ROOT + name));
         assertThat(NOT_HERE.keySet()).allSatisfy(name -> assertThat(current).doesNotContainKey(ROOT + name));
+        assertThat(ADDED_TYPES).allSatisfy(name -> assertThat(current).containsKey(ROOT + name));
+        assertThat(ADDED_TYPES).allSatisfy(name -> assertThat(baseline).doesNotContainKey(ROOT + name));
         Set<String> baselineMembers = members(baseline);
         Set<String> currentMembers = members(current);
         assertThat(baselineMembers).containsAll(MEMBERS_NOT_HERE.keySet());
@@ -293,8 +258,9 @@ class PublicShapeTest {
             }
         }
         for (String field : newFields.keySet()) {
-            if (!oldFields.containsKey(field)) {
-                problems.add(type + "." + field + ": not in the baseline");
+            String key = type + "." + field;
+            if (!oldFields.containsKey(field) && !ADDITIONS.contains(key)) {
+                problems.add(key + ": not in the baseline");
             }
         }
     }
@@ -485,5 +451,60 @@ class PublicShapeTest {
             }
         }
         return models;
+    }
+
+    /** The lines of {@code api/differences.txt}. */
+    private record Differences(List<String[]> entries) {
+
+        static Differences read(String resource) {
+            try (InputStream in = PublicShapeTest.class.getResourceAsStream(resource)) {
+                if (in == null) {
+                    throw new IllegalStateException(resource + " is not on the test classpath");
+                }
+                var entries = new ArrayList<String[]>();
+                for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
+                    if (line.isBlank() || line.startsWith("#")) {
+                        continue;
+                    }
+                    String[] fields = line.split(" \\| ");
+                    if (fields.length < 3 || !Set.of("gone", "added", "signature", "deprecated").contains(fields[0])
+                            || (fields[0].equals("signature") && fields.length < 4)) {
+                        throw new IllegalStateException(resource + ": cannot read the line: " + line);
+                    }
+                    entries.add(fields);
+                }
+                return new Differences(entries);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
+
+        /** Types of this kind: an entry without a member part. */
+        Map<String, String> types(String kind) {
+            return select(kind, false);
+        }
+
+        /** Members of this kind: an entry of the form {@code type.name descriptor}. */
+        Map<String, String> members(String kind) {
+            return select(kind, true);
+        }
+
+        Map<String, String> signatures() {
+            var signatures = new TreeMap<String, String>();
+            entries.stream().filter(e -> e[0].equals("signature")).forEach(e -> signatures.put(e[1], e[2]));
+            return signatures;
+        }
+
+        private Map<String, String> select(String kind, boolean members) {
+            var selected = new TreeMap<String, String>();
+            for (String[] entry : entries) {
+                if (entry[0].equals(kind) && entry[1].contains(" ") == members) {
+                    if (selected.put(entry[1], entry[2]) != null) {
+                        throw new IllegalStateException("listed twice: " + entry[1]);
+                    }
+                }
+            }
+            return selected;
+        }
     }
 }
