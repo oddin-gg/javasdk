@@ -31,7 +31,10 @@ public enum KnownDifference {
   EVENT_RECOVERY_NOT_REPORTED("KD-1", true),
   FIXTURE_CHANGE_START_TIME_IS_ZERO("KD-4", true),
   VOID_REASON_IS_ALWAYS_NULL("KD-5", false),
-  PIPE_SEPARATED_LISTS_ARE_NOT_SPLIT("KD-6", false);
+  PIPE_SEPARATED_LISTS_ARE_NOT_SPLIT("KD-6", false),
+  CATCH_GIVES_AN_EMPTY_COLLECTION("KD-10", true),
+  OLDER_MESSAGE_OVERWRITES_THE_STATUS("KD-13", true),
+  STALE_MESSAGE_WRITES_THE_STATUS("KD-14", true);
 
   /** The SDK lines a scenario can run against. */
   public enum Line {
