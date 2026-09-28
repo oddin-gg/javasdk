@@ -88,6 +88,38 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   scenario, not kept, that opened the feed and waited 75 s: both producers reported down with
   `ALIVE_INTERVAL_VIOLATION` 60 s after `open()`, neither of them ever up.
 
+## KD-10 Under CATCH a collection that cannot load is empty
+
+- **0.0.x:** `Match.getCompetitors()` under `ExceptionHandlingStrategy.CATCH`, for a match the
+  API cannot serve, returns an empty list.
+- **1.0:** Returns null: "under CATCH the whole collection is null" (section 3, Behaviour that
+  stays).
+- **Why:** An empty list reads as "no competitors" rather than "could not load".
+- **Pinned by:** `ExceptionStrategyScenarioIT.underCatchAGetterTheApiCannotServeReturnsNull`
+- **Found:** by test against 0.0.56.
+
+## KD-13 An older message overwrites the status of a newer one
+
+- **0.0.x:** An odds change stamped earlier than one already handled writes its match status -
+  scores, status - over the newer one's.
+- **1.0:** "A message from the same producer with an older timestamp does not write feed-owned
+  fields. It is still built and delivered" (section 4, Caches and loaders, Ownership and
+  ordering).
+- **Why:** Out-of-order delivery turns a score back.
+- **Pinned by:** `StaleFeedScenarioIT.anOlderMessageDoesNotReplaceTheStatusOfANewerOne`
+- **Found:** by test against 0.0.56.
+
+## KD-14 A message from half an hour ago writes the status as current
+
+- **0.0.x:** An odds change stamped 30 minutes ago writes its match status as if it were current.
+- **1.0:** "A feed message whose corrected age exceeds the same 20 minutes does not write
+  feed-owned fields either. A message that old is a delayed backlog message, and REST has since
+  taken over. It is still delivered" (section 4, Caches and loaders); the status comes from the
+  match summary.
+- **Why:** A backlog replaces fresher state with old.
+- **Pinned by:** `StaleFeedScenarioIT.aMessageFromHalfAnHourAgoIsStillDelivered`
+- **Found:** by test against 0.0.56.
+
 ## KD-17 Nothing acts on a feed that is far behind
 
 - **0.0.x:** No safety net: a backlog of old messages is processed one by one. The watchdog can
