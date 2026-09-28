@@ -91,7 +91,8 @@ changes_shape() {
     python3 "$here/schema_shape.py" "$old" "$new" >"$work/one" || verdict=$?
     case "$verdict" in
       0) ;;
-      1) changed=0; sed "s|^|$path: |" "$work/one" >>"$work/shape" ;;
+      # the file name is upstream data: passed to awk as a value, never spliced into a program
+      1) changed=0; awk -v file="$path" '{ print file ": " $0 }' "$work/one" >>"$work/shape" ;;
       *) broken "cannot compare $path at $commit: $(cat "$work/one")" ;;
     esac
   done <<<"$files"
@@ -126,10 +127,9 @@ for branch in "$@"; do
     continue
   fi
 
-  first_additive= first_time= first_shape= shapes=0 waiting=0
+  first_additive= first_time= first_shape= waiting=0
   while read -r commit time; do
     if changes_shape "$commit"; then
-      shapes=$((shapes + 1))
       [ -n "$first_shape" ] || first_shape=$commit
       subject=$(schema log -1 --format=%s "$commit")
       echo "WARN $branch: needs a decision - $commit ($subject) changes the schema's shape:"
@@ -148,8 +148,7 @@ for branch in "$@"; do
     echo "     $branch: $waiting additive change(s) after $first_shape wait for its decision"
   fi
   if [ -z "$first_additive" ]; then
-    [ "$shapes" -gt 0 ] || echo "ok   $branch: behind only by commits that change nothing it decodes"
-    continue
+    continue # behind shape changes only, each reported above
   fi
   # the newest commit this line can take without a decision
   target=$head
