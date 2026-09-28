@@ -160,6 +160,13 @@ $a
 $c"
 c22=$(commit 21 "reorder the elements")
 
+# a type that is new, in a file that exists, with a required attribute: additive
+sed -i.bak 's|</xs:schema>|    <xs:complexType name="fresh"><xs:attribute name="x" type="xs:int" use="required"/></xs:complexType>\
+</xs:schema>|' "$repo/schema/feed/more.xsd" && rm "$repo/schema/feed/more.xsd.bak"
+c25=$(commit 21 "a new type with a required attribute in an existing file")
+git -C "$repo" mv schema/feed/more.xsd schema/feed/moved.xsd
+c26=$(commit 21 "move a file")
+
 # a file name that sed would have run: its w flag writes a file
 trap_name='schema/feed/odd|w marker|.xsd'
 printf '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:complexType name="t">\n<xs:attribute name="a" type="xs:int"/>\n</xs:complexType></xs:schema>\n' >"$repo/$trap_name"
@@ -221,12 +228,28 @@ check "a new include is additive" 0 "refresh due by" "line=$c18" "$(days 21)" "$
 check "a new enum value is additive" 0 "refresh due by" "line=$c19" "$(days 21)" "$c20"
 check "a new required element is additive" 0 "refresh due by" "line=$c20" "$(days 21)" "$c21"
 check "reordered elements are additive" 0 "refresh due by" "line=$c21" "$(days 21)" "$c22"
+check "a new type's required attribute in an existing file is additive" 0 "refresh due by" "line=$c22" "$(days 22)" "$c25"
+check "a moved file is compared with itself" 0 "refresh due by" "line=$c25" "$(days 22)" "$c26"
 mkdir "$work/cwd"
 git -C "$repo" update-ref refs/heads/main "$c24"
-(cd "$work/cwd" && SCHEMA_REPO="file://$repo" PINS="line=$c23" NOW="$(days 60)" "$here/schema-drift.sh" line >/dev/null 2>&1) || true
-if [ -z "$(ls -A "$work/cwd")" ]; then pass "a file name that is a sed command runs nothing"; else
-  fail "a file name ran as code: it left $(ls -A "$work/cwd")"; fi
+out=$(cd "$work/cwd" && SCHEMA_REPO="file://$repo" PINS="line=$c23" NOW="$(days 60)" "$here/schema-drift.sh" line 2>&1) \
+  && got=0 || got=$?
+# the run has to have reached the file - reported it by its name - for "nothing written" to mean anything
+if [ "$got" = 0 ] && grep -Fq "odd|w marker|.xsd: removed" <<<"$out" && [ -z "$(ls -A "$work/cwd")" ]; then
+  pass "a file name that is a sed command runs nothing"
+else
+  fail "a file name that is a sed command: exit $got, left: $(ls -A "$work/cwd")" "$out"
+fi
 check "a file name is reported as data, never run" 0 "odd\|name&e\.xsd: removed" "line=$c15" "$(days 60)" "$c16"
+# a line that cannot be judged fails alone: the other line is still checked
+git -C "$repo" update-ref refs/heads/main "$c14"
+out=$(SCHEMA_REPO="file://$repo" PINS="broken=$c13 fine=$c14" NOW="$(days 60)" "$here/schema-drift.sh" broken fine 2>&1) \
+  && got=0 || got=$?
+if [ "$got" = 1 ] && grep -q "FAIL broken: cannot compare" <<<"$out" && grep -q "ok   fine: up to date" <<<"$out"; then
+  pass "a line that cannot be judged does not stop the others"
+else
+  fail "a line that cannot be judged: exit $got" "$out"
+fi
 check "a pin that does not exist" 1 "is not on the schema's main" \
   "line=0123456789012345678901234567890123456789" "$(days 1)" "$c1"
 check "a pin that exists but is not on main" 1 "its pin $side is not on the schema's main" "line=$side" "$(days 21)" "$c4"
