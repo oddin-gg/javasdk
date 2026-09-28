@@ -133,6 +133,13 @@ class FeedDecoderTest {
     }
 
     @Test
+    void malformedContentAfterTheMessageIsRefused() {
+        assertThatThrownBy(() -> lenient.decode(bytes(ALIVE + "<unclosed")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("not a well-formed feed message");
+    }
+
+    @Test
     void aDocumentThatIsNotAFeedMessageIsRefused() {
         assertThatThrownBy(() -> lenient.decode(bytes("<producers response_code=\"OK\"/>")))
                 .isInstanceOf(DecodeException.class);
