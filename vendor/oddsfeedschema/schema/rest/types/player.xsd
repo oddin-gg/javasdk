@@ -8,5 +8,7 @@
         <xs:attribute type="xs:string" name="name" use="required"/>
         <xs:attribute type="sportUrn" name="sport" use="required"/>
         <xs:attribute type="xs:string" name="full_name"/>
+        <!-- -1 unknown, 0 not underage, 1 underage; same encoding as team@underage -->
+        <xs:attribute type="xs:integer" name="underage"/>
     </xs:complexType>
 </xs:schema>

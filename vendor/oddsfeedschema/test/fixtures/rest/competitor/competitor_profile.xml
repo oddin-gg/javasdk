@@ -5,6 +5,6 @@
         <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
     </competitor>
     <players>
-        <player id="od:player:9001" name="Player One" sport="od:sport:1" full_name="Player One Full"/>
+        <player id="od:player:9001" name="Player One" sport="od:sport:1" full_name="Player One Full" underage="-1"/>
     </players>
 </competitor_profile>
