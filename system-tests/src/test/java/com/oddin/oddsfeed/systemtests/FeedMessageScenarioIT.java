@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.tuple;
 import com.oddin.oddsfeed.systemtests.fake.FakeFeed;
 import com.oddin.oddsfeed.systemtests.fake.FakeRestServer;
 import com.oddin.oddsfeed.systemtests.fake.Fixtures;
+import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -112,6 +113,7 @@ class FeedMessageScenarioIT {
   }
 
   @Test
+  @SuppressWarnings("deprecation") // KD-5 reads the deprecated void reason on purpose
   void aBetCancelReachesOnBetCancelWithItsWindowAndVoidReasons() throws InterruptedException {
     try (FakeRestServer rest = FakeRestServer.start();
         FakeFeed feed = FakeFeed.start();
@@ -132,6 +134,9 @@ class FeedMessageScenarioIT {
               tuple(1, Map.of(), null, null),
               tuple(42, Map.of("setnr", "1"), null, null),
               tuple(17, Map.of("mapnr", "2"), 4, "minutes=5"));
+      // market 17 carries void_reason="1" as well; 0.0.x never reads it
+      KnownDifference.VOID_REASON_IS_ALWAYS_NULL.expectLegacy(() ->
+          assertThat(cancel.getMarkets().get(2).getVoidReason()).as("void reason of market 17").isNull());
     }
   }
 
@@ -170,6 +175,30 @@ class FeedMessageScenarioIT {
       assertThat(change.getTimestamp().getCreated()).as("created").isBetween(sent.from(), sent.to());
       assertThat(change.getChangeType()).as("change type").isEqualTo(FixtureChangeType.NEW);
       assertThat(change.getNextLiveTime()).as("next live time, which the fixture leaves out").isNull();
+      // the feed has no start time on a fixture change; 0.0.x reads the absent value as 0
+      KnownDifference.FIXTURE_CHANGE_START_TIME_IS_ZERO.expect(
+          () -> assertThat(change.getStartTime()).as("start time").isEqualTo(new Date(0)),
+          () -> assertThat(change.getStartTime()).as("start time").isNull());
+    }
+  }
+
+  /**
+   * A bet stop for some market groups names them separated by a pipe. 0.0.x splits the attribute
+   * on the two characters {@code \|} rather than on the pipe, and hands back one group.
+   */
+  @Test
+  void aBetStopForSeveralGroupsNamesEach() throws InterruptedException {
+    try (FakeRestServer rest = FakeRestServer.start();
+        FakeFeed feed = FakeFeed.start();
+        Sdk sdk = Sdk.against(rest, feed)) {
+      Received received = sdk.open(MessageInterest.ALL);
+      Sent.publishing(feed, Fixtures.replace(Fixtures.read("feed/bet_stop/bet_stop_all_groups.xml"),
+          "groups=\"all\"", "groups=\"winner|handicap\""));
+
+      BetStop<?> betStop = received.next(BetStop.class);
+      assertThat(betStop.getEvent().getId()).as("event").isEqualTo(MATCH);
+      KnownDifference.PIPE_SEPARATED_LISTS_ARE_NOT_SPLIT.expectLegacy(() ->
+          assertThat(betStop.getGroups()).as("groups").containsExactly("winner|handicap"));
     }
   }
 
