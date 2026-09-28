@@ -123,9 +123,6 @@ types in packages whose name contains `internal`.
 6. The schema classes carry `jakarta.xml.bind` annotations instead of `javax.xml.bind`.
    They are plain objects with getters and stay usable as such. Client code that
    creates its own `JAXBContext` over them must move to Jakarta too.
-7. A replay session created next to live sessions on one `OddsFeed` no longer writes
-   replayed state into the live caches, producer liveness or recovery checkpoints. It
-   did, and that was a bug: replayed old scores overwrote live ones.
 
 ### Behaviour that stays, and that the implementation must not "fix"
 
@@ -143,7 +140,9 @@ types in packages whose name contains `internal`.
   `onOddsChange` sees the state the message carried. Same as today.
 - Multi-session with the priority-split interests and the interest-combination
   validation stays exactly as today. A client may still create its own
-  `SYSTEM_ALIVE_ONLY` session or a replay session next to live sessions.
+  `SYSTEM_ALIVE_ONLY` session next to live sessions. A replay session stays the only
+  session of its `OddsFeed`: 0.0.x gives it the interest `ALL`, which the validation
+  allows only for a single session, so replay has always run on an instance of its own.
 - Fixture-change deduplication across sessions stays with today's key: producer, event
   id and change timestamp, remembered for one hour.
 - Recovery messages are delivered to the client like any other message, on every
@@ -376,10 +375,9 @@ Ownership and ordering:
   producer, event id and change timestamp, bounded in size and expiring after one
   hour. Evictions before expiry are counted. All session dispatchers consult it before
   delivering.
-- Caches, producer state and checkpoints belong to one `OddsFeed` instance. Replay
-  messages on an instance that also has live sessions do not write feed-owned fields,
-  do not advance checkpoints and do not feed producer liveness (difference 7). On a
-  replay-only instance they do all three.
+- Caches, producer state and checkpoints belong to one `OddsFeed` instance. A replay
+  session is the only session of its instance (section 3), so replayed messages never
+  share caches, producer state or checkpoints with live ones.
 
 Locales and catalogs:
 
@@ -734,7 +732,7 @@ group by group.
     with cap and re-arm, the safety net with per-producer offsets, stale-offset
     disable, pause during recovery, request-before-reset, its own cap and the lagging
     state, producer-status reasons.
-25. Replay manager, including the mixed-instance rule (difference 7).
+25. Replay manager.
 26. `OddsFeed` façade, sessions, builder, one-shot lifecycle with all-or-nothing
     `open()`, watchdog over every thread group, `getHealth()` with the full counter
     list.
@@ -848,3 +846,9 @@ old names (section 3, difference 4).
   or nothing; auth refusals need three strikes; watchdog covers every thread group and
   every internal wait has a deadline; the benchmark has a cold scenario; counters for
   everything that discards data.
+- 2026-09-28, from the system tests: 0.0.x refuses a replay session next to any other
+  session on one `OddsFeed`, because the replay session's interest is `ALL`. So the
+  mixed setup behind difference 7, replayed state reaching live caches, never existed,
+  and the promise that a replay session can sit next to live sessions was wrong.
+  Difference 7 and the mixed-instance rule of ticket 25 are withdrawn; the combination
+  stays refused, as today.

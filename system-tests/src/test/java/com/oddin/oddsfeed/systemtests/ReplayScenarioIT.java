@@ -6,14 +6,12 @@ import static org.assertj.core.api.Assertions.catchThrowable;
 import com.oddin.oddsfeed.systemtests.fake.FakeFeed;
 import com.oddin.oddsfeed.systemtests.fake.FakeRestServer;
 import com.oddin.oddsfeed.systemtests.fake.Fixtures;
-import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.ReplayManager;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.exceptions.UnsupportedMessageInterestCombination;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
-import com.oddin.oddsfeedsdk.mq.entities.BetStop;
 import com.oddin.oddsfeedsdk.mq.entities.Message;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
@@ -60,38 +58,22 @@ class ReplayScenarioIT {
   }
 
   /**
-   * A replay session next to a live one. 0.0.x refuses the combination when the feed opens: it
-   * gives every replay session the interest "all", which it allows only for a feed with one
-   * session. 1.0 opens both, each gets its own messages, and what is replayed does not reach the
-   * live side's caches - the replayed score does not become the live match's.
+   * A replay session cannot open next to a live one: it gets the interest "all", which is allowed
+   * only for a feed with one session. Replay runs on a feed of its own, in 0.0.x and in 1.0 alike,
+   * so replayed state never shares caches with live state.
    */
   @Test
-  void aReplaySessionOpensNextToALiveSession() throws InterruptedException {
+  void aReplaySessionCannotOpenNextToALiveSession() throws InterruptedException {
     try (FakeRestServer rest = FakeRestServer.start();
         FakeFeed feed = FakeFeed.start();
         Sdk sdk = Sdk.against(rest, feed)) {
-      var live = new Received();
-      var replayed = new Received();
       var oddsFeed = sdk.oddsFeed();
-      oddsFeed.getSessionBuilder().setListener(live).setMessageInterest(MessageInterest.LIVE_ONLY).build();
-      oddsFeed.getSessionBuilder().setListener(replayed).buildReplay();
+      oddsFeed.getSessionBuilder().setListener(new Received()).setMessageInterest(MessageInterest.LIVE_ONLY).build();
+      oddsFeed.getSessionBuilder().setListener(new Received()).buildReplay();
 
-      KnownDifference.REPLAY_NEXT_TO_LIVE_IS_REFUSED.expect(
-          () -> assertThat(catchThrowable(oddsFeed::open)).as("opening a live and a replay session")
-              .isInstanceOf(UnsupportedMessageInterestCombination.class)
-              .hasMessageContaining("all messages can be used only for single session configuration"),
-          () -> {
-            oddsFeed.open();
-            // the summary the live side loads says 3; the replay says 9
-            feed.publishReplay(Fixtures.replace(
-                Fixtures.read("feed/odds_change/odds_change_closed_with_winner.xml"),
-                "home_score=\"3\"", "home_score=\"9\""));
-            assertThat(replayed.next(Message.class)).as("what the replay session gets").isInstanceOf(OddsChange.class);
-            feed.publishFixture(BET_STOP);
-            assertThat(live.next(Message.class)).as("what the live session gets").isInstanceOf(BetStop.class);
-            assertThat(oddsFeed.getSportsInfoManager().getMatch(MATCH).getStatus().getHomeScore())
-                .as("home score of the live match").isEqualTo(3.0);
-          });
+      assertThat(catchThrowable(oddsFeed::open)).as("opening a live and a replay session")
+          .isInstanceOf(UnsupportedMessageInterestCombination.class)
+          .hasMessageContaining("all messages can be used only for single session configuration");
     }
   }
 }
