@@ -15,6 +15,9 @@ and it changes how a generated class holds it - and a new attribute-group refere
 may bring required attributes from another file. Any other new key is additive: a new optional
 attribute, a new element (required or not, it adds a field and changes none that exists), a new
 type, a new enum value, a new include.
+
+The order of elements inside a sequence does not count: components are keyed by name, and the SDK
+decodes without validating, where JAXB does not hold a payload to the schema's order.
 """
 import sys
 import xml.etree.ElementTree as ET
