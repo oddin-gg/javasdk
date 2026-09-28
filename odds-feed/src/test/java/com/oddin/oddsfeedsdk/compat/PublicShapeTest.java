@@ -251,10 +251,18 @@ class PublicShapeTest {
         }
         Map<String, FieldModel> newFields = publicFields(now);
         Map<String, FieldModel> oldFields = publicFields(old);
-        for (String field : oldFields.keySet()) {
-            String key = type + "." + field;
-            if (!newFields.containsKey(field) && !MEMBERS_NOT_HERE.containsKey(key)) {
-                problems.add(key + ": missing");
+        for (var entry : oldFields.entrySet()) {
+            String key = type + "." + entry.getKey();
+            FieldModel after = newFields.get(entry.getKey());
+            if (after == null) {
+                if (!MEMBERS_NOT_HERE.containsKey(key)) {
+                    problems.add(key + ": missing");
+                }
+                continue;
+            }
+            boolean deprecated = isDeprecated(entry.getValue()) || NEWLY_DEPRECATED.contains(key);
+            if (deprecated != isDeprecated(after)) {
+                problems.add(key + ": deprecated " + isDeprecated(after) + ", expected " + deprecated);
             }
         }
         for (String field : newFields.keySet()) {
@@ -397,6 +405,10 @@ class PublicShapeTest {
 
     private static boolean isDeprecated(MethodModel method) {
         return method.findAttribute(Attributes.deprecated()).isPresent();
+    }
+
+    private static boolean isDeprecated(FieldModel field) {
+        return field.findAttribute(Attributes.deprecated()).isPresent();
     }
 
     private static boolean isPublic(ClassModel model) {

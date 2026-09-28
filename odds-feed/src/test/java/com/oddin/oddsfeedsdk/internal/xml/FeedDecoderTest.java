@@ -5,11 +5,26 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFAlive;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlement;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlementMarket;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetStop;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFChangeType;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFFavourite;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFFixtureChange;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFOutcomeActive;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFResult;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFMarketStatus;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChangeMarket;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse.BodyHandlers;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.util.List;
@@ -42,7 +57,7 @@ class FeedDecoderTest {
     }
 
     @Test
-    void neitherAnExternalEntityNorAnExternalDtdIsFetched() throws IOException {
+    void neitherAnExternalEntityNorAnExternalDtdIsFetched() throws IOException, InterruptedException {
         // A server the parser would call if it resolved anything; nothing may reach it.
         var requests = new AtomicInteger();
         HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
@@ -56,6 +71,11 @@ class FeedDecoderTest {
         server.start();
         try {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            // the server answers, so the zero below means the parser never called, not that it could not
+            try (var client = HttpClient.newHttpClient()) {
+                client.send(HttpRequest.newBuilder(URI.create(base + "/control")).build(), BodyHandlers.discarding());
+            }
+            assertThat(requests).as("the control request").hasValue(1);
             String entity = """
                     <?xml version="1.0"?>
                     <!DOCTYPE alive [<!ENTITY secret SYSTEM "%s/entity">]>
@@ -76,7 +96,18 @@ class FeedDecoderTest {
         } finally {
             server.stop(0);
         }
-        assertThat(requests).as("requests the parser made").hasValue(0);
+        assertThat(requests).as("requests, the control one included").hasValue(1);
+    }
+
+    @Test
+    void anInternalEntityIsNotExpanded() {
+        // harmless if expanded - "1" - so a parser that expands it decodes the message and this fails
+        String xml = """
+                <?xml version="1.0"?>
+                <!DOCTYPE alive [<!ENTITY one "1">]>
+                <alive product="1" timestamp="1" subscribed="&one;"/>
+                """;
+        assertThatThrownBy(() -> lenient.decode(bytes(xml))).isInstanceOf(DecodeException.class);
     }
 
     @Test
@@ -141,6 +172,43 @@ class FeedDecoderTest {
         assertThat(market.getStatus()).isEqualTo(OFMarketStatus.UNKNOWN);
         assertThat(market.getStatusRaw()).isEqualTo(-9);
         assertThatThrownBy(() -> strict.decode(bytes(xml))).isInstanceOf(DecodeException.class);
+    }
+
+    @Test
+    void aRequiredEnumAMessageLacksReadsAsAbsentNotAsAValue() throws DecodeException {
+        // a settlement outcome without its result must not read as LOST, nor a status as NOT_STARTED
+        var settlement = (OFBetSettlement) lenient.decode(bytes("""
+                <bet_settlement product="2" event_id="od:match:1" timestamp="1">
+                  <outcomes><market id="1"><outcome id="1"/></market></outcomes>
+                </bet_settlement>
+                """));
+        var outcome = settlement.getOutcomes().getMarket().getFirst().getOutcome().getFirst();
+        assertThat(outcome.getResult()).isNull();
+        assertThat(outcome.getResultRaw()).isNull();
+        outcome.setResult(null);
+        var change = (OFOddsChange) lenient.decode(bytes("""
+                <odds_change product="2" event_id="od:match:1" timestamp="1"><sport_event_status/></odds_change>
+                """));
+        assertThat(change.getSportEventStatus().getStatus()).isNull();
+    }
+
+    @Test
+    void everyEnumAccessorReadsWhatTheFixtureCarries() throws Exception {
+        Path feed = FeedGoldenTest.vendored().resolve("test/fixtures/feed");
+        var betStop = (OFBetStop) lenient.decode(Files.readAllBytes(feed.resolve("bet_stop/bet_stop_all_groups.xml")));
+        assertThat(betStop.getMarketStatus()).isEqualTo(OFMarketStatus.SUSPENDED);
+        var fixtureChange = (OFFixtureChange) lenient.decode(Files.readAllBytes(feed.resolve("fixture_change/fixture_change.xml")));
+        assertThat(fixtureChange.getChangeType()).isEqualTo(OFChangeType.NEW);
+        var settlement = (OFBetSettlement) lenient.decode(Files.readAllBytes(feed.resolve("bet_settlement/bet_settlement.xml")));
+        assertThat(settlement.getOutcomes().getMarket().getFirst().getOutcome())
+                .extracting(OFBetSettlementMarket.OFOutcome::getResult)
+                .containsExactly(OFResult.WON, OFResult.LOST);
+        var odds = (OFOddsChange) lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_markets_only.xml")));
+        OFOddsChangeMarket market = odds.getOdds().getMarket().getFirst();
+        assertThat(market.getFavourite()).isEqualTo(OFFavourite.YES);
+        assertThat(market.getOutcome().getFirst().getActive()).isEqualTo(OFOutcomeActive.ACTIVE);
+        var closed = (OFOddsChange) lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_closed_with_winner.xml")));
+        assertThat(closed.getSportEventStatus().getStatus()).isEqualTo(OFEventStatus.FINALIZED);
     }
 
     @Test

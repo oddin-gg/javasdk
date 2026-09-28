@@ -145,8 +145,8 @@ gone | schema/feed/v1/ObjectFactory.createRollbackBetCancelMarket ()Lcom/oddin/o
 gone | schema/feed/v1/ObjectFactory.createRollbackBetSettlementMarket ()Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFRollbackBetSettlementMarket; | the market class is nested in its message now
 gone | schema/feed/v1/ObjectFactory.createStatisticsScoreType ()Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFStatisticsScoreType; | not in the aligned schema: the feed never sends it
 
-added | schema/feed/v1/OFBetSettlementMarket$OFOutcome.getResultRaw ()I | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
-added | schema/feed/v1/OFBetSettlementMarket$OFOutcome.setResultRaw (I)V | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
+added | schema/feed/v1/OFBetSettlementMarket$OFOutcome.getResultRaw ()Ljava/lang/Integer; | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
+added | schema/feed/v1/OFBetSettlementMarket$OFOutcome.setResultRaw (Ljava/lang/Integer;)V | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
 added | schema/feed/v1/OFBetStop.getMarketStatusRaw ()Ljava/lang/Integer; | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
 added | schema/feed/v1/OFBetStop.setMarketStatusRaw (Ljava/lang/Integer;)V | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
 added | schema/feed/v1/OFChangeType.UNKNOWN Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFChangeType; | a value this SDK does not know
@@ -174,13 +174,21 @@ added | schema/feed/v1/OFRollbackBetSettlement$OFRollbackBetSettlementMarket | t
 added | schema/feed/v1/OFRollbackBetSettlement.getRequestId ()Ljava/lang/Long; | in the schema, new in 1.0
 added | schema/feed/v1/OFRollbackBetSettlement.setRequestId (Ljava/lang/Long;)V | in the schema, new in 1.0
 added | schema/feed/v1/OFSportEventStatus.getScoreboardAvailable ()Ljava/lang/Boolean; | tells a missing value from false
-added | schema/feed/v1/OFSportEventStatus.getStatusRaw ()I | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
+added | schema/feed/v1/OFSportEventStatus.getStatusRaw ()Ljava/lang/Integer; | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
 added | schema/feed/v1/OFSportEventStatus.getWinnerId ()Ljava/lang/String; | in the schema, new in 1.0
 added | schema/feed/v1/OFSportEventStatus.setScoreboardAvailable (Ljava/lang/Boolean;)V | optional in the schema now, so a Boolean; isScoreboardAvailable() stays
-added | schema/feed/v1/OFSportEventStatus.setStatusRaw (I)V | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
+added | schema/feed/v1/OFSportEventStatus.setStatusRaw (Ljava/lang/Integer;)V | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
 added | schema/feed/v1/OFSportEventStatus.setWinnerId (Ljava/lang/String;)V | in the schema, new in 1.0
 added | schema/feed/v1/ObjectFactory.createRollbackBetCancelMarket ()Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFRollbackBetCancel$OFRollbackBetCancelMarket; | the market class is nested in its message now
 added | schema/feed/v1/ObjectFactory.createRollbackBetSettlementMarket ()Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFRollbackBetSettlement$OFRollbackBetSettlementMarket; | the market class is nested in its message now
 
 signature | schema/feed/v1/OFRollbackBetCancel.getMarket ()Ljava/util/List; | ()Ljava/util/List<Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFRollbackBetCancel$OFRollbackBetCancelMarket;>; | the market class is nested in its message now
 signature | schema/feed/v1/OFRollbackBetSettlement.getMarket ()Ljava/util/List; | ()Ljava/util/List<Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFRollbackBetSettlement$OFRollbackBetSettlementMarket;>; | the market class is nested in its message now
+
+deprecated | schema/feed/v1/OFEventStatus.SUSPENDED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
+deprecated | schema/feed/v1/OFEventStatus.ENDED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
+deprecated | schema/feed/v1/OFEventStatus.DELAYED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
+deprecated | schema/feed/v1/OFEventStatus.INTERRUPTED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
+deprecated | schema/feed/v1/OFEventStatus.POSTPONED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
+deprecated | schema/feed/v1/OFEventStatus.ABANDONED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
+deprecated | schema/feed/v1/OFChangeType.FORMAT Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFChangeType; | not in the aligned schema: the feed never sends it
