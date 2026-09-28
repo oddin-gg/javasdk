@@ -192,3 +192,9 @@ deprecated | schema/feed/v1/OFEventStatus.INTERRUPTED Lcom/oddin/oddsfeedsdk/sch
 deprecated | schema/feed/v1/OFEventStatus.POSTPONED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
 deprecated | schema/feed/v1/OFEventStatus.ABANDONED Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus; | not in the aligned schema: the feed never sends it
 deprecated | schema/feed/v1/OFChangeType.FORMAT Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFChangeType; | not in the aligned schema: the feed never sends it
+added | schema/feed/v1/OFMarket.getSpecifiersRaw ()Ljava/lang/String; | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
+added | schema/feed/v1/OFMarket.setSpecifiersRaw (Ljava/lang/String;)V | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
+added | schema/feed/v1/OFBetSettlementMarket.getSpecifiersRaw ()Ljava/lang/String; | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
+added | schema/feed/v1/OFBetSettlementMarket.setSpecifiersRaw (Ljava/lang/String;)V | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
+added | schema/feed/v1/OFOddsChangeMarket.getSpecifiersRaw ()Ljava/lang/String; | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
+added | schema/feed/v1/OFOddsChangeMarket.setSpecifiersRaw (Ljava/lang/String;)V | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned

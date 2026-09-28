@@ -35,6 +35,9 @@ public final class FeedDecoder {
     /** The largest body decoded by default: the feed's messages are a few kilobytes. */
     public static final int DEFAULT_MAX_BYTES = 1 << 20;
 
+    /** The deepest nesting decoded: the feed's messages are five or six levels deep. */
+    static final int MAX_DEPTH = 64;
+
     private static final JAXBContext CONTEXT = context();
 
     private final int maxBytes;
@@ -53,6 +56,8 @@ public final class FeedDecoder {
         inputs.setProperty(XMLInputFactory.SUPPORT_DTD, false);
         inputs.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
         inputs.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
+        // a million bytes of opening tags must not become a million levels to track
+        inputs.setProperty("http://www.oracle.com/xml/jaxp/properties/maxElementDepth", MAX_DEPTH);
     }
 
     /** The decoder the SDK uses: bodies up to {@code maxBytes}, unknown content skipped. */
