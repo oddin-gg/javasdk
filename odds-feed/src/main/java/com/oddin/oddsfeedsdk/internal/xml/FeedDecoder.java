@@ -75,6 +75,10 @@ public final class FeedDecoder {
             XMLStreamReader reader = inputs.createXMLStreamReader(new ByteArrayInputStream(body));
             try {
                 decoded = unmarshaller(problems).unmarshal(reader);
+                // JAXB stops at the root's end; whatever follows must be well-formed too
+                while (reader.hasNext()) {
+                    reader.next();
+                }
             } finally {
                 reader.close();
             }

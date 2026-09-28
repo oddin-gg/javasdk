@@ -13,22 +13,30 @@ import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFRollbackBetCancel;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFRollbackBetSettlement;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFSnapshotComplete;
+import jakarta.xml.bind.JAXBContext;
+import jakarta.xml.bind.Marshaller;
 import java.io.IOException;
 import java.io.StringReader;
+import java.io.StringWriter;
+import java.math.BigDecimal;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.stream.Stream;
 import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.transform.Source;
 import javax.xml.transform.stream.StreamSource;
 import javax.xml.validation.Schema;
 import javax.xml.validation.SchemaFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.w3c.dom.Element;
+import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
 /**
@@ -79,6 +87,99 @@ class FeedGoldenTest {
         }
         // a fixture directory that yields nothing would pass the loop above
         assertThat(decoded).as("fixtures decoded").hasSizeGreaterThan(CLASSES.size());
+    }
+
+    /**
+     * What each fixture decodes to, written back as XML, is the fixture: every element and
+     * attribute in the same place with the same value. So nothing is dropped, and nothing lands in
+     * a field that holds it differently - which the class of the result alone does not show.
+     */
+    @Test
+    void everyFixtureDecodesToWhatItSays() throws Exception {
+        Marshaller marshaller = JAXBContext.newInstance(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class)
+                .createMarshaller();
+        var differences = new ArrayList<String>();
+        for (String directory : CLASSES.keySet()) {
+            for (Path fixture : xmlFiles(fixtures.resolve(directory))) {
+                var written = new StringWriter();
+                marshaller.marshal(strict.decode(Files.readAllBytes(fixture)), written);
+                compare(parse(new InputSource(fixture.toUri().toString())),
+                        parse(new InputSource(new StringReader(written.toString()))),
+                        directory + "/" + fixture.getFileName(), differences);
+            }
+        }
+        assertThat(differences).as("what the fixtures decode to, written back").isEmpty();
+    }
+
+    private static Element parse(InputSource source) throws Exception {
+        var factory = DocumentBuilderFactory.newInstance();
+        factory.setNamespaceAware(true);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        return factory.newDocumentBuilder().parse(source).getDocumentElement();
+    }
+
+    /** Elements by name and order, attributes by name and value; numbers compare as numbers. */
+    private static void compare(Element expected, Element actual, String where, List<String> differences) {
+        String path = where + " <" + expected.getLocalName() + ">";
+        if (!expected.getLocalName().equals(actual.getLocalName())) {
+            differences.add(path + ": written back as <" + actual.getLocalName() + ">");
+            return;
+        }
+        var want = attributes(expected);
+        var got = attributes(actual);
+        for (var entry : want.entrySet()) {
+            String value = got.get(entry.getKey());
+            if (value == null) {
+                differences.add(path + " @" + entry.getKey() + ": lost");
+            } else if (!sameValue(entry.getValue(), value)) {
+                differences.add(path + " @" + entry.getKey() + ": " + entry.getValue() + " came back as " + value);
+            }
+        }
+        got.keySet().stream().filter(name -> !want.containsKey(name))
+                .forEach(name -> differences.add(path + " @" + name + ": appeared"));
+        List<Element> wantChildren = children(expected);
+        List<Element> gotChildren = children(actual);
+        if (wantChildren.size() != gotChildren.size()) {
+            differences.add(path + ": " + wantChildren.size() + " child elements came back as " + gotChildren.size());
+            return;
+        }
+        for (int i = 0; i < wantChildren.size(); i++) {
+            compare(wantChildren.get(i), gotChildren.get(i), path, differences);
+        }
+    }
+
+    private static Map<String, String> attributes(Element element) {
+        var attributes = new TreeMap<String, String>();
+        var all = element.getAttributes();
+        for (int i = 0; i < all.getLength(); i++) {
+            var attribute = all.item(i);
+            if (!XMLConstants.XMLNS_ATTRIBUTE_NS_URI.equals(attribute.getNamespaceURI())) {
+                attributes.put(attribute.getLocalName(), attribute.getNodeValue());
+            }
+        }
+        return attributes;
+    }
+
+    private static List<Element> children(Element element) {
+        var children = new ArrayList<Element>();
+        for (var node = element.getFirstChild(); node != null; node = node.getNextSibling()) {
+            if (node instanceof Element child) {
+                children.add(child);
+            }
+        }
+        return children;
+    }
+
+    /** "0.50" and "0.5" are the same number; "true" and "1" are not the same text. */
+    private static boolean sameValue(String expected, String actual) {
+        if (expected.equals(actual)) {
+            return true;
+        }
+        try {
+            return new BigDecimal(expected).compareTo(new BigDecimal(actual)) == 0;
+        } catch (NumberFormatException notNumbers) {
+            return false;
+        }
     }
 
     @Test
