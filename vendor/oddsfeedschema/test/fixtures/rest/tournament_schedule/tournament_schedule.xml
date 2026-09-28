@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<tournament_schedule generated_at="2026-08-26T12:00:00">
+    <tournament id="od:tournament:1042" name="Test Tournament" abbreviation="" risk_tier="1"
+                scheduled="2026-08-26T18:00:00" scheduled_end="2026-08-27T18:00:00">
+        <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
+    </tournament>
+    <sport_events/>
+</tournament_schedule>

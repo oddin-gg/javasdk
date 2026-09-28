@@ -1,0 +1,7 @@
+<odds_change product="3" event_id="od:match:198314" timestamp="1777832981632">
+    <sport_event_status home_score="0" away_score="0" status="1" scoreboard_available="true" match_status="0">
+        <scoreboard home_kills="20" away_kills="18" home_destroyed_turrets="3" away_destroyed_turrets="1"
+                    home_destroyed_towers="4" away_destroyed_towers="2" home_gold="52000" away_gold="48000"/>
+    </sport_event_status>
+    <odds/>
+</odds_change>

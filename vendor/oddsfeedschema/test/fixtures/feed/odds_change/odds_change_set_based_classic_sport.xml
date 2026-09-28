@@ -1,0 +1,14 @@
+<!--
+    Set based classic sports on the Gadget feed: home_games/away_games carry the
+    games won inside each set. The esports feed never emits type="set".
+-->
+<odds_change product="2" event_id="od:match:198314" timestamp="1777832981632">
+    <sport_event_status home_score="1" away_score="1" status="1" scoreboard_available="false" match_status="1">
+        <period_scores>
+            <period_score type="set" number="1" match_status_code="1" home_score="1" away_score="0" home_games="6" away_games="4"/>
+            <period_score type="set" number="2" match_status_code="1" home_score="0" away_score="1" home_games="3" away_games="6"/>
+            <period_score type="set" number="3" match_status_code="1" home_score="0" away_score="0" home_games="2" away_games="1"/>
+        </period_scores>
+    </sport_event_status>
+    <odds/>
+</odds_change>

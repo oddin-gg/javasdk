@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+    <xs:include schemaLocation="types.xsd"/>
+    <xs:element name="bet_stop">
+        <xs:complexType>
+            <xs:attributeGroup ref="messageAttributes"/>
+            <xs:attribute name="groups" type="xs:string" use="optional">
+                <xs:annotation>
+                    <xs:documentation>
+                        Pipe separated list of the market groups the stop applies
+                        to, or "all" for every market of the event.
+                    </xs:documentation>
+                </xs:annotation>
+            </xs:attribute>
+            <xs:attribute name="market_status" type="marketStatus" use="optional"/>
+        </xs:complexType>
+    </xs:element>
+</xs:schema>

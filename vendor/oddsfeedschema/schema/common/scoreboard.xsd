@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    The single authoritative attribute list for the <scoreboard> element.
+
+    <scoreboard> appears both inside the AMQP <odds_change>/<sport_event_status>
+    message and inside the REST match_summary <sport_event_status> response, and
+    the producer emits exactly the same shape in both places, so both schemas
+    reference this one group instead of keeping their own copy.
+
+    The producer picks one sport-specific subset per message - a CS2 scoreboard
+    carries the round attributes, a cricket scoreboard the runs/overs/wickets
+    attributes - so every attribute here is optional and only a subset ever
+    appears on a single element.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+    <xs:attributeGroup name="scoreboardAttributes">
+        <!-- CS2 / CS2 Wingman -->
+        <xs:attribute name="current_ct_team" type="xs:int" use="optional"/>
+        <!-- Valorant -->
+        <xs:attribute name="current_def_team" type="xs:int" use="optional"/>
+        <!-- round based sports (CS2, Valorant, ...) -->
+        <xs:attribute name="home_won_rounds" type="xs:int" use="optional"/>
+        <xs:attribute name="away_won_rounds" type="xs:int" use="optional"/>
+        <xs:attribute name="current_round" type="xs:int" use="optional"/>
+        <!-- MOBA (League of Legends, King of Glory, Mobile Legends, Dota) -->
+        <xs:attribute name="home_kills" type="xs:int" use="optional"/>
+        <xs:attribute name="away_kills" type="xs:int" use="optional"/>
+        <xs:attribute name="home_destroyed_turrets" type="xs:int" use="optional"/>
+        <xs:attribute name="away_destroyed_turrets" type="xs:int" use="optional"/>
+        <xs:attribute name="home_destroyed_towers" type="xs:int" use="optional"/>
+        <xs:attribute name="away_destroyed_towers" type="xs:int" use="optional"/>
+        <xs:attribute name="home_gold" type="xs:int" use="optional"/>
+        <xs:attribute name="away_gold" type="xs:int" use="optional"/>
+        <!-- goal based sports (rush / virtual soccer) -->
+        <xs:attribute name="home_goals" type="xs:int" use="optional"/>
+        <xs:attribute name="away_goals" type="xs:int" use="optional"/>
+        <!-- point based sports (rush / virtual basketball, rush madden) -->
+        <xs:attribute name="home_points" type="xs:int" use="optional"/>
+        <xs:attribute name="away_points" type="xs:int" use="optional"/>
+        <!-- game based sports (table tennis) -->
+        <xs:attribute name="home_games" type="xs:int" use="optional"/>
+        <xs:attribute name="away_games" type="xs:int" use="optional"/>
+        <!-- rush cricket -->
+        <xs:attribute name="home_runs" type="xs:int" use="optional"/>
+        <xs:attribute name="away_runs" type="xs:int" use="optional"/>
+        <xs:attribute name="home_wickets_fallen" type="xs:int" use="optional"/>
+        <xs:attribute name="away_wickets_fallen" type="xs:int" use="optional"/>
+        <xs:attribute name="home_overs_played" type="xs:int" use="optional"/>
+        <xs:attribute name="away_overs_played" type="xs:int" use="optional"/>
+        <xs:attribute name="home_balls_played" type="xs:int" use="optional"/>
+        <xs:attribute name="away_balls_played" type="xs:int" use="optional"/>
+        <xs:attribute name="home_batting" type="xs:boolean" use="optional"/>
+        <xs:attribute name="away_batting" type="xs:boolean" use="optional"/>
+        <xs:attribute name="home_won_coin_toss" type="xs:boolean" use="optional"/>
+        <xs:attribute name="inning" type="xs:int" use="optional"/>
+        <!-- clocks, in seconds -->
+        <xs:attribute name="time" type="xs:int" use="optional"/>
+        <xs:attribute name="game_time" type="xs:int" use="optional"/>
+        <xs:attribute name="elapsed_time" type="xs:int" use="optional"/>
+        <xs:attribute name="remaining_game_time" type="xs:int" use="optional"/>
+    </xs:attributeGroup>
+</xs:schema>

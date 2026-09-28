@@ -1,0 +1,11 @@
+<bet_settlement product="2" event_id="od:match:198314" timestamp="1777832981632">
+    <outcomes>
+        <market id="1">
+            <outcome id="1" result="1"/>
+            <outcome id="2" result="0"/>
+        </market>
+        <market id="42" specifiers="setnr=1">
+            <outcome id="1" result="1" void_factor="0.5"/>
+        </market>
+    </outcomes>
+</bet_settlement>
