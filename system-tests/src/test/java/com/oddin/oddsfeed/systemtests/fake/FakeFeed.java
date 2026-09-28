@@ -23,8 +23,6 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
@@ -47,7 +45,8 @@ import org.testcontainers.utility.DockerImageName;
  *
  * <p>RabbitMQ's own user store refuses empty passwords, so the broker asks this class instead,
  * through its HTTP auth backend. Any user name is let in, to the one virtual host only, and every
- * connection is recorded as a {@link Login}.
+ * connection is recorded as a {@link Login} - until {@link #refuseLogins()}, after which every
+ * login is turned away the way a token the feed does not accept is.
  *
  * <p>Messages go in through the broker's management API rather than an AMQP client, so the fake
  * adds nothing to the classpath the SDK under test runs with.
@@ -60,7 +59,7 @@ public final class FakeFeed implements AutoCloseable {
   /** The exchange live messages are published to. */
   public static final String EXCHANGE = "oddinfeed";
 
-  /** The exchange replay sessions bind to. Declared so they can, nothing publishes to it yet. */
+  /** The exchange replay sessions bind to; {@link #publishReplay} sends to it. */
   public static final String REPLAY_EXCHANGE = "oddinreplay";
 
   /** The bookmaker in the REST fake's whoami answer; the SDK derives the virtual host from it. */
@@ -78,10 +77,10 @@ public final class FakeFeed implements AutoCloseable {
   /** The management API's own login, not a feed connection; kept out of {@link #logins()}. */
   private static final String PUBLISHER = "fake-feed-publisher";
 
-  private static final Pattern ROOT_TIMESTAMP = Pattern.compile("(<[a-z_]+\\b[^>]*?\\btimestamp=\")\\d+(\")");
-
   private final String virtualHost = "/oddinfeed/" + BOOKMAKER_ID;
   private final List<Login> logins = new CopyOnWriteArrayList<>();
+  private final List<String> refusedLogins = new CopyOnWriteArrayList<>();
+  private volatile boolean refusing;
   private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
   // HTTP/1.1: the default first asks to upgrade to HTTP/2, and the management API hangs up on that
   private final HttpClient http = HttpClient.newBuilder()
@@ -150,6 +149,19 @@ public final class FakeFeed implements AutoCloseable {
   }
 
   /**
+   * Refuses every feed login from now on, the way the broker answers a token it does not accept.
+   * Connections already open stay open.
+   */
+  public void refuseLogins() {
+    refusing = true;
+  }
+
+  /** The user names of the logins refused so far, oldest first; for the SDK, its access token. */
+  public List<String> refusedLogins() {
+    return List.copyOf(refusedLogins);
+  }
+
+  /**
    * The AMQP connections open on the broker right now, as the broker lists them. Unlike
    * {@link #logins()} this shrinks when a client disconnects.
    */
@@ -190,13 +202,25 @@ public final class FakeFeed implements AutoCloseable {
    * @return whether the broker routed it to at least one queue; false when no SDK is bound for it
    */
   public boolean publish(String message) {
-    String now = Long.toString(System.currentTimeMillis());
-    Matcher timestamp = ROOT_TIMESTAMP.matcher(message);
-    String stamped = timestamp.find()
-        ? message.substring(0, timestamp.start()) + timestamp.group(1) + now + timestamp.group(2)
-            + message.substring(timestamp.end())
-        : message;
+    String stamped = stamped(message);
     return publish(routingKey(stamped), stamped);
+  }
+
+  /** The message with its root element's {@code timestamp} set to now. */
+  private static String stamped(String message) {
+    return FeedMessages.ROOT_TIMESTAMP.matcher(message).find()
+        ? FeedMessages.stampedAt(message, System.currentTimeMillis())
+        : message;
+  }
+
+  /**
+   * Publishes a feed message with the routing key the live feed would use, keeping its own
+   * timestamp; for a message stamped in the past, see {@link FeedMessages#stampedAt}.
+   *
+   * @return whether the broker routed it to at least one queue
+   */
+  public boolean publishAsIs(String message) {
+    return publish(routingKey(message), message);
   }
 
   /**
@@ -206,6 +230,21 @@ public final class FakeFeed implements AutoCloseable {
    * @return whether the broker routed it to at least one queue
    */
   public boolean publish(String routingKey, String message) {
+    return publish(EXCHANGE, routingKey, message);
+  }
+
+  /**
+   * Publishes a feed message as a replay would: like {@link #publish(String)}, stamped with the
+   * current time, but to the {@value #REPLAY_EXCHANGE} exchange that replay sessions bind to.
+   *
+   * @return whether the broker routed it to at least one queue
+   */
+  public boolean publishReplay(String message) {
+    String stamped = stamped(message);
+    return publish(REPLAY_EXCHANGE, routingKey(stamped), stamped);
+  }
+
+  private boolean publish(String exchange, String routingKey, String message) {
     String body = "{\"routing_key\":" + json(routingKey)
         + ",\"payload\":" + json(message)
         + ",\"payload_encoding\":\"string\""
@@ -213,7 +252,7 @@ public final class FakeFeed implements AutoCloseable {
         + ",\"content_type\":\"application/xml\"}}";
     HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + broker.getHost() + ":"
             + broker.getMappedPort(MANAGEMENT) + "/api/exchanges/"
-            + URLEncoder.encode(virtualHost, UTF_8) + "/" + EXCHANGE + "/publish"))
+            + URLEncoder.encode(virtualHost, UTF_8) + "/" + exchange + "/publish"))
         .header("Authorization", "Basic "
             + Base64.getEncoder().encodeToString((PUBLISHER + ":" + PUBLISHER).getBytes(UTF_8)))
         .header("Content-Type", "application/json")
@@ -327,7 +366,16 @@ public final class FakeFeed implements AutoCloseable {
       String username = query.getOrDefault("username", "");
       String answer = switch (exchange.getRequestURI().getPath()) {
         // the management API only lets tagged users in
-        case "/user" -> username.equals(PUBLISHER) ? "allow administrator" : "allow";
+        case "/user" -> {
+          if (username.equals(PUBLISHER)) {
+            yield "allow administrator";
+          }
+          if (refusing) {
+            refusedLogins.add(username);
+            yield "deny";
+          }
+          yield "allow";
+        }
         case "/vhost" -> {
           if (!virtualHost.equals(query.get("vhost"))) {
             yield "deny";

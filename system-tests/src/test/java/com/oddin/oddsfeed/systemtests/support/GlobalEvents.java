@@ -42,21 +42,34 @@ public final class GlobalEvents implements GlobalEventsListener {
    * @throws AssertionError if none arrives, naming every other status change that did
    */
   public ProducerStatus nextProducerStatus(long producerId) throws InterruptedException {
-    long deadline = System.nanoTime() + Received.DELIVERY.toNanos();
     List<ProducerStatus> others = new ArrayList<>();
+    Optional<ProducerStatus> status = pollProducerStatus(producerId, Received.DELIVERY, others);
+    if (status.isEmpty()) {
+      throw new AssertionError("no status change of producer " + producerId
+          + " reached the listener within " + Received.DELIVERY.toSeconds() + " s; "
+          + (others.isEmpty()
+              ? "nothing else arrived either"
+              : "it got " + others.stream().map(GlobalEvents::describe).collect(Collectors.joining(", "))
+                  + " instead"));
+    }
+    return status.get();
+  }
+
+  /** The next status change of this producer within {@code wait}, or empty; for checking there is none. */
+  public Optional<ProducerStatus> pollProducerStatus(long producerId, Duration wait) throws InterruptedException {
+    return pollProducerStatus(producerId, wait, new ArrayList<>());
+  }
+
+  private Optional<ProducerStatus> pollProducerStatus(long producerId, Duration wait, List<ProducerStatus> others)
+      throws InterruptedException {
+    long deadline = System.nanoTime() + wait.toNanos();
     while (true) {
-      long left = Math.max(0, deadline - System.nanoTime());
-      ProducerStatus status = unreadStatuses.poll(left, TimeUnit.NANOSECONDS);
+      ProducerStatus status = unreadStatuses.poll(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
       if (status == null) {
-        throw new AssertionError("no status change of producer " + producerId
-            + " reached the listener within " + Received.DELIVERY.toSeconds() + " s; "
-            + (others.isEmpty()
-                ? "nothing else arrived either"
-                : "it got " + others.stream().map(GlobalEvents::describe).collect(Collectors.joining(", "))
-                    + " instead"));
+        return Optional.empty();
       }
       if (status.getProducer() != null && status.getProducer().getId() == producerId) {
-        return status;
+        return Optional.of(status);
       }
       others.add(status);
     }

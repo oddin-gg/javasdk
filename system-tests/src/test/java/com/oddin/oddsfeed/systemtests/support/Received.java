@@ -33,6 +33,23 @@ public final class Received implements OddsFeedListener {
   public static final Duration DELIVERY = Duration.ofSeconds(10);
 
   private final BlockingQueue<Message> messages = new LinkedBlockingQueue<>();
+  private final Class<? extends Message> throwOn;
+
+  public Received() {
+    this(null);
+  }
+
+  private Received(Class<? extends Message> throwOn) {
+    this.throwOn = throwOn;
+  }
+
+  /**
+   * A listener whose callback for this kind of message throws, as a client's buggy code would -
+   * after keeping the message, so the test still sees that it arrived.
+   */
+  public static Received throwingOn(Class<? extends Message> kind) {
+    return new Received(kind);
+  }
 
   /** The next message of this kind, within {@link #DELIVERY}. */
   public <M extends Message> M next(Class<M> kind) throws InterruptedException {
@@ -90,43 +107,50 @@ public final class Received implements OddsFeedListener {
     return kind + event + producer;
   }
 
+  private void record(Message message) {
+    messages.add(message);
+    if (throwOn != null && throwOn.isInstance(message)) {
+      throw new IllegalStateException("thrown by the test's listener on " + describe(message));
+    }
+  }
+
   @Override
   public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 
   @Override
   public void onBetStop(OddsFeedSession session, BetStop<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 
   @Override
   public void onBetSettlement(OddsFeedSession session, BetSettlement<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 
   @Override
   public void onRollbackBetSettlement(OddsFeedSession session, RollbackBetSettlement<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 
   @Override
   public void onRollbackBetCancel(OddsFeedSession session, RollbackBetCancel<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 
   @Override
   public void onBetCancel(OddsFeedSession session, BetCancel<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 
   @Override
   public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 
   @Override
   public void onUnparsableMessage(OddsFeedSession session, UnparsableMessage<SportEvent> message) {
-    messages.add(message);
+    record(message);
   }
 }

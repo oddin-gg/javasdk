@@ -64,11 +64,19 @@ public final class FakeRestServer implements AutoCloseable {
 
   private static final Response NOT_FOUND = new Response(404, Fixtures.read("rest/error/not_found.xml"));
   private static final Response ACCEPTED = new Response(202, "");
+  private static final String OUTAGE_BODY = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <response response_code="SERVICE_UNAVAILABLE">
+          <action>outage</action>
+          <message>the fake REST server is down</message>
+      </response>
+      """;
 
   private final HttpsServer server;
   private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
   private final List<RecordedRequest> requests = new CopyOnWriteArrayList<>();
   private final Map<String, Response> overrides = new ConcurrentHashMap<>();
+  private volatile Response outage;
   private final AtomicInteger inFlight = new AtomicInteger();
   private volatile long lastFinishedAt = System.nanoTime();
 
@@ -102,11 +110,31 @@ public final class FakeRestServer implements AutoCloseable {
   }
 
   /**
+   * Answers every request - any path, any method, overrides included - with this status until
+   * {@link #endOutage}, the way the API looks to the SDK while it is down.
+   */
+  public void startOutage(int status) {
+    outage = new Response(status, OUTAGE_BODY);
+  }
+
+  /** Back to the routes and overrides. */
+  public void endOutage() {
+    outage = null;
+  }
+
+  /**
    * Everything received so far, oldest first. It can include a late background request from an SDK
    * an earlier test used, so check for what you expect instead of comparing the whole list.
    */
   public List<RecordedRequest> requests() {
     return List.copyOf(requests);
+  }
+
+  /** The requests received so far with this method and path, oldest first. */
+  public List<RecordedRequest> requests(String method, String path) {
+    return requests.stream()
+        .filter(request -> request.method().equals(method) && request.path().equals(path))
+        .toList();
   }
 
   /**
@@ -116,15 +144,28 @@ public final class FakeRestServer implements AutoCloseable {
    * @throws AssertionError if it never arrives, naming the paths that did
    */
   public RecordedRequest awaitRequest(String method, String path) throws InterruptedException {
+    return awaitRequests(method, path, 1).getFirst();
+  }
+
+  /**
+   * The requests with this method and path once there are at least {@code count} of them,
+   * waiting up to ten seconds; for a call the SDK repeats, such as a second recovery.
+   *
+   * @throws AssertionError if fewer arrive, naming the paths that did
+   */
+  public List<RecordedRequest> awaitRequests(String method, String path, int count)
+      throws InterruptedException {
     long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
     while (true) {
-      for (RecordedRequest request : requests) {
-        if (request.method().equals(method) && request.path().equals(path)) {
-          return request;
-        }
+      List<RecordedRequest> matching = requests(method, path);
+      if (matching.size() >= count) {
+        return matching;
       }
       if (System.nanoTime() > deadline) {
-        throw new AssertionError("no " + method + " " + path + " within 10 s; the SDK asked for "
+        throw new AssertionError((count == 1
+                ? "no " + method + " " + path + " within 10 s"
+                : matching.size() + " of " + count + " " + method + " " + path + " within 10 s")
+            + "; the SDK asked for "
             + requests.stream().map(request -> request.method() + " " + request.path()).toList());
       }
       Thread.sleep(50);
@@ -197,6 +238,10 @@ public final class FakeRestServer implements AutoCloseable {
   }
 
   private Response answer(String method, String path) {
+    Response down = outage;
+    if (down != null) {
+      return down;
+    }
     Response override = overrides.get(path);
     if (override != null) {
       return override;
