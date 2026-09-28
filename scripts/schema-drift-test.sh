@@ -118,6 +118,55 @@ c15=$(commit 19 "a file with an odd name")
 printf '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:complexType name="t">\n</xs:complexType></xs:schema>\n' >"$repo/$odd"
 c16=$(commit 19 "drop its attribute")
 
+# the rules the classifier states, one commit each, on a file of their own
+more() { # more <root attributes> <extra top-level content> <sequence>
+  cat >"$repo/schema/feed/more.xsd" <<EOF
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"$1>
+$2
+    <xs:simpleType name="kind"><xs:restriction base="xs:int">
+        <xs:enumeration value="1"/>
+        <xs:enumeration value="2"/>$ENUM
+    </xs:restriction></xs:simpleType>
+    <xs:element name="m"><xs:complexType><xs:sequence>
+$3
+    </xs:sequence></xs:complexType></xs:element>
+</xs:schema>
+EOF
+}
+a='        <xs:element name="a" type="xs:int"/>'
+b='        <xs:element name="b" type="xs:int"/>'
+c='        <xs:element name="c" type="xs:int"/>'
+ENUM=
+more "" "" "$a
+$b"
+c17=$(commit 21 "another message")
+more ' elementFormDefault="qualified"' "" "$a
+$b"
+c18=$(commit 21 "change a setting of the schema itself")
+more ' elementFormDefault="qualified"' '    <xs:include schemaLocation="alive.xsd"/>' "$a
+$b"
+c19=$(commit 21 "include another file")
+ENUM='
+        <xs:enumeration value="3"/>'
+more ' elementFormDefault="qualified"' '    <xs:include schemaLocation="alive.xsd"/>' "$a
+$b"
+c20=$(commit 21 "a new enum value")
+more ' elementFormDefault="qualified"' '    <xs:include schemaLocation="alive.xsd"/>' "$a
+$b
+$c"
+c21=$(commit 21 "a new required element")
+more ' elementFormDefault="qualified"' '    <xs:include schemaLocation="alive.xsd"/>' "$b
+$a
+$c"
+c22=$(commit 21 "reorder the elements")
+
+# a file name that sed would have run: its w flag writes a file
+trap_name='schema/feed/odd|w marker|.xsd'
+printf '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:complexType name="t">\n<xs:attribute name="a" type="xs:int"/>\n</xs:complexType></xs:schema>\n' >"$repo/$trap_name"
+c23=$(commit 22 "a file whose name is a sed command")
+printf '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:complexType name="t">\n</xs:complexType></xs:schema>\n' >"$repo/$trap_name"
+c24=$(commit 22 "drop its attribute")
+
 # a commit that exists but not on main
 git -C "$repo" checkout -q -b side "$c1"
 echo side >"$repo/side.txt"
@@ -167,6 +216,16 @@ check "an attribute group on an existing type is a shape change" 0 \
   "attribute group added to an existing component" "line=$c11" "$(days 60)" "$c12"
 check "a deleted schema file is a shape change" 0 "WARN line: needs a decision - $c13" "line=$c12" "$(days 60)" "$c13"
 check "a file that is not XML fails loudly" 1 "cannot compare schema/feed/broken.xsd" "line=$c13" "$(days 60)" "$c14"
+check "a setting of the schema itself is a shape change" 0 "changed /:" "line=$c17" "$(days 60)" "$c18"
+check "a new include is additive" 0 "refresh due by" "line=$c18" "$(days 21)" "$c19"
+check "a new enum value is additive" 0 "refresh due by" "line=$c19" "$(days 21)" "$c20"
+check "a new required element is additive" 0 "refresh due by" "line=$c20" "$(days 21)" "$c21"
+check "reordered elements are additive" 0 "refresh due by" "line=$c21" "$(days 21)" "$c22"
+mkdir "$work/cwd"
+git -C "$repo" update-ref refs/heads/main "$c24"
+(cd "$work/cwd" && SCHEMA_REPO="file://$repo" PINS="line=$c23" NOW="$(days 60)" "$here/schema-drift.sh" line >/dev/null 2>&1) || true
+if [ -z "$(ls -A "$work/cwd")" ]; then pass "a file name that is a sed command runs nothing"; else
+  fail "a file name ran as code: it left $(ls -A "$work/cwd")"; fi
 check "a file name is reported as data, never run" 0 "odd\|name&e\.xsd: removed" "line=$c15" "$(days 60)" "$c16"
 check "a pin that does not exist" 1 "is not on the schema's main" \
   "line=0123456789012345678901234567890123456789" "$(days 1)" "$c1"
@@ -212,13 +271,20 @@ if [ "$1 $2" = "issue list" ]; then
   [ -z "${GH_FAIL:-}" ] || exit 1
   printf '%s\n' "$GH_TITLES"
 fi
+if [ "$1 $2" = "issue create" ]; then
+  while [ "$#" -gt 0 ]; do
+    if [ "$1" = "--title" ]; then echo "$2" >>"$GH_CREATED"; fi
+    shift
+  done
+fi
 EOF
 chmod +x "$bin/gh"
 printf 'release/0.x\t%s\tone\nnext\t%s\ttwo\n' "$c6" "$c8" >"$work/report"
 asked="Schema drift: release/0.x needs a decision on oddsfeedschema ${c6:0:7}"
 issues() { # issues <titles gh finds> [fail]; sets out, got, creates
   : >"$work/gh.log"
-  out=$(PATH="$bin:$PATH" GH_LOG="$work/gh.log" GH_TITLES="$1" GH_FAIL="${2:-}" REPO=owner/repo \
+  : >"$work/created"
+  out=$(PATH="$bin:$PATH" GH_LOG="$work/gh.log" GH_CREATED="$work/created" GH_TITLES="$1" GH_FAIL="${2:-}" REPO=owner/repo \
     "$here/schema-drift-issues.sh" "$work/report" 2>&1) && got=0 || got=$?
   creates=$(grep -c "issue create" "$work/gh.log" || true)
 }
@@ -227,6 +293,11 @@ if [ "$got" = 0 ] && [ "$creates" = 2 ]; then pass "issues: one per shape change
   fail "issues: exit $got, $creates created, expected 0 and 2" "$out"; fi
 if [ "$(grep -c 'author:app/github-actions' "$work/gh.log")" = 2 ]; then pass "issues: only the workflow's own issues count"; else
   fail "issues: the lookup does not filter by the workflow's author" "$(cat "$work/gh.log")"; fi
+if [ "$(grep -c -- '--state all' "$work/gh.log")" = 2 ]; then pass "issues: a closed issue counts as asked"; else
+  fail "issues: the lookup does not include closed issues" "$(cat "$work/gh.log")"; fi
+issues "$(cat "$work/created")"
+if [ "$got" = 0 ] && [ "$creates" = 0 ]; then pass "issues: the next run finds the issues this one opened"; else
+  fail "issues: the next run asked again: $creates created" "$out"; fi
 issues "$asked"
 if [ "$got" = 0 ] && [ "$creates" = 1 ] && grep -q "already asked: $asked" <<<"$out"; then pass "issues: a change asked about before is not asked again"; else
   fail "issues: exit $got, $creates created, expected 0 and 1" "$out"; fi

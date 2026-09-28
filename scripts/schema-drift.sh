@@ -120,7 +120,8 @@ for branch in "$@"; do
   fi
 
   # the schema commits this line has not taken, oldest first
-  behind=$(schema log --reverse --format='%H %ct' "$pin..$head" -- schema test/fixtures) \
+  # --first-parent: a merged pull request counts once, at the time it was merged
+  behind=$(schema log --first-parent --reverse --format='%H %ct' "$pin..$head" -- schema test/fixtures) \
     || broken "cannot list the schema commits after $pin"
   if [ -z "$behind" ]; then
     echo "ok   $branch: up to date (pin $pin)"
