@@ -113,21 +113,6 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   scenario, not kept, that opened the feed and waited 75 s: both producers reported down with
   `ALIVE_INTERVAL_VIOLATION` 60 s after `open()`, neither of them ever up.
 
-## KD-8 A replay session next to a live one is refused
-
-- **0.0.x:** `open()` throws `UnsupportedMessageInterestCombination`, "all messages can be used
-  only for single session configuration", for a replay session next to any other session:
-  `buildReplay()` gives the replay session the interest `ALL`, which is allowed only for a feed
-  with one session. So the mixed setup in which replayed state reached the live caches, the bug
-  NEXT.md section 3 difference 7 describes, cannot be built on 0.0.56.
-- **1.0:** Opens. Each session gets the messages of its own exchange, and what is replayed does
-  not write live caches, producer liveness or recovery checkpoints (section 3, difference 7, and
-  "a replay session next to live sessions" under Behaviour that stays; section 4, Caches and
-  loaders).
-- **Why:** NEXT.md promises the combination; 0.0.56 never allowed it.
-- **Pinned by:** `ReplayScenarioIT.aReplaySessionOpensNextToALiveSession`
-- **Found:** by test against 0.0.56.
-
 ## KD-9 A callback that throws is reported as an unparsable message
 
 - **0.0.x:** Logs "Failed to process message" and hands the same message to
