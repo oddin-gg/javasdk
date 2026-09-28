@@ -5,6 +5,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.oddin.oddsfeed.systemtests.fake.FakeFeed;
 import com.oddin.oddsfeed.systemtests.fake.FakeRestServer;
 import com.oddin.oddsfeed.systemtests.fake.Fixtures;
+import com.oddin.oddsfeed.systemtests.support.GlobalEvents;
+import com.oddin.oddsfeed.systemtests.support.KnownDifference;
+import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.ProducerManager;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -82,20 +85,19 @@ class ProducerStatusScenarioIT {
   }
 
   /**
-   * What 0.0.56 does with the snapshot complete of an event recovery: nothing a client can see.
-   * The request goes out with the id the SDK returns, but {@code onEventRecoveryCompleted} is
-   * never called. For a producer with a live scope, like producer 2 here, 0.0.56 counts an event
-   * recovery complete once a live-only session has seen its snapshot complete - yet it only counts
-   * snapshot completes on sessions that are neither live-only nor prematch-only, so that never
-   * happens. This test records the behaviour; the next batch decides whether 1.0 lists it as a
-   * known difference.
+   * The snapshot complete of an event recovery completes it: the request goes out with the id the
+   * SDK returns, and the snapshot complete carrying that id is reported through
+   * {@code onEventRecoveryCompleted}. 0.0.x never reports it (KD-1): for a producer with a live
+   * scope, like producer 2 here, it counts an event recovery complete once a live-only session has
+   * seen its snapshot complete - yet it only counts snapshot completes on sessions that are
+   * neither live-only nor prematch-only, so that never happens.
    *
    * <p>A completed producer recovery after it shows that the SDK has consumed the event's
-   * snapshot complete, which went into the same queue first, so the silence is not a message
-   * still on its way.
+   * snapshot complete, which went into the same queue first, so silence is not a message still on
+   * its way.
    */
   @Test
-  void theSnapshotCompleteOfAnEventRecoveryIsNotReported() throws InterruptedException {
+  void theSnapshotCompleteOfAnEventRecoveryCompletesIt() throws InterruptedException {
     try (FakeRestServer rest = FakeRestServer.start();
         FakeFeed feed = FakeFeed.start();
         Sdk sdk = Sdk.against(rest, feed)) {
@@ -113,9 +115,13 @@ class ProducerStatusScenarioIT {
       assertThat(sdk.events().nextProducerStatus(2).getProducerStatusReason())
           .as("producer 2, once both snapshot completes are through")
           .isEqualTo(ProducerStatusReason.FIRST_RECOVERY_COMPLETED);
-      assertThat(sdk.events().pollEventRecovery(Duration.ofSeconds(1)))
-          .as("onEventRecoveryCompleted for request " + eventRequestId + " - 0.0.56 never calls it")
-          .isEmpty();
+      KnownDifference.EVENT_RECOVERY_NOT_REPORTED.expect(
+          () -> assertThat(sdk.events().pollEventRecovery(Duration.ofSeconds(1)))
+              .as("onEventRecoveryCompleted for request " + eventRequestId)
+              .isEmpty(),
+          () -> assertThat(sdk.events().pollEventRecovery(Received.DELIVERY))
+              .as("onEventRecoveryCompleted for request " + eventRequestId)
+              .contains(new GlobalEvents.EventRecovery(MATCH, eventRequestId)));
     }
   }
 

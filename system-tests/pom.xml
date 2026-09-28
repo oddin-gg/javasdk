@@ -139,6 +139,10 @@
         <configuration>
           <!-- Nothing to run until the first scenarios land. -->
           <failIfNoTests>false</failIfNoTests>
+          <systemPropertyVariables>
+            <!-- KnownDifferenceListTest reads KNOWN-DIFFERENCES.md next to this POM. -->
+            <module.basedir>${project.basedir}</module.basedir>
+          </systemPropertyVariables>
         </configuration>
       </plugin>
       <plugin>
