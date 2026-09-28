@@ -41,6 +41,30 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **Pinned by:** `ProducerStatusScenarioIT.theSnapshotCompleteOfAnEventRecoveryCompletesIt`
 - **Found:** by test against 0.0.56, and in the source (`validateEventSnapshotComplete`).
 
+## KD-2 A producer that is still down reports nothing when an alive says it is unsubscribed
+
+- **0.0.x:** Every producer starts down. An alive with `subscribed="0"` for a producer that is
+  down changes neither the down flag nor the reason, so `onProducerStatusChange` is not called.
+  The SDK does ask for a recovery.
+- **1.0:** To be decided. NEXT.md says neither whether producers start down nor whether this
+  raises a status event.
+- **Why:** A client waiting for a first status event after `open()` sees none; the choice should
+  be made on purpose.
+- **Pinned by:** `ProducerRecoveryScenarioIT.anUnsubscribedAliveForAProducerStillDownIsNotReported`
+- **Found:** by test against 0.0.56.
+
+## KD-3 A producer the producer list does not have is made up
+
+- **0.0.x:** A message from such a producer is dropped with only a warning in the log, "Creating
+  unknown producer: 7". `ProducerManager.getProducer(7)` returns a made-up producer named
+  "unknown", described as "unknown producer" - and, by the source, enabled and in both scopes.
+- **1.0:** "Unknown producer ids are an error, not a fabricated producer" (section 4, Recovery and
+  producers). The message is still not delivered; `getProducer` for an unknown id returns null or
+  throws an SDK exception - ticket 23 picks which, the test accepts either.
+- **Why:** A made-up producer hides a wrong id or a producer list the SDK did not load.
+- **Pinned by:** `ProducerRecoveryScenarioIT.aMessageFromAnUnknownProducerIsNotDelivered`
+- **Found:** by test against 0.0.56.
+
 ## KD-4 A fixture change starts at 1 January 1970
 
 - **0.0.x:** `FixtureChange.getStartTime()` returns `new Date(0)`. The feed schema has no
@@ -66,14 +90,15 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 
 - **0.0.x:** Kotlin's `split("\\|")` takes its argument literally, so it splits on the two
   characters `\|`, not on `|`. A bet stop with `groups="winner|handicap"` has one group,
-  `winner|handicap`. By the source, a producer whose scope is `live|prematch` has no scope at
-  all - so a live-only or prematch-only session never enables it and drops its messages.
+  `winner|handicap`. A producer whose scope is `live|prematch` has no scope at all - so, by the
+  source, a live-only or prematch-only session never enables it and drops its messages.
 - **1.0:** To be decided. NEXT.md is silent; the schema documents the groups as a list separated
   by a pipe.
 - **Why:** A client matching bet stop groups one by one never matches.
-- **Pinned by:** `FeedMessageScenarioIT.aBetStopForSeveralGroupsNamesEach`
-- **Found:** by test against 0.0.56 for the groups; the scopes and their effect on sessions by
-  reading the source (`ProducerData`, `MessageInterest`).
+- **Pinned by:** `FeedMessageScenarioIT.aBetStopForSeveralGroupsNamesEach`,
+  `ProducerRecoveryScenarioIT.aProducerListedWithBothScopesHasBoth`
+- **Found:** by test against 0.0.56 for the groups and the scopes; the effect on sessions by
+  reading the source (`MessageInterest`).
 
 ## KD-7 The producer watchdog first runs a minute after open
 
@@ -88,6 +113,33 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   scenario, not kept, that opened the feed and waited 75 s: both producers reported down with
   `ALIVE_INTERVAL_VIOLATION` 60 s after `open()`, neither of them ever up.
 
+## KD-8 A replay session next to a live one is refused
+
+- **0.0.x:** `open()` throws `UnsupportedMessageInterestCombination`, "all messages can be used
+  only for single session configuration", for a replay session next to any other session:
+  `buildReplay()` gives the replay session the interest `ALL`, which is allowed only for a feed
+  with one session. So the mixed setup in which replayed state reached the live caches, the bug
+  NEXT.md section 3 difference 7 describes, cannot be built on 0.0.56.
+- **1.0:** Opens. Each session gets the messages of its own exchange, and what is replayed does
+  not write live caches, producer liveness or recovery checkpoints (section 3, difference 7, and
+  "a replay session next to live sessions" under Behaviour that stays; section 4, Caches and
+  loaders).
+- **Why:** NEXT.md promises the combination; 0.0.56 never allowed it.
+- **Pinned by:** `ReplayScenarioIT.aReplaySessionOpensNextToALiveSession`
+- **Found:** by test against 0.0.56.
+
+## KD-9 A callback that throws is reported as an unparsable message
+
+- **0.0.x:** Logs "Failed to process message" and hands the same message to
+  `onUnparsableMessage`, as if the feed had sent something it could not read. The session goes
+  on.
+- **1.0:** The exception is caught, counted and reported through the listener-exception hook on
+  the global listener, flagged as coming from client code; the unparsable callback is only for
+  messages that did not decode (section 4, Delivery).
+- **Why:** A client bug shows up as a feed problem.
+- **Pinned by:** `ThrowingCallbackScenarioIT.aCallbackThatThrowsDoesNotStopTheSession`
+- **Found:** by test against 0.0.56.
+
 ## KD-10 Under CATCH a collection that cannot load is empty
 
 - **0.0.x:** `Match.getCompetitors()` under `ExceptionHandlingStrategy.CATCH`, for a match the
@@ -96,6 +148,30 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   stays).
 - **Why:** An empty list reads as "no competitors" rather than "could not load".
 - **Pinned by:** `ExceptionStrategyScenarioIT.underCatchAGetterTheApiCannotServeReturnsNull`
+- **Found:** by test against 0.0.56.
+
+## KD-11 A recovery request the API refused is not asked for again
+
+- **0.0.x:** When the API refuses the recovery request, the recovery stays marked as started, and
+  later alives ask for another only once the maximum recovery time, 360 minutes by default, has
+  passed. The producer stays down meanwhile.
+- **1.0:** Re-issued with backoff, at most three times in a row, re-armed after ten minutes or
+  when an alive arrives after a gap (section 4, Recovery and producers). The test allows 30 s for
+  the second request.
+- **Why:** A short API outage at the wrong moment keeps a producer down for hours.
+- **Pinned by:** `RestOutageScenarioIT.aRecoveryRequestTheApiRefusedIsAskedForAgain`
+- **Found:** by test against 0.0.56.
+
+## KD-12 A reconnect does not lead to a recovery
+
+- **0.0.x:** After the AMQP client reconnects, a producer that was up stays up and its alives do
+  not lead to a recovery, so what was sent while the connection was down is not recovered -
+  unless the watchdog (KD-7) takes the producer down first.
+- **1.0:** "Exclusive queues are always re-declared; whatever the broker buffered for the old
+  queue is gone, and recovery covers it" (section 4, Connection). The test expects another
+  recovery request after the reconnect.
+- **Why:** Messages lost with the old queue stay lost.
+- **Pinned by:** `ReconnectScenarioIT.afterAReconnectMessagesFlowAgainAndTheGapIsRecovered`
 - **Found:** by test against 0.0.56.
 
 ## KD-13 An older message overwrites the status of a newer one
@@ -118,6 +194,32 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   match summary.
 - **Why:** A backlog replaces fresher state with old.
 - **Pinned by:** `StaleFeedScenarioIT.aMessageFromHalfAnHourAgoIsStillDelivered`
+- **Found:** by test against 0.0.56.
+
+## KD-15 Closing a feed that failed to start logs an error
+
+- **0.0.x:** `close()` on a feed whose start failed before the bookmaker details loaded logs
+  "Failed to close" at ERROR, with a provisioning error for "missing bookmaker detail": the timer
+  it shuts down is only created at that point and needs the bookmaker details. By the source,
+  what `close()` releases after the timer - the caches and the API client - is left as it is.
+- **1.0:** `open()` is all or nothing and closes whatever it created when a step fails; the
+  client's exit is `close()` and a new `OddsFeed` (section 4, Connection, and section 3, Behaviour
+  that stays). The test expects no error from that `close()`.
+- **Why:** Closing after a failure is what clients are told to do; it should not look like a
+  second failure.
+- **Pinned by:** `StartupScenarioIT.withTheApiDownTheFeedDoesNotStart`
+- **Found:** by test against 0.0.56.
+
+## KD-16 A login the broker refuses escapes as the AMQP client's own exception
+
+- **0.0.x:** `open()` throws the AMQP client's `com.rabbitmq.client.AuthenticationFailureException`,
+  not an SDK exception; its message carries the broker's `ACCESS_REFUSED`. The SDK tries once and
+  does not retry.
+- **1.0:** To be decided. NEXT.md treats a refused login as permanent after three refusals within
+  one minute, with a fatal error event carrying the broker's reason, and `open()` as all or
+  nothing (section 4, Connection); it does not say what `open()` throws.
+- **Why:** A client catching the SDK's exceptions misses this one.
+- **Pinned by:** `StartupScenarioIT.aTokenTheBrokerRefusesStopsTheStart`
 - **Found:** by test against 0.0.56.
 
 ## KD-17 Nothing acts on a feed that is far behind
