@@ -1,0 +1,67 @@
+name: Schema drift
+
+# Each release line vendors oddsfeedschema at a pinned commit. This compares the pins on both
+# lines with the schema's main every weekday: see scripts/schema-drift.sh for the rules. It fails
+# when a line lags an additive schema change for more than seven days, and opens an issue, once,
+# when the schema changed shape, because that needs a decision rather than a refresh.
+#
+# GitHub runs scheduled workflows only from the default branch, so this file lives on main and
+# reads the other branches by name. When next becomes main, this file must come along and the
+# branch list below changes to "release/0.x main".
+
+on:
+  schedule:
+    - cron: '17 6 * * 1-5'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    name: Schema pins
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Compare the pins with the schema
+        run: scripts/schema-drift.sh release/0.x next
+        env:
+          SHAPE_REPORT: ${{ runner.temp }}/shape.tsv
+
+      - name: Ask for a decision on a shape change
+        # also after a failing comparison: one line can be stale while the other needs a decision
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHAPE_REPORT: ${{ runner.temp }}/shape.tsv
+        run: |
+          [ -s "$SHAPE_REPORT" ] || exit 0
+          while IFS=$'\t' read -r branch commit subject; do
+            title="Schema drift: $branch needs a decision on oddsfeedschema ${commit:0:7}"
+            # Open or closed: closing the issue records the decision, and the job asks only once.
+            # a failed lookup stops the step here rather than filing the issue a second time
+            asked=$(gh issue list --repo "$REPO" --state all --limit 100 --search "\"$title\" in:title" \
+              --json title --jq '.[].title')
+            if grep -Fxq -- "$title" <<<"$asked"; then
+              echo "already asked: $title"
+              continue
+            fi
+            body=$(printf '%s\n' \
+              "oddsfeedschema commit $commit ($subject) removes or rewrites part of the schema, or adds a required attribute to a type that exists." \
+              "" \
+              "The \`$branch\` line is pinned before it, and a change like this is not taken without a decision:" \
+              "" \
+              "- to take it, refresh the pin on \`$branch\` with \`scripts/refresh-schema.sh <commit>\` and adapt the models" \
+              "- not to take it, close this issue and say why" \
+              "" \
+              "Either way this issue is the record; the scheduled drift job does not ask again." \
+              "" \
+              "Run: https://github.com/$REPO/actions/runs/$GITHUB_RUN_ID")
+            gh issue create --repo "$REPO" --title "$title" --body "$body"
+          done <"$SHAPE_REPORT"
