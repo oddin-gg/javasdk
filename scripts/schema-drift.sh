@@ -70,30 +70,40 @@ pin_of() {
 
 day() { date -u -d "@$1" +%F 2>/dev/null || date -u -r "$1" +%F; }
 
-# Whether a schema commit changes a shape; what changed goes to $work/shape.
+# Whether a schema commit changes a shape: 0 it does, with what changed in $work/shape; 1 it is
+# additive; 2 it cannot be compared, with why in $work/error.
 changes_shape() {
-  local commit=$1 status path old new changed=1
+  local commit=$1 status path renamed old new changed=1 verdict files
   : >"$work/shape"
-  local files
-  files=$(schema diff --no-renames --name-status "$commit^" "$commit" -- schema) \
-    || broken "cannot diff schema commit $commit"
-  while IFS=$'\t' read -r status path; do
+  if ! files=$(schema diff --find-renames --name-status "$commit^" "$commit" -- schema); then
+    echo "cannot diff schema commit $commit" >"$work/error"
+    return 2
+  fi
+  while IFS=$'\t' read -r status path renamed; do
     [ -n "$path" ] || continue
-    case "$path" in *.xsd) ;; *) continue ;; esac
     old=$work/old.xsd new=$work/new.xsd
-    if [ "$status" = A ]; then old=/dev/null; else
-      schema show "$commit^:$path" >"$old" || broken "cannot read $path before $commit"
+    local before=$path after=$path
+    case "$status" in
+      R*) after=$renamed ;; # a move: its content before and after
+      A) old=/dev/null ;;
+      D) new=/dev/null ;;
+    esac
+    case "$before$after" in *.xsd*) ;; *) continue ;; esac
+    if [ "$old" != /dev/null ] && ! schema show "$commit^:$before" >"$old"; then
+      echo "cannot read $before before $commit" >"$work/error"
+      return 2
     fi
-    if [ "$status" = D ]; then new=/dev/null; else
-      schema show "$commit:$path" >"$new" || broken "cannot read $path at $commit"
+    if [ "$new" != /dev/null ] && ! schema show "$commit:$after" >"$new"; then
+      echo "cannot read $after at $commit" >"$work/error"
+      return 2
     fi
-    local verdict=0
+    verdict=0
     python3 "$here/schema_shape.py" "$old" "$new" >"$work/one" || verdict=$?
     case "$verdict" in
       0) ;;
       # the file name is upstream data: passed to awk as a value, never spliced into a program
-      1) changed=0; awk -v file="$path" '{ print file ": " $0 }' "$work/one" >>"$work/shape" ;;
-      *) broken "cannot compare $path at $commit: $(cat "$work/one")" ;;
+      1) changed=0; awk -v file="$after" '{ print file ": " $0 }' "$work/one" >>"$work/shape" ;;
+      *) { echo "cannot compare $after at $commit:"; cat "$work/one"; } >"$work/error"; return 2 ;;
     esac
   done <<<"$files"
   return "$changed"
@@ -129,8 +139,17 @@ for branch in "$@"; do
   fi
 
   first_additive= first_time= first_shape= waiting=0
+  unreadable=
   while read -r commit time; do
-    if changes_shape "$commit"; then
+    verdict=0
+    changes_shape "$commit" || verdict=$?
+    if [ "$verdict" = 2 ]; then
+      # this line cannot be judged; the others still are
+      echo "FAIL $branch: $(cat "$work/error")"
+      unreadable=1
+      break
+    fi
+    if [ "$verdict" = 0 ]; then
       [ -n "$first_shape" ] || first_shape=$commit
       subject=$(schema log -1 --format=%s "$commit")
       echo "WARN $branch: needs a decision - $commit ($subject) changes the schema's shape:"
@@ -144,6 +163,10 @@ for branch in "$@"; do
       first_additive=$commit first_time=$time
     fi
   done <<<"$behind"
+  if [ -n "$unreadable" ]; then
+    failed=1
+    continue
+  fi
 
   if [ "$waiting" -gt 0 ]; then
     echo "     $branch: $waiting additive change(s) after $first_shape wait for its decision"
