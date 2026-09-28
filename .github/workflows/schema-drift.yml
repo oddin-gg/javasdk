@@ -2,8 +2,8 @@ name: Schema drift
 
 # Each release line vendors oddsfeedschema at a pinned commit. This compares the pins on both
 # lines with the schema's main every weekday: see scripts/schema-drift.sh for the rules. It fails
-# when a line lags an additive schema change for more than seven days, and opens an issue, once,
-# when the schema changed shape, because that needs a decision rather than a refresh.
+# when a line lags an additive schema change for more than seven days, and opens an issue, once per
+# schema commit, for every shape change, because that needs a decision rather than a refresh.
 #
 # GitHub runs scheduled workflows only from the default branch, so this file lives on main and
 # reads the other branches by name. When next becomes main, this file must come along and the
@@ -13,15 +13,48 @@ on:
   schedule:
     - cron: '17 6 * * 1-5'
   workflow_dispatch:
+  # the drift check's own tests, whenever it changes
+  pull_request:
+    paths:
+      - 'scripts/schema-drift.sh'
+      - 'scripts/schema-drift-test.sh'
+      - 'scripts/schema_shape.py'
+      - '.github/workflows/schema-drift.yml'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'scripts/schema-drift.sh'
+      - 'scripts/schema-drift-test.sh'
+      - 'scripts/schema_shape.py'
+      - '.github/workflows/schema-drift.yml'
 
 permissions:
   contents: read
-  issues: write
 
 jobs:
+  test:
+    name: Drift check tests
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run the tests
+        run: scripts/schema-drift-test.sh
+
   drift:
     name: Schema pins
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -45,9 +78,10 @@ jobs:
           while IFS=$'\t' read -r branch commit subject; do
             title="Schema drift: $branch needs a decision on oddsfeedschema ${commit:0:7}"
             # Open or closed: closing the issue records the decision, and the job asks only once.
-            # a failed lookup stops the step here rather than filing the issue a second time
-            asked=$(gh issue list --repo "$REPO" --state all --limit 100 --search "\"$title\" in:title" \
-              --json title --jq '.[].title')
+            # Only issues this workflow opened count, so an issue anyone else opens under the same
+            # title cannot stand in for it. A failed lookup stops the step rather than asking twice.
+            asked=$(gh issue list --repo "$REPO" --state all --limit 100 \
+              --search "\"$title\" in:title author:app/github-actions" --json title --jq '.[].title')
             if grep -Fxq -- "$title" <<<"$asked"; then
               echo "already asked: $title"
               continue
