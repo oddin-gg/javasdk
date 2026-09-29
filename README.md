@@ -13,7 +13,9 @@ Java SDK
 > Testcontainers (with colima, see Testcontainers' notes on `DOCKER_HOST` and
 > `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`). To run them against another published SDK, give
 > the script and Maven the same version: `MAVEN_ARGS=-Dsdk.version=0.0.54 ./scripts/fetch-sdk.sh`,
-> then `./mvnw verify -Dsdk.version=0.0.54`. The old 0.0.x SDK lives in `library/` and still
+> then `./mvnw verify -Dsdk.version=0.0.54`. The build fails on any compiler, Error Prone or
+> NullAway warning and on unformatted code; `./mvnw spotless:apply` formats it (Palantir Java
+> Format). The old 0.0.x SDK lives in `library/` and still
 > builds with Gradle on JDK 8.
 
 Purpose of this SDK is to make integration process much smoother and easier. This SDK should take care of all connection, 
