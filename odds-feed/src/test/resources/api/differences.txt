@@ -8,6 +8,9 @@
 #             or arriving with a later part of the rewrite
 # added       a public type or member 0.0.57 did not have
 # signature   a member whose generic signature changed on purpose; the third field is the new one
+# supertype   a type whose superclass changed on purpose; the third field is the new one. Members
+#             count where a caller finds them, declared or inherited, so a getter that moved between
+#             a class and its superclass is not a difference
 # deprecated  a member deprecated here that 0.0.57 did not deprecate
 #
 # Types are internal names relative to com/oddin/oddsfeedsdk/; members add ".name descriptor".
@@ -198,3 +201,4 @@ added | schema/feed/v1/OFBetSettlementMarket.getSpecifiersRaw ()Ljava/lang/Strin
 added | schema/feed/v1/OFBetSettlementMarket.setSpecifiersRaw (Ljava/lang/String;)V | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
 added | schema/feed/v1/OFOddsChangeMarket.getSpecifiersRaw ()Ljava/lang/String; | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
 added | schema/feed/v1/OFOddsChangeMarket.setSpecifiersRaw (Ljava/lang/String;)V | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
+

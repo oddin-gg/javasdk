@@ -101,6 +101,9 @@ class PublicShapeTest {
     /** Generic signatures that differ on purpose, member to its new signature. */
     private static final Map<String, String> SIGNATURE_CHANGES = DIFFERENCES.signatures();
 
+    /** Superclasses that differ on purpose, type to its new superclass. */
+    private static final Map<String, String> SUPERTYPE_CHANGES = DIFFERENCES.supertypes();
+
     /** Members deprecated here that the baseline did not deprecate. */
     private static final Set<String> NEWLY_DEPRECATED =
             DIFFERENCES.members("deprecated").keySet();
@@ -191,6 +194,12 @@ class PublicShapeTest {
         assertThat(NOT_HERE.keySet()).allSatisfy(name -> assertThat(current).doesNotContainKey(ROOT + name));
         assertThat(ADDED_TYPES).allSatisfy(name -> assertThat(current).containsKey(ROOT + name));
         assertThat(ADDED_TYPES).allSatisfy(name -> assertThat(baseline).doesNotContainKey(ROOT + name));
+        assertThat(SUPERTYPE_CHANGES).allSatisfy((name, superclass) -> {
+            assertThat(baseline).containsKey(ROOT + name);
+            assertThat(current.get(ROOT + name).superclass().map(ClassEntry::asInternalName))
+                    .as("%s's superclass", name)
+                    .contains(superclass);
+        });
         Set<String> baselineMembers = members(baseline);
         Set<String> currentMembers = members(current);
         assertThat(baselineMembers).containsAll(MEMBERS_NOT_HERE.keySet());
@@ -213,8 +222,9 @@ class PublicShapeTest {
         }
         String oldSuper = old.superclass().map(ClassEntry::asInternalName).orElse("");
         String newSuper = now.superclass().map(ClassEntry::asInternalName).orElse("");
-        if (!oldSuper.equals(newSuper)) {
-            problems.add(name + ": extends " + newSuper + ", was " + oldSuper);
+        String expectedSuper = SUPERTYPE_CHANGES.getOrDefault(name, oldSuper);
+        if (!expectedSuper.equals(newSuper)) {
+            problems.add(name + ": extends " + newSuper + ", expected " + expectedSuper);
         }
         if (!interfaces(old).equals(interfaces(now))) {
             problems.add(name + ": implements " + interfaces(now) + ", was " + interfaces(old));
@@ -224,11 +234,20 @@ class PublicShapeTest {
         }
     }
 
+    /**
+     * A member counts where a caller finds it: declared on the type, or inherited from one of its
+     * superclasses on the same side. A schema class that now extends another, or no longer extends
+     * one, keeps every getter callable although the getter is declared somewhere else.
+     */
     private static void compareMembers(ClassModel old, ClassModel now, List<String> problems) {
         String type = relative(old.thisClass().asInternalName());
-        Map<String, MethodModel> newMethods = publicMethods(now);
-        Map<String, MethodModel> oldMethods = publicMethods(old);
+        Map<String, MethodModel> newMethods = callableMethods(now, current);
+        Map<String, MethodModel> oldMethods = callableMethods(old, baseline);
+        Map<String, MethodModel> declared = publicMethods(now);
         for (Map.Entry<String, MethodModel> entry : oldMethods.entrySet()) {
+            if (checkedOnItsOwnType(old, entry.getKey())) {
+                continue;
+            }
             String key = type + "." + entry.getKey();
             if (MEMBERS_NOT_HERE.containsKey(key)) {
                 continue;
@@ -252,7 +271,7 @@ class PublicShapeTest {
             }
             compareNullability(key, before, after, problems);
         }
-        for (String member : newMethods.keySet()) {
+        for (String member : declared.keySet()) {
             String key = type + "." + member;
             if (!oldMethods.containsKey(member) && !ADDITIONS.contains(key)) {
                 problems.add(key + ": not in the baseline");
@@ -374,6 +393,43 @@ class PublicShapeTest {
         return methods;
     }
 
+    /** The public methods declared on the type and on its superclasses among {@code side}, nearest first. */
+    private static Map<String, MethodModel> callableMethods(ClassModel model, Map<String, ClassModel> side) {
+        Map<String, MethodModel> methods = new TreeMap<>(publicMethods(model));
+        Optional<ClassModel> parent = superclass(model, side);
+        while (parent.isPresent()) {
+            publicMethods(parent.get()).forEach((key, method) -> {
+                if (!key.startsWith("<init>")) {
+                    methods.putIfAbsent(key, method);
+                }
+            });
+            parent = superclass(parent.get(), side);
+        }
+        return methods;
+    }
+
+    /**
+     * Whether a baseline member the type only inherits is compared where it is declared: on a
+     * superclass that is itself in scope and still here. One inherited from a superclass that is gone
+     * is compared on every type that inherits it, since that is where a caller loses it.
+     */
+    private static boolean checkedOnItsOwnType(ClassModel model, String member) {
+        if (publicMethods(model).containsKey(member)) {
+            return false;
+        }
+        Optional<ClassModel> parent = superclass(model, baseline);
+        while (parent.isPresent() && !publicMethods(parent.get()).containsKey(member)) {
+            parent = superclass(parent.get(), baseline);
+        }
+        return parent.filter(owner -> inScope(owner)
+                        && !NOT_HERE.containsKey(relative(owner.thisClass().asInternalName())))
+                .isPresent();
+    }
+
+    private static Optional<ClassModel> superclass(ClassModel model, Map<String, ClassModel> side) {
+        return model.superclass().map(ClassEntry::asInternalName).map(side::get);
+    }
+
     private static Map<String, FieldModel> publicFields(ClassModel model) {
         Map<String, FieldModel> fields = new TreeMap<>();
         for (FieldModel field : model.fields()) {
@@ -387,12 +443,12 @@ class PublicShapeTest {
         return fields;
     }
 
-    /** Every public member of every type, as {@code type.name descriptor}. */
+    /** Every public member callable on every type, declared or inherited, as {@code type.name descriptor}. */
     private static Set<String> members(Map<String, ClassModel> classes) {
         Set<String> members = new TreeSet<>();
         for (ClassModel model : classes.values()) {
             String type = relative(model.thisClass().asInternalName());
-            publicMethods(model).keySet().forEach(m -> members.add(type + "." + m));
+            callableMethods(model, classes).keySet().forEach(m -> members.add(type + "." + m));
             publicFields(model).keySet().forEach(f -> members.add(type + "." + f));
         }
         return members;
@@ -517,9 +573,9 @@ class PublicShapeTest {
                     // every field, the reason above all, must say something
                     if (fields.length < 3
                             || Arrays.stream(fields).anyMatch(String::isBlank)
-                            || !Set.of("gone", "added", "signature", "deprecated")
+                            || !Set.of("gone", "added", "signature", "supertype", "deprecated")
                                     .contains(fields[0])
-                            || (fields[0].equals("signature") && fields.length < 4)) {
+                            || (Set.of("signature", "supertype").contains(fields[0]) && fields.length < 4)) {
                         throw new IllegalStateException(resource + ": cannot read the line: " + line);
                     }
                     entries.add(fields);
@@ -544,6 +600,12 @@ class PublicShapeTest {
             var signatures = new TreeMap<String, String>();
             entries.stream().filter(e -> e[0].equals("signature")).forEach(e -> signatures.put(e[1], e[2]));
             return signatures;
+        }
+
+        Map<String, String> supertypes() {
+            var supertypes = new TreeMap<String, String>();
+            entries.stream().filter(e -> e[0].equals("supertype")).forEach(e -> supertypes.put(e[1], e[2]));
+            return supertypes;
         }
 
         private Map<String, String> select(String kind, boolean members) {
