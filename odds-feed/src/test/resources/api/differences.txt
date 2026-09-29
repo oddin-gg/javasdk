@@ -24,11 +24,9 @@ gone | api/factories/MarketData | internal factory
 gone | api/factories/MarketDataFactory | internal factory
 gone | api/factories/MarketDescriptionFactory | internal factory
 gone | api/factories/MarketFactory | internal factory
-gone | exceptions/ApiException | takes the REST error model, arrives with it
 gone | mq/ChannelConsumer | internal AMQP consumer
 gone | mq/ExchangeNameProvider | internal AMQP consumer
 gone | mq/FeedMessageFactory | internal message building
-gone | mq/MessageInterest | session API, arrives with the sessions
 gone | mq/entities/MarketInitializer | internal message building
 gone | mq/entities/MarketStatus$Companion | maps a feed enum to a message enum, arrives with the message building
 gone | mq/entities/FixtureChangeType$Companion | maps a feed enum to a message enum, arrives with the message building
@@ -44,6 +42,8 @@ signature | mq/entities/MarketMessage.getMarkets ()Ljava/util/List; | ()Ljava/ut
 added | api/entities/sportevent/EventStatus.fromApiEventStatus (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus; | for Kotlin callers of the companion function
 added | api/entities/sportevent/EventStatus.fromFeedEventStatus (Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus; | for Kotlin callers of the companion function
 added | api/entities/sportevent/LiveOddsAvailability.fromApiEvent (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/LiveOddsAvailability; | for Kotlin callers of the companion function
+added | exceptions/ApiException.<init> (Ljava/lang/String;)V | 0.0.x defaulted the error and the cause, which Kotlin callers could leave out
+added | exceptions/ApiException.<init> (Ljava/lang/String;Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAError;)V | 0.0.x defaulted the cause, which Kotlin callers could leave out
 
 deprecated | mq/entities/Market.getRefId ()Ljava/lang/Integer; | the feed never sends it
 deprecated | mq/entities/Outcome.getRefId ()Ljava/lang/Long; | the feed never sends it
