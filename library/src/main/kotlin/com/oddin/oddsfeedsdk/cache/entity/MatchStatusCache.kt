@@ -175,7 +175,9 @@ class MatchStatusCacheImpl @Inject constructor(
         val item = LocalizedMatchStatus(
             // The feed never carries a winner; keep the one the API supplied.
             winnerId = existing?.winnerId,
-            status = EventStatus.fromFeedEventStatus(data.status),
+            // A number this SDK has no constant for decodes as null: report it as Unknown
+            // rather than failing the whole message and keeping the previous status.
+            status = data.status?.let { EventStatus.fromFeedEventStatus(it) } ?: EventStatus.Unknown,
             periodScores = mapFeedPeriodScores(data.periodScores?.periodScore ?: listOf()),
             matchStatusId = data.matchStatus,
             // Scores are optional in the schema: a status-only message must leave the
