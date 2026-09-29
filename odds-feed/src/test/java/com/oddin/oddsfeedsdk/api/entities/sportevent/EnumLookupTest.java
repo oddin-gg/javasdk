@@ -3,10 +3,12 @@ package com.oddin.oddsfeedsdk.api.entities.sportevent;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
- * The lookups clients call with REST values. PublicShapeTest pins their signatures; this pins what
+ * The lookups clients call with REST and feed values. PublicShapeTest pins their signatures; this pins what
  * they answer, taken from the 0.0.x source.
  */
 class EnumLookupTest {
@@ -40,6 +42,31 @@ class EnumLookupTest {
         assertThat(EventStatus.fromApiEventStatus("LIVE")).isEqualTo(EventStatus.Unknown);
         assertThat(EventStatus.fromApiEventStatus(null)).isEqualTo(EventStatus.Unknown);
         assertThat(EventStatus.Companion.fromApiEventStatus(null)).isEqualTo(EventStatus.Unknown);
+    }
+
+    // 0.0.56 and older mapped only five feed statuses and reported a cancelled match as Unknown.
+    // The feed numbers are not getApiId(): the feed's 9 is abandoned, the enum's 6.
+    @Test
+    void everyFeedStatusNumberIsItsOwnEventStatus() {
+        var expected = Map.of(
+                0, EventStatus.NotStarted,
+                1, EventStatus.Live,
+                2, EventStatus.Suspended,
+                3, EventStatus.Ended,
+                4, EventStatus.Finished,
+                5, EventStatus.Cancelled,
+                6, EventStatus.Delayed,
+                7, EventStatus.Interrupted,
+                8, EventStatus.Postponed,
+                9, EventStatus.Abandoned);
+        for (var entry : expected.entrySet()) {
+            var feed = OFEventStatus.fromValue(entry.getKey());
+            assertThat(EventStatus.fromFeedEventStatus(feed)).as("feed %d", entry.getKey()).isEqualTo(entry.getValue());
+            assertThat(EventStatus.Companion.fromFeedEventStatus(feed)).as("feed %d", entry.getKey()).isEqualTo(entry.getValue());
+        }
+        // every constant but UNKNOWN has a number above, and UNKNOWN stays Unknown
+        assertThat(expected).hasSize(OFEventStatus.values().length - 1);
+        assertThat(EventStatus.fromFeedEventStatus(OFEventStatus.UNKNOWN)).isEqualTo(EventStatus.Unknown);
     }
 
     @Test

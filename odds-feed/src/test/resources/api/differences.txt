@@ -31,7 +31,6 @@ gone | mq/entities/MarketStatus$Companion | maps a feed enum to a message enum, 
 gone | mq/entities/FixtureChangeType$Companion | maps a feed enum to a message enum, arrives with the message building
 gone | mq/entities/MarketStatus.Companion Lcom/oddin/oddsfeedsdk/mq/entities/MarketStatus$Companion; | maps a feed enum to a message enum, arrives with the message building
 gone | mq/entities/FixtureChangeType.Companion Lcom/oddin/oddsfeedsdk/mq/entities/FixtureChangeType$Companion; | maps a feed enum to a message enum, arrives with the message building
-gone | api/entities/sportevent/EventStatus$Companion.fromFeedEventStatus (Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus; | maps a feed enum to a message enum, arrives with the message building
 
 # Kotlin let OddsChange.getMarkets() narrow List<Market>; Java allows that only when the parent says
 # List<? extends Market>. The erased signature is unchanged.
@@ -40,6 +39,7 @@ signature | mq/entities/MarketMessage.getMarkets ()Ljava/util/List; | ()Ljava/ut
 # Kotlin code called a companion function as EventStatus.fromApiEventStatus(...); against a Java enum
 # that needs a static method.
 added | api/entities/sportevent/EventStatus.fromApiEventStatus (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus; | for Kotlin callers of the companion function
+added | api/entities/sportevent/EventStatus.fromFeedEventStatus (Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus; | for Kotlin callers of the companion function
 added | api/entities/sportevent/LiveOddsAvailability.fromApiEvent (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/LiveOddsAvailability; | for Kotlin callers of the companion function
 
 deprecated | mq/entities/Market.getRefId ()Ljava/lang/Integer; | the feed never sends it

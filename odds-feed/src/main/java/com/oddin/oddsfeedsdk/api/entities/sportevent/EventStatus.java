@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.api.entities.sportevent;
 
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus;
 import org.jspecify.annotations.Nullable;
 
 public enum EventStatus {
@@ -47,12 +48,39 @@ public enum EventStatus {
         return Unknown;
     }
 
+    /**
+     * The status for the number the feed sends. The feed numbers differ from {@link #getApiId()}
+     * (the feed's 9 is {@link #Abandoned}), so this maps by name; {@link OFEventStatus#UNKNOWN} is
+     * {@link #Unknown}.
+     */
+    @SuppressWarnings("deprecation") // statuses the schema no longer lists still map, as in 0.0.x
+    public static EventStatus fromFeedEventStatus(OFEventStatus status) {
+        // no default: a feed status added later fails the build until it is mapped
+        return switch (status) {
+            case NOT_STARTED -> NotStarted;
+            case LIVE -> Live;
+            case SUSPENDED -> Suspended;
+            case ENDED -> Ended;
+            case FINALIZED -> Finished;
+            case CANCELLED -> Cancelled;
+            case DELAYED -> Delayed;
+            case INTERRUPTED -> Interrupted;
+            case POSTPONED -> Postponed;
+            case ABANDONED -> Abandoned;
+            case UNKNOWN -> Unknown;
+        };
+    }
+
     public static final class Companion {
         private Companion() {
         }
 
         public EventStatus fromApiEventStatus(@Nullable String status) {
             return EventStatus.fromApiEventStatus(status);
+        }
+
+        public EventStatus fromFeedEventStatus(OFEventStatus status) {
+            return EventStatus.fromFeedEventStatus(status);
         }
     }
 }
