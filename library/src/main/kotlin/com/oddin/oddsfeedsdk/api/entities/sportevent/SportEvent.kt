@@ -199,6 +199,9 @@ enum class EventStatus(val apiName: String, val apiId: Int) {
             return values().firstOrNull { it.apiName == status } ?: Unknown
         }
 
+        // No else branch on purpose: a feed status added later must fail the build
+        // until it is mapped, instead of silently reaching clients as Unknown.
+        // The feed numbers differ from apiId (feed 9 is abandoned), so map by name.
         fun fromFeedEventStatus(status: OFEventStatus): EventStatus {
             return when (status) {
                 OFEventStatus.NOT_STARTED -> NotStarted
@@ -206,7 +209,11 @@ enum class EventStatus(val apiName: String, val apiId: Int) {
                 OFEventStatus.SUSPENDED -> Suspended
                 OFEventStatus.ENDED -> Ended
                 OFEventStatus.FINALIZED -> Finished
-                else -> Unknown
+                OFEventStatus.CANCELLED -> Cancelled
+                OFEventStatus.DELAYED -> Delayed
+                OFEventStatus.INTERRUPTED -> Interrupted
+                OFEventStatus.POSTPONED -> Postponed
+                OFEventStatus.ABANDONED -> Abandoned
             }
         }
     }
