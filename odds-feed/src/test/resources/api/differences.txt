@@ -202,3 +202,116 @@ added | schema/feed/v1/OFBetSettlementMarket.setSpecifiersRaw (Ljava/lang/String
 added | schema/feed/v1/OFOddsChangeMarket.getSpecifiersRaw ()Ljava/lang/String; | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
 added | schema/feed/v1/OFOddsChangeMarket.setSpecifiersRaw (Ljava/lang/String;)V | the attribute as decoded, null when absent; getSpecifiers() keeps what 0.0.x returned
 
+# ---- REST schema classes (generated from the vendored schema)
+
+gone | schema/rest/v1/ObjectFactory.createBookmakerDetails (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RABookmakerDetail;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createCompetitorProfile (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RACompetitorProfileEndpoint;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createDelayedInfo ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RADelayedInfo; | RADelayedInfo is gone
+gone | schema/rest/v1/ObjectFactory.createErrorAction ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAErrorAction; | RAErrorAction is gone
+gone | schema/rest/v1/ObjectFactory.createErrorMessage ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAErrorMessage; | RAErrorMessage is gone
+gone | schema/rest/v1/ObjectFactory.createFixtureChanges (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAFixtureChangesEndpoint;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createFixturesFixture (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAFixturesEndpoint;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createMarketVoidReasonsVoidReasonParam (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAMarketVoidReasons$VoidReason$Param;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createMatchSummary (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAMatchSummaryEndpoint;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createPeriodScoreBase ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPeriodScoreBase; | RAPeriodScoreBase is gone
+gone | schema/rest/v1/ObjectFactory.createPlayerProfile (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayerProfileEndpoint;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createPlayerProfilePlayer ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayerProfileEndpoint$Player; | RAPlayerProfileEndpoint$Player is gone
+gone | schema/rest/v1/ObjectFactory.createSchedule (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAScheduleEndpoint;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createSportTournaments (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RASportTournaments;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createSports (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RASportsEndpoint;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createTournamentInfo (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RATournamentInfo;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createTournamentLength (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RATournamentLength;)Ljavax/xml/bind/JAXBElement; | the aligned schema has no tournament_length root element
+gone | schema/rest/v1/ObjectFactory.createTournamentSchedule (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RATournamentSchedule;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/ObjectFactory.createTournaments (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RADatetournaments;)Ljavax/xml/bind/JAXBElement; | returns a jakarta.xml.bind JAXBElement now
+gone | schema/rest/v1/RACompetitorProfileEndpoint.getGeneratedAt ()Ljavax/xml/datatype/XMLGregorianCalendar; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RACompetitorProfileEndpoint.setGeneratedAt (Ljavax/xml/datatype/XMLGregorianCalendar;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RADelayedInfo | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAError.getAction ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAErrorAction; | the aligned schema declares the error action and message as text
+gone | schema/rest/v1/RAError.getMessage ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAErrorMessage; | the aligned schema declares the error action and message as text
+gone | schema/rest/v1/RAError.setAction (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAErrorAction;)V | the aligned schema declares the error action and message as text
+gone | schema/rest/v1/RAError.setMessage (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAErrorMessage;)V | the aligned schema declares the error action and message as text
+gone | schema/rest/v1/RAErrorAction | the aligned schema declares the error action as text: RAError.getAction() returns it
+gone | schema/rest/v1/RAErrorMessage | the aligned schema declares the error message as text: RAError.getMessage() returns it
+gone | schema/rest/v1/RAFixture.getDelayedInfo ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RADelayedInfo; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAFixture.getNextLiveTime ()Ljavax/xml/datatype/XMLGregorianCalendar; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAFixture.isStartTimeConfirmed ()Ljava/lang/Boolean; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAFixture.setDelayedInfo (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RADelayedInfo;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAFixture.setNextLiveTime (Ljavax/xml/datatype/XMLGregorianCalendar;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAFixture.setStartTimeConfirmed (Ljava/lang/Boolean;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAMarketDescription.getRefId ()I | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAMarketDescription.setRefId (I)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAOutcomeDescription$Outcome.getRefId ()Ljava/lang/Long; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAOutcomeDescription$Outcome.setRefId (Ljava/lang/Long;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RAPeriodScoreBase | the aligned schema has one period score type: its getters are on RAPeriodScore
+gone | schema/rest/v1/RAPlayerProfileEndpoint$Player | the aligned schema has one player type, shared with the competitor profile: RAPlayer
+gone | schema/rest/v1/RAPlayerProfileEndpoint.getPlayer ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayerProfileEndpoint$Player; | the player is an RAPlayer now
+gone | schema/rest/v1/RAPlayerProfileEndpoint.setPlayer (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayerProfileEndpoint$Player;)V | the player is an RAPlayer now
+gone | schema/rest/v1/RASport.getIconPath ()Ljava/lang/String; | in the aligned schema only the sports list has an icon path: RASportExtended
+gone | schema/rest/v1/RASport.getRefId ()Ljava/lang/String; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASport.setIconPath (Ljava/lang/String;)V | in the aligned schema only the sports list has an icon path: RASportExtended
+gone | schema/rest/v1/RASport.setRefId (Ljava/lang/String;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASportEvent.getRefId ()Ljava/lang/String; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASportEvent.setRefId (Ljava/lang/String;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASportEventStatus.getMatchStatus ()Ljava/lang/String; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASportEventStatus.getPeriod ()Ljava/lang/Integer; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASportEventStatus.setMatchStatus (Ljava/lang/String;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASportEventStatus.setPeriod (Ljava/lang/Integer;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RASportEventStatusBase | the aligned schema has one sport event status type: its getters are on RASportEventStatus
+gone | schema/rest/v1/RATeam.getRefId ()Ljava/lang/String; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RATeam.setRefId (Ljava/lang/String;)V | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RATournament.getRefId ()Ljava/lang/String; | not in the aligned schema: the API never sends it
+gone | schema/rest/v1/RATournament.setRefId (Ljava/lang/String;)V | not in the aligned schema: the API never sends it
+added | schema/rest/v1/ObjectFactory.createBookmakerDetails (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RABookmakerDetail;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createCompetitorProfile (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RACompetitorProfileEndpoint;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createCompetitorProfileEndpointPlayers ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RACompetitorProfileEndpoint$Players; | creates a type that is new in the aligned schema
+added | schema/rest/v1/ObjectFactory.createFixtureChanges (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAFixtureChangesEndpoint;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createFixtureCompetitors ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAFixtureCompetitors; | creates a type that is new in the aligned schema
+added | schema/rest/v1/ObjectFactory.createFixturesFixture (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAFixturesEndpoint;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createMarketVoidReasonsVoidReasonParam (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAMarketVoidReasons$VoidReason$Param;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createMatchSummary (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAMatchSummaryEndpoint;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createPlayer ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer; | creates a type that is new in the aligned schema
+added | schema/rest/v1/ObjectFactory.createPlayerProfile (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayerProfileEndpoint;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createPlayerStatus (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAReplayStatusEndpoint;)Ljakarta/xml/bind/JAXBElement; | a root element of a named type in the aligned schema
+added | schema/rest/v1/ObjectFactory.createReplaySetContent (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAReplaySetContent;)Ljakarta/xml/bind/JAXBElement; | a root element of a named type in the aligned schema
+added | schema/rest/v1/ObjectFactory.createReplayStatusEndpoint ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAReplayStatusEndpoint; | creates a type that is new in the aligned schema
+added | schema/rest/v1/ObjectFactory.createResponse (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAError;)Ljakarta/xml/bind/JAXBElement; | a root element of a named type in the aligned schema
+added | schema/rest/v1/ObjectFactory.createSchedule (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAScheduleEndpoint;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createSportExtended ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RASportExtended; | creates a type that is new in the aligned schema
+added | schema/rest/v1/ObjectFactory.createSportTournaments (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RASportTournaments;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createSports (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RASportsEndpoint;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createTournamentInfo (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RATournamentInfo;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createTournamentSchedule (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RATournamentSchedule;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/ObjectFactory.createTournaments (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RADatetournaments;)Ljakarta/xml/bind/JAXBElement; | the jakarta.xml.bind counterpart of the javax one
+added | schema/rest/v1/RACompetitorProfileEndpoint$Players | the players element of the aligned schema; getPlayers() still returns the list
+added | schema/rest/v1/RACompetitorProfileEndpoint.getPlayersElement ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RACompetitorProfileEndpoint$Players; | the players element itself; getPlayers() still returns the list
+added | schema/rest/v1/RACompetitorProfileEndpoint.setPlayersElement (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RACompetitorProfileEndpoint$Players;)V | the players element itself; getPlayers() still returns the list
+added | schema/rest/v1/RAError.getAction ()Ljava/lang/String; | the aligned schema declares the error action and message as text
+added | schema/rest/v1/RAError.getMessage ()Ljava/lang/String; | the aligned schema declares the error action and message as text
+added | schema/rest/v1/RAError.getResponseCodeRaw ()Ljava/lang/String; | the value as sent, next to the typed getter
+added | schema/rest/v1/RAError.setAction (Ljava/lang/String;)V | the aligned schema declares the error action and message as text
+added | schema/rest/v1/RAError.setMessage (Ljava/lang/String;)V | the aligned schema declares the error action and message as text
+added | schema/rest/v1/RAError.setResponseCodeRaw (Ljava/lang/String;)V | the value as sent, next to the typed getter
+added | schema/rest/v1/RAFixtureCompetitors | the fixture competitors type of the aligned schema
+added | schema/rest/v1/RAMarketDescription.setGroups (Ljava/lang/String;)V | every attribute has a setter now
+added | schema/rest/v1/RAPlayer | the one player type of the aligned schema
+added | schema/rest/v1/RAPlayerProfileEndpoint.getGeneratedAtRaw ()Ljavax/xml/datatype/XMLGregorianCalendar; | the value as sent, next to the typed getter
+added | schema/rest/v1/RAPlayerProfileEndpoint.getPlayer ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer; | the player is an RAPlayer now
+added | schema/rest/v1/RAPlayerProfileEndpoint.setGeneratedAtRaw (Ljavax/xml/datatype/XMLGregorianCalendar;)V | the value as sent, next to the typed getter
+added | schema/rest/v1/RAPlayerProfileEndpoint.setPlayer (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer;)V | the player is an RAPlayer now
+added | schema/rest/v1/RAReplayStatusEndpoint | in the aligned schema; the SDK does not call this endpoint
+added | schema/rest/v1/RASportEventStatus.getAggregateAwayScore ()Ljava/lang/Double; | in the aligned schema
+added | schema/rest/v1/RASportEventStatus.getAggregateHomeScore ()Ljava/lang/Double; | in the aligned schema
+added | schema/rest/v1/RASportEventStatus.getAggregateWinnerId ()Ljava/lang/String; | in the aligned schema
+added | schema/rest/v1/RASportEventStatus.getScoreboardAvailableRaw ()Ljava/lang/Boolean; | the value as sent, next to the typed getter
+added | schema/rest/v1/RASportEventStatus.getStatusCode ()Ljava/lang/Integer; | in the aligned schema
+added | schema/rest/v1/RASportEventStatus.setAggregateAwayScore (Ljava/lang/Double;)V | in the aligned schema
+added | schema/rest/v1/RASportEventStatus.setAggregateHomeScore (Ljava/lang/Double;)V | in the aligned schema
+added | schema/rest/v1/RASportEventStatus.setAggregateWinnerId (Ljava/lang/String;)V | in the aligned schema
+added | schema/rest/v1/RASportEventStatus.setScoreboardAvailableRaw (Ljava/lang/Boolean;)V | the value as sent, next to the typed getter
+added | schema/rest/v1/RASportEventStatus.setStatusCode (Ljava/lang/Integer;)V | in the aligned schema
+added | schema/rest/v1/RASportExtended | the sports list type of the aligned schema, with the icon path
+signature | schema/rest/v1/RACompetitorProfileEndpoint.getPlayers ()Ljava/util/List; | ()Ljava/util/List<Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer;>; | lists RAPlayer, the one player type of the aligned schema
+signature | schema/rest/v1/RACompetitorProfileEndpoint.setPlayers (Ljava/util/List;)V | (Ljava/util/List<Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer;>;)V | lists RAPlayer, the one player type of the aligned schema
+signature | schema/rest/v1/RASportsEndpoint.getSport ()Ljava/util/List; | ()Ljava/util/List<Lcom/oddin/oddsfeedsdk/schema/rest/v1/RASportExtended;>; | the sports list type of the aligned schema, RASportExtended extends RASport
+supertype | schema/rest/v1/RAPeriodScore | java/lang/Object | the aligned schema has one type here; the superclass getters are declared on it
+supertype | schema/rest/v1/RASportEventStatus | java/lang/Object | the aligned schema has one type here; the superclass getters are declared on it
