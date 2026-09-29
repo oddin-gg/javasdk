@@ -68,16 +68,16 @@ class OddsChangeScenarioIT {
   void closingTheFeedLeavesNothingBehind() throws InterruptedException {
     try (LogCapture logs = LogCapture.start();
         FakeRestServer rest = FakeRestServer.start();
-        FakeFeed feed = FakeFeed.start();
-        Sdk sdk = Sdk.against(rest, feed)) {
-      Set<Thread> before = liveNonDaemonThreads();
-      Received received = sdk.open(MessageInterest.ALL);
-      feed.publishFixture(ODDS_CHANGE);
-      received.next(OddsChange.class);
-      assertThat(feed.openConnections()).as("connected while open")
-          .contains(new FakeFeed.Login(Sdk.TOKEN, feed.virtualHost()));
-
-      sdk.close();
+        FakeFeed feed = FakeFeed.start()) {
+      Set<Thread> before;
+      try (Sdk sdk = Sdk.against(rest, feed)) {
+        before = liveNonDaemonThreads();
+        Received received = sdk.open(MessageInterest.ALL);
+        feed.publishFixture(ODDS_CHANGE);
+        received.next(OddsChange.class);
+        assertThat(feed.openConnections()).as("connected while open")
+            .contains(new FakeFeed.Login(Sdk.TOKEN, feed.virtualHost()));
+      }
 
       assertThat(eventually(feed::openConnections, List::isEmpty))
           .as("connections left on the broker after close").isEmpty();

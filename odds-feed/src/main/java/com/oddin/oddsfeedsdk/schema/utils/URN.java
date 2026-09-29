@@ -5,13 +5,13 @@ import com.oddin.oddsfeedsdk.exceptions.UnsupportedUrnFormatException;
 import java.util.Objects;
 
 public class URN {
-    final private String prefix;
-    final private String type;
-    final private Long id;
+    private final String prefix;
+    private final String type;
+    private final Long id;
 
-    static public final String TypeMatch = "match";
-    static public final String TypeTournament = "tournament";
-    static public final String TypePlayer = "player";
+    public static final String TypeMatch = "match";
+    public static final String TypeTournament = "tournament";
+    public static final String TypePlayer = "player";
 
     URN(String prefix, String type, Long id) {
         this.prefix = prefix;
@@ -19,6 +19,8 @@ public class URN {
         this.id = id;
     }
 
+    // String.split drops trailing empty parts, so "od:match:1:" parses as 0.0.x parsed it
+    @SuppressWarnings("StringSplitter")
     public static URN parse(String urnString) {
         String[] parts = urnString.split(":");
         if (parts.length != 3) {
@@ -47,6 +49,8 @@ public class URN {
         return id;
     }
 
+    // URN is not final: comparing classes keeps equals symmetric if a client subclasses it
+    @SuppressWarnings("EqualsGetClass")
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
