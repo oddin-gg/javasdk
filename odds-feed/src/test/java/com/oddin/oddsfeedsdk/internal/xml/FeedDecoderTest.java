@@ -1,6 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.xml;
 
-import static com.oddin.oddsfeedsdk.internal.xml.FeedGoldenTest.bytes;
+import static com.oddin.oddsfeedsdk.internal.xml.XmlFixtures.bytes;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -44,7 +44,7 @@ class FeedDecoderTest {
     static void loadTheSchema() throws Exception {
         strict = FeedDecoder.strict(
                 FeedDecoder.DEFAULT_MAX_BYTES,
-                FeedGoldenTest.feedSchema(FeedGoldenTest.vendored().resolve("schema/feed")));
+                XmlFixtures.schema(XmlFixtures.vendored().resolve("schema/feed")));
     }
 
     @Test
@@ -203,7 +203,7 @@ class FeedDecoderTest {
 
     @Test
     void everyEnumAccessorReadsWhatTheFixtureCarries() throws Exception {
-        Path feed = FeedGoldenTest.vendored().resolve("test/fixtures/feed");
+        Path feed = XmlFixtures.vendored().resolve("test/fixtures/feed");
         var betStop = (OFBetStop) lenient.decode(Files.readAllBytes(feed.resolve("bet_stop/bet_stop_all_groups.xml")));
         assertThat(betStop.getMarketStatus()).isEqualTo(OFMarketStatus.SUSPENDED);
         var fixtureChange =
