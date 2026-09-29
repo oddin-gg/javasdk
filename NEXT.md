@@ -710,7 +710,8 @@ matters where it says so, the rest can run in parallel.
     permit, call and retries, retry for idempotent calls only, error mapping including
     permanent failures with the fatal event, 429 handling, startup deadline, API call
     events.
-15. Benchmark harness: corpus, JMH skeleton, warm and cold scenarios, CI budget check.
+15. Benchmark harness: corpus, JMH skeleton, warm scenario, CI budget check. The cold
+    scenario joins when the caches and the HTTP client exist.
 
 ### Phase 2 – Core
 
@@ -808,7 +809,12 @@ benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
 
 ## 12. Open questions
 
-1. JAXB or StAX for decoding? Decide with numbers from ticket 15.
+1. JAXB or StAX for decoding? The numbers from ticket 15 are in (`benchmarks/README.md`):
+   a typical live odds change of 150 markets takes 0.9 ms with JAXB and 0.3 ms with a
+   hand-written StAX reader into the same generated classes; keeping one unmarshaller
+   instead of one per message changes nothing. Still to decide: StAX for odds changes
+   only, the large and frequent message, with JAXB for the rest, or JAXB everywhere
+   until the end-to-end numbers of Phase 2 show where the time goes.
 2. Which clients test the release candidates? Needs an answer from customer success.
 3. Do the priority-split session interests keep exactly today's semantics? Proposal:
    yes, they are public API.
