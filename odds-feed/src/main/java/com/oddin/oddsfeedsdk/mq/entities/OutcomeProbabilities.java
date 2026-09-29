@@ -5,5 +5,6 @@ import org.jspecify.annotations.Nullable;
 public interface OutcomeProbabilities extends Outcome {
     boolean isActive();
 
-    @Nullable Double getProbability();
+    @Nullable
+    Double getProbability();
 }

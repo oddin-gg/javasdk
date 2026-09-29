@@ -6,9 +6,12 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 public interface Fixture {
-    @Nullable Date getStartTime();
+    @Nullable
+    Date getStartTime();
 
-    @Nullable Map<String, String> getExtraInfo();
+    @Nullable
+    Map<String, String> getExtraInfo();
 
-    @Nullable List<TvChannel> getTvChannels();
+    @Nullable
+    List<TvChannel> getTvChannels();
 }

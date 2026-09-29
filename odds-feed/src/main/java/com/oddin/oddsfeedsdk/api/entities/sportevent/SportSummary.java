@@ -10,13 +10,18 @@ public interface SportSummary {
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable URN getRefId();
+    @Nullable
+    URN getRefId();
 
-    @Nullable Map<Locale, String> getNames();
+    @Nullable
+    Map<Locale, String> getNames();
 
-    @Nullable String getName(Locale locale);
+    @Nullable
+    String getName(Locale locale);
 
-    @Nullable String getAbbreviation(Locale locale);
+    @Nullable
+    String getAbbreviation(Locale locale);
 
-    @Nullable String getIconPath(Locale locale);
+    @Nullable
+    String getIconPath(Locale locale);
 }

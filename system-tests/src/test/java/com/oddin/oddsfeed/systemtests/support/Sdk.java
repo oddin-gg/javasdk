@@ -20,87 +20,91 @@ import java.util.function.UnaryOperator;
  */
 public final class Sdk implements AutoCloseable {
 
-  /** The access token every test SDK uses; the fakes record it rather than check it. */
-  public static final String TOKEN = "system-test-token";
+    /** The access token every test SDK uses; the fakes record it rather than check it. */
+    public static final String TOKEN = "system-test-token";
 
-  /**
-   * Where an SDK without a fake feed is told the feed is: a port on this machine nothing listens
-   * on, so a scenario that should never connect would fail loudly if it did.
-   */
-  private static final int NO_FEED_PORT = 1;
+    /**
+     * Where an SDK without a fake feed is told the feed is: a port on this machine nothing listens
+     * on, so a scenario that should never connect would fail loudly if it did.
+     */
+    private static final int NO_FEED_PORT = 1;
 
-  private final OddsFeed oddsFeed;
-  private final FakeRestServer rest;
-  private final GlobalEvents events = new GlobalEvents();
-  private boolean closed;
+    private final OddsFeed oddsFeed;
+    private final FakeRestServer rest;
+    private final GlobalEvents events = new GlobalEvents();
+    private boolean closed;
 
-  private Sdk(FakeRestServer rest, String feedHost, int feedPort,
-      UnaryOperator<OddsFeedConfigurationBuilder> configure) {
-    OddsFeedConfiguration configuration = configure.apply(OddsFeed.getOddsFeedConfigurationBuilder()
-            .selectEnvironment(feedHost, rest.apiHost(), feedPort)
-            .setAccessToken(TOKEN))
-        .build();
-    this.oddsFeed = new OddsFeed(events, configuration);
-    this.rest = rest;
-  }
-
-  public static Sdk against(FakeRestServer rest, FakeFeed feed) {
-    return against(rest, feed, UnaryOperator.identity());
-  }
-
-  /** With configuration on top of the fakes' addresses and the token, e.g. an exception strategy. */
-  public static Sdk against(FakeRestServer rest, FakeFeed feed,
-      UnaryOperator<OddsFeedConfigurationBuilder> configure) {
-    return new Sdk(rest, feed.host(), feed.port(), configure);
-  }
-
-  /**
-   * For scenarios that only read through the managers and never open the feed, so no broker
-   * needs to start.
-   */
-  public static Sdk withoutFeed(FakeRestServer rest, UnaryOperator<OddsFeedConfigurationBuilder> configure) {
-    return new Sdk(rest, "127.0.0.1", NO_FEED_PORT, configure);
-  }
-
-  public OddsFeed oddsFeed() {
-    return oddsFeed;
-  }
-
-  public GlobalEvents events() {
-    return events;
-  }
-
-  /** Builds one session with this interest and opens the feed; returns what the session receives. */
-  public Received open(MessageInterest interest) {
-    return open(interest, new Received());
-  }
-
-  /** Builds one session with this interest and listener, and opens the feed. */
-  public Received open(MessageInterest interest, Received received) {
-    oddsFeed.getSessionBuilder().setListener(received).setMessageInterest(interest).build();
-    oddsFeed.open();
-    return received;
-  }
-
-  /** Builds a replay session, the only one, and opens the feed; returns what it receives. */
-  public Received openReplay() {
-    var received = new Received();
-    oddsFeed.getSessionBuilder().setListener(received).buildReplay();
-    oddsFeed.open();
-    return received;
-  }
-
-  /** Closes the SDK once; a test may close it itself to check what closing leaves behind. */
-  @Override
-  public void close() {
-    if (closed) {
-      return;
+    private Sdk(
+            FakeRestServer rest, String feedHost, int feedPort, UnaryOperator<OddsFeedConfigurationBuilder> configure) {
+        OddsFeedConfiguration configuration = configure
+                .apply(OddsFeed.getOddsFeedConfigurationBuilder()
+                        .selectEnvironment(feedHost, rest.apiHost(), feedPort)
+                        .setAccessToken(TOKEN))
+                .build();
+        this.oddsFeed = new OddsFeed(events, configuration);
+        this.rest = rest;
     }
-    closed = true;
-    try {
-      rest.awaitQuiet();
-    } finally {
-      oddsFeed.close();
+
+    public static Sdk against(FakeRestServer rest, FakeFeed feed) {
+        return against(rest, feed, UnaryOperator.identity());
     }
-  }
+
+    /** With configuration on top of the fakes' addresses and the token, e.g. an exception strategy. */
+    public static Sdk against(
+            FakeRestServer rest, FakeFeed feed, UnaryOperator<OddsFeedConfigurationBuilder> configure) {
+        return new Sdk(rest, feed.host(), feed.port(), configure);
+    }
+
+    /**
+     * For scenarios that only read through the managers and never open the feed, so no broker
+     * needs to start.
+     */
+    public static Sdk withoutFeed(FakeRestServer rest, UnaryOperator<OddsFeedConfigurationBuilder> configure) {
+        return new Sdk(rest, "127.0.0.1", NO_FEED_PORT, configure);
+    }
+
+    public OddsFeed oddsFeed() {
+        return oddsFeed;
+    }
+
+    public GlobalEvents events() {
+        return events;
+    }
+
+    /** Builds one session with this interest and opens the feed; returns what the session receives. */
+    public Received open(MessageInterest interest) {
+        return open(interest, new Received());
+    }
+
+    /** Builds one session with this interest and listener, and opens the feed. */
+    public Received open(MessageInterest interest, Received received) {
+        oddsFeed.getSessionBuilder()
+                .setListener(received)
+                .setMessageInterest(interest)
+                .build();
+        oddsFeed.open();
+        return received;
+    }
+
+    /** Builds a replay session, the only one, and opens the feed; returns what it receives. */
+    public Received openReplay() {
+        var received = new Received();
+        oddsFeed.getSessionBuilder().setListener(received).buildReplay();
+        oddsFeed.open();
+        return received;
+    }
+
+    /** Closes the SDK once; a test may close it itself to check what closing leaves behind. */
+    @Override
+    public void close() {
+        if (closed) {
+            return;
+        }
+        closed = true;
+        try {
+            rest.awaitQuiet();
+        } finally {
+            oddsFeed.close();
+        }
+    }
 }

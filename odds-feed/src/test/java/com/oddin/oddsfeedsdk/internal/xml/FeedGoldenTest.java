@@ -83,7 +83,8 @@ class FeedGoldenTest {
                 UnparsedMessage message = strict.decode(body);
                 assertThat(message).as(fixture.getFileName().toString()).isInstanceOf(entry.getValue());
                 assertThat(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES).decode(body))
-                        .as("%s, lenient", fixture.getFileName()).isInstanceOf(entry.getValue());
+                        .as("%s, lenient", fixture.getFileName())
+                        .isInstanceOf(entry.getValue());
                 decoded.add(entry.getKey() + "/" + fixture.getFileName());
             }
         }
@@ -105,9 +106,11 @@ class FeedGoldenTest {
             for (Path fixture : xmlFiles(fixtures.resolve(directory))) {
                 var written = new StringWriter();
                 marshaller.marshal(strict.decode(Files.readAllBytes(fixture)), written);
-                compare(parse(new InputSource(fixture.toUri().toString())),
+                compare(
+                        parse(new InputSource(fixture.toUri().toString())),
                         parse(new InputSource(new StringReader(written.toString()))),
-                        directory + "/" + fixture.getFileName(), differences);
+                        directory + "/" + fixture.getFileName(),
+                        differences);
             }
         }
         assertThat(differences).as("what the fixtures decode to, written back").isEmpty();
@@ -137,7 +140,8 @@ class FeedGoldenTest {
                 differences.add(path + " @" + entry.getKey() + ": " + entry.getValue() + " came back as " + value);
             }
         }
-        got.keySet().stream().filter(name -> !want.containsKey(name))
+        got.keySet().stream()
+                .filter(name -> !want.containsKey(name))
                 .forEach(name -> differences.add(path + " @" + name + ": appeared"));
         List<Element> wantChildren = children(expected);
         List<Element> gotChildren = children(actual);
@@ -188,7 +192,9 @@ class FeedGoldenTest {
     void everyFixtureDirectoryIsCovered() throws IOException {
         // A message family added upstream must be placed here on purpose, not skipped quietly.
         try (Stream<Path> directories = Files.list(fixtures)) {
-            assertThat(directories.filter(Files::isDirectory).map(d -> d.getFileName().toString()))
+            assertThat(directories
+                            .filter(Files::isDirectory)
+                            .map(d -> d.getFileName().toString()))
                     .containsExactlyInAnyOrderElementsOf(CLASSES.keySet());
         }
     }
@@ -226,7 +232,9 @@ class FeedGoldenTest {
     static Schema feedSchema(Path directory) throws IOException, SAXException {
         var includes = new StringBuilder();
         for (Path xsd : xsdFiles(directory)) {
-            includes.append("  <xs:include schemaLocation=\"").append(xsd.getFileName()).append("\"/>\n");
+            includes.append("  <xs:include schemaLocation=\"")
+                    .append(xsd.getFileName())
+                    .append("\"/>\n");
         }
         String all = """
                 <xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
@@ -234,7 +242,8 @@ class FeedGoldenTest {
                 """.formatted(includes);
         var factory = SchemaFactory.newInstance(XMLConstants.W3C_XML_SCHEMA_NS_URI);
         factory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "file");
-        Source source = new StreamSource(new StringReader(all), directory.resolve("all.xsd").toUri().toString());
+        Source source = new StreamSource(
+                new StringReader(all), directory.resolve("all.xsd").toUri().toString());
         return factory.newSchema(source);
     }
 
@@ -250,7 +259,8 @@ class FeedGoldenTest {
 
     static Path vendored() throws URISyntaxException {
         URL source = requireNonNull(
-                FeedGoldenTest.class.getResource("/oddsfeedschema/SOURCE"), "the vendored schema is not on the test classpath");
+                FeedGoldenTest.class.getResource("/oddsfeedschema/SOURCE"),
+                "the vendored schema is not on the test classpath");
         return requireNonNull(Path.of(source.toURI()).getParent());
     }
 }

@@ -7,5 +7,6 @@ public interface TvChannel {
 
     String getStreamUrl();
 
-    @Nullable String getLanguage();
+    @Nullable
+    String getLanguage();
 }

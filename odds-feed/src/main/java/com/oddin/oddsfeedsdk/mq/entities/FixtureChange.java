@@ -9,7 +9,8 @@ public interface FixtureChange<T extends SportEvent> extends EventMessage<T> {
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable Date getNextLiveTime();
+    @Nullable
+    Date getNextLiveTime();
 
     /** @deprecated the feed never sends this value. */
     @Deprecated

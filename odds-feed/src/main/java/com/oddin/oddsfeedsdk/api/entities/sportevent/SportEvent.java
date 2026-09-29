@@ -6,19 +6,26 @@ import java.util.Locale;
 import org.jspecify.annotations.Nullable;
 
 public interface SportEvent {
-    @Nullable URN getId();
+    @Nullable
+    URN getId();
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable URN getRefId();
+    @Nullable
+    URN getRefId();
 
-    @Nullable String getName(Locale locale);
+    @Nullable
+    String getName(Locale locale);
 
-    @Nullable URN getSportId();
+    @Nullable
+    URN getSportId();
 
-    @Nullable Date getScheduledTime();
+    @Nullable
+    Date getScheduledTime();
 
-    @Nullable Date getScheduledEndTime();
+    @Nullable
+    Date getScheduledEndTime();
 
-    @Nullable LiveOddsAvailability getLiveOddsAvailability();
+    @Nullable
+    LiveOddsAvailability getLiveOddsAvailability();
 }

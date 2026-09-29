@@ -6,11 +6,15 @@ import org.jspecify.annotations.Nullable;
 public interface MarketVoidReason {
     int getId();
 
-    @Nullable String getName();
+    @Nullable
+    String getName();
 
-    @Nullable String getDescription();
+    @Nullable
+    String getDescription();
 
-    @Nullable String getTemplate();
+    @Nullable
+    String getTemplate();
 
-    @Nullable List<String> getParams();
+    @Nullable
+    List<String> getParams();
 }

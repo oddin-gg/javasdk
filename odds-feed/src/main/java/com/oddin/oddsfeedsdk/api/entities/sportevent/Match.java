@@ -5,17 +5,24 @@ import org.jspecify.annotations.Nullable;
 
 public interface Match extends Competition {
     @Override
-    @Nullable MatchStatus getStatus();
+    @Nullable
+    MatchStatus getStatus();
 
-    @Nullable Tournament getTournament();
+    @Nullable
+    Tournament getTournament();
 
-    @Nullable TeamCompetitor getHomeCompetitor();
+    @Nullable
+    TeamCompetitor getHomeCompetitor();
 
-    @Nullable TeamCompetitor getAwayCompetitor();
+    @Nullable
+    TeamCompetitor getAwayCompetitor();
 
-    @Nullable Fixture getFixture();
+    @Nullable
+    Fixture getFixture();
 
-    @Nullable SportFormat getSportFormat();
+    @Nullable
+    SportFormat getSportFormat();
 
-    @Nullable Map<String, String> getExtraInfo();
+    @Nullable
+    Map<String, String> getExtraInfo();
 }

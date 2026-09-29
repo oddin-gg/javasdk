@@ -9,19 +9,25 @@ public interface MarketDescription {
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable Integer getRefId();
+    @Nullable
+    Integer getRefId();
 
-    @Nullable String getName(Locale locale);
+    @Nullable
+    String getName(Locale locale);
 
     List<OutcomeDescription> getOutcomes();
 
-    @Nullable String getVariant();
+    @Nullable
+    String getVariant();
 
-    @Nullable List<Specifier> getSpecifiers();
+    @Nullable
+    List<Specifier> getSpecifiers();
 
-    @Nullable String getIncludesOutcomesOfType();
+    @Nullable
+    String getIncludesOutcomesOfType();
 
-    @Nullable OutcomeType getOutcomeType();
+    @Nullable
+    OutcomeType getOutcomeType();
 
     List<String> getGroups();
 }

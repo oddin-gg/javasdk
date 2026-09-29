@@ -73,8 +73,7 @@ public enum EventStatus {
     }
 
     public static final class Companion {
-        private Companion() {
-        }
+        private Companion() {}
 
         public EventStatus fromApiEventStatus(@Nullable String status) {
             return EventStatus.fromApiEventStatus(status);

@@ -6,7 +6,8 @@ import org.jspecify.annotations.Nullable;
 public interface EventMessage<T extends SportEvent> extends Message {
     T getEvent();
 
-    @Nullable Long getRequestId();
+    @Nullable
+    Long getRequestId();
 
     byte[] getRawMessage();
 }

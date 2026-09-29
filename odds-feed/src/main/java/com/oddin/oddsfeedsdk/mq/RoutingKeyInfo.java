@@ -14,10 +14,7 @@ public final class RoutingKeyInfo {
     private final boolean isSystemRoutingKey;
 
     public RoutingKeyInfo(
-            String fullRoutingKey,
-            @Nullable URN sportId,
-            @Nullable URN eventId,
-            boolean isSystemRoutingKey) {
+            String fullRoutingKey, @Nullable URN sportId, @Nullable URN eventId, boolean isSystemRoutingKey) {
         this.fullRoutingKey = fullRoutingKey;
         this.sportId = sportId;
         this.eventId = eventId;

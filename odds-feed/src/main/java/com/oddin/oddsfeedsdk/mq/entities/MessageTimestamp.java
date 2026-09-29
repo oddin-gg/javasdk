@@ -1,6 +1,5 @@
 package com.oddin.oddsfeedsdk.mq.entities;
 
-import java.util.Objects;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -12,11 +11,7 @@ public final class MessageTimestamp {
     private final long received;
     private long published;
 
-    public MessageTimestamp(
-            long created,
-            long sent,
-            long received,
-            long published) {
+    public MessageTimestamp(long created, long sent, long received, long published) {
         this.created = created;
         this.sent = sent;
         this.received = received;
@@ -55,10 +50,7 @@ public final class MessageTimestamp {
         if (!(other instanceof MessageTimestamp that)) {
             return false;
         }
-        return created == that.created
-                && sent == that.sent
-                && received == that.received
-                && published == that.published;
+        return created == that.created && sent == that.sent && received == that.received && published == that.published;
     }
 
     @Override

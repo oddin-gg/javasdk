@@ -3,7 +3,8 @@ package com.oddin.oddsfeedsdk.api.entities.sportevent;
 import org.jspecify.annotations.Nullable;
 
 public enum LiveOddsAvailability {
-    NOT_AVAILABLE("not_available"), AVAILABLE("available");
+    NOT_AVAILABLE("not_available"),
+    AVAILABLE("available");
 
     /**
      * Keeps {@code LiveOddsAvailability.Companion.fromApiEvent(...)} compiling: 0.0.x was Kotlin,
@@ -28,8 +29,7 @@ public enum LiveOddsAvailability {
     }
 
     public static final class Companion {
-        private Companion() {
-        }
+        private Companion() {}
 
         public LiveOddsAvailability fromApiEvent(@Nullable String availability) {
             return LiveOddsAvailability.fromApiEvent(availability);

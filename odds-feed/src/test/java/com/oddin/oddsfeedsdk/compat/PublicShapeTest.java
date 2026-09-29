@@ -76,11 +76,11 @@ class PublicShapeTest {
      * implementation class.
      */
     private static final Pattern KOTLIN_OR_IMPL = Pattern.compile(
-            ".*(\\$DefaultImpls|\\$WhenMappings.*|Kt|Kt\\$.*|\\$\\d+|\\$[a-z][A-Za-z]*\\$\\d+.*)"
-                    + "|.*Impl(\\$.*)?");
+            ".*(\\$DefaultImpls|\\$WhenMappings.*|Kt|Kt\\$.*|\\$\\d+|\\$[a-z][A-Za-z]*\\$\\d+.*)" + "|.*Impl(\\$.*)?");
 
     /** In the cache package only the static data types are reachable from the entities; the rest is the cache itself. */
-    private static final Set<String> CACHE_TYPES = Set.of(ROOT + "cache/StaticData", ROOT + "cache/LocalizedStaticData");
+    private static final Set<String> CACHE_TYPES =
+            Set.of(ROOT + "cache/StaticData", ROOT + "cache/LocalizedStaticData");
 
     /** The accepted differences, from {@code api/differences.txt}; see its header. */
     private static final Differences DIFFERENCES = Differences.read("/api/differences.txt");
@@ -101,7 +101,8 @@ class PublicShapeTest {
     private static final Map<String, String> SIGNATURE_CHANGES = DIFFERENCES.signatures();
 
     /** Members deprecated here that the baseline did not deprecate. */
-    private static final Set<String> NEWLY_DEPRECATED = DIFFERENCES.members("deprecated").keySet();
+    private static final Set<String> NEWLY_DEPRECATED =
+            DIFFERENCES.members("deprecated").keySet();
 
     /** Kotlin data class members Java has no use for; the design accepts losing them. */
     private static final Pattern DATA_CLASS_EXTRAS = Pattern.compile("component\\d+|copy|copy\\$default");
@@ -141,7 +142,9 @@ class PublicShapeTest {
         }
         // A baseline that yields nothing would pass everything below.
         assertThat(compared).as("baseline types compared").isGreaterThan(60);
-        assertThat(problems).as("differences from the %s public API", System.getProperty("baseline.version")).isEmpty();
+        assertThat(problems)
+                .as("differences from the %s public API", System.getProperty("baseline.version"))
+                .isEmpty();
     }
 
     @Test
@@ -150,8 +153,11 @@ class PublicShapeTest {
         for (ClassModel now : current.values()) {
             String name = now.thisClass().asInternalName();
             // internal packages are never public API, whatever their classes' modifiers say
-            if (isPublic(now) && !name.endsWith("/package-info") && !name.contains("/internal/")
-                    && !baseline.containsKey(name) && !ADDED_TYPES.contains(relative(name))) {
+            if (isPublic(now)
+                    && !name.endsWith("/package-info")
+                    && !name.contains("/internal/")
+                    && !baseline.containsKey(name)
+                    && !ADDED_TYPES.contains(relative(name))) {
                 extra.add(relative(name));
             }
         }
@@ -168,9 +174,11 @@ class PublicShapeTest {
     void everyPackageThatWasKotlinIsNullMarked() {
         for (String pkg : PACKAGES) {
             ClassModel info = current.get(pkg + "/package-info");
-            boolean marked = info != null && info.findAttribute(Attributes.runtimeVisibleAnnotations())
-                    .map(a -> a.annotations().stream().anyMatch(an -> an.className().stringValue().equals(JSPECIFY_NULL_MARKED)))
-                    .orElse(false);
+            boolean marked = info != null
+                    && info.findAttribute(Attributes.runtimeVisibleAnnotations())
+                            .map(a -> a.annotations().stream()
+                                    .anyMatch(an -> an.className().stringValue().equals(JSPECIFY_NULL_MARKED)))
+                            .orElse(false);
             assertThat(marked).as("%s is @NullMarked", relative(pkg)).isEqualTo(!UNMARKED.contains(pkg));
         }
     }
@@ -279,16 +287,19 @@ class PublicShapeTest {
      */
     private static void compareNullability(String key, MethodModel before, MethodModel after, List<String> problems) {
         Optional<Boolean> oldReturn = kotlinNullness(before.findAttribute(Attributes.runtimeInvisibleAnnotations())
-                .map(a -> a.annotations()).orElse(List.of()));
+                .map(a -> a.annotations())
+                .orElse(List.of()));
         if (oldReturn.isPresent() && oldReturn.get() != jspecifyNullable(after, -1)) {
             problems.add(key + ": return nullable " + jspecifyNullable(after, -1) + ", was " + oldReturn.get());
         }
         List<List<Annotation>> oldParameters = before.findAttribute(Attributes.runtimeInvisibleParameterAnnotations())
-                .map(a -> a.parameterAnnotations()).orElse(List.of());
+                .map(a -> a.parameterAnnotations())
+                .orElse(List.of());
         for (int i = 0; i < oldParameters.size(); i++) {
             Optional<Boolean> oldParameter = kotlinNullness(oldParameters.get(i));
             if (oldParameter.isPresent() && oldParameter.get() != jspecifyNullable(after, i)) {
-                problems.add(key + ": parameter " + i + " nullable " + jspecifyNullable(after, i) + ", was " + oldParameter.get());
+                problems.add(key + ": parameter " + i + " nullable " + jspecifyNullable(after, i) + ", was "
+                        + oldParameter.get());
             }
         }
     }
@@ -309,7 +320,8 @@ class PublicShapeTest {
     /** Whether the return type (index -1) or a parameter carries JSpecify's {@code @Nullable} at its top level. */
     private static boolean jspecifyNullable(MethodModel method, int parameter) {
         List<TypeAnnotation> annotations = method.findAttribute(Attributes.runtimeVisibleTypeAnnotations())
-                .map(a -> a.annotations()).orElse(List.of());
+                .map(a -> a.annotations())
+                .orElse(List.of());
         for (TypeAnnotation annotation : annotations) {
             if (!annotation.targetPath().isEmpty()
                     || !annotation.annotation().className().stringValue().equals(JSPECIFY_NULLABLE)) {
@@ -346,9 +358,13 @@ class PublicShapeTest {
         for (MethodModel method : model.methods()) {
             String name = method.methodName().stringValue();
             String descriptor = method.methodType().stringValue();
-            boolean visible = method.flags().has(AccessFlag.PUBLIC) || method.flags().has(AccessFlag.PROTECTED);
-            if (!visible || method.flags().has(AccessFlag.SYNTHETIC) || method.flags().has(AccessFlag.BRIDGE)
-                    || DATA_CLASS_EXTRAS.matcher(name).matches() || name.endsWith("$annotations")
+            boolean visible =
+                    method.flags().has(AccessFlag.PUBLIC) || method.flags().has(AccessFlag.PROTECTED);
+            if (!visible
+                    || method.flags().has(AccessFlag.SYNTHETIC)
+                    || method.flags().has(AccessFlag.BRIDGE)
+                    || DATA_CLASS_EXTRAS.matcher(name).matches()
+                    || name.endsWith("$annotations")
                     || descriptor.contains(KOTLIN_MARKER)) {
                 continue;
             }
@@ -361,7 +377,10 @@ class PublicShapeTest {
         Map<String, FieldModel> fields = new TreeMap<>();
         for (FieldModel field : model.fields()) {
             if (field.flags().has(AccessFlag.PUBLIC) && !field.flags().has(AccessFlag.SYNTHETIC)) {
-                fields.put(field.fieldName().stringValue() + " " + field.fieldType().stringValue(), field);
+                fields.put(
+                        field.fieldName().stringValue() + " "
+                                + field.fieldType().stringValue(),
+                        field);
             }
         }
         return fields;
@@ -392,15 +411,21 @@ class PublicShapeTest {
     }
 
     private static Set<String> interfaces(ClassModel model) {
-        return model.interfaces().stream().map(ClassEntry::asInternalName).collect(Collectors.toCollection(TreeSet::new));
+        return model.interfaces().stream()
+                .map(ClassEntry::asInternalName)
+                .collect(Collectors.toCollection(TreeSet::new));
     }
 
     private static String signature(ClassModel model) {
-        return model.findAttribute(Attributes.signature()).map(s -> s.signature().stringValue()).orElse("");
+        return model.findAttribute(Attributes.signature())
+                .map(s -> s.signature().stringValue())
+                .orElse("");
     }
 
     private static String signature(MethodModel method) {
-        return method.findAttribute(Attributes.signature()).map(s -> s.signature().stringValue()).orElse("");
+        return method.findAttribute(Attributes.signature())
+                .map(s -> s.signature().stringValue())
+                .orElse("");
     }
 
     private static boolean isDeprecated(MethodModel method) {
@@ -429,13 +454,16 @@ class PublicShapeTest {
     private static Map<String, ClassModel> readBaseline() throws IOException, NoSuchAlgorithmException {
         Path jar = Path.of(System.getProperty("baseline.jar"));
         String version = System.getProperty("baseline.version");
-        assertThat(jar).as("the %s jar - run scripts/fetch-sdk.sh first", version).isRegularFile();
+        assertThat(jar)
+                .as("the %s jar - run scripts/fetch-sdk.sh first", version)
+                .isRegularFile();
 
         Properties pins = new Properties();
         try (InputStream in = Files.newInputStream(Path.of(System.getProperty("baseline.checksums")))) {
             pins.load(in);
         }
-        String digest = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(jar)));
+        String digest =
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(jar)));
         assertThat(digest).as("SHA-256 of %s", jar).isEqualTo(pins.getProperty(version + ".jar"));
 
         Map<String, ClassModel> classes = new TreeMap<>();
@@ -454,7 +482,11 @@ class PublicShapeTest {
 
     /** This module's compiled classes. */
     private static Map<String, ClassModel> readCurrent() throws IOException, URISyntaxException {
-        Path classes = Path.of(Producer.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+        Path classes = Path.of(Producer.class
+                .getProtectionDomain()
+                .getCodeSource()
+                .getLocation()
+                .toURI());
         Map<String, ClassModel> models = new TreeMap<>();
         try (Stream<Path> files = Files.walk(classes)) {
             for (Path file : files.filter(f -> f.toString().endsWith(".class")).toList()) {
@@ -474,12 +506,16 @@ class PublicShapeTest {
                     throw new IllegalStateException(resource + " is not on the test classpath");
                 }
                 var entries = new ArrayList<String[]>();
-                for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).lines().toList()) {
+                for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8)
+                        .lines()
+                        .toList()) {
                     if (line.isBlank() || line.startsWith("#")) {
                         continue;
                     }
                     String[] fields = line.split(" \\| ", -1);
-                    if (fields.length < 3 || !Set.of("gone", "added", "signature", "deprecated").contains(fields[0])
+                    if (fields.length < 3
+                            || !Set.of("gone", "added", "signature", "deprecated")
+                                    .contains(fields[0])
                             || (fields[0].equals("signature") && fields.length < 4)) {
                         throw new IllegalStateException(resource + ": cannot read the line: " + line);
                     }
