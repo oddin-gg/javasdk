@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.cache.entity
 import com.oddin.oddsfeedsdk.FeedMessage
 import com.oddin.oddsfeedsdk.api.ApiClient
 import com.oddin.oddsfeedsdk.api.ApiResponse
+import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus
 import com.oddin.oddsfeedsdk.mq.RoutingKeyInfo
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange
@@ -85,6 +86,48 @@ class MatchStatusCacheTest {
         // The sets-won tally on the same row must stay readable and independent.
         assertEquals(1.0, periodScores[0].homeScore, 0.0)
         assertEquals(0.0, periodScores[0].awayScore, 0.0)
+    }
+
+    // The wire numbers are not EventStatus.apiId (abandoned is 9 on the feed, 6 in the
+    // enum), so check what a client reads for each number the feed sends.
+    @Test
+    fun everyFeedStatusNumberReachesTheClientAsItsOwnStatus() {
+        val expected = mapOf(
+            0 to EventStatus.NotStarted,
+            1 to EventStatus.Live,
+            2 to EventStatus.Suspended,
+            3 to EventStatus.Ended,
+            4 to EventStatus.Finished,
+            5 to EventStatus.Cancelled,
+            6 to EventStatus.Delayed,
+            7 to EventStatus.Interrupted,
+            8 to EventStatus.Postponed,
+            9 to EventStatus.Abandoned
+        )
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
+        }
+        val cache = MatchStatusCacheImpl(apiClient)
+
+        expected.forEach { (wire, status) ->
+            val raw = """<odds_change event_id="od:match:$wire" product="1" timestamp="1785831336922">
+                  <sport_event_status status="$wire" match_status="0"/>
+                </odds_change>"""
+            val message = feedContext.createUnmarshaller()
+                .unmarshal(ByteArrayInputStream(raw.toByteArray())) as OFOddsChange
+            val id = URN.parse("od:match:$wire")
+            cache.onFeedMessageReceived(
+                id,
+                FeedMessage(
+                    message,
+                    ByteArray(1),
+                    RoutingKeyInfo("hi.pre.-.odds_change.-.od:match.$wire", null, id, false),
+                    MessageTimestamp(0, 0, 0, 0)
+                )
+            )
+
+            assertEquals("feed status $wire", status, cache.getMatchStatus(id)?.status)
+        }
     }
 
     @Test
