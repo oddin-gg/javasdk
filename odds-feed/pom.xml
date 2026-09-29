@@ -66,6 +66,12 @@
     </dependency>
 
     <dependency>
+      <!-- the old examples import it; ApiUsageTest compiles them -->
+      <groupId>org.jetbrains</groupId>
+      <artifactId>annotations</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
@@ -159,6 +165,7 @@
           <systemPropertyVariables>
             <baseline.jar>${settings.localRepository}/${api.baseline.groupPath}/odds-feed/${api.baseline.version}/odds-feed-${api.baseline.version}.jar</baseline.jar>
             <baseline.version>${api.baseline.version}</baseline.version>
+            <examples.sources>${maven.multiModuleProjectDirectory}/examples/src/main/java</examples.sources>
             <!-- the same pins the system tests check the SDK they run against with -->
             <baseline.checksums>${maven.multiModuleProjectDirectory}/system-tests/src/test/resources/sdk-jar-checksums.properties</baseline.checksums>
           </systemPropertyVariables>
