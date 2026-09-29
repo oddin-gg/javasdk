@@ -24,7 +24,7 @@ public record RecordedRequest(String method, String path, String query, Map<Stri
     if (query == null) {
       return null;
     }
-    for (String pair : query.split("&")) {
+    for (String pair : query.split("&", -1)) {
       int eq = pair.indexOf('=');
       if (URLDecoder.decode(eq < 0 ? pair : pair.substring(0, eq), UTF_8).equals(name)) {
         return eq < 0 ? "" : URLDecoder.decode(pair.substring(eq + 1), UTF_8);

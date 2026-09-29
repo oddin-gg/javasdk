@@ -9,6 +9,7 @@ public enum LiveOddsAvailability {
      * Keeps {@code LiveOddsAvailability.Companion.fromApiEvent(...)} compiling: 0.0.x was Kotlin,
      * and that is how Java code reached a function of its companion object.
      */
+    @SuppressWarnings("VariableNameSameAsType") // the name is the compatibility
     public static final Companion Companion = new Companion();
 
     private final String availability;

@@ -474,11 +474,11 @@ class PublicShapeTest {
                     throw new IllegalStateException(resource + " is not on the test classpath");
                 }
                 var entries = new ArrayList<String[]>();
-                for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).split("\n")) {
+                for (String line : new String(in.readAllBytes(), StandardCharsets.UTF_8).lines().toList()) {
                     if (line.isBlank() || line.startsWith("#")) {
                         continue;
                     }
-                    String[] fields = line.split(" \\| ");
+                    String[] fields = line.split(" \\| ", -1);
                     if (fields.length < 3 || !Set.of("gone", "added", "signature", "deprecated").contains(fields[0])
                             || (fields[0].equals("signature") && fields.length < 4)) {
                         throw new IllegalStateException(resource + ": cannot read the line: " + line);

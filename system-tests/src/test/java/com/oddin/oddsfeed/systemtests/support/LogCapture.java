@@ -24,7 +24,8 @@ public final class LogCapture implements AutoCloseable {
 
   /** "LEVEL logger: message" for everything at WARN or above from loggers under this prefix. */
   public List<String> warningsFrom(String loggerPrefix) {
-    synchronized (appender.list) {
+    // AppenderBase.doAppend adds to the list holding the appender's own lock
+    synchronized (appender) {
       return appender.list.stream()
           .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
           .filter(event -> event.getLoggerName().startsWith(loggerPrefix))

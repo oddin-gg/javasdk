@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.xml;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.oddin.oddsfeedsdk.mq.entities.UnparsedMessage;
@@ -20,6 +21,7 @@ import java.io.StringReader;
 import java.io.StringWriter;
 import java.math.BigDecimal;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -64,7 +66,7 @@ class FeedGoldenTest {
 
     @BeforeAll
     static void loadTheSchema() throws Exception {
-        Path vendored = Path.of(FeedGoldenTest.class.getResource("/oddsfeedschema/SOURCE").toURI()).getParent();
+        Path vendored = vendored();
         fixtures = vendored.resolve("test/fixtures/feed");
         strict = FeedDecoder.strict(FeedDecoder.DEFAULT_MAX_BYTES, feedSchema(vendored.resolve("schema/feed")));
     }
@@ -247,6 +249,8 @@ class FeedGoldenTest {
     }
 
     static Path vendored() throws URISyntaxException {
-        return Path.of(FeedGoldenTest.class.getResource("/oddsfeedschema/SOURCE").toURI()).getParent();
+        URL source = requireNonNull(
+                FeedGoldenTest.class.getResource("/oddsfeedschema/SOURCE"), "the vendored schema is not on the test classpath");
+        return requireNonNull(Path.of(source.toURI()).getParent());
     }
 }

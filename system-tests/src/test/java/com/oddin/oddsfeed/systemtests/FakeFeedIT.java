@@ -67,7 +67,7 @@ class FakeFeedIT {
       // Logging in comes before the new queue is bound, and until the broker notices the old
       // connection is gone its queue still takes messages - so "routed" proves nothing yet. Keep
       // publishing until one actually arrives.
-      Optional<OddsChange> afterReconnect = Optional.empty();
+      Optional<?> afterReconnect = Optional.empty();
       deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
       while (afterReconnect.isEmpty() && System.nanoTime() < deadline) {
         feed.publishFixture(ODDS_CHANGE);

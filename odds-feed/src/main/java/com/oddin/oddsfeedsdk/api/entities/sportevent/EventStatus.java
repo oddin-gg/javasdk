@@ -20,6 +20,7 @@ public enum EventStatus {
      * Keeps {@code EventStatus.Companion.fromApiEventStatus(...)} compiling: 0.0.x was Kotlin,
      * and that is how Java code reached a function of its companion object.
      */
+    @SuppressWarnings("VariableNameSameAsType") // the name is the compatibility
     public static final Companion Companion = new Companion();
 
     private final String apiName;

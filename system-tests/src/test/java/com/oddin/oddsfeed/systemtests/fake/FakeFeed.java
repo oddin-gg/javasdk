@@ -431,7 +431,7 @@ public final class FakeFeed implements AutoCloseable {
   private static Map<String, String> query(String raw) {
     Map<String, String> parameters = new HashMap<>();
     if (raw != null) {
-      for (String pair : raw.split("&")) {
+      for (String pair : raw.split("&", -1)) {
         int eq = pair.indexOf('=');
         String name = eq < 0 ? pair : pair.substring(0, eq);
         String value = eq < 0 ? "" : pair.substring(eq + 1);
@@ -443,7 +443,8 @@ public final class FakeFeed implements AutoCloseable {
 
   private static String json(String value) {
     StringBuilder out = new StringBuilder("\"");
-    for (char c : value.toCharArray()) {
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
       switch (c) {
         case '"' -> out.append("\\\"");
         case '\\' -> out.append("\\\\");
