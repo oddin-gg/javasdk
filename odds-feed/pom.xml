@@ -24,7 +24,7 @@
       same names as ours.
     -->
     <api.baseline.groupPath>com/oddin/oddsfeed</api.baseline.groupPath>
-    <api.baseline.version>0.0.56</api.baseline.version>
+    <api.baseline.version>0.0.57</api.baseline.version>
   </properties>
 
   <dependencyManagement>
