@@ -157,17 +157,23 @@ types in packages whose name contains `internal`.
 
 ### How we check it
 
-- The old `examples` module compiles against the new jar.
-- A curated `api-usage` module calls every public signature once. It compiles against
-  0.0.56 and against 1.0.0 in CI. This is the real source-compatibility gate.
-- A reflection test walks the public entry points, collects every reachable type, and
-  fails if one lives in an `internal` package, or has no counterpart of the same name
-  in the 0.0.56 jar and is not on the **additions list**, a file in the repo that
-  names every type and method added in 1.x, reviewed like code. A reachable type
-  missing from `api-usage` fails the test too, so the curated module cannot drift.
-- A jar diff (japicmp) against 0.0.56 runs as an advisory report with an allowlist for
-  the accepted differences. It answers binary questions, not source ones, so it does
-  not gate.
+- The old `examples` compile against the new jar.
+- Generated usage is the real source-compatibility gate. A test reads the last 0.0.x
+  jar and writes code that calls every public method and constructor, reads every
+  public field and implements every public interface of the public API, then compiles
+  it against that jar (proving the code is right) and against 1.0. It catches what a
+  class-file comparison cannot: a checked exception added to a method, an abstract
+  method added to an interface a client implements, a return type a caller can no
+  longer assign. Generated rather than written by hand, so it covers every signature
+  and cannot drift.
+- A class-file comparison walks the public entry points, collects every reachable type,
+  and compares each with its 0.0.x counterpart: kind, supertypes, every public member
+  with its generic signature and nullability. It fails on a reachable type in an
+  `internal` package, and on any difference not on the **differences list**, a file in
+  the repo that names every type and member added, changed or gone in 1.x, reviewed
+  like code, and the source of the release notes.
+- No jar diff: binary compatibility is not promised, so a report that could not gate
+  would not be read.
 - Binary compatibility is not promised. A client that reaches the SDK through an
   intermediate library compiled against 0.0.x can hit `NoSuchMethodError` at runtime.
   We know of no such library. The 1.0.0 version signals the change.
@@ -520,7 +526,7 @@ must never be silent again, but the SDK cannot unwedge client code.
 
 ## 5. New in 1.0
 
-Additive only, and every addition is on the additions list (section 3). All of it
+Additive only, and every addition is on the differences list (section 3). All of it
 exists in the Go SDK already.
 
 - Entities: `Category` on tournaments, reference ids on matches and tournaments,
@@ -539,7 +545,11 @@ exists in the Go SDK already.
   name the cause.
 - Raw data: `default` methods on the extended listener delivering raw XML bytes for
   feed messages and REST responses, and raw-string getters next to enum getters.
-- Telemetry: SDK version in the HTTP `User-Agent` and in AMQP client properties.
+- Telemetry: the SDK reports its version the way the Go SDK does - an HTTP `User-Agent`
+  of `oddin-javasdk/<version> (java <version>)` and an `X-Oddin-SDK-Version` header on
+  every API call, and `SDK_version` next to today's `SDK=java` in the AMQP client
+  properties. The version comes from the jar, marked `-dev` for a build without one,
+  and a public getter returns it so a client can log what it runs.
 
 Things the Java SDK has and Go does not stay: multi-session with priority interests,
 `setSpecificEventsOnly`, raw API data callback.
@@ -632,14 +642,15 @@ Performance is a requirement, not a follow-up.
 
 ## 9. Build and release
 
-- Root `pom.xml`, modules `odds-feed` (published), `examples` and `api-usage`
-  (compile against it, not published), `system-tests`. Maven wrapper checked in.
+- Root `pom.xml`, modules `odds-feed` (published) and `system-tests`. Maven wrapper
+  checked in. The old `examples` and the generated usage are compiled by a test in
+  `odds-feed`, not by modules of their own.
 - The schema is vendored: a copy of the schema repo's XSDs and fixtures lives in this
   repo, with the source commit recorded next to it and a script that refreshes the
   copy. The build never reaches out to another repository. Old releases stay
   rebuildable. The drift job from section 6 watches the pin.
 - JDK 25 toolchain, JaCoCo, Surefire and Failsafe, Enforcer, the compatibility checks,
-  the additions list, XML generation from the vendored schema.
+  the differences list, XML generation from the vendored schema.
 - Version from the git tag. GitHub Actions on `v1*` tags from `next` or `main`: build,
   compatibility checks, system tests against both versions, then a pipeline step that
   queries the target registry and fails if the version already exists, then sign and
@@ -687,9 +698,9 @@ matters where it says so, the rest can run in parallel.
 10. `odds-feed` module with the public entity and message types as source-compatible
     declarations, no behaviour.
 11. The rest of the public API as declarations: managers, sessions, listeners,
-    configuration builder. Old `examples` compile. The `api-usage` module compiles
-    against both versions. The reachability test with the additions list.
-    Compatibility checks run in CI.
+    configuration builder. Old `examples` compile. The generated usage compiles
+    against both versions. The comparison scoped by reachability, with the
+    differences list. Compatibility checks run in CI.
 12. Generated feed models with name-preserving bindings, decoder hardening, raw-string
     getters, plus golden decode tests. One PR per message family. Lists the types
     whose shape changed.
@@ -742,7 +753,8 @@ group by group.
 
 27. Field parity with the Go SDK, in small groups.
 28. Option and method parity.
-29. Telemetry headers and client properties.
+29. Telemetry headers and client properties: the SDK version on every API call and
+    broker connection, as the Go SDK sends it (section 5), and a public version getter.
 30. Logging cleanup. Noisy logs are a client complaint.
 31. README, examples, integration guide with the onboarding checklist (distinct node
     ids, prefetch versus queue limit), FAQ update.
@@ -853,3 +865,10 @@ old names (section 3, difference 4).
   and the promise that a replay session can sit next to live sessions was wrong.
   Difference 7 and the mixed-instance rule of ticket 25 are withdrawn; the combination
   stays refused, as today.
+- 2026-09-29, ticket 11 checked against what tickets 10 and 12 had built: the
+  class-file comparison and its differences list already did the reachability test's
+  job, so the comparison is scoped by reachability instead of a second test. The
+  curated `api-usage` module became generated usage, which covers every signature
+  without upkeep; the advisory jar diff is dropped. Telemetry spelled out after the
+  Go SDK: version in `User-Agent`, `X-Oddin-SDK-Version` and the AMQP client
+  properties.
