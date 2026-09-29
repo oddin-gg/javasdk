@@ -21,6 +21,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -32,6 +33,7 @@ import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.jar.JarFile;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -42,8 +44,10 @@ import org.junit.jupiter.api.Test;
  * Compares the public types this module declares with the ones the 0.0.x release had.
  *
  * <p>Both sides are read as class files, never loaded: the baseline's classes have the same names
- * as ours. For every public type of the baseline in {@link #PACKAGES}, minus the ones listed in
- * {@link #NOT_HERE}, this module must have a type of the same kind and generic shape, and every
+ * as ours. The public API is every type reachable from the {@link #ENTRY_POINTS} through public
+ * signatures, plus the schema packages a client reaches by casting. For every such type of the
+ * baseline, minus the ones listed in {@link #NOT_HERE}, this module must have a type of the same
+ * kind and generic shape, and every
  * public member with the same name, erased signature, generic signature and nullability. Nullability
  * matters because Kotlin clients read it: the baseline carries it as JetBrains annotations, this
  * module as JSpecify ones.
@@ -56,18 +60,66 @@ class PublicShapeTest {
 
     private static final String ROOT = "com/oddin/oddsfeedsdk/";
 
-    /** The packages this module declares. */
-    private static final Set<String> PACKAGES = Set.of(
+    /** Where a client starts: what it creates, configures, implements or catches. */
+    private static final Set<String> ENTRY_POINTS = Set.of(
+            ROOT + "OddsFeed",
+            ROOT + "config/OddsFeedConfiguration",
+            ROOT + "config/OddsFeedConfigurationBuilder",
+            ROOT + "config/Environment",
+            ROOT + "config/Region",
+            ROOT + "config/ExceptionHandlingStrategy",
+            ROOT + "api/SportsInfoManager",
+            ROOT + "api/MarketDescriptionManager",
+            ROOT + "ProducerManager",
+            ROOT + "RecoveryManager",
+            ROOT + "ReplayManager",
+            ROOT + "OddsFeedSession",
+            ROOT + "ReplaySession",
+            ROOT + "OddsFeedSessionBuilder",
+            ROOT + "mq/MessageInterest",
+            ROOT + "subscribe/GlobalEventsListener",
+            ROOT + "subscribe/OddsFeedListener",
+            ROOT + "subscribe/OddsFeedExtListener",
+            // Kotlin declares no checked exceptions, so no signature leads to these
+            ROOT + "exceptions/OddsFeedSdkException",
+            ROOT + "exceptions/ApiException",
+            ROOT + "exceptions/GenericOdsFeedException",
+            ROOT + "exceptions/InitException",
+            ROOT + "exceptions/ItemNotFoundException",
+            ROOT + "exceptions/UnsupportedMessageInterestCombination",
+            ROOT + "exceptions/UnsupportedUrnFormatException");
+
+    /**
+     * Packages compared whole, reachable or not: the schema classes reach a client only by a cast
+     * of the raw callbacks' payload, and every other public type in them is one a client can name.
+     */
+    private static final Set<String> WHOLE_PACKAGES = Set.of(
             ROOT + "api/entities",
             ROOT + "api/entities/sportevent",
             ROOT + "api/factories",
-            ROOT + "cache",
             ROOT + "exceptions",
             ROOT + "mq",
             ROOT + "mq/entities",
             ROOT + "schema/feed/v1",
             ROOT + "schema/rest/v1",
             ROOT + "schema/utils");
+
+    /** The packages this module declares public types in, outside the internal ones. */
+    private static final Set<String> PACKAGES = Set.of(
+            ROOT.substring(0, ROOT.length() - 1),
+            ROOT + "api",
+            ROOT + "api/entities",
+            ROOT + "api/entities/sportevent",
+            ROOT + "api/factories",
+            ROOT + "cache",
+            ROOT + "config",
+            ROOT + "exceptions",
+            ROOT + "mq",
+            ROOT + "mq/entities",
+            ROOT + "schema/feed/v1",
+            ROOT + "schema/rest/v1",
+            ROOT + "schema/utils",
+            ROOT + "subscribe");
 
     /** Packages that were Java in 0.0.x already: their callers never had nullability to keep. */
     private static final Set<String> UNMARKED =
@@ -81,18 +133,14 @@ class PublicShapeTest {
     private static final Pattern KOTLIN_OR_IMPL = Pattern.compile(
             ".*(\\$DefaultImpls|\\$WhenMappings.*|Kt|Kt\\$.*|\\$\\d+|\\$[a-z][A-Za-z]*\\$\\d+.*)" + "|.*Impl(\\$.*)?");
 
-    /** In the cache package only the static data types are reachable from the entities; the rest is the cache itself. */
-    private static final Set<String> CACHE_TYPES =
-            Set.of(ROOT + "cache/StaticData", ROOT + "cache/LocalizedStaticData");
-
     /** The accepted differences, from {@code api/differences.txt}; see its header. */
     private static final Differences DIFFERENCES = Differences.read("/api/differences.txt");
 
     /** Public types of the baseline that are not here, and why. */
-    private static final Map<String, String> NOT_HERE = DIFFERENCES.types("gone");
+    static final Map<String, String> NOT_HERE = DIFFERENCES.types("gone");
 
     /** Public members of the baseline that are not here, and why. Keys are {@code type.name descriptor}. */
-    private static final Map<String, String> MEMBERS_NOT_HERE = DIFFERENCES.members("gone");
+    static final Map<String, String> MEMBERS_NOT_HERE = DIFFERENCES.members("gone");
 
     /** Public types here that the baseline did not have. */
     private static final Set<String> ADDED_TYPES = DIFFERENCES.types("added").keySet();
@@ -119,13 +167,15 @@ class PublicShapeTest {
     private static final String JSPECIFY_NULLABLE = "Lorg/jspecify/annotations/Nullable;";
     private static final String JSPECIFY_NULL_MARKED = "Lorg/jspecify/annotations/NullMarked;";
 
-    private static Map<String, ClassModel> baseline;
-    private static Map<String, ClassModel> current;
+    static Map<String, ClassModel> baseline;
+    static Map<String, ClassModel> current;
+    private static Set<String> baselineApi;
 
     @BeforeAll
     static void readBothSides() throws Exception {
         baseline = readBaseline();
         current = readCurrent();
+        baselineApi = reachable(baseline);
     }
 
     @Test
@@ -168,6 +218,22 @@ class PublicShapeTest {
             }
         }
         assertThat(extra).as("public types without a baseline counterpart").isEmpty();
+    }
+
+    /**
+     * What a client reaches from the entry points is public API here too: none of it may be in an
+     * internal package, and whatever the baseline did not have must be listed as added.
+     */
+    @Test
+    void everyTypeReachableFromTheEntryPointsIsPublicApi() {
+        Set<String> reached = reachable(current);
+        assertThat(reached).as("types reachable from the entry points").hasSizeGreaterThan(80);
+        assertThat(reached)
+                .as("internal types reachable from the entry points")
+                .noneMatch(name -> name.contains("/internal/"));
+        assertThat(reached)
+                .as("reachable types without a baseline counterpart")
+                .allMatch(name -> baseline.containsKey(name) || ADDED_TYPES.contains(relative(name)));
     }
 
     /**
@@ -363,19 +429,56 @@ class PublicShapeTest {
 
     // ------------------------------------------------------------------ class file helpers
 
-    private static boolean inScope(ClassModel model) {
+    static boolean inScope(ClassModel model) {
         String name = model.thisClass().asInternalName();
         String pkg = name.substring(0, name.lastIndexOf('/'));
-        if (!isPublic(model) || !PACKAGES.contains(pkg)) {
-            return false;
-        }
-        if (pkg.equals(ROOT + "cache") && !CACHE_TYPES.contains(name)) {
+        if (!isPublic(model) || !(WHOLE_PACKAGES.contains(pkg) || baselineApi.contains(name))) {
             return false;
         }
         return !KOTLIN_OR_IMPL.matcher(name.substring(pkg.length() + 1)).matches();
     }
 
-    private static Map<String, MethodModel> publicMethods(ClassModel model) {
+    /**
+     * Every type of ours reachable from the entry points: through the supertypes, and through the
+     * types in the signatures of public and protected members and public fields, generics included.
+     */
+    private static Set<String> reachable(Map<String, ClassModel> side) {
+        var seen = new TreeSet<String>();
+        var queue = new ArrayDeque<>(ENTRY_POINTS);
+        while (!queue.isEmpty()) {
+            String name = queue.poll();
+            ClassModel model = side.get(name);
+            if (model == null || !seen.add(name)) {
+                continue;
+            }
+            var texts = new ArrayList<String>();
+            model.superclass().ifPresent(s -> texts.add("L" + s.asInternalName() + ";"));
+            model.interfaces().forEach(i -> texts.add("L" + i.asInternalName() + ";"));
+            texts.add(signature(model));
+            for (MethodModel method : publicMethods(model).values()) {
+                texts.add(method.methodType().stringValue());
+                texts.add(signature(method));
+            }
+            for (FieldModel field : publicFields(model).values()) {
+                texts.add(field.fieldType().stringValue());
+                field.findAttribute(Attributes.signature())
+                        .ifPresent(sig -> texts.add(sig.signature().stringValue()));
+            }
+            for (String text : texts) {
+                Matcher type = TYPE_IN_SIGNATURE.matcher(text);
+                while (type.find()) {
+                    if (type.group(1).startsWith(ROOT)) {
+                        queue.add(type.group(1));
+                    }
+                }
+            }
+        }
+        return seen;
+    }
+
+    private static final Pattern TYPE_IN_SIGNATURE = Pattern.compile("L([\\w/$]+)[;<]");
+
+    static Map<String, MethodModel> publicMethods(ClassModel model) {
         Map<String, MethodModel> methods = new TreeMap<>();
         for (MethodModel method : model.methods()) {
             String name = method.methodName().stringValue();
@@ -396,7 +499,7 @@ class PublicShapeTest {
     }
 
     /** The public methods declared on the type and on its superclasses among {@code side}, nearest first. */
-    private static Map<String, MethodModel> callableMethods(ClassModel model, Map<String, ClassModel> side) {
+    static Map<String, MethodModel> callableMethods(ClassModel model, Map<String, ClassModel> side) {
         Map<String, MethodModel> methods = new TreeMap<>(publicMethods(model));
         Optional<ClassModel> parent = superclass(model, side);
         while (parent.isPresent()) {
@@ -445,7 +548,7 @@ class PublicShapeTest {
         return model.superclass().map(ClassEntry::asInternalName).map(side::get);
     }
 
-    private static Map<String, FieldModel> publicFields(ClassModel model) {
+    static Map<String, FieldModel> publicFields(ClassModel model) {
         Map<String, FieldModel> fields = new TreeMap<>();
         for (FieldModel field : model.fields()) {
             if (field.flags().has(AccessFlag.PUBLIC) && !field.flags().has(AccessFlag.SYNTHETIC)) {
@@ -488,7 +591,7 @@ class PublicShapeTest {
                 .collect(Collectors.toCollection(TreeSet::new));
     }
 
-    private static String signature(ClassModel model) {
+    static String signature(ClassModel model) {
         return model.findAttribute(Attributes.signature())
                 .map(s -> s.signature().stringValue())
                 .orElse("");
@@ -512,11 +615,11 @@ class PublicShapeTest {
         return model.flags().has(AccessFlag.PUBLIC);
     }
 
-    private static boolean isStatic(MethodModel method) {
+    static boolean isStatic(MethodModel method) {
         return method.flags().has(AccessFlag.STATIC);
     }
 
-    private static String relative(String internalName) {
+    static String relative(String internalName) {
         return internalName.startsWith(ROOT) ? internalName.substring(ROOT.length()) : internalName;
     }
 
