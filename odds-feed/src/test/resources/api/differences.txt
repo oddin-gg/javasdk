@@ -1,14 +1,14 @@
-# Every difference from the 0.0.56 public API that is accepted, one per line. PublicShapeTest fails
+# Every difference from the 0.0.57 public API that is accepted, one per line. PublicShapeTest fails
 # on any difference not listed here, and on an entry that no longer matches anything, so this file is
 # always the exact list - for review, and for the release notes.
 #
 #   kind | type or member | reason                       (fields separated by " | ")
 #
-# gone        a public type or member 0.0.56 had that is not here: internal, dropped with the schema,
+# gone        a public type or member 0.0.57 had that is not here: internal, dropped with the schema,
 #             or arriving with a later part of the rewrite
-# added       a public type or member 0.0.56 did not have
+# added       a public type or member 0.0.57 did not have
 # signature   a member whose generic signature changed on purpose; the third field is the new one
-# deprecated  a member deprecated here that 0.0.56 did not deprecate
+# deprecated  a member deprecated here that 0.0.57 did not deprecate
 #
 # Types are internal names relative to com/oddin/oddsfeedsdk/; members add ".name descriptor".
 
