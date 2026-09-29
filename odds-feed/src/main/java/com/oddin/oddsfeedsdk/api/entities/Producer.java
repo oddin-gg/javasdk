@@ -27,9 +27,11 @@ public interface Producer {
 
     long getProcessingQueDelay();
 
-    @Nullable Instant getTimestampForRecovery();
+    @Nullable
+    Instant getTimestampForRecovery();
 
     int getStatefulRecoveryWindowInMinutes();
 
-    @Nullable RecoveryInfo getRecoveryInfo();
+    @Nullable
+    RecoveryInfo getRecoveryInfo();
 }

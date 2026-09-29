@@ -6,17 +6,24 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 public interface Player {
-    @Nullable URN getId();
+    @Nullable
+    URN getId();
 
-    @Nullable Map<Locale, String> getNames();
+    @Nullable
+    Map<Locale, String> getNames();
 
-    @Nullable String getName(Locale locale);
+    @Nullable
+    String getName(Locale locale);
 
-    @Nullable Map<Locale, String> getFullNames();
+    @Nullable
+    Map<Locale, String> getFullNames();
 
-    @Nullable String getFullName(Locale locale);
+    @Nullable
+    String getFullName(Locale locale);
 
-    @Nullable Map<Locale, String> getSportIDs();
+    @Nullable
+    Map<Locale, String> getSportIDs();
 
-    @Nullable String getSportID(Locale locale);
+    @Nullable
+    String getSportID(Locale locale);
 }

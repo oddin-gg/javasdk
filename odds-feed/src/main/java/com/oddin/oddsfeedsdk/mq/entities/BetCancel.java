@@ -6,13 +6,16 @@ import java.util.List;
 import org.jspecify.annotations.Nullable;
 
 public interface BetCancel<T extends SportEvent> extends MarketMessage<T> {
-    @Nullable Date getStartTime();
+    @Nullable
+    Date getStartTime();
 
-    @Nullable Date getEndTime();
+    @Nullable
+    Date getEndTime();
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable String getSupercededBy();
+    @Nullable
+    String getSupercededBy();
 
     @Override
     List<MarketCancel> getMarkets();

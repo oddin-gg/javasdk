@@ -1,7 +1,6 @@
 package com.oddin.oddsfeedsdk.schema.utils;
 
 import com.oddin.oddsfeedsdk.exceptions.UnsupportedUrnFormatException;
-
 import java.util.Objects;
 
 public class URN {
@@ -56,9 +55,7 @@ public class URN {
         if (this == o) return true;
         if (o == null || getClass() != o.getClass()) return false;
         URN urn = (URN) o;
-        return Objects.equals(prefix, urn.prefix) &&
-                Objects.equals(type, urn.type) &&
-                Objects.equals(id, urn.id);
+        return Objects.equals(prefix, urn.prefix) && Objects.equals(type, urn.type) && Objects.equals(id, urn.id);
     }
 
     @Override

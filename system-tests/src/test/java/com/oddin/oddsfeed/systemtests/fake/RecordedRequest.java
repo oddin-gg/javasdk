@@ -15,21 +15,21 @@ import java.util.Map;
  */
 public record RecordedRequest(String method, String path, String query, Map<String, String> headers) {
 
-  public String header(String name) {
-    return headers.get(name.toLowerCase(java.util.Locale.ROOT));
-  }
+    public String header(String name) {
+        return headers.get(name.toLowerCase(java.util.Locale.ROOT));
+    }
 
-  /** The first value of this query parameter, decoded, or null when the query has none. */
-  public String parameter(String name) {
-    if (query == null) {
-      return null;
+    /** The first value of this query parameter, decoded, or null when the query has none. */
+    public String parameter(String name) {
+        if (query == null) {
+            return null;
+        }
+        for (String pair : query.split("&", -1)) {
+            int eq = pair.indexOf('=');
+            if (URLDecoder.decode(eq < 0 ? pair : pair.substring(0, eq), UTF_8).equals(name)) {
+                return eq < 0 ? "" : URLDecoder.decode(pair.substring(eq + 1), UTF_8);
+            }
+        }
+        return null;
     }
-    for (String pair : query.split("&", -1)) {
-      int eq = pair.indexOf('=');
-      if (URLDecoder.decode(eq < 0 ? pair : pair.substring(0, eq), UTF_8).equals(name)) {
-        return eq < 0 ? "" : URLDecoder.decode(pair.substring(eq + 1), UTF_8);
-      }
-    }
-    return null;
-  }
 }

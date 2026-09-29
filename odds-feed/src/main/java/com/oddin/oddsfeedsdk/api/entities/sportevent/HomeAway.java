@@ -1,7 +1,8 @@
 package com.oddin.oddsfeedsdk.api.entities.sportevent;
 
 public enum HomeAway {
-    HOME(0), AWAY(1);
+    HOME(0),
+    AWAY(1);
 
     private final int value;
 

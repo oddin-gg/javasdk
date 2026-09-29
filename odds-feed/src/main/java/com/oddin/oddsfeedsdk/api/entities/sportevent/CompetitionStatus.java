@@ -5,9 +5,12 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 public interface CompetitionStatus {
-    @Nullable URN getWinnerId();
+    @Nullable
+    URN getWinnerId();
 
-    @Nullable EventStatus getStatus();
+    @Nullable
+    EventStatus getStatus();
 
-    @Nullable Map<String, @Nullable Object> getProperties();
+    @Nullable
+    Map<String, @Nullable Object> getProperties();
 }

@@ -9,11 +9,14 @@ public interface Market {
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable Integer getRefId();
+    @Nullable
+    Integer getRefId();
 
     Map<String, String> getSpecifiers();
 
-    @Nullable String getName();
+    @Nullable
+    String getName();
 
-    @Nullable String getName(Locale locale);
+    @Nullable
+    String getName(Locale locale);
 }

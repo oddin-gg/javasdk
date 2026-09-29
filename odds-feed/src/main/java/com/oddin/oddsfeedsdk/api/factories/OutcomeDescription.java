@@ -8,9 +8,12 @@ public interface OutcomeDescription {
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable Long getRefId();
+    @Nullable
+    Long getRefId();
 
-    @Nullable String getName(Locale locale);
+    @Nullable
+    String getName(Locale locale);
 
-    @Nullable String getDescription(Locale locale);
+    @Nullable
+    String getDescription(Locale locale);
 }

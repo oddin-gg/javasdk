@@ -6,9 +6,11 @@ import java.util.List;
 import org.jspecify.annotations.Nullable;
 
 public interface RollbackBetCancel<T extends SportEvent> extends MarketMessage<T> {
-    @Nullable Date getStartTime();
+    @Nullable
+    Date getStartTime();
 
-    @Nullable Date getEndTime();
+    @Nullable
+    Date getEndTime();
 
     @Override
     List<Market> getMarkets();

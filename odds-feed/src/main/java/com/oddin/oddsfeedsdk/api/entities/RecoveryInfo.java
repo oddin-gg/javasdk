@@ -11,5 +11,6 @@ public interface RecoveryInfo {
 
     boolean getSuccessful();
 
-    @Nullable Integer getNodeId();
+    @Nullable
+    Integer getNodeId();
 }

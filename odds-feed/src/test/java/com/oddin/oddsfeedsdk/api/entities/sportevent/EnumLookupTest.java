@@ -34,8 +34,12 @@ class EnumLookupTest {
     @Test
     void anEventStatusIsFoundByItsRestNameAndAnythingElseIsUnknown() {
         for (EventStatus status : EventStatus.values()) {
-            assertThat(EventStatus.fromApiEventStatus(status.getApiName())).as(status.getApiName()).isEqualTo(status);
-            assertThat(EventStatus.Companion.fromApiEventStatus(status.getApiName())).as(status.getApiName()).isEqualTo(status);
+            assertThat(EventStatus.fromApiEventStatus(status.getApiName()))
+                    .as(status.getApiName())
+                    .isEqualTo(status);
+            assertThat(EventStatus.Companion.fromApiEventStatus(status.getApiName()))
+                    .as(status.getApiName())
+                    .isEqualTo(status);
         }
         // the constant is Finished, the REST name is closed
         assertThat(EventStatus.fromApiEventStatus("finished")).isEqualTo(EventStatus.Unknown);
@@ -61,8 +65,12 @@ class EnumLookupTest {
                 9, EventStatus.Abandoned);
         for (var entry : expected.entrySet()) {
             var feed = OFEventStatus.fromValue(entry.getKey());
-            assertThat(EventStatus.fromFeedEventStatus(feed)).as("feed %d", entry.getKey()).isEqualTo(entry.getValue());
-            assertThat(EventStatus.Companion.fromFeedEventStatus(feed)).as("feed %d", entry.getKey()).isEqualTo(entry.getValue());
+            assertThat(EventStatus.fromFeedEventStatus(feed))
+                    .as("feed %d", entry.getKey())
+                    .isEqualTo(entry.getValue());
+            assertThat(EventStatus.Companion.fromFeedEventStatus(feed))
+                    .as("feed %d", entry.getKey())
+                    .isEqualTo(entry.getValue());
         }
         // every constant but UNKNOWN has a number above, and UNKNOWN stays Unknown
         assertThat(expected).hasSize(OFEventStatus.values().length - 1);

@@ -21,89 +21,92 @@ import java.util.stream.Collectors;
  */
 public final class GlobalEvents implements GlobalEventsListener {
 
-  private final CountDownLatch connectionDown = new CountDownLatch(1);
-  private final List<ProducerStatus> producerStatuses = new CopyOnWriteArrayList<>();
-  private final BlockingQueue<ProducerStatus> unreadStatuses = new LinkedBlockingQueue<>();
-  private final BlockingQueue<EventRecovery> eventRecoveries = new LinkedBlockingQueue<>();
+    private final CountDownLatch connectionDown = new CountDownLatch(1);
+    private final List<ProducerStatus> producerStatuses = new CopyOnWriteArrayList<>();
+    private final BlockingQueue<ProducerStatus> unreadStatuses = new LinkedBlockingQueue<>();
+    private final BlockingQueue<EventRecovery> eventRecoveries = new LinkedBlockingQueue<>();
 
-  /** Whether the SDK reported its feed connection down within {@code wait}. */
-  public boolean awaitConnectionDown(Duration wait) throws InterruptedException {
-    return connectionDown.await(wait.toMillis(), TimeUnit.MILLISECONDS);
-  }
-
-  /** Every producer status change so far, oldest first, whether a test has waited for it or not. */
-  public List<ProducerStatus> producerStatuses() {
-    return List.copyOf(producerStatuses);
-  }
-
-  /**
-   * The next status change of this producer, within {@link Received#DELIVERY}.
-   *
-   * @throws AssertionError if none arrives, naming every other status change that did
-   */
-  public ProducerStatus nextProducerStatus(long producerId) throws InterruptedException {
-    List<ProducerStatus> others = new ArrayList<>();
-    Optional<ProducerStatus> status = pollProducerStatus(producerId, Received.DELIVERY, others);
-    if (status.isEmpty()) {
-      throw new AssertionError("no status change of producer " + producerId
-          + " reached the listener within " + Received.DELIVERY.toSeconds() + " s; "
-          + (others.isEmpty()
-              ? "nothing else arrived either"
-              : "it got " + others.stream().map(GlobalEvents::describe).collect(Collectors.joining(", "))
-                  + " instead"));
+    /** Whether the SDK reported its feed connection down within {@code wait}. */
+    public boolean awaitConnectionDown(Duration wait) throws InterruptedException {
+        return connectionDown.await(wait.toMillis(), TimeUnit.MILLISECONDS);
     }
-    return status.get();
-  }
 
-  /** The next status change of this producer within {@code wait}, or empty; for checking there is none. */
-  public Optional<ProducerStatus> pollProducerStatus(long producerId, Duration wait) throws InterruptedException {
-    return pollProducerStatus(producerId, wait, new ArrayList<>());
-  }
-
-  private Optional<ProducerStatus> pollProducerStatus(long producerId, Duration wait, List<ProducerStatus> others)
-      throws InterruptedException {
-    long deadline = System.nanoTime() + wait.toNanos();
-    while (true) {
-      ProducerStatus status = unreadStatuses.poll(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
-      if (status == null) {
-        return Optional.empty();
-      }
-      if (status.getProducer() != null && status.getProducer().getId() == producerId) {
-        return Optional.of(status);
-      }
-      others.add(status);
+    /** Every producer status change so far, oldest first, whether a test has waited for it or not. */
+    public List<ProducerStatus> producerStatuses() {
+        return List.copyOf(producerStatuses);
     }
-  }
 
-  /** The next completed event recovery within {@code wait}, or empty. */
-  public Optional<EventRecovery> pollEventRecovery(Duration wait) throws InterruptedException {
-    return Optional.ofNullable(eventRecoveries.poll(wait.toMillis(), TimeUnit.MILLISECONDS));
-  }
+    /**
+     * The next status change of this producer, within {@link Received#DELIVERY}.
+     *
+     * @throws AssertionError if none arrives, naming every other status change that did
+     */
+    public ProducerStatus nextProducerStatus(long producerId) throws InterruptedException {
+        List<ProducerStatus> others = new ArrayList<>();
+        Optional<ProducerStatus> status = pollProducerStatus(producerId, Received.DELIVERY, others);
+        if (status.isEmpty()) {
+            throw new AssertionError("no status change of producer " + producerId
+                    + " reached the listener within " + Received.DELIVERY.toSeconds() + " s; "
+                    + (others.isEmpty()
+                            ? "nothing else arrived either"
+                            : "it got "
+                                    + others.stream()
+                                            .map(GlobalEvents::describe)
+                                            .collect(Collectors.joining(", ")) + " instead"));
+        }
+        return status.get();
+    }
 
-  /** "producer 1 down (OTHER)" - enough to tell status changes apart in a failure. */
-  static String describe(ProducerStatus status) {
-    String producer = status.getProducer() == null
-        ? "unknown producer"
-        : "producer " + status.getProducer().getId();
-    return producer + (status.isDown() ? " down" : " up") + " (" + status.getProducerStatusReason() + ")";
-  }
+    /** The next status change of this producer within {@code wait}, or empty; for checking there is none. */
+    public Optional<ProducerStatus> pollProducerStatus(long producerId, Duration wait) throws InterruptedException {
+        return pollProducerStatus(producerId, wait, new ArrayList<>());
+    }
 
-  @Override
-  public void onConnectionDown() {
-    connectionDown.countDown();
-  }
+    private Optional<ProducerStatus> pollProducerStatus(long producerId, Duration wait, List<ProducerStatus> others)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + wait.toNanos();
+        while (true) {
+            ProducerStatus status =
+                    unreadStatuses.poll(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            if (status == null) {
+                return Optional.empty();
+            }
+            if (status.getProducer() != null && status.getProducer().getId() == producerId) {
+                return Optional.of(status);
+            }
+            others.add(status);
+        }
+    }
 
-  @Override
-  public void onProducerStatusChange(ProducerStatus producerStatus) {
-    producerStatuses.add(producerStatus);
-    unreadStatuses.add(producerStatus);
-  }
+    /** The next completed event recovery within {@code wait}, or empty. */
+    public Optional<EventRecovery> pollEventRecovery(Duration wait) throws InterruptedException {
+        return Optional.ofNullable(eventRecoveries.poll(wait.toMillis(), TimeUnit.MILLISECONDS));
+    }
 
-  @Override
-  public void onEventRecoveryCompleted(URN eventId, long requestId) {
-    eventRecoveries.add(new EventRecovery(eventId, requestId));
-  }
+    /** "producer 1 down (OTHER)" - enough to tell status changes apart in a failure. */
+    static String describe(ProducerStatus status) {
+        String producer = status.getProducer() == null
+                ? "unknown producer"
+                : "producer " + status.getProducer().getId();
+        return producer + (status.isDown() ? " down" : " up") + " (" + status.getProducerStatusReason() + ")";
+    }
 
-  /** One {@link #onEventRecoveryCompleted} call. */
-  public record EventRecovery(URN eventId, long requestId) {}
+    @Override
+    public void onConnectionDown() {
+        connectionDown.countDown();
+    }
+
+    @Override
+    public void onProducerStatusChange(ProducerStatus producerStatus) {
+        producerStatuses.add(producerStatus);
+        unreadStatuses.add(producerStatus);
+    }
+
+    @Override
+    public void onEventRecoveryCompleted(URN eventId, long requestId) {
+        eventRecoveries.add(new EventRecovery(eventId, requestId));
+    }
+
+    /** One {@link #onEventRecoveryCompleted} call. */
+    public record EventRecovery(URN eventId, long requestId) {}
 }

@@ -11,5 +11,6 @@ public interface CompetitorOutcomeOdds extends OutcomeOdds {
 
     /** @deprecated the feed never sends this value. */
     @Deprecated
-    @Nullable Competitor getTeam();
+    @Nullable
+    Competitor getTeam();
 }

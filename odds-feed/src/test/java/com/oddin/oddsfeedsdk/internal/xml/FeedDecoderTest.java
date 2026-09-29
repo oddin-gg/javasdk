@@ -12,21 +12,21 @@ import com.oddin.oddsfeedsdk.schema.feed.v1.OFChangeType;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFFavourite;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFFixtureChange;
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFOutcomeActive;
-import com.oddin.oddsfeedsdk.schema.feed.v1.OFResult;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFMarketStatus;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChangeMarket;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFOutcomeActive;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFResult;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeAll;
@@ -43,7 +43,8 @@ class FeedDecoderTest {
     @BeforeAll
     static void loadTheSchema() throws Exception {
         strict = FeedDecoder.strict(
-                FeedDecoder.DEFAULT_MAX_BYTES, FeedGoldenTest.feedSchema(FeedGoldenTest.vendored().resolve("schema/feed")));
+                FeedDecoder.DEFAULT_MAX_BYTES,
+                FeedGoldenTest.feedSchema(FeedGoldenTest.vendored().resolve("schema/feed")));
     }
 
     @Test
@@ -73,7 +74,8 @@ class FeedDecoderTest {
             String base = "http://127.0.0.1:" + server.getAddress().getPort();
             // the server answers, so the zero below means the parser never called, not that it could not
             try (var client = HttpClient.newHttpClient()) {
-                client.send(HttpRequest.newBuilder(URI.create(base + "/control")).build(), BodyHandlers.discarding());
+                client.send(
+                        HttpRequest.newBuilder(URI.create(base + "/control")).build(), BodyHandlers.discarding());
             }
             assertThat(requests).as("the control request").hasValue(1);
             String entity = """
@@ -113,8 +115,8 @@ class FeedDecoderTest {
     @Test
     void nestingDeeperThanTheLimitIsRefused() throws DecodeException {
         String deep = "<x>".repeat(FeedDecoder.MAX_DEPTH) + "</x>".repeat(FeedDecoder.MAX_DEPTH);
-        assertThatThrownBy(() -> lenient.decode(bytes(
-                "<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">" + deep + "</alive>")))
+        assertThatThrownBy(() -> lenient.decode(
+                        bytes("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">" + deep + "</alive>")))
                 .isInstanceOf(DecodeException.class);
         // the same content, shallow, is only skipped
         assertThat(lenient.decode(bytes("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\"><x/></alive>")))
@@ -171,7 +173,10 @@ class FeedDecoderTest {
                   <odds><market id="1" status="-9"/></odds>
                 </odds_change>
                 """;
-        OFOddsChangeMarket market = ((OFOddsChange) lenient.decode(bytes(xml))).getOdds().getMarket().getFirst();
+        OFOddsChangeMarket market = ((OFOddsChange) lenient.decode(bytes(xml)))
+                .getOdds()
+                .getMarket()
+                .getFirst();
         assertThat(market.getStatus()).isEqualTo(OFMarketStatus.UNKNOWN);
         assertThat(market.getStatusRaw()).isEqualTo(-9);
         assertThatThrownBy(() -> strict.decode(bytes(xml))).isInstanceOf(DecodeException.class);
@@ -185,7 +190,8 @@ class FeedDecoderTest {
                   <outcomes><market id="1"><outcome id="1"/></market></outcomes>
                 </bet_settlement>
                 """));
-        var outcome = settlement.getOutcomes().getMarket().getFirst().getOutcome().getFirst();
+        var outcome =
+                settlement.getOutcomes().getMarket().getFirst().getOutcome().getFirst();
         assertThat(outcome.getResult()).isNull();
         assertThat(outcome.getResultRaw()).isNull();
         outcome.setResult(null);
@@ -200,20 +206,24 @@ class FeedDecoderTest {
         Path feed = FeedGoldenTest.vendored().resolve("test/fixtures/feed");
         var betStop = (OFBetStop) lenient.decode(Files.readAllBytes(feed.resolve("bet_stop/bet_stop_all_groups.xml")));
         assertThat(betStop.getMarketStatus()).isEqualTo(OFMarketStatus.SUSPENDED);
-        var fixtureChange = (OFFixtureChange) lenient.decode(Files.readAllBytes(feed.resolve("fixture_change/fixture_change.xml")));
+        var fixtureChange =
+                (OFFixtureChange) lenient.decode(Files.readAllBytes(feed.resolve("fixture_change/fixture_change.xml")));
         assertThat(fixtureChange.getChangeType()).isEqualTo(OFChangeType.NEW);
-        var settlement = (OFBetSettlement) lenient.decode(Files.readAllBytes(feed.resolve("bet_settlement/bet_settlement.xml")));
+        var settlement =
+                (OFBetSettlement) lenient.decode(Files.readAllBytes(feed.resolve("bet_settlement/bet_settlement.xml")));
         assertThat(settlement.getOutcomes().getMarket().getFirst().getOutcome())
                 .extracting(OFBetSettlementMarket.OFOutcome::getResult)
                 .containsExactly(OFResult.WON, OFResult.LOST);
-        var odds = (OFOddsChange) lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_markets_only.xml")));
+        var odds = (OFOddsChange)
+                lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_markets_only.xml")));
         OFOddsChangeMarket market = odds.getOdds().getMarket().getFirst();
         assertThat(market.getFavourite()).isEqualTo(OFFavourite.YES);
         // this market has no specifiers: empty, as in 0.0.x, and the raw value says there were none
         assertThat(market.getSpecifiers()).isEmpty();
         assertThat(market.getSpecifiersRaw()).isNull();
         assertThat(market.getOutcome().getFirst().getActive()).isEqualTo(OFOutcomeActive.ACTIVE);
-        var closed = (OFOddsChange) lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_closed_with_winner.xml")));
+        var closed = (OFOddsChange)
+                lenient.decode(Files.readAllBytes(feed.resolve("odds_change/odds_change_closed_with_winner.xml")));
         assertThat(closed.getSportEventStatus().getStatus()).isEqualTo(OFEventStatus.FINALIZED);
     }
 
@@ -234,7 +244,8 @@ class FeedDecoderTest {
         assertThat(OFMarketStatus.fromValue(-4)).isEqualTo(OFMarketStatus.CANCELLED);
         assertThat(OFMarketStatus.CANCELLED.value()).isEqualTo(-4);
         // 0.0.x threw for a number without a constant, and UNKNOWN is not one
-        assertThatThrownBy(() -> OFMarketStatus.fromValue(Integer.MIN_VALUE)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> OFMarketStatus.fromValue(Integer.MIN_VALUE))
+                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(OFMarketStatus.UNKNOWN::value).isInstanceOf(IllegalStateException.class);
     }
 }

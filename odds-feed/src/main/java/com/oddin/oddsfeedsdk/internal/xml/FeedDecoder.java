@@ -94,7 +94,8 @@ public final class FeedDecoder {
             throw new DecodeException("message does not match the schema: " + String.join("; ", problems));
         }
         if (!(decoded instanceof UnparsedMessage message)) {
-            throw new DecodeException("message is not a feed message: " + decoded.getClass().getSimpleName());
+            throw new DecodeException(
+                    "message is not a feed message: " + decoded.getClass().getSimpleName());
         }
         return message;
     }

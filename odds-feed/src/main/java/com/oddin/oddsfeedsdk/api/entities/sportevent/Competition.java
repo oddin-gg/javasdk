@@ -4,7 +4,9 @@ import java.util.List;
 import org.jspecify.annotations.Nullable;
 
 public interface Competition extends SportEvent {
-    @Nullable CompetitionStatus getStatus();
+    @Nullable
+    CompetitionStatus getStatus();
 
-    @Nullable List<Competitor> getCompetitors();
+    @Nullable
+    List<Competitor> getCompetitors();
 }

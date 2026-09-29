@@ -6,13 +6,18 @@ import java.util.Locale;
 import org.jspecify.annotations.Nullable;
 
 public interface Tournament extends LongTermEvent {
-    @Nullable List<Competitor> getCompetitors();
+    @Nullable
+    List<Competitor> getCompetitors();
 
-    @Nullable Date getStartDate();
+    @Nullable
+    Date getStartDate();
 
-    @Nullable Date getEndDate();
+    @Nullable
+    Date getEndDate();
 
-    @Nullable Integer getRiskTier();
+    @Nullable
+    Integer getRiskTier();
 
-    @Nullable String getAbbreviation(Locale locale);
+    @Nullable
+    String getAbbreviation(Locale locale);
 }
