@@ -12,7 +12,7 @@ import java.util.random.RandomGeneratorFactory;
  * every time for a size, so a benchmark run can be compared with the last one.
  *
  * <p>Most markets have two or three outcomes, some have many (a correct score has up to twenty), and
- * about half carry specifiers, as live markets do.
+ * three in four carry specifiers.
  */
 public final class Corpus {
 
