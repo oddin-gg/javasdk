@@ -22,6 +22,7 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -513,7 +514,9 @@ class PublicShapeTest {
                         continue;
                     }
                     String[] fields = line.split(" \\| ", -1);
+                    // every field, the reason above all, must say something
                     if (fields.length < 3
+                            || Arrays.stream(fields).anyMatch(String::isBlank)
                             || !Set.of("gone", "added", "signature", "deprecated")
                                     .contains(fields[0])
                             || (fields[0].equals("signature") && fields.length < 4)) {
