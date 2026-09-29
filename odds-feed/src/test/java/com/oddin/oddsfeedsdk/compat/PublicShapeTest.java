@@ -66,10 +66,12 @@ class PublicShapeTest {
             ROOT + "mq",
             ROOT + "mq/entities",
             ROOT + "schema/feed/v1",
+            ROOT + "schema/rest/v1",
             ROOT + "schema/utils");
 
     /** Packages that were Java in 0.0.x already: their callers never had nullability to keep. */
-    private static final Set<String> UNMARKED = Set.of(ROOT + "schema/feed/v1", ROOT + "schema/utils");
+    private static final Set<String> UNMARKED =
+            Set.of(ROOT + "schema/feed/v1", ROOT + "schema/rest/v1", ROOT + "schema/utils");
 
     /**
      * Kotlin compiler output that has no Java counterpart and that no client code names: interface

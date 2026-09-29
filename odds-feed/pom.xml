@@ -91,8 +91,8 @@
     <plugins>
       <plugin>
         <!--
-          Generates the feed XML classes from the vendored schema at every build; nothing generated
-          is committed. src/main/xjb keeps the 0.0.x class names and interfaces.
+          Generates the feed and REST XML classes from the vendored schema at every build; nothing
+          generated is committed. src/main/xjb keeps the 0.0.x class names and interfaces.
         -->
         <groupId>org.jvnet.jaxb</groupId>
         <artifactId>jaxb-maven-plugin</artifactId>
@@ -100,6 +100,7 @@
         <configuration>
           <extension>true</extension>
           <noFileHeader>true</noFileHeader>
+          <episode>false</episode>
           <args>
             <arg>-Xinheritance</arg>
             <arg>-Xinject-code</arg>
@@ -130,6 +131,23 @@
                 <include>feed.xjb</include>
               </bindingIncludes>
               <generateDirectory>${project.build.directory}/generated-sources/xjc-feed</generateDirectory>
+            </configuration>
+          </execution>
+          <execution>
+            <id>rest</id>
+            <goals>
+              <goal>generate</goal>
+            </goals>
+            <configuration>
+              <schemaDirectory>${project.basedir}/../vendor/oddsfeedschema/schema/rest</schemaDirectory>
+              <schemaIncludes>
+                <include>*.xsd</include>
+              </schemaIncludes>
+              <bindingDirectory>${project.basedir}/src/main/xjb</bindingDirectory>
+              <bindingIncludes>
+                <include>rest.xjb</include>
+              </bindingIncludes>
+              <generateDirectory>${project.build.directory}/generated-sources/xjc-rest</generateDirectory>
             </configuration>
           </execution>
         </executions>

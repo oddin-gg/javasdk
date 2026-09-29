@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Keeps the REST XML classes under the names, package and interfaces 0.0.x had, so client code that
+  casts a raw API response to one of them still compiles. The RA prefix comes from the name transform;
+  the bindings below name what 0.0.x named differently. What the schema no longer has, the generated
+  classes do not have either; PublicShapeTest lists it.
+-->
+<jaxb:bindings version="3.0"
+               xmlns:jaxb="https://jakarta.ee/xml/ns/jaxb"
+               xmlns:xs="http://www.w3.org/2001/XMLSchema"
+               xmlns:inheritance="urn:jaxb.jvnet.org:plugin:inheritance"
+               xmlns:ci="http://jaxb.dev.java.net/plugin/code-injector"
+               jaxb:extensionBindingPrefixes="inheritance ci">
+
+  <jaxb:globalBindings generateElementProperty="false"/>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/whoami.xsd">
+    <jaxb:schemaBindings>
+      <jaxb:package name="com.oddin.oddsfeedsdk.schema.rest.v1"/>
+      <jaxb:nameXmlTransform>
+        <jaxb:typeName prefix="RA"/>
+        <jaxb:elementName prefix="RA"/>
+        <jaxb:anonymousTypeName prefix="RA"/>
+      </jaxb:nameXmlTransform>
+    </jaxb:schemaBindings>
+    <jaxb:bindings node="//xs:complexType[@name='bookmakerDetail']">
+      <jaxb:factoryMethod name="BookmakerDetail"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.ResponseWithCode</inheritance:implements>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/error.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='errorResponse']">
+      <jaxb:class name="RAError"/>
+      <jaxb:factoryMethod name="Error"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.ResponseWithCode</inheritance:implements>
+      <ci:code>
+        /** Null for a status this SDK does not know; {@link #getResponseCodeRaw()} keeps the text. */
+        public RAResponseCode getResponseCode() {
+            for (RAResponseCode code : RAResponseCode.values()) {
+                if (code.value().equals(this.responseCodeRaw)) {
+                    return code;
+                }
+            }
+            return null;
+        }
+
+        public void setResponseCode(RAResponseCode value) {
+            this.responseCodeRaw = value == null ? null : value.value();
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='errorResponse']/xs:attribute[@name='response_code']">
+      <jaxb:property name="responseCodeRaw"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/markets.xsd">
+    <jaxb:bindings node="//xs:simpleType[@name='outcomeType']">
+      <!-- a String in 0.0.x -->
+      <jaxb:typesafeEnumClass map="false"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='market_descriptions']">
+      <jaxb:class name="RAMarketDescriptions"/>
+      <jaxb:factoryMethod name="MarketDescriptions"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.ResponseWithCode</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='outcome_description']//xs:element[@name='outcome']/xs:complexType">
+      <jaxb:class name="Outcome"/>
+      <jaxb:factoryMethod name="OutcomeDescriptionOutcome"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='specifier_description']">
+      <jaxb:class name="RADescSpecifiers"/>
+      <jaxb:factoryMethod name="DescSpecifiers"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='specifier_description']//xs:element[@name='specifier']/xs:complexType">
+      <jaxb:class name="Specifier"/>
+      <jaxb:factoryMethod name="DescSpecifiersSpecifier"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='market_description']">
+      <jaxb:factoryMethod name="MarketDescription"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='outcome_description']">
+      <jaxb:factoryMethod name="OutcomeDescription"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/match_status.xsd">
+    <jaxb:bindings node="//xs:element[@name='match_status_descriptions']">
+      <jaxb:class name="RAMatchStatusDescriptions"/>
+      <jaxb:factoryMethod name="MatchStatusDescriptions"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.ResponseWithCode</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='match_status_description']">
+      <jaxb:factoryMethod name="MatchStatusDescription"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.cache.StaticData</inheritance:implements>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/producers.xsd">
+    <jaxb:bindings node="//xs:element[@name='producers']">
+      <jaxb:class name="RAProducers"/>
+      <jaxb:factoryMethod name="Producers"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.api.ResponseWithCode</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='producer']">
+      <jaxb:factoryMethod name="Producer"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/void_reasons.xsd">
+    <jaxb:bindings node="//xs:element[@name='void_reasons']">
+      <jaxb:class name="RAMarketVoidReasons"/>
+      <jaxb:factoryMethod name="MarketVoidReasons"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='void_reason']/xs:complexType">
+      <jaxb:class name="VoidReason"/>
+      <jaxb:factoryMethod name="MarketVoidReasonsVoidReason"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:element[@name='param']/xs:complexType">
+      <jaxb:class name="Param"/>
+      <jaxb:factoryMethod name="MarketVoidReasonsVoidReasonParam"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/competitor.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='competitorProfileEndpoint']">
+      <jaxb:factoryMethod name="CompetitorProfileEndpoint"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.schema.rest.v1.RATeamable</inheritance:implements>
+      <ci:code>
+        /** The players, as 0.0.x listed them: without the wrapping element. */
+        public java.util.List&lt;RAPlayer&gt; getPlayers() {
+            if (this.playersElement == null) {
+                this.playersElement = new Players();
+            }
+            return this.playersElement.getPlayer();
+        }
+
+        public void setPlayers(java.util.List&lt;RAPlayer&gt; value) {
+            this.playersElement = new Players();
+            this.playersElement.getPlayer().addAll(value);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='competitorProfileEndpoint']//xs:element[@name='players']">
+      <jaxb:property name="playersElement"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='competitorProfileEndpoint']//xs:element[@name='players']/xs:complexType">
+      <jaxb:class name="Players"/>
+      <jaxb:factoryMethod name="CompetitorProfileEndpointPlayers"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/player.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='playerProfileEndpoint']">
+      <jaxb:factoryMethod name="PlayerProfileEndpoint"/>
+      <ci:code>
+        /** As text, which is what 0.0.x had here, unlike every other generated_at. */
+        public String getGeneratedAt() {
+            return this.generatedAtRaw == null ? null : this.generatedAtRaw.toXMLFormat();
+        }
+
+        public void setGeneratedAt(String value) {
+            this.generatedAtRaw = value == null
+                    ? null
+                    : javax.xml.datatype.DatatypeFactory.newDefaultInstance().newXMLGregorianCalendar(value);
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='playerProfileEndpoint']/xs:attribute[@name='generated_at']">
+      <jaxb:property name="generatedAtRaw"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/replay_content.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='replayEndpoint']">
+      <jaxb:class name="RAReplaySetContent"/>
+      <jaxb:factoryMethod name="ReplaySetContent"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='replayEndpoint']//xs:element[@name='replay_event']">
+      <jaxb:property name="event"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='replayEvent']">
+      <jaxb:factoryMethod name="ReplayEvent"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/types/team.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='team']/xs:attribute[@name='underage']">
+      <!-- an Integer in 0.0.x; the values are -1, 0 and 1 -->
+      <jaxb:property>
+        <jaxb:baseType name="java.lang.Integer"/>
+      </jaxb:property>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='team']">
+      <jaxb:factoryMethod name="Team"/>
+      <ci:code>
+        /** 0.0.x had both this and {@link #getVirtual()}. */
+        public Boolean isVirtual() {
+            return this.virtual;
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='teamExtended']">
+      <jaxb:factoryMethod name="TeamExtended"/>
+      <inheritance:implements>com.oddin.oddsfeedsdk.schema.rest.v1.RATeamable</inheritance:implements>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='teamCompetitor']">
+      <jaxb:factoryMethod name="TeamCompetitor"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/types/player.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='player']/xs:attribute[@name='underage']">
+      <jaxb:property>
+        <jaxb:baseType name="java.lang.Integer"/>
+      </jaxb:property>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='player']">
+      <jaxb:factoryMethod name="Player"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/types/tournament.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='tournament']/xs:attribute[@name='risk_tier']">
+      <!-- required, but an Integer in 0.0.x -->
+      <jaxb:property>
+        <jaxb:baseType name="java.lang.Integer"/>
+      </jaxb:property>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='competitors']">
+      <jaxb:factoryMethod name="Competitors"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='tournament']">
+      <jaxb:factoryMethod name="Tournament"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='tournamentExtended']">
+      <jaxb:factoryMethod name="TournamentExtended"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='tournamentLength']">
+      <jaxb:factoryMethod name="TournamentLength"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/types/sport_event.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='sportEvent']">
+      <jaxb:factoryMethod name="SportEvent"/>
+      <ci:code>
+        /** 0.0.x had both this and {@link #getStartTimeTbd()}. */
+        public Boolean isStartTimeTbd() {
+            return this.startTimeTbd;
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='extraInfo']">
+      <jaxb:factoryMethod name="ExtraInfo"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='info']">
+      <jaxb:factoryMethod name="Info"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='sportEventCompetitors']">
+      <jaxb:factoryMethod name="SportEventCompetitors"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/types/sport_event_status.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='sportEventStatus']">
+      <jaxb:factoryMethod name="SportEventStatus"/>
+      <ci:code>
+        /** False when the API does not say; {@link #getScoreboardAvailableRaw()} tells the two apart. */
+        public boolean isScoreboardAvailable() {
+            return Boolean.TRUE.equals(this.scoreboardAvailableRaw);
+        }
+
+        public void setScoreboardAvailable(boolean value) {
+            this.scoreboardAvailableRaw = value;
+        }
+      </ci:code>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='sportEventStatus']/xs:attribute[@name='scoreboard_available']">
+      <jaxb:property name="scoreboardAvailableRaw"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='periodScore']">
+      <jaxb:factoryMethod name="PeriodScore"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='periodScores']">
+      <jaxb:factoryMethod name="PeriodScores"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='scoreboard']">
+      <jaxb:factoryMethod name="Scoreboard"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/common/period_score.xsd">
+    <jaxb:bindings node="//xs:attribute[@name='match_status_code']">
+      <!-- required, but an Integer in 0.0.x -->
+      <jaxb:property>
+        <jaxb:baseType name="java.lang.Integer"/>
+      </jaxb:property>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:attribute[@name='number']">
+      <jaxb:property>
+        <jaxb:baseType name="java.lang.Integer"/>
+      </jaxb:property>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/common/scoreboard.xsd">
+    <!-- 0.0.x spelled these two its own way, as on the feed -->
+    <jaxb:bindings node="//xs:attribute[@name='current_ct_team']">
+      <jaxb:property name="currentCTTeam"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:attribute[@name='current_def_team']">
+      <jaxb:property name="currentDefenderTeam"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/tournaments.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='datetournaments']">
+      <jaxb:factoryMethod name="Datetournaments"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/fixtures_fixture.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='fixture']">
+      <jaxb:factoryMethod name="Fixture"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='fixturesEndpoint']">
+      <jaxb:factoryMethod name="FixturesEndpoint"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='fixtureCompetitors']">
+      <jaxb:factoryMethod name="FixtureCompetitors"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='tvChannels']">
+      <jaxb:factoryMethod name="TvChannels"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='tvChannel']">
+      <jaxb:factoryMethod name="TvChannel"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/fixture_changes.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='fixtureChange']">
+      <jaxb:factoryMethod name="FixtureChange"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='fixtureChangesEndpoint']">
+      <jaxb:factoryMethod name="FixtureChangesEndpoint"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/match_summary.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='matchSummaryEndpoint']">
+      <jaxb:factoryMethod name="MatchSummaryEndpoint"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/replay_status.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='replayStatusEndpoint']">
+      <jaxb:factoryMethod name="ReplayStatusEndpoint"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/schedule.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='scheduleEndpoint']">
+      <jaxb:factoryMethod name="ScheduleEndpoint"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/types/sport.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='sport']">
+      <jaxb:factoryMethod name="Sport"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/types/sport_extended.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='sportExtended']">
+      <jaxb:factoryMethod name="SportExtended"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/tournament_schedule.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='sportEvents']">
+      <jaxb:factoryMethod name="SportEvents"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='tournamentSchedule']">
+      <jaxb:factoryMethod name="TournamentSchedule"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/sport_tournaments.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='sportTournaments']">
+      <jaxb:factoryMethod name="SportTournaments"/>
+    </jaxb:bindings>
+    <jaxb:bindings node="//xs:complexType[@name='tournaments']">
+      <jaxb:factoryMethod name="Tournaments"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/sports.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='sportsEndpoint']">
+      <jaxb:factoryMethod name="SportsEndpoint"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+
+  <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/tournament_info.xsd">
+    <jaxb:bindings node="//xs:complexType[@name='tournamentInfo']">
+      <jaxb:factoryMethod name="TournamentInfo"/>
+    </jaxb:bindings>
+  </jaxb:bindings>
+</jaxb:bindings>
