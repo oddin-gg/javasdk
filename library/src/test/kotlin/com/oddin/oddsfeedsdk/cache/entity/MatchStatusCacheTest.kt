@@ -130,6 +130,41 @@ class MatchStatusCacheTest {
         }
     }
 
+    // A status number added to the feed after this release has no constant, and JAXB
+    // decodes it as null. It used to fail the message, so the match kept its previous
+    // status and lost the rest of the update.
+    @Test
+    fun aFeedStatusNumberThisSdkDoesNotKnowIsUnknown() {
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
+        }
+        val cache = MatchStatusCacheImpl(apiClient)
+        val id = URN.parse("od:match:1")
+        fun send(status: Int, homeScore: Int, timestamp: Long) {
+            val raw = """<odds_change event_id="od:match:1" product="1" timestamp="$timestamp">
+                  <sport_event_status status="$status" match_status="0" home_score="$homeScore" away_score="0"/>
+                </odds_change>"""
+            val message = feedContext.createUnmarshaller()
+                .unmarshal(ByteArrayInputStream(raw.toByteArray())) as OFOddsChange
+            cache.onFeedMessageReceived(
+                id,
+                FeedMessage(
+                    message,
+                    ByteArray(1),
+                    RoutingKeyInfo("hi.pre.-.odds_change.-.od:match.1", null, id, false),
+                    MessageTimestamp(0, 0, 0, 0)
+                )
+            )
+        }
+
+        send(status = 1, homeScore = 1, timestamp = 1785831336922)
+        send(status = 99, homeScore = 2, timestamp = 1785831336923)
+
+        val status = cache.getMatchStatus(id)!!
+        assertEquals(EventStatus.Unknown, status.status)
+        assertEquals("the rest of the message still applies", 2.0, status.homeScore, 0.0)
+    }
+
     @Test
     fun apiPeriodScoresCarryGames() {
         val raw = """<?xml version="1.0"?>
