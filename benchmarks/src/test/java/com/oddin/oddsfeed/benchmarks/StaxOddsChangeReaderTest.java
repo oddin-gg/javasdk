@@ -1,7 +1,9 @@
 package com.oddin.oddsfeed.benchmarks;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
@@ -14,6 +16,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
+import javax.xml.stream.XMLStreamException;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -62,7 +65,32 @@ class StaxOddsChangeReaderTest {
     }
 
     @Test
-    void theReaderIsForOddsChanges() throws Exception {
-        assertThat(stax.read(Corpus.oddsChange(1))).isInstanceOf(OFOddsChange.class);
+    void valuesAreReadByXmlSchemasRules() throws Exception {
+        // the corpus and the fixtures write true, false and plain numbers; the schema allows more
+        byte[] body = """
+                <odds_change product=" 2 " event_id="od:match:1" timestamp="1777832981632">\
+                <sport_event_status status="1" match_status="52" home_score=" 1 " away_score="0"\
+                 scoreboard_available="1">\
+                <period_scores><period_score type="map" number="1" match_status_code="51" home_score="1"\
+                 away_score="0" home_won_coin_toss="0"/></period_scores>\
+                <scoreboard home_batting="1" away_batting="false" current_round=" 7"/>\
+                </sport_event_status>\
+                <odds><market id="1" status="1"><outcome id="1" odds="INF" active="1"/>\
+                <outcome id="2" odds="-INF" probabilities="NaN" active="0"/></market></odds>\
+                </odds_change>""".getBytes(UTF_8);
+        OFOddsChange decoded = stax.read(body);
+        assertThat(decoded.getSportEventStatus().getScoreboardAvailable()).isTrue();
+        assertThat(decoded.getSportEventStatus().getScoreboard().getHomeBatting())
+                .isTrue();
+        Marshaller marshaller = JAXBContext.newInstance(ObjectFactory.class).createMarshaller();
+        assertThat(written(marshaller, decoded)).isEqualTo(written(marshaller, jaxb.decode(body)));
+    }
+
+    @Test
+    void anotherMessageIsRefusedAsTheDecoderRefusesIt() {
+        byte[] betStop = "<bet_stop product=\"2\" event_id=\"od:match:1\" timestamp=\"1\"/>".getBytes(UTF_8);
+        assertThatThrownBy(() -> stax.read(betStop))
+                .isInstanceOf(XMLStreamException.class)
+                .hasMessageContaining("not an odds change: bet_stop");
     }
 }
