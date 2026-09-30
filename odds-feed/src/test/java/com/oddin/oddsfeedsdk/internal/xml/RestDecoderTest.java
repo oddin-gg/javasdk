@@ -19,6 +19,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RATeamable;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -129,8 +130,14 @@ class RestDecoderTest {
 
         var player = new RAPlayer();
         player.setName("Player Two");
-        empty.setPlayers(List.of(player));
+        var players = new ArrayList<RAPlayer>();
+        empty.setPlayers(players);
+        players.add(player);
+        // 0.0.x kept the list it was given
         assertThat(empty.getPlayersElement().getPlayer()).containsExactly(player);
+        empty.setPlayers(null);
+        assertThat(empty.getPlayersElement()).isNull();
+        assertThat(empty.getPlayers()).isEmpty();
     }
 
     @Test
@@ -138,10 +145,24 @@ class RestDecoderTest {
         var profile = strict.decode(fixture("player/player_profile.xml"), RAPlayerProfileEndpoint.class);
         assertThat(profile.getGeneratedAt()).isEqualTo("2026-08-26T12:00:00");
         assertThat(profile.getPlayer().getUnderage()).isEqualTo(1);
-        profile.setGeneratedAt("2026-08-27T08:30:00");
-        assertThat(profile.getGeneratedAtRaw().getDay()).isEqualTo(27);
-        profile.setGeneratedAt(null);
-        assertThat(profile.getGeneratedAt()).isNull();
+        // the text as sent, not a calendar written back: +00:00 stays, and 0.0.x kept even bad text
+        for (String sent : List.of("2026-08-26T12:00:00+00:00", "yesterday")) {
+            String xml = "<player_profile generated_at=\"" + sent + "\"><player id=\"od:player:1\"/></player_profile>";
+            assertThat(lenient.decode(bytes(xml), RAPlayerProfileEndpoint.class).getGeneratedAt())
+                    .isEqualTo(sent);
+        }
+        profile.setGeneratedAt("yesterday");
+        assertThat(profile.getGeneratedAt()).isEqualTo("yesterday");
+    }
+
+    @Test
+    void aNilRootIsRefusedAsAMalformedResponseIs() {
+        String xml = """
+                <match_summary xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:nil="true"/>""";
+        assertThatThrownBy(() -> lenient.decode(bytes(xml), RAMatchSummaryEndpoint.class))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("nil root element match_summary");
+        assertThatThrownBy(() -> lenient.decode(bytes(xml))).isInstanceOf(DecodeException.class);
     }
 
     @Test

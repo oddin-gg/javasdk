@@ -247,7 +247,7 @@ class PublicShapeTest {
         Map<String, MethodModel> oldMethods = callableMethods(old, baseline);
         Map<String, MethodModel> declared = publicMethods(now);
         for (Map.Entry<String, MethodModel> entry : oldMethods.entrySet()) {
-            if (checkedOnItsOwnType(old, entry.getKey())) {
+            if (checkedOnItsOwnType(old, now, entry.getKey())) {
                 continue;
             }
             String key = type + "." + entry.getKey();
@@ -412,20 +412,33 @@ class PublicShapeTest {
 
     /**
      * Whether a baseline member the type only inherits is compared where it is declared: on a
-     * superclass that is itself in scope and still here. One inherited from a superclass that is gone
-     * is compared on every type that inherits it, since that is where a caller loses it.
+     * superclass that is itself in scope, still here and still the type's superclass. One inherited
+     * from a superclass that is gone, or that the type no longer extends, is compared on every type
+     * that inherited it, since that is where a caller loses it.
      */
-    private static boolean checkedOnItsOwnType(ClassModel model, String member) {
-        if (publicMethods(model).containsKey(member)) {
+    private static boolean checkedOnItsOwnType(ClassModel old, ClassModel now, String member) {
+        if (publicMethods(old).containsKey(member)) {
             return false;
         }
-        Optional<ClassModel> parent = superclass(model, baseline);
+        Optional<ClassModel> parent = superclass(old, baseline);
         while (parent.isPresent() && !publicMethods(parent.get()).containsKey(member)) {
             parent = superclass(parent.get(), baseline);
         }
         return parent.filter(owner -> inScope(owner)
-                        && !NOT_HERE.containsKey(relative(owner.thisClass().asInternalName())))
+                        && !NOT_HERE.containsKey(relative(owner.thisClass().asInternalName()))
+                        && stillExtends(now, owner.thisClass().asInternalName()))
                 .isPresent();
+    }
+
+    private static boolean stillExtends(ClassModel model, String superclass) {
+        for (Optional<ClassModel> parent = superclass(model, current);
+                parent.isPresent();
+                parent = superclass(parent.get(), current)) {
+            if (parent.get().thisClass().asInternalName().equals(superclass)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static Optional<ClassModel> superclass(ClassModel model, Map<String, ClassModel> side) {

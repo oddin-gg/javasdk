@@ -83,7 +83,15 @@ final class XmlReader {
         if (!problems.isEmpty()) {
             throw new DecodeException(noun + " does not match the schema: " + String.join("; ", problems));
         }
-        return decoded instanceof JAXBElement<?> element ? element.getValue() : decoded;
+        if (decoded instanceof JAXBElement<?> element) {
+            // xsi:nil on the root leaves the element without a value
+            if (element.isNil() || element.getValue() == null) {
+                throw new DecodeException(
+                        noun + " has a nil root element " + element.getName().getLocalPart());
+            }
+            return element.getValue();
+        }
+        return decoded;
     }
 
     private Unmarshaller unmarshaller(List<String> problems) throws JAXBException {
