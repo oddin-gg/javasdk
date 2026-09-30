@@ -289,6 +289,13 @@ wedge.
   `Retry-After` are honoured within the same deadline. 401 and 403 are permanent: the
   call fails at once, nothing retries, and a fatal error event goes to the events
   dispatcher in addition to the caller's exception or null.
+- The retry policy is the Go SDK's: at most three attempts, backoff from half a second
+  doubling to five, with jitter. A 5xx or a failed connection is retried for reads and
+  for recovery requests, which the API deduplicates on their request id, and not for
+  replay control, which it would carry out twice. A 429 is retried for every call, since
+  the API did nothing, after its `Retry-After` when that is longer than the backoff; one
+  that asks for longer than the time left fails the call at once. The Go SDK ignores
+  `Retry-After`. Replay control uses the data pool, so it cannot hold up recovery.
 - Partial failure in a parallel fan-out: `THROW` fails the getter with the first error;
   `CATCH` returns null for the whole collection. Never a short list.
 - Startup: `open()` needs whoami and the producer list. It retries them inside a
@@ -548,8 +555,10 @@ exists in the Go SDK already.
 - Telemetry: the SDK reports its version the way the Go SDK does - an HTTP `User-Agent`
   of `oddin-javasdk/<version> (java <version>)` and an `X-Oddin-SDK-Version` header on
   every API call, and `SDK_version` next to today's `SDK=java` in the AMQP client
-  properties. The version comes from the jar, marked `-dev` for a build without one,
-  and a public getter returns it so a client can log what it runs.
+  properties. The version is the jar's own, written in by the build; a snapshot reports
+  it marked `-dev` (`1.0.1-SNAPSHOT` as `1.0.1-dev`), as the Go SDK marks a build that
+  is not a release. `OddsFeed.getSdkVersion()` returns it so a client can log what it
+  runs.
 
 Things the Java SDK has and Go does not stay: multi-session with priority interests,
 `setSpecificEventsOnly`, raw API data callback.
@@ -642,8 +651,9 @@ Performance is a requirement, not a follow-up.
 
 ## 9. Build and release
 
-- Root `pom.xml`, modules `odds-feed` (published) and `system-tests`. Maven wrapper
-  checked in. The old `examples` and the generated usage are compiled by a test in
+- Root `pom.xml`, modules `odds-feed` (published), `system-tests`, and `test-fakes`, the
+  fake REST API that both run against (not published; JDK only, so the system tests
+  can use it with 0.0.x too). Maven wrapper checked in. The old `examples` and the generated usage are compiled by a test in
   `odds-feed`, not by modules of their own.
 - The schema is vendored: a copy of the schema repo's XSDs and fixtures lives in this
   repo, with the source commit recorded next to it and a script that refreshes the
@@ -709,7 +719,10 @@ matters where it says so, the rest can run in parallel.
 14. HTTP client: all endpoints, three permit pools, one deadline per call covering
     permit, call and retries, retry for idempotent calls only, error mapping including
     permanent failures with the fatal event, 429 handling, startup deadline, API call
-    events.
+    events. Also the version headers and getter from ticket 29, and the HTTP timeout,
+    REST concurrency limit and startup timeout options. The client reports to an
+    internal events interface; ticket 22 connects it to the dispatcher and adds the
+    public listener methods.
 15. Benchmark harness: corpus, JMH skeleton, warm scenario, CI budget check. The cold
     scenario joins when the caches and the HTTP client exist.
 
@@ -754,8 +767,9 @@ group by group.
 
 27. Field parity with the Go SDK, in small groups.
 28. Option and method parity.
-29. Telemetry headers and client properties: the SDK version on every API call and
-    broker connection, as the Go SDK sends it (section 5), and a public version getter.
+29. Telemetry: `SDK_version` in the broker connection's client properties, as the Go SDK
+    sends it (section 5). The REST headers and the public version getter came with
+    ticket 14.
 30. Logging cleanup. Noisy logs are a client complaint.
 31. README, examples, integration guide with the onboarding checklist (distinct node
     ids, prefetch versus queue limit), FAQ update.
@@ -878,3 +892,11 @@ old names (section 3, difference 4).
   without upkeep; the advisory jar diff is dropped. Telemetry spelled out after the
   Go SDK: version in `User-Agent`, `X-Oddin-SDK-Version` and the AMQP client
   properties.
+- 2026-09-30, ticket 14 checked against the Go SDK's client: its retry policy is taken
+  as it is (three attempts, idempotency per call, 429 always retried), plus `Retry-After`,
+  which the design asks for and the Go SDK ignores. The version telemetry moved into
+  ticket 14 so that no API call goes out without it: `User-Agent`
+  `oddin-javasdk/<version> (java <runtime version>)`, a snapshot build reported as
+  `-dev`, and `OddsFeed.getSdkVersion()`. The fake REST API moved into a module of its
+  own, since the SDK's tests cannot depend on the system tests, and learned replies in
+  turn, delays and headers.
