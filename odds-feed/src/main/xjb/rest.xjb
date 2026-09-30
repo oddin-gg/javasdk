@@ -10,7 +10,8 @@
                xmlns:xs="http://www.w3.org/2001/XMLSchema"
                xmlns:inheritance="urn:jaxb.jvnet.org:plugin:inheritance"
                xmlns:ci="http://jaxb.dev.java.net/plugin/code-injector"
-               jaxb:extensionBindingPrefixes="inheritance ci">
+               xmlns:xjc="http://java.sun.com/xml/ns/jaxb/xjc"
+               jaxb:extensionBindingPrefixes="xjc inheritance ci">
 
   <jaxb:globalBindings generateElementProperty="false"/>
 
@@ -136,9 +137,13 @@
             return this.playersElement.getPlayer();
         }
 
+        /** Keeps the list it is given, and null clears the players, as 0.0.x did. */
         public void setPlayers(java.util.List&lt;RAPlayer&gt; value) {
-            this.playersElement = new Players();
-            this.playersElement.getPlayer().addAll(value);
+            this.playersElement = null;
+            if (value != null) {
+                this.playersElement = new Players();
+                this.playersElement.player = value;
+            }
         }
       </ci:code>
     </jaxb:bindings>
@@ -154,21 +159,14 @@
   <jaxb:bindings schemaLocation="../../../../vendor/oddsfeedschema/schema/rest/player.xsd">
     <jaxb:bindings node="//xs:complexType[@name='playerProfileEndpoint']">
       <jaxb:factoryMethod name="PlayerProfileEndpoint"/>
-      <ci:code>
-        /** As text, which is what 0.0.x had here, unlike every other generated_at. */
-        public String getGeneratedAt() {
-            return this.generatedAtRaw == null ? null : this.generatedAtRaw.toXMLFormat();
-        }
-
-        public void setGeneratedAt(String value) {
-            this.generatedAtRaw = value == null
-                    ? null
-                    : javax.xml.datatype.DatatypeFactory.newDefaultInstance().newXMLGregorianCalendar(value);
-        }
-      </ci:code>
     </jaxb:bindings>
     <jaxb:bindings node="//xs:complexType[@name='playerProfileEndpoint']/xs:attribute[@name='generated_at']">
-      <jaxb:property name="generatedAtRaw"/>
+      <!-- the text as sent, which is what 0.0.x had here, unlike every other generated_at -->
+      <jaxb:property>
+        <jaxb:baseType>
+          <xjc:javaType name="java.lang.String" adapter="jakarta.xml.bind.annotation.adapters.CollapsedStringAdapter"/>
+        </jaxb:baseType>
+      </jaxb:property>
     </jaxb:bindings>
   </jaxb:bindings>
 

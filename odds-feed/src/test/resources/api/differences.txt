@@ -294,9 +294,7 @@ added | schema/rest/v1/RAError.setResponseCodeRaw (Ljava/lang/String;)V | the va
 added | schema/rest/v1/RAFixtureCompetitors | the fixture competitors type of the aligned schema
 added | schema/rest/v1/RAMarketDescription.setGroups (Ljava/lang/String;)V | every attribute has a setter now
 added | schema/rest/v1/RAPlayer | the one player type of the aligned schema
-added | schema/rest/v1/RAPlayerProfileEndpoint.getGeneratedAtRaw ()Ljavax/xml/datatype/XMLGregorianCalendar; | the value as sent, next to the typed getter
 added | schema/rest/v1/RAPlayerProfileEndpoint.getPlayer ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer; | the player is an RAPlayer now
-added | schema/rest/v1/RAPlayerProfileEndpoint.setGeneratedAtRaw (Ljavax/xml/datatype/XMLGregorianCalendar;)V | the value as sent, next to the typed getter
 added | schema/rest/v1/RAPlayerProfileEndpoint.setPlayer (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer;)V | the player is an RAPlayer now
 added | schema/rest/v1/RAReplayStatusEndpoint | in the aligned schema; the SDK does not call this endpoint
 added | schema/rest/v1/RASportEventStatus.getAggregateAwayScore ()Ljava/lang/Double; | in the aligned schema
