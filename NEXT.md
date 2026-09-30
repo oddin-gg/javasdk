@@ -497,6 +497,11 @@ and REST workers post facts to it; it decides and posts work out.
 
 - Connection events: connecting, up, down, recovering. No duplicate "down" on a normal
   close.
+- The connection is made as the Go SDK makes it: TLS with the broker's certificate and
+  host name checked (0.0.x trusted any certificate), the virtual host whoami names (0.0.x
+  built `/oddinfeed/<bookmaker id>`, the same today), a 10 second heartbeat, and the host
+  as configured, tried once - the client's own resolver tries every address of a host,
+  and a refused login on the first then reads as a network failure on the last.
 - Reconnect with backoff on network failures. Exclusive queues are always re-declared;
   whatever the broker buffered for the old queue is gone, and recovery covers it.
 - Authentication and authorisation failures and a wrong virtual host are treated as
@@ -672,8 +677,9 @@ Performance is a requirement, not a follow-up.
 ## 9. Build and release
 
 - Root `pom.xml`, modules `odds-feed` (published), `system-tests`, and `test-fakes`, the
-  fake REST API that both run against (not published; JDK only, so the system tests
-  can use it with 0.0.x too). Maven wrapper checked in. The old `examples` and the generated usage are compiled by a test in
+  fake REST API and the fake feed that both run against (not published; it adds no AMQP
+  client or XML binding, so the system tests use it with 0.0.x too). Maven wrapper
+  checked in. The old `examples` and the generated usage are compiled by a test in
   `odds-feed`, not by modules of their own.
 - The schema is vendored: a copy of the schema repo's XSDs and fixtures lives in this
   repo, with the source commit recorded next to it and a script that refreshes the
@@ -768,7 +774,9 @@ group by group.
     and the three-strikes rule, connection events, one channel per session, prefetch
     validation, maximum message size, raw hand-off into bounded session queues, the
     channel replacement sequence with epochs and `SessionTransport.reset()`, the
-    SDK-owned alive consumer, unparsable disposition, `open()` rollback.
+    SDK-owned alive consumer, unparsable disposition, `open()` rollback. Also `SDK_version`
+    in the client properties (ticket 29), the prefetch and maximum message size options,
+    and the fake feed moved into `test-fakes` for the SDK's own tests.
 22. Session dispatchers: decode, build, cache write, callback, ack, the one failure
     policy for every step; message factory, markets and outcomes; fixture-change
     deduplication with today's key; the events dispatcher with its two bounded queues.
@@ -788,9 +796,8 @@ group by group.
 
 27. Field parity with the Go SDK, in small groups.
 28. Option and method parity.
-29. Telemetry: `SDK_version` in the broker connection's client properties, as the Go SDK
-    sends it (section 5). The REST headers and the public version getter came with
-    ticket 14.
+29. Telemetry, done: the REST headers and the public version getter with ticket 14,
+    `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
 31. README, examples, integration guide with the onboarding checklist (distinct node
     ids, prefetch versus queue limit), FAQ update.
