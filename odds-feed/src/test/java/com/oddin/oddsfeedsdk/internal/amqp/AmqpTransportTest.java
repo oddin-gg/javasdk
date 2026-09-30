@@ -159,22 +159,47 @@ class AmqpTransportTest {
         long before = session.epoch();
 
         feed().deleteClientQueues();
-        long deadline = System.nanoTime() + WAIT.toNanos();
-        while (session.epoch() == before && System.nanoTime() < deadline) {
-            Thread.sleep(20);
-        }
-        assertThat(session.epoch()).as("the session's channel, opened again").isGreaterThan(before);
-        feed().publishFixture(ODDS_CHANGE);
-        assertThat(next(session).epoch()).isEqualTo(session.epoch());
+        awaitReopened((SessionChannel) session, before);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
 
         // and the SDK's own alive consumer
         int alivesBefore = events.alives.size();
-        deadline = System.nanoTime() + WAIT.toNanos();
+        long deadline = System.nanoTime() + WAIT.toNanos();
         while (events.alives.size() == alivesBefore && System.nanoTime() < deadline) {
             feed().publishFixture("feed/alive/alive.xml");
             Thread.sleep(200);
         }
         assertThat(events.alives).as("alives again").hasSizeGreaterThan(alivesBefore);
+        assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
+    }
+
+    @Test
+    void aChannelThatWillNotOpenIsTriedAgainWithoutLeavingQueuesBehind() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        SessionTransport session = transport.addSession(allKeys());
+        transport.open();
+        var channel = (SessionChannel) session;
+        feed().removeExchange(FakeFeed.EXCHANGE);
+        try {
+            // the queue goes, and every new one fails to bind to the exchange that is gone
+            feed().deleteClientQueues();
+            long deadline = System.nanoTime() + WAIT.toNanos();
+            while (channel.failedReopens() < 2 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(channel.failedReopens()).as("reopens that failed").isGreaterThanOrEqualTo(2);
+            assertThat(feed().clientQueues())
+                    .as("a queue that could not be bound is deleted")
+                    .hasSizeLessThanOrEqualTo(1);
+        } finally {
+            feed().restoreExchange(FakeFeed.EXCHANGE);
+        }
+        long failed = session.epoch();
+        awaitReopened(channel, failed);
+        assertThat(channel.failedReopens())
+                .as("reset by the reopen that worked")
+                .isZero();
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
         assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
     }
 
@@ -228,10 +253,32 @@ class AmqpTransportTest {
             }
             assertThat(events.reasons.get(1)).contains("limit");
             assertThat(events.waits.get(1)).as("the resource pause").isEqualTo(1_000L);
+            assertThat(String.join(" ", events.told))
+                    .doesNotContain("test-token")
+                    .contains(Failure.TOKEN);
         } finally {
             feed().limitConnections(-1);
         }
         events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+    }
+
+    @Test
+    void anOpenTheBrokerTurnsAwayDoesNotTellTheToken() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        transport.addSession(allKeys());
+        feed().limitConnections(0);
+        try {
+            assertThatThrownBy(transport::open)
+                    .isInstanceOf(InitException.class)
+                    .hasMessageContaining("is out of resources")
+                    .satisfies(e -> assertThat(chain(e))
+                            .allSatisfy(cause -> assertThat(String.valueOf(cause.getMessage()))
+                                    .doesNotContain("test-token"))
+                            .anySatisfy(cause -> assertThat(String.valueOf(cause.getMessage()))
+                                    .contains(Failure.TOKEN)));
+        } finally {
+            feed().limitConnections(-1);
+        }
     }
 
     @Test
@@ -336,6 +383,25 @@ class AmqpTransportTest {
         RawDelivery delivery = session.queue().poll(WAIT);
         assertThat(delivery).as("a delivery within " + WAIT).isNotNull();
         return requireNonNull(delivery);
+    }
+
+    /** Waits for the session's channel to be open again in an epoch after {@code before}. */
+    private static void awaitReopened(SessionChannel session, long before) throws InterruptedException {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while ((session.epoch() == before || !session.isOpen()) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.epoch()).as("the session's channel, opened again").isGreaterThan(before);
+        assertThat(session.isOpen()).isTrue();
+    }
+
+    /** Publishes until the broker routes it: a binding can come a moment after the channel is open. */
+    private static RawDelivery deliveredAfterPublishing(SessionTransport session) throws InterruptedException {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!feed().publishFixture(ODDS_CHANGE) && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        return next(session);
     }
 
     private static void awaitSize(SessionTransport session, int size) throws InterruptedException {

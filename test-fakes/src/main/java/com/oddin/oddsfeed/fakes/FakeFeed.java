@@ -204,16 +204,60 @@ public final class FakeFeed implements AutoCloseable {
         rabbitmqctl("set_vhost_limits", "-p", virtualHost(), "{\"max-connections\": " + connections + "}");
     }
 
+    /** Removes an exchange, as a broker misconfigured for a while would be; see {@link #restoreExchange}. */
+    public void removeExchange(String exchange) {
+        management("DELETE", "/api/exchanges/" + URLEncoder.encode(virtualHost, UTF_8) + "/" + exchange, null);
+    }
+
+    /** Declares a removed exchange again, a durable topic exchange as the feed's are. */
+    public void restoreExchange(String exchange) {
+        management(
+                "PUT",
+                "/api/exchanges/" + URLEncoder.encode(virtualHost, UTF_8) + "/" + exchange,
+                "{\"type\":\"topic\",\"durable\":true}");
+    }
+
+    /** The queues the broker named for its clients: their exclusive queues. */
+    public List<String> clientQueues() {
+        return rabbitmqctl("list_queues", "--quiet", "--no-table-headers", "-p", virtualHost(), "name")
+                .lines()
+                .map(String::trim)
+                .filter(queue -> queue.startsWith("amq.gen-"))
+                .toList();
+    }
+
+    private void management(String method, String path, String body) {
+        HttpRequest request = HttpRequest.newBuilder(
+                        URI.create("http://" + broker.getHost() + ":" + broker.getMappedPort(MANAGEMENT) + path))
+                .header(
+                        "Authorization",
+                        "Basic " + Base64.getEncoder().encodeToString((PUBLISHER + ":" + PUBLISHER).getBytes(UTF_8)))
+                .header("Content-Type", "application/json")
+                .timeout(Duration.ofSeconds(10))
+                .method(
+                        method,
+                        body == null ? HttpRequest.BodyPublishers.noBody() : HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        try {
+            HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() / 100 != 2) {
+                throw new IllegalStateException(
+                        method + " " + path + " failed: " + response.statusCode() + " " + response.body());
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException(method + " " + path + " failed", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted: " + method + " " + path, e);
+        }
+    }
+
     /**
      * Deletes every queue the broker named - the exclusive queues its clients declared - as an
      * operator or a broker policy might, leaving the connections open.
      */
     public void deleteClientQueues() {
-        String queues = rabbitmqctl("list_queues", "--quiet", "--no-table-headers", "-p", virtualHost(), "name");
-        for (String queue : queues.lines()
-                .map(String::trim)
-                .filter(q -> q.startsWith("amq.gen-"))
-                .toList()) {
+        for (String queue : clientQueues()) {
             rabbitmqctl("delete_queue", "-p", virtualHost(), queue);
         }
     }
