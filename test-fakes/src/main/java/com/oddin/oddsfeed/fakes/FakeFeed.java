@@ -189,6 +189,43 @@ public final class FakeFeed implements AutoCloseable {
     }
 
     /**
+     * Closes every client connection, as a broker restart or a network cut would look to a client
+     * that reconnects.
+     */
+    public void closeConnections() {
+        rabbitmqctl("close_all_connections", "--global", "closed by the fake feed");
+    }
+
+    /**
+     * The client properties of the open connections, as rabbitmqctl prints them: one line per
+     * connection, with its name first.
+     */
+    public List<String> connectionProperties() {
+        return rabbitmqctl("list_connections", "--quiet", "--no-table-headers", "name", "client_properties")
+                .lines()
+                .filter(line -> !line.isBlank())
+                .toList();
+    }
+
+    private String rabbitmqctl(String... arguments) {
+        var command = new String[arguments.length + 1];
+        command[0] = "rabbitmqctl";
+        System.arraycopy(arguments, 0, command, 1, arguments.length);
+        try {
+            Container.ExecResult result = broker.execInContainer(command);
+            if (result.getExitCode() != 0) {
+                throw new IllegalStateException("rabbitmqctl " + arguments[0] + " failed: " + result.getStderr());
+            }
+            return result.getStdout();
+        } catch (IOException e) {
+            throw new UncheckedIOException("could not run rabbitmqctl " + arguments[0], e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted running rabbitmqctl " + arguments[0], e);
+        }
+    }
+
+    /**
      * Publishes a vendored feed fixture as the live feed would; see {@link #publish(String)}.
      *
      * @param name the path under the fixtures directory, e.g. {@code "feed/alive/alive.xml"}
