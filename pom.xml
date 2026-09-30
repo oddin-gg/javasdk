@@ -58,6 +58,7 @@
     <jetbrains-annotations.version>13.0</jetbrains-annotations.version>
     <jaxb.version>4.0.9</jaxb.version>
     <caffeine.version>3.3.0</caffeine.version>
+    <amqp-client.version>5.36.0</amqp-client.version>
     <jaxb-maven-plugin.version>4.0.16</jaxb-maven-plugin.version>
     <junit.version>5.12.2</junit.version>
     <assertj.version>3.27.3</assertj.version>
@@ -89,6 +90,11 @@
         <groupId>com.github.ben-manes.caffeine</groupId>
         <artifactId>caffeine</artifactId>
         <version>${caffeine.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.rabbitmq</groupId>
+        <artifactId>amqp-client</artifactId>
+        <version>${amqp-client.version}</version>
       </dependency>
       <dependency>
         <groupId>org.jetbrains</groupId>

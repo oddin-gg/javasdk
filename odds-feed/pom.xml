@@ -71,6 +71,12 @@
       <artifactId>caffeine</artifactId>
     </dependency>
 
+    <!-- the feed's broker -->
+    <dependency>
+      <groupId>com.rabbitmq</groupId>
+      <artifactId>amqp-client</artifactId>
+    </dependency>
+
     <dependency>
       <!-- the old examples import it; ApiUsageTest compiles them -->
       <groupId>org.jetbrains</groupId>
