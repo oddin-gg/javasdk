@@ -338,7 +338,8 @@ Write rule:
 - Every field of every cached entity has one **authoritative endpoint**. For a
   competitor the authoritative endpoint of its player list is the competitor profile;
   of its name per locale, the profile in that locale. For a match status it is the
-  match summary. Ticket 16 carries the full table.
+  match summary. The full table is `odds-feed/CACHE-FIELDS.md`, with what 0.0.x wrote
+  from where and the questions tickets 17 to 19 settle.
 - An authoritative response replaces the fields it is authoritative for, in the locale
   it was fetched for, and marks them **authoritatively written**. A field the response
   omits is cleared and stays marked. That is how a retracted winner disappears from
