@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.rest;
 
+import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
@@ -297,6 +298,95 @@ class ApiClientTest {
     }
 
     @Test
+    void aSuccessOverTheSizeLimitFailsAtOnceAndAnErrorIsCutShort() {
+        // padding after the root element: valid XML, and more than one network buffer
+        String padded = Fixtures.read("rest/whoami/bookmaker_details.xml") + " ".repeat(100_000);
+        int size = padded.getBytes(UTF_8).length;
+        api.respond(WHOAMI, 200, padded);
+
+        assertThat(limited(size, 50).fetchWhoAmI()).as("exactly at the limit").isNotNull();
+
+        ApiClient tight = limited(size - 1, 50);
+        assertThatThrownBy(tight::fetchWhoAmI)
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("the answer is over " + (size - 1) + " bytes");
+        assertThat(api.requests("GET", WHOAMI)).as("one byte over is final").hasSize(2);
+        // both recovery permits came back
+        for (int i = 0; i < 3; i++) {
+            assertThat(tight.fetchProducers()).isNotNull();
+        }
+
+        api.respond(WHOAMI, 403, REFUSED + " ".repeat(1_000));
+        assertThatThrownBy(tight::fetchWhoAmI)
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(HttpStatusException.refused(e)).isTrue());
+        assertThat(events.refused).extracting(ApiCall::status).containsExactly(403);
+    }
+
+    @Test
+    void aBodyThatStallsIsStillJudgedByItsStatus() {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofMillis(800)));
+        api.respond(WHOAMI, Reply.of(403, REFUSED).stallingMidBody(Duration.ofSeconds(3)));
+        assertThatThrownBy(client::fetchWhoAmI)
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(HttpStatusException.refused(e)).isTrue());
+        assertThat(events.refused).extracting(ApiCall::status).containsExactly(403);
+
+        // replay control that the API answered 202 is done, however its body ends
+        api.respond("/v1/replay/stop", Reply.of(202, "<accepted/>").stallingMidBody(Duration.ofSeconds(3)));
+        long started = System.nanoTime();
+        client.postReplayStop();
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(1500));
+        assertThat(api.requests("POST", "/v1/replay/stop")).hasSize(1);
+    }
+
+    @Test
+    void aSuccessWhoseBodyBreaksOffIsReadAgainUnlessItWasControl() {
+        ApiClient client = client(b -> b);
+        String summary = Fixtures.read("rest/match_summary/match_summary.xml");
+        api.respond(SUMMARY, Reply.of(200, summary).cutOffMidBody(), Reply.of(200, summary));
+        assertThat(client.fetchMatchSummary(MATCH, Locale.ENGLISH)).isNotNull();
+        assertThat(api.requests("GET", SUMMARY)).hasSize(2);
+
+        api.respond("/v1/replay/clear", Reply.of(202, "<accepted/>").cutOffMidBody());
+        client.postReplayClear();
+        assertThat(api.requests("POST", "/v1/replay/clear")).hasSize(1);
+    }
+
+    @Test
+    void closingWakesACallWaitingToTryAgain() throws Exception {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(10)));
+        api.respond(WHOAMI, Reply.of(429, "").withHeader("Retry-After", "5"));
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> waiting = calls.submit(() -> client.fetchWhoAmI());
+            api.awaitRequest("GET", WHOAMI);
+            Thread.sleep(100);
+            long started = System.nanoTime();
+            client.close();
+            assertThatThrownBy(waiting::get).cause().hasMessageContaining("the feed is closed");
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
+        }
+    }
+
+    @Test
+    void closingEndsAStartupThatIsTryingAgain() throws Exception {
+        ApiClient client = client(b -> b);
+        api.startOutage(503);
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<Startup> startup = calls.submit(() -> Startup.fetch(client, Duration.ofSeconds(30)));
+            api.awaitRequest("GET", WHOAMI);
+            long started = System.nanoTime();
+            client.close();
+            assertThatThrownBy(startup::get)
+                    .cause()
+                    .isInstanceOf(InitException.class)
+                    .hasMessage("Failed to init odds feed: the feed was closed");
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
+        }
+        api.endOutage();
+    }
+
+    @Test
     void aClosedClientCallsNothing() {
         ApiClient client = client(b -> b);
         client.close();
@@ -522,6 +612,19 @@ class ApiClientTest {
                     .as("attempt %d", attempt)
                     .isBetween((long) (expected * 0.7), (long) (expected * 1.3));
         }
+    }
+
+    /** A client whose bodies may be at most {@code maxBytes}, and an error's {@code maxErrorBytes}. */
+    private ApiClient limited(int maxBytes, int maxErrorBytes) {
+        OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.invalid", api.apiHost())
+                .setAccessToken("token")
+                .build();
+        var client = new ApiClient(
+                configuration,
+                new RestTransport(configuration, events, TestTls.clientContext(), maxBytes, maxErrorBytes));
+        open.add(client);
+        return client;
     }
 
     /** A client whose API host has nobody listening: every connection fails. */
