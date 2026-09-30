@@ -43,7 +43,7 @@ public final class SideLoads implements AutoCloseable {
         return dropped.get();
     }
 
-    /** Loads that threw; a side-load's failure reaches no caller. */
+    /** Loads that threw, errors included; a side-load's failure reaches no caller. */
     public long failed() {
         return failed.get();
     }
@@ -63,7 +63,8 @@ public final class SideLoads implements AutoCloseable {
             }
             try {
                 load.run();
-            } catch (RuntimeException e) {
+            } catch (Throwable e) {
+                // whatever one load throws, the worker stays for the next
                 failed.incrementAndGet();
             }
         }

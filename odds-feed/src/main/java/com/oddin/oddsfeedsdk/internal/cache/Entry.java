@@ -12,33 +12,36 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * One cached entity at one moment: its values, which of them an authoritative endpoint wrote (or
- * cleared), when each locale was last fetched authoritatively, and its generation. Immutable; a
- * write makes a new one.
+ * cleared), when each authoritative endpoint was last fetched in each locale, and its generation.
+ * Immutable; a write makes a new one.
  *
  * <p>An invalidated entry keeps its place with a new generation and nothing else - a tombstone - so
  * a fetch that started before the invalidation can tell and throw its result away.
  */
 public final class Entry {
 
-    static final Entry ABSENT = new Entry(0, Map.of(), Set.of(), Map.of(), 0);
-
     private final long generation;
     private final Map<Slot, Object> values;
     private final Set<Slot> authoritative;
-    private final Map<Locale, Instant> loaded;
+    private final Map<Loaded, Instant> loaded;
     private final long changedAt;
 
     private Entry(
             long generation,
             Map<Slot, Object> values,
             Set<Slot> authoritative,
-            Map<Locale, Instant> loaded,
+            Map<Loaded, Instant> loaded,
             long changedAt) {
         this.generation = generation;
         this.values = Map.copyOf(values);
         this.authoritative = Set.copyOf(authoritative);
         this.loaded = Map.copyOf(loaded);
         this.changedAt = changedAt;
+    }
+
+    /** An entry with nothing in it yet, of a generation no other entry of its cache has had. */
+    static Entry empty(long generation) {
+        return new Entry(generation, Map.of(), Set.of(), Map.of(), 0);
     }
 
     /** When it last changed, on the cache's ticker: what its age counts from. */
@@ -56,14 +59,18 @@ public final class Entry {
         return (T) values.get(field.slot(locale));
     }
 
-    /** When {@code locale} was last fetched from an authoritative endpoint, or null. */
-    public @Nullable Instant loadedAt(Locale locale) {
-        return loaded.get(locale);
+    /** When {@code endpoint} was last fetched in {@code locale}, or null. */
+    public @Nullable Instant loadedAt(Endpoint endpoint, Locale locale) {
+        return loaded.get(new Loaded(endpoint, locale));
     }
 
-    /** Whether {@code locale} was fetched authoritatively within {@code age} of {@code now}. */
-    public boolean isFresh(Locale locale, Instant now, Duration age) {
-        Instant at = loaded.get(locale);
+    /**
+     * Whether {@code endpoint} was fetched in {@code locale} within {@code age} of {@code now}. Each
+     * authoritative endpoint of an entity has its own: a match's fixture fetched says nothing about
+     * its summary.
+     */
+    public boolean isFresh(Endpoint endpoint, Locale locale, Instant now, Duration age) {
+        Instant at = loaded.get(new Loaded(endpoint, locale));
         return at != null && !at.plus(age).isBefore(now);
     }
 
@@ -97,7 +104,7 @@ public final class Entry {
             }
         }
         var nextLoaded = new HashMap<>(loaded);
-        nextLoaded.put(locale, now);
+        nextLoaded.put(new Loaded(write.endpoint(), locale), now);
         return new Entry(generation, nextValues, nextAuthoritative, nextLoaded, ticks);
     }
 
@@ -118,7 +125,10 @@ public final class Entry {
     }
 
     /** The tombstone of this entry: nothing kept but a new generation. */
-    Entry invalidated(long ticks) {
-        return new Entry(generation + 1, Map.of(), Set.of(), Map.of(), ticks);
+    Entry invalidated(long newGeneration, long ticks) {
+        return new Entry(newGeneration, Map.of(), Set.of(), Map.of(), ticks);
     }
+
+    /** An endpoint fetched in a locale. */
+    private record Loaded(Endpoint endpoint, Locale locale) {}
 }
