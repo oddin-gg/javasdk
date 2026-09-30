@@ -34,7 +34,13 @@ class AmqpRefusalTest {
                 assertThat(events.reasons.subList(1, events.reasons.size()))
                         .as("why the next ones did")
                         .allSatisfy(reason -> assertThat(reason).contains("ACCESS_REFUSED"));
-                assertThat(String.join(" ", events.reasons)).doesNotContain("test-token");
+                assertThat(String.join(" ", events.told)).doesNotContain("test-token");
+                assertThat(events.fatalCause).isNotNull();
+                for (Throwable cause = events.fatalCause; cause != null; cause = cause.getCause()) {
+                    assertThat(String.valueOf(cause.getMessage()))
+                            .as("the fatal cause chain")
+                            .doesNotContain("test-token");
+                }
                 assertThat(events.count("recovering")).isEqualTo(3);
                 int refused = feed.refusedLogins().size();
                 Thread.sleep(1_000);

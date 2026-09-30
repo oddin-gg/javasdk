@@ -13,6 +13,10 @@ final class Recorded implements ConnectionEvents {
     final List<RawDelivery> alives = new CopyOnWriteArrayList<>();
     final List<String> reasons = new CopyOnWriteArrayList<>();
     final List<Long> waits = new CopyOnWriteArrayList<>();
+    /** Every reason told: of each down, recovering and fatal. */
+    final List<String> told = new CopyOnWriteArrayList<>();
+
+    volatile @Nullable Throwable fatalCause;
 
     @Override
     public void connecting() {
@@ -27,17 +31,21 @@ final class Recorded implements ConnectionEvents {
     @Override
     public void down(String reason) {
         events.add("down");
+        told.add(reason);
     }
 
     @Override
     public void recovering(int attempt, long waitMillis, String reason) {
         events.add("recovering");
         reasons.add(reason);
+        told.add(reason);
         waits.add(waitMillis);
     }
 
     @Override
     public void fatal(String reason, @Nullable Throwable cause) {
+        told.add(reason);
+        fatalCause = cause;
         events.add("fatal: " + reason);
     }
 

@@ -14,7 +14,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
@@ -26,6 +25,11 @@ import org.jspecify.annotations.Nullable;
  */
 final class SessionChannel implements SessionTransport {
 
+    /** Told when a channel of a session is lost: the broker closed or cancelled it, or it would not open. */
+    interface Lost {
+        void lost(SessionChannel session, long epoch);
+    }
+
     private final String exchange;
     private final List<String> bindings;
     private final SessionQueue queue;
@@ -33,13 +37,15 @@ final class SessionChannel implements SessionTransport {
     private final int maxMessageSize;
     private final InstantSource clock;
     private final Supplier<@Nullable Connection> connection;
-    private final Consumer<SessionChannel> lost;
+    private final Lost lost;
     private final ReentrantLock lock = new ReentrantLock();
     private final AtomicLong skippedAcks = new AtomicLong();
     /** Reopens that failed in a row: the transport pauses longer before each next one. */
     private final AtomicInteger failedReopens = new AtomicInteger();
     /** Whether a reopen is waiting or running, so the broker's closing and cancelling start one. */
     private final AtomicBoolean reopening = new AtomicBoolean();
+    /** Whether the broker took the current channel or its consumer; cleared by a channel opening. */
+    private final AtomicBoolean taken = new AtomicBoolean();
     /** Changed under the lock; read without it. */
     private final AtomicLong epoch = new AtomicLong();
 
@@ -58,7 +64,7 @@ final class SessionChannel implements SessionTransport {
             int maxMessageSize,
             InstantSource clock,
             Supplier<@Nullable Connection> connection,
-            Consumer<SessionChannel> lost) {
+            Lost lost) {
         this.exchange = exchange;
         this.bindings = List.copyOf(bindings);
         this.queue = queue;
@@ -91,6 +97,8 @@ final class SessionChannel implements SessionTransport {
                 throw e;
             }
             channel = opened;
+            taken.set(false);
+            failedReopens.set(0);
         } finally {
             lock.unlock();
         }
@@ -117,7 +125,7 @@ final class SessionChannel implements SessionTransport {
     @Override
     public void reset() {
         if (!tryReset()) {
-            lost.accept(this);
+            lost.lost(this, epoch.get());
         }
     }
 
@@ -133,11 +141,11 @@ final class SessionChannel implements SessionTransport {
                 // no connection to open one on: move the epoch on, and the reconnect opens the channel
                 closeChannel();
                 queue.removeEpochsBefore(epoch.incrementAndGet());
+                failedReopens.set(0);
                 return true;
             }
             try {
                 open(now);
-                failedReopens.set(0);
                 return true;
             } catch (IOException | RuntimeException e) {
                 failedReopens.incrementAndGet();
@@ -148,10 +156,28 @@ final class SessionChannel implements SessionTransport {
         }
     }
 
-    /** Whether it has a channel that is open. */
+    /**
+     * Reopens the channel lost in {@code lostEpoch}, unless it was replaced since by one that is
+     * open - by a reconnect, say - which must not be thrown away for it.
+     *
+     * @return whether the session has an open channel now, or no connection to open one on
+     */
+    boolean reopenIfStillLost(long lostEpoch) {
+        lock.lock();
+        try {
+            if (epoch.get() != lostEpoch && isOpen() && !taken.get()) {
+                return true;
+            }
+            return tryReset();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /** Whether it has an open channel whose consumer the broker has not taken. */
     boolean isOpen() {
         Channel current = channel;
-        return current != null && current.isOpen();
+        return current != null && current.isOpen() && !taken.get();
     }
 
     @Override
@@ -260,14 +286,21 @@ final class SessionChannel implements SessionTransport {
         @Override
         public void handleCancel(String consumerTag) {
             // the broker cancelled the consumer: its queue is gone
-            lost.accept(SessionChannel.this);
+            taken(epochOfChannel);
         }
 
         @Override
         public void handleShutdownSignal(String consumerTag, ShutdownSignalException signal) {
             // a channel the broker closed on a live connection; a lost connection is the transport's
-            if (!signal.isInitiatedByApplication() && !signal.isHardError() && epochOfChannel == epoch.get()) {
-                lost.accept(SessionChannel.this);
+            if (!signal.isInitiatedByApplication() && !signal.isHardError()) {
+                taken(epochOfChannel);
+            }
+        }
+
+        private void taken(long ofEpoch) {
+            if (ofEpoch == epoch.get()) {
+                taken.set(true);
+                lost.lost(SessionChannel.this, ofEpoch);
             }
         }
     }
