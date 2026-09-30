@@ -57,6 +57,7 @@
     <!-- the version 0.0.x depends on; only the old examples use it, when the compatibility test compiles them -->
     <jetbrains-annotations.version>13.0</jetbrains-annotations.version>
     <jaxb.version>4.0.9</jaxb.version>
+    <caffeine.version>3.3.0</caffeine.version>
     <jaxb-maven-plugin.version>4.0.16</jaxb-maven-plugin.version>
     <junit.version>5.12.2</junit.version>
     <assertj.version>3.27.3</assertj.version>
@@ -83,6 +84,11 @@
         <groupId>org.jspecify</groupId>
         <artifactId>jspecify</artifactId>
         <version>${jspecify.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>com.github.ben-manes.caffeine</groupId>
+        <artifactId>caffeine</artifactId>
+        <version>${caffeine.version}</version>
       </dependency>
       <dependency>
         <groupId>org.jetbrains</groupId>
