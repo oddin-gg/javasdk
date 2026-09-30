@@ -161,23 +161,32 @@ class EntityCacheTest {
     }
 
     @Test
-    void anInvalidationStillCountsWhenItsTombstoneIsGone() {
-        // a fetch that started on nothing, its key invalidated, the tombstone expired
+    void anInvalidationCountsForAFetchThatStartedOnNoEntry() {
         Stamp onNothing = cache.stamp("c1");
         cache.invalidate("c1");
-        time.advance(Duration.ofHours(25));
-        assertThat(cache.get("c1")).isNull();
+        assertThat(cache.get("c1"))
+                .as("no tombstone for a key without an entry")
+                .isNull();
+        assertThat(cache.size()).isZero();
         assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "Before The Change"), onNothing))
                 .isFalse();
 
-        // a fetch that started on an entry, which was invalidated, dropped, and made again by a fill
+        Stamp onOther = cache.stamp("c3");
+        cache.invalidate("c4");
+        assertThat(cache.writeAuthoritative("c3", profileWrite(EN, "Unrelated"), onOther))
+                .as("another key's invalidation says nothing about this one")
+                .isTrue();
+    }
+
+    @Test
+    void anEntryDroppedAndMadeAgainIsNotTheOneTheFetchStartedWith() {
         profile("c2", EN, "Two", "CZ", "T2", List.of());
         Stamp onEntry = cache.stamp("c2");
         cache.invalidate("c2");
         time.advance(Duration.ofHours(25));
+        assertThat(cache.get("c2")).as("the tombstone expired").isNull();
         cache.fill("c2", Write.from(SCHEDULE, EN).put(COUNTRY, "SK"));
         assertThat(cache.writeAuthoritative("c2", profileWrite(EN, "Before The Change"), onEntry))
-                .as("a new entry is not the one the fetch started with")
                 .isFalse();
     }
 

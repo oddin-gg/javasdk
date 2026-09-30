@@ -75,17 +75,28 @@ public final class FeedWatermarks<K> {
     }
 
     /**
-     * Whether a REST response may write the feed-owned fields of {@code entity}: when no producer
-     * has written them within {@link #STATUS_AGE} of {@code now}, by the SDK's clock.
+     * Runs a REST response's write of the feed-owned fields of {@code entity} if no producer has
+     * written them within {@link #STATUS_AGE} of {@code now}, by the SDK's clock. The write runs under
+     * the entity's watermark, so a live message admitted meanwhile either comes first, and the write
+     * does not happen, or comes after and overwrites it: a REST answer from before the feed resumed
+     * cannot replace what the feed wrote.
+     *
+     * @return whether it wrote
      */
-    public boolean restMayWrite(K entity, Instant now) {
-        Marks current = marks.getIfPresent(entity);
-        if (current == null) {
-            return true;
-        }
+    public boolean restWriteIfQuiet(K entity, Instant now, Runnable write) {
         Instant quietSince = now.minus(STATUS_AGE);
-        return current.byProducer().values().stream()
-                .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
+        var wrote = new boolean[1];
+        marks.asMap().compute(entity, (k, current) -> {
+            boolean quiet = current == null
+                    || current.byProducer().values().stream()
+                            .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
+            if (quiet) {
+                write.run();
+                wrote[0] = true;
+            }
+            return current;
+        });
+        return wrote[0];
     }
 
     /** How many entities it holds watermarks for. */

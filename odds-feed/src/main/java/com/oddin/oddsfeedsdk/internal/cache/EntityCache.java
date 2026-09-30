@@ -24,6 +24,9 @@ import org.jspecify.annotations.Nullable;
  */
 public final class EntityCache<K> {
 
+    /** How long an invalidation is remembered for a key with no entry: longer than any fetch waits. */
+    static final Duration INVALIDATION_MEMORY = Duration.ofHours(1);
+
     private final String name;
     private final Duration age;
     private final InstantSource clock;
@@ -31,8 +34,11 @@ public final class EntityCache<K> {
     private final Cache<K, Entry> entries;
     /** Where generations come from: no two entries of this cache, past or present, share one. */
     private final AtomicLong generations = new AtomicLong();
-    /** How many invalidations there have been, for a fetch that started on no entry at all. */
-    private final AtomicLong invalidations = new AtomicLong();
+    /**
+     * The generation of each key's last invalidation: what a fetch that started on no entry checks,
+     * since there is no entry to tell it, and what outlasts a tombstone that was evicted.
+     */
+    private final Cache<K, Long> invalidated;
 
     public EntityCache(String name, long maximumSize, Duration age) {
         this(name, maximumSize, age, InstantSource.system(), Ticker.systemTicker());
@@ -49,6 +55,12 @@ public final class EntityCache<K> {
                 .expireAfter(new AgedFromLastChange<K, Entry>(age, Entry::changedAt))
                 .ticker(ticker)
                 // eviction on the writing thread: nothing to hand over, nothing left pending
+                .executor(Runnable::run)
+                .build();
+        this.invalidated = Caffeine.newBuilder()
+                .maximumSize(maximumSize)
+                .expireAfterWrite(INVALIDATION_MEMORY)
+                .ticker(ticker)
                 .executor(Runnable::run)
                 .build();
     }
@@ -74,17 +86,18 @@ public final class EntityCache<K> {
 
     /** What an authoritative fetch remembers when it starts, to tell whether its result still applies. */
     public Stamp stamp(K key) {
-        long invalidated = invalidations.get();
+        long lastInvalidation = lastInvalidation(key);
         Entry entry = entries.getIfPresent(key);
-        return entry == null ? new Stamp(false, 0, invalidated) : new Stamp(true, entry.generation(), invalidated);
+        return entry == null
+                ? new Stamp(false, 0, lastInvalidation)
+                : new Stamp(true, entry.generation(), lastInvalidation);
     }
 
     /**
      * Writes an authoritative response, unless the entry was invalidated or dropped since {@code
      * started}: then nothing is written, and the caller reads the entry again. Generations are never
-     * reused, so an entry dropped and made again is not taken for the one the fetch started with. A
-     * fetch that started on no entry cannot tell its key's invalidation from another's once the
-     * tombstone is gone, so it gives way to any invalidation since it started.
+     * reused, so an entry dropped and made again is not taken for the one the fetch started with,
+     * and a fetch that started on no entry gives way to an invalidation of its key since.
      *
      * @return whether it was written
      */
@@ -93,7 +106,7 @@ public final class EntityCache<K> {
         entries.asMap().compute(key, (k, current) -> {
             boolean stale = started.present()
                     ? current == null || current.generation() != started.generation()
-                    : invalidations.get() != started.invalidations();
+                    : lastInvalidation(key) != started.lastInvalidation();
             if (stale) {
                 return current;
             }
@@ -116,16 +129,14 @@ public final class EntityCache<K> {
 
     /**
      * Drops the entry's values and leaves a tombstone with a new generation, so a fetch that started
-     * before throws its result away.
+     * before throws its result away. A key with no entry gets no tombstone: its invalidation is
+     * remembered for as long as a fetch can run.
      */
     public void invalidate(K key) {
-        // counted before the tombstone is there, so no fetch can miss both
-        invalidations.incrementAndGet();
-        entries.asMap()
-                .compute(
-                        key,
-                        (k, current) -> (current == null ? Entry.empty(0) : current)
-                                .invalidated(generations.incrementAndGet(), ticker.read()));
+        long generation = generations.incrementAndGet();
+        // remembered before the tombstone is there, so no fetch can miss both
+        invalidated.put(key, generation);
+        entries.asMap().computeIfPresent(key, (k, current) -> current.invalidated(generation, ticker.read()));
     }
 
     /** Invalidates every entry. */
@@ -141,12 +152,17 @@ public final class EntityCache<K> {
         return entries.estimatedSize();
     }
 
+    private long lastInvalidation(K key) {
+        Long generation = invalidated.getIfPresent(key);
+        return generation == null ? 0 : generation;
+    }
+
     /**
      * The state of an entry when a fetch started.
      *
      * @param present whether there was an entry
      * @param generation its generation then
-     * @param invalidations how many invalidations the cache had had then
+     * @param lastInvalidation the generation of the key's last invalidation then, 0 for none
      */
-    public record Stamp(boolean present, long generation, long invalidations) {}
+    public record Stamp(boolean present, long generation, long lastInvalidation) {}
 }
