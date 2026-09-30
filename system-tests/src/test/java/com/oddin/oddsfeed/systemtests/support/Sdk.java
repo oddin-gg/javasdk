@@ -1,7 +1,7 @@
 package com.oddin.oddsfeed.systemtests.support;
 
+import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.systemtests.fake.FakeFeed;
-import com.oddin.oddsfeed.systemtests.fake.FakeRestServer;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;

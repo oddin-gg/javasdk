@@ -5,8 +5,8 @@ import static com.oddin.oddsfeed.systemtests.fake.FeedMessages.snapshotComplete;
 import static com.oddin.oddsfeed.systemtests.fake.FeedMessages.stampedAt;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.systemtests.fake.FakeFeed;
-import com.oddin.oddsfeed.systemtests.fake.FakeRestServer;
 import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;

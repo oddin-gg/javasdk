@@ -3,6 +3,7 @@ package com.oddin.oddsfeed.systemtests.fake;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.oddin.oddsfeed.fakes.Fixtures;
 import org.junit.jupiter.api.Test;
 
 /** The routing keys the fake derives, in the shape the feed uses. No broker needed. */

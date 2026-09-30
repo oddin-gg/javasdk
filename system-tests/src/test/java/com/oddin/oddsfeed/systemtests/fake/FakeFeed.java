@@ -2,6 +2,8 @@ package com.oddin.oddsfeed.systemtests.fake;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeed.fakes.TestTls;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;

@@ -3,9 +3,9 @@ package com.oddin.oddsfeed.systemtests;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
+import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.systemtests.fake.FakeFeed;
-import com.oddin.oddsfeed.systemtests.fake.FakeRestServer;
-import com.oddin.oddsfeed.systemtests.fake.Fixtures;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.ReplayManager;

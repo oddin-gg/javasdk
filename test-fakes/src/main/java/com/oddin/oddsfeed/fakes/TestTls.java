@@ -1,4 +1,4 @@
-package com.oddin.oddsfeed.systemtests.fake;
+package com.oddin.oddsfeed.fakes;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
@@ -28,12 +28,13 @@ import javax.net.ssl.X509TrustManager;
  * hence one certificate, created once, rather than one per server. The JDK's own trust stays in
  * place next to it, so nothing else in the JVM loses HTTPS.
  */
-final class TestTls {
+public final class TestTls {
 
     private static final String ALIAS = "fake-servers";
     private static final char[] PASSWORD = "fake-servers".toCharArray();
     private static KeyStore keyStore;
     private static SSLContext serverContext;
+    private static SSLContext clientContext;
 
     private TestTls() {}
 
@@ -43,10 +44,20 @@ final class TestTls {
     }
 
     /**
+     * A client context that trusts the fakes and everything the JDK trusts: the JVM default once
+     * a fake has started, and there for a client that is given its context rather than taking the
+     * default.
+     */
+    public static synchronized SSLContext clientContext() {
+        create();
+        return clientContext;
+    }
+
+    /**
      * The same certificate and its private key as PEM, for a server outside this JVM to present:
      * the broker behind the fake feed.
      */
-    static synchronized Pem pem() {
+    public static synchronized Pem pem() {
         create();
         try {
             Base64.Encoder base64 = Base64.getMimeEncoder(64, "\n".getBytes(UTF_8));
@@ -65,7 +76,7 @@ final class TestTls {
     }
 
     /** A certificate and its PKCS#8 private key, both PEM-encoded. */
-    record Pem(String certificate, String privateKey) {}
+    public record Pem(String certificate, String privateKey) {}
 
     private static void create() {
         if (serverContext != null) {
@@ -79,7 +90,7 @@ final class TestTls {
             SSLContext server = SSLContext.getInstance("TLS");
             server.init(keys.getKeyManagers(), null, null);
 
-            trustInThisJvm(generated);
+            clientContext = trustInThisJvm(generated);
             keyStore = generated;
             serverContext = server;
         } catch (Exception e) {
@@ -134,7 +145,7 @@ final class TestTls {
         }
     }
 
-    private static void trustInThisJvm(KeyStore ours) throws Exception {
+    private static SSLContext trustInThisJvm(KeyStore ours) throws Exception {
         X509TrustManager fake = trustManager(ours);
         X509TrustManager jdk = trustManager(null);
         X509TrustManager both = new X509TrustManager() {
@@ -164,6 +175,7 @@ final class TestTls {
         client.init(null, new TrustManager[] {both}, null);
         SSLContext.setDefault(client);
         HttpsURLConnection.setDefaultSSLSocketFactory(client.getSocketFactory());
+        return client;
     }
 
     /** A null key store means the JDK's own trusted certificates. */

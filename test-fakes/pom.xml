@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>gg.oddin.oddsfeed</groupId>
+    <artifactId>odds-feed-parent</artifactId>
+    <version>${revision}</version>
+  </parent>
+
+  <artifactId>test-fakes</artifactId>
+  <packaging>jar</packaging>
+
+  <name>Oddin Odds Feed SDK test fakes</name>
+  <description>
+    The fake REST API the SDK's own tests and the system tests run against, answering from the
+    vendored schema fixtures. It depends on the JDK only, so the system tests can use it with the
+    0.0.x SDK as well as with 1.0.
+  </description>
+
+  <properties>
+    <!-- For tests only. Nothing here is published. -->
+    <maven.deploy.skip>true</maven.deploy.skip>
+    <maven.install.skip>true</maven.install.skip>
+  </properties>
+
+  <build>
+    <resources>
+      <resource>
+        <!-- the fixtures vendored from the oddsfeedschema repository, see vendor/oddsfeedschema/SOURCE -->
+        <directory>${project.basedir}/../vendor/oddsfeedschema/test/fixtures</directory>
+        <targetPath>oddsfeedschema/test/fixtures</targetPath>
+      </resource>
+    </resources>
+  </build>
+</project>
