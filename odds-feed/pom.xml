@@ -65,6 +65,12 @@
       <scope>runtime</scope>
     </dependency>
 
+    <!-- the caches: bounded, with ages, no soft references (NEXT.md, Caches and loaders) -->
+    <dependency>
+      <groupId>com.github.ben-manes.caffeine</groupId>
+      <artifactId>caffeine</artifactId>
+    </dependency>
+
     <dependency>
       <!-- the old examples import it; ApiUsageTest compiles them -->
       <groupId>org.jetbrains</groupId>
