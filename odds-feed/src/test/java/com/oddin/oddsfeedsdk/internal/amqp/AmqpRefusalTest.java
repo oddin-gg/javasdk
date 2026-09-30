@@ -28,6 +28,13 @@ class AmqpRefusalTest {
                         event -> event.startsWith("fatal: the broker refused the login 3 times"),
                         Duration.ofSeconds(30));
                 assertThat(transport.hasFailed()).isTrue();
+                assertThat(events.reasons.getFirst())
+                        .as("why the first try came")
+                        .contains("closed by the fake feed");
+                assertThat(events.reasons.subList(1, events.reasons.size()))
+                        .as("why the next ones did")
+                        .allSatisfy(reason -> assertThat(reason).contains("ACCESS_REFUSED"));
+                assertThat(String.join(" ", events.reasons)).doesNotContain("test-token");
                 assertThat(events.count("recovering")).isEqualTo(3);
                 int refused = feed.refusedLogins().size();
                 Thread.sleep(1_000);

@@ -197,6 +197,14 @@ public final class FakeFeed implements AutoCloseable {
     }
 
     /**
+     * Limits the virtual host to this many connections, as a broker at its limit refuses more; -1
+     * for no limit.
+     */
+    public void limitConnections(int connections) {
+        rabbitmqctl("set_vhost_limits", "-p", virtualHost(), "{\"max-connections\": " + connections + "}");
+    }
+
+    /**
      * Deletes every queue the broker named - the exclusive queues its clients declared - as an
      * operator or a broker policy might, leaving the connections open.
      */

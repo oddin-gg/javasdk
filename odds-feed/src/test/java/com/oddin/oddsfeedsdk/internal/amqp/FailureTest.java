@@ -54,10 +54,35 @@ class FailureTest {
 
     @Test
     void theDescriptionIsTheBrokersReasonWhenItGaveOne() {
-        assertThat(Failure.describe(new IOException(closed(AMQP.ACCESS_REFUSED, "ACCESS_REFUSED - Login was refused"))))
+        assertThat(Failure.describe(
+                        new IOException(closed(AMQP.ACCESS_REFUSED, "ACCESS_REFUSED - Login was refused")), "a-token"))
                 .isEqualTo("403 ACCESS_REFUSED - Login was refused");
-        assertThat(Failure.describe(new IOException(new ConnectException("Connection refused"))))
+        assertThat(Failure.describe(new IOException(new ConnectException("Connection refused")), "a-token"))
                 .isEqualTo("Connection refused");
+    }
+
+    @Test
+    void theAccessTokenTheBrokerQuotesIsTakenOut() {
+        var refused = new IOException(
+                closed(
+                        AMQP.NOT_ALLOWED,
+                        "NOT_ALLOWED - access to vhost '/oddinfeed/53' refused for user 'secret-token': connection limit (5) is reached"));
+        assertThat(Failure.describe(refused, "secret-token"))
+                .doesNotContain("secret-token")
+                .contains("refused for user '<access token>'");
+        assertThat(Failure.redacted(refused, "secret-token").getMessage()).doesNotContain("secret-token");
+        assertThat(Failure.redacted(refused, "secret-token").getStackTrace()).isEqualTo(refused.getStackTrace());
+    }
+
+    @Test
+    void aQueueLimitOnAChannelIsOutOfResources() {
+        var close = new AMQP.Channel.Close.Builder()
+                .replyCode(AMQP.PRECONDITION_FAILED)
+                .replyText(
+                        "PRECONDITION_FAILED - cannot declare queue: queue limit in vhost '/oddinfeed/53' (10) is reached")
+                .build();
+        assertThat(Failure.of(new IOException(new ShutdownSignalException(false, false, close, null))))
+                .isEqualTo(Failure.RESOURCES);
     }
 
     private static ShutdownSignalException closed(int code, String text) {

@@ -12,6 +12,7 @@ final class Recorded implements ConnectionEvents {
     final List<String> events = new CopyOnWriteArrayList<>();
     final List<RawDelivery> alives = new CopyOnWriteArrayList<>();
     final List<String> reasons = new CopyOnWriteArrayList<>();
+    final List<Long> waits = new CopyOnWriteArrayList<>();
 
     @Override
     public void connecting() {
@@ -32,6 +33,7 @@ final class Recorded implements ConnectionEvents {
     public void recovering(int attempt, long waitMillis, String reason) {
         events.add("recovering");
         reasons.add(reason);
+        waits.add(waitMillis);
     }
 
     @Override

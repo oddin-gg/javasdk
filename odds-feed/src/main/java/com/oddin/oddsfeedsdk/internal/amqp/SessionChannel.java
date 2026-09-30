@@ -77,8 +77,9 @@ final class SessionChannel implements SessionTransport {
             long next = epoch.incrementAndGet();
             queue.removeEpochsBefore(next);
             Channel opened = on.createChannel();
+            String name = null;
             try {
-                String name = opened.queueDeclare("", false, true, true, null).getQueue();
+                name = opened.queueDeclare("", false, true, true, null).getQueue();
                 for (String key : bindings) {
                     opened.queueBind(name, exchange, key);
                 }
@@ -86,6 +87,7 @@ final class SessionChannel implements SessionTransport {
                 opened.basicConsume(name, false, new Deliveries(opened, next));
             } catch (IOException | RuntimeException e) {
                 closeQuietly(opened);
+                deleteQuietly(on, name);
                 throw e;
             }
             channel = opened;
@@ -114,6 +116,16 @@ final class SessionChannel implements SessionTransport {
 
     @Override
     public void reset() {
+        if (!tryReset()) {
+            lost.accept(this);
+        }
+    }
+
+    /**
+     * The replacement sequence; false when the new channel could not be opened on a live
+     * connection, for the caller to try again.
+     */
+    boolean tryReset() {
         lock.lock();
         try {
             Connection now = connection.get();
@@ -121,18 +133,25 @@ final class SessionChannel implements SessionTransport {
                 // no connection to open one on: move the epoch on, and the reconnect opens the channel
                 closeChannel();
                 queue.removeEpochsBefore(epoch.incrementAndGet());
-                return;
+                return true;
             }
             try {
                 open(now);
                 failedReopens.set(0);
+                return true;
             } catch (IOException | RuntimeException e) {
                 failedReopens.incrementAndGet();
-                lost.accept(this);
+                return false;
             }
         } finally {
             lock.unlock();
         }
+    }
+
+    /** Whether it has a channel that is open. */
+    boolean isOpen() {
+        Channel current = channel;
+        return current != null && current.isOpen();
     }
 
     @Override
@@ -181,6 +200,26 @@ final class SessionChannel implements SessionTransport {
         }
     }
 
+    /**
+     * Deletes a queue declared for a consumer that never started: with no consumer it is never
+     * deleted by itself, and outlives its channel for as long as the connection lasts.
+     */
+    static void deleteQuietly(Connection on, @Nullable String queue) {
+        if (queue == null || !on.isOpen()) {
+            return;
+        }
+        try {
+            Channel deleting = on.createChannel();
+            try {
+                deleting.queueDelete(queue);
+            } finally {
+                closeQuietly(deleting);
+            }
+        } catch (IOException | RuntimeException alreadyGone) {
+            // the broker drops it with the connection at the latest
+        }
+    }
+
     static void closeQuietly(Channel closing) {
         try {
             if (closing.isOpen()) {
@@ -204,7 +243,7 @@ final class SessionChannel implements SessionTransport {
         public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body)
                 throws IOException {
             var timestamp = properties.getTimestamp();
-            boolean queued = queue.offer(new RawDelivery(
+            SessionQueue.Offer offered = queue.offer(new RawDelivery(
                     body.length > maxMessageSize ? null : body,
                     body.length,
                     envelope.getRoutingKey(),
@@ -212,8 +251,8 @@ final class SessionChannel implements SessionTransport {
                     epochOfChannel,
                     clock.instant(),
                     timestamp == null ? null : timestamp.toInstant()));
-            if (!queued) {
-                // dropped and counted: acknowledged, or its prefetch credit would be gone for good
+            if (offered == SessionQueue.Offer.FULL) {
+                // refused and counted: acknowledged, or its prefetch credit would be gone for good
                 getChannel().basicAck(envelope.getDeliveryTag(), false);
             }
         }
