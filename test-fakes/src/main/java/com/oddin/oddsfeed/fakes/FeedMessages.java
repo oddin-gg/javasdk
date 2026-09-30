@@ -1,6 +1,5 @@
-package com.oddin.oddsfeed.systemtests.fake;
+package com.oddin.oddsfeed.fakes;
 
-import com.oddin.oddsfeed.fakes.Fixtures;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
