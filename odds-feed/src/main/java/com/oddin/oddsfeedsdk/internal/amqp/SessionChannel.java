@@ -10,6 +10,8 @@ import java.io.IOException;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -34,13 +36,19 @@ final class SessionChannel implements SessionTransport {
     private final Consumer<SessionChannel> lost;
     private final ReentrantLock lock = new ReentrantLock();
     private final AtomicLong skippedAcks = new AtomicLong();
-    private @Nullable Channel channel;
+    /** Reopens that failed in a row: the transport pauses longer before each next one. */
+    private final AtomicInteger failedReopens = new AtomicInteger();
+    /** Whether a reopen is waiting or running, so the broker's closing and cancelling start one. */
+    private final AtomicBoolean reopening = new AtomicBoolean();
     /** Changed under the lock; read without it. */
     private final AtomicLong epoch = new AtomicLong();
 
+    private @Nullable Channel channel;
+
     /**
      * @param connection the transport's connection now, null while it has none
-     * @param lost told when the broker closes or cancels this channel on its own
+     * @param lost told when the broker closes or cancels this channel on its own, or it cannot be
+     *     opened again on a live connection
      */
     SessionChannel(
             String exchange,
@@ -117,7 +125,9 @@ final class SessionChannel implements SessionTransport {
             }
             try {
                 open(now);
+                failedReopens.set(0);
             } catch (IOException | RuntimeException e) {
+                failedReopens.incrementAndGet();
                 lost.accept(this);
             }
         } finally {
@@ -133,6 +143,20 @@ final class SessionChannel implements SessionTransport {
     @Override
     public SessionQueue queue() {
         return queue;
+    }
+
+    /** Reopens that failed in a row. */
+    int failedReopens() {
+        return failedReopens.get();
+    }
+
+    /** Claims the one reopen that may wait or run; false when one already does. */
+    boolean startReopen() {
+        return reopening.compareAndSet(false, true);
+    }
+
+    void reopenDone() {
+        reopening.set(false);
     }
 
     /** Acknowledgements skipped because their channel was gone. */
@@ -157,7 +181,7 @@ final class SessionChannel implements SessionTransport {
         }
     }
 
-    private static void closeQuietly(Channel closing) {
+    static void closeQuietly(Channel closing) {
         try {
             if (closing.isOpen()) {
                 closing.close();
@@ -177,10 +201,10 @@ final class SessionChannel implements SessionTransport {
         }
 
         @Override
-        public void handleDelivery(
-                String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) {
+        public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body)
+                throws IOException {
             var timestamp = properties.getTimestamp();
-            queue.offer(new RawDelivery(
+            boolean queued = queue.offer(new RawDelivery(
                     body.length > maxMessageSize ? null : body,
                     body.length,
                     envelope.getRoutingKey(),
@@ -188,6 +212,10 @@ final class SessionChannel implements SessionTransport {
                     epochOfChannel,
                     clock.instant(),
                     timestamp == null ? null : timestamp.toInstant()));
+            if (!queued) {
+                // dropped and counted: acknowledged, or its prefetch credit would be gone for good
+                getChannel().basicAck(envelope.getDeliveryTag(), false);
+            }
         }
 
         @Override

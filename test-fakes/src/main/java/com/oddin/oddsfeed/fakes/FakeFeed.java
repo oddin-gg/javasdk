@@ -197,6 +197,20 @@ public final class FakeFeed implements AutoCloseable {
     }
 
     /**
+     * Deletes every queue the broker named - the exclusive queues its clients declared - as an
+     * operator or a broker policy might, leaving the connections open.
+     */
+    public void deleteClientQueues() {
+        String queues = rabbitmqctl("list_queues", "--quiet", "--no-table-headers", "-p", virtualHost(), "name");
+        for (String queue : queues.lines()
+                .map(String::trim)
+                .filter(q -> q.startsWith("amq.gen-"))
+                .toList()) {
+            rabbitmqctl("delete_queue", "-p", virtualHost(), queue);
+        }
+    }
+
+    /**
      * The client properties of the open connections, as rabbitmqctl prints them: one line per
      * connection, with its name first.
      */
