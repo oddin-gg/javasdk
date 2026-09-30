@@ -11,12 +11,10 @@ import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import java.net.InetAddress;
 import java.security.KeyStore;
-import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.TrustManagerFactory;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
@@ -187,7 +185,7 @@ class AmqpTransportTest {
         SSLContext tls = SSLContext.getInstance("TLS");
         tls.init(null, onlyTheJdksTrust.getTrustManagers(), null);
         AmqpSettings base = settings(10, 1 << 20);
-        assertRefusedByTls(withTls(base, base.host(), tls), "PKIX");
+        assertRefusedByTls(withTls(base, base.host(), tls), "certification path");
     }
 
     @Test
@@ -196,6 +194,44 @@ class AmqpTransportTest {
         String host = InetAddress.getLocalHost().getHostName();
         AmqpSettings base = settings(10, 1 << 20);
         assertRefusedByTls(withTls(base, host, TestTls.clientContext()), "subject alternative");
+    }
+
+    @Test
+    void aDeliveryRefusedForWantOfRoomIsAcknowledgedSoTheSessionGoesOn() throws Exception {
+        AmqpTransport transport = transport(settings(3, 1 << 20), false);
+        SessionTransport session = transport.addSession(allKeys(), 1);
+        transport.open();
+        for (int i = 0; i < 5; i++) {
+            feed().publishFixture(ODDS_CHANGE);
+        }
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (session.queue().overflowed() < 4 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.queue().overflowed()).as("room for one only").isEqualTo(4);
+        session.ack(next(session));
+        feed().publishFixture(ODDS_CHANGE);
+        assertThat(next(session)).as("the refused ones gave their credit back").isNotNull();
+    }
+
+    @Test
+    void aBrokerAtItsConnectionLimitIsRetriedWithTheLongPauseAndSaysSo() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        transport.addSession(allKeys());
+        transport.open();
+        feed().limitConnections(0);
+        try {
+            feed().closeConnections();
+            long deadline = System.nanoTime() + WAIT.toNanos();
+            while (events.reasons.size() < 2 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(events.reasons.get(1)).contains("limit");
+            assertThat(events.waits.get(1)).as("the resource pause").isEqualTo(1_000L);
+        } finally {
+            feed().limitConnections(-1);
+        }
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
     }
 
     @Test
@@ -247,10 +283,11 @@ class AmqpTransportTest {
         transport.addSession(allKeys());
         assertThatThrownBy(transport::open)
                 .isInstanceOf(InitException.class)
+                .hasMessageContaining("could not be trusted")
                 .satisfies(e -> assertThat(chain(e))
                         .as("the cause chain")
-                        .anySatisfy(cause -> assertThat(cause)
-                                .isInstanceOfAny(SSLHandshakeException.class, CertificateException.class))
+                        .anySatisfy(cause -> assertThat(String.valueOf(cause.getMessage()))
+                                .containsAnyOf("SSLHandshakeException", "CertificateException"))
                         .anySatisfy(cause ->
                                 assertThat(String.valueOf(cause.getMessage())).contains(why)));
         assertThat(feed().logins()).as("no login got as far as the broker").hasSize(loginsBefore);
