@@ -106,6 +106,28 @@ class OddsFeedConfigurationBuilderTest {
     }
 
     @Test
+    void thePrefetchAndTheMessageSizeHaveTheirDefaultsAndBounds() {
+        OddsFeedConfiguration defaults =
+                builder().selectProduction().setAccessToken("token").build();
+        assertThat(defaults.getAmqpPrefetch()).isEqualTo(200);
+        assertThat(defaults.getMaxMessageSize()).isEqualTo(1 << 20);
+        OddsFeedConfiguration set = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setAmqpPrefetch(10_000)
+                .setMaxMessageSize(4096)
+                .build();
+        assertThat(set.getAmqpPrefetch()).isEqualTo(10_000);
+        assertThat(set.getMaxMessageSize()).isEqualTo(4096);
+        assertThat(builder().setAmqpPrefetch(1)).isNotNull();
+        assertThatThrownBy(() -> builder().setAmqpPrefetch(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("1 to 10000");
+        assertThatThrownBy(() -> builder().setAmqpPrefetch(10_001)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder().setMaxMessageSize(0)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void theApiLimitsMustBePositive() {
         assertThatThrownBy(() -> builder().setHttpClientTimeout(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class)

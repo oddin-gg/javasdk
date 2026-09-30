@@ -17,6 +17,10 @@ public final class OddsFeedConfiguration {
     /** The startup timeout, when none is set, is this many HTTP timeouts. */
     static final int STARTUP_TIMEOUTS = 3;
 
+    static final int DEFAULT_AMQP_PREFETCH = 200;
+    static final int MAX_AMQP_PREFETCH = 10_000;
+    static final int DEFAULT_MAX_MESSAGE_SIZE = 1 << 20;
+
     /** 0.0.x was Kotlin, and its constants lived on the companion object too. */
     @SuppressWarnings("VariableNameSameAsType") // the name is the compatibility
     public static final Companion Companion = new Companion();
@@ -36,6 +40,8 @@ public final class OddsFeedConfiguration {
     private final Duration httpClientTimeout;
     private final int restConcurrencyLimit;
     private final Duration startupTimeout;
+    private final int amqpPrefetch;
+    private final int maxMessageSize;
 
     /**
      * Public because 0.0.x's constructor was, to Java callers; {@link OddsFeedConfigurationBuilder}
@@ -69,7 +75,9 @@ public final class OddsFeedConfiguration {
                 maxPlayerCacheSize,
                 DEFAULT_HTTP_CLIENT_TIMEOUT,
                 DEFAULT_REST_CONCURRENCY_LIMIT,
-                DEFAULT_HTTP_CLIENT_TIMEOUT.multipliedBy(STARTUP_TIMEOUTS));
+                DEFAULT_HTTP_CLIENT_TIMEOUT.multipliedBy(STARTUP_TIMEOUTS),
+                DEFAULT_AMQP_PREFETCH,
+                DEFAULT_MAX_MESSAGE_SIZE);
     }
 
     OddsFeedConfiguration(
@@ -87,7 +95,9 @@ public final class OddsFeedConfiguration {
             long maxPlayerCacheSize,
             Duration httpClientTimeout,
             int restConcurrencyLimit,
-            Duration startupTimeout) {
+            Duration startupTimeout,
+            int amqpPrefetch,
+            int maxMessageSize) {
         this.accessToken = accessToken;
         this.defaultLocale = defaultLocale;
         this.maxInactivitySeconds = maxInactivitySeconds;
@@ -103,6 +113,8 @@ public final class OddsFeedConfiguration {
         this.httpClientTimeout = httpClientTimeout;
         this.restConcurrencyLimit = restConcurrencyLimit;
         this.startupTimeout = startupTimeout;
+        this.amqpPrefetch = amqpPrefetch;
+        this.maxMessageSize = maxMessageSize;
     }
 
     public String getAccessToken() {
@@ -177,6 +189,23 @@ public final class OddsFeedConfiguration {
      */
     public Duration getStartupTimeout() {
         return startupTimeout;
+    }
+
+    /**
+     * How many messages the broker hands a session before the session has acknowledged them: the
+     * session's backlog in the SDK, and so, times the maximum message size, its memory. 200 unless
+     * set. New in 1.0.
+     */
+    public int getAmqpPrefetch() {
+        return amqpPrefetch;
+    }
+
+    /**
+     * The largest message body the SDK decodes, in bytes; a larger one is reported as unparsable and
+     * acknowledged. 1 MiB unless set. New in 1.0.
+     */
+    public int getMaxMessageSize() {
+        return maxMessageSize;
     }
 
     /** 0.0.x's companion object; the constants are on the class. */

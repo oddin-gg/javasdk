@@ -24,6 +24,8 @@ public final class OddsFeedConfigurationBuilder {
     private Duration httpClientTimeout = OddsFeedConfiguration.DEFAULT_HTTP_CLIENT_TIMEOUT;
     private int restConcurrencyLimit = OddsFeedConfiguration.DEFAULT_REST_CONCURRENCY_LIMIT;
     private @Nullable Duration startupTimeout;
+    private int amqpPrefetch = OddsFeedConfiguration.DEFAULT_AMQP_PREFETCH;
+    private int maxMessageSize = OddsFeedConfiguration.DEFAULT_MAX_MESSAGE_SIZE;
 
     /** Public because 0.0.x's constructor was, to Java callers; {@code OddsFeed.getOddsFeedConfigurationBuilder()} makes one. */
     public OddsFeedConfigurationBuilder() {}
@@ -145,6 +147,33 @@ public final class OddsFeedConfigurationBuilder {
         return this;
     }
 
+    /**
+     * How many unacknowledged messages the broker hands each session. 200 unless set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is 1 to 10 000; the broker reads 0 as unlimited
+     */
+    public OddsFeedConfigurationBuilder setAmqpPrefetch(int prefetch) {
+        if (prefetch < 1 || prefetch > OddsFeedConfiguration.MAX_AMQP_PREFETCH) {
+            throw new IllegalArgumentException(
+                    "AMQP prefetch must be 1 to " + OddsFeedConfiguration.MAX_AMQP_PREFETCH + ", was " + prefetch);
+        }
+        this.amqpPrefetch = prefetch;
+        return this;
+    }
+
+    /**
+     * The largest message body decoded, in bytes. 1 MiB unless set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is at least 1
+     */
+    public OddsFeedConfigurationBuilder setMaxMessageSize(int bytes) {
+        if (bytes < 1) {
+            throw new IllegalArgumentException("maximum message size must be at least 1 byte, was " + bytes);
+        }
+        this.maxMessageSize = bytes;
+        return this;
+    }
+
     private static Duration positive(Duration duration, String what) {
         if (!duration.isPositive()) {
             throw new IllegalArgumentException(what + " must be positive, was " + duration);
@@ -182,6 +211,8 @@ public final class OddsFeedConfigurationBuilder {
                 maxPlayerCacheSize,
                 httpClientTimeout,
                 restConcurrencyLimit,
-                startup != null ? startup : httpClientTimeout.multipliedBy(OddsFeedConfiguration.STARTUP_TIMEOUTS));
+                startup != null ? startup : httpClientTimeout.multipliedBy(OddsFeedConfiguration.STARTUP_TIMEOUTS),
+                amqpPrefetch,
+                maxMessageSize);
     }
 }
