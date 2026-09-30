@@ -19,6 +19,7 @@ import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RABookmakerDetail;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMarketDescriptions;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint;
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducers;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.net.URI;
 import java.time.Duration;
@@ -298,7 +299,7 @@ class ApiClientTest {
     }
 
     @Test
-    void aSuccessOverTheSizeLimitFailsAtOnceAndAnErrorIsCutShort() {
+    void aSuccessOverTheSizeLimitFailsAtOnceAndAnErrorIsCutShort() throws Exception {
         // padding after the root element: valid XML, and more than one network buffer
         String padded = Fixtures.read("rest/whoami/bookmaker_details.xml") + " ".repeat(100_000);
         int size = padded.getBytes(UTF_8).length;
@@ -311,16 +312,66 @@ class ApiClientTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("the answer is over " + (size - 1) + " bytes");
         assertThat(api.requests("GET", WHOAMI)).as("one byte over is final").hasSize(2);
-        // both recovery permits came back
-        for (int i = 0; i < 3; i++) {
-            assertThat(tight.fetchProducers()).isNotNull();
+        // both recovery permits came back: two calls are at the API at once
+        api.respond("/v1/descriptions/producers", Reply.of(200, OK_PRODUCERS).after(Duration.ofSeconds(1)));
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            long started = System.nanoTime();
+            List<Future<RAProducers>> both =
+                    List.of(calls.submit(() -> tight.fetchProducers()), calls.submit(() -> tight.fetchProducers()));
+            api.awaitRequests("GET", "/v1/descriptions/producers", 2);
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(900));
+            for (Future<RAProducers> producers : both) {
+                assertThat(producers.get()).isNotNull();
+            }
         }
 
-        api.respond(WHOAMI, 403, REFUSED + " ".repeat(1_000));
+        // an error is read only as far as the limit: this one whole would decode to its message,
+        // and the call does not wait for the rest of it
+        api.respond(WHOAMI, Reply.of(403, REFUSED + " ".repeat(1_000)).stallingMidBody(Duration.ofSeconds(3)));
+        long started = System.nanoTime();
         assertThatThrownBy(tight::fetchWhoAmI)
                 .isInstanceOf(ApiException.class)
+                .hasMessageStartingWith("Failed to get data: GET ")
+                .hasMessageEndingWith("answered 403")
                 .satisfies(e -> assertThat(HttpStatusException.refused(e)).isTrue());
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(1500));
         assertThat(events.refused).extracting(ApiCall::status).containsExactly(403);
+    }
+
+    @Test
+    void aRedirectIsNotFollowed() {
+        try (FakeRestServer elsewhere = FakeRestServer.start()) {
+            ApiClient client = client(b -> b);
+            api.respond(WHOAMI, Reply.of(302, "").withHeader("Location", "https://" + elsewhere.apiHost() + WHOAMI));
+            assertThatThrownBy(client::fetchWhoAmI)
+                    .isInstanceOf(ApiException.class)
+                    .satisfies(e -> assertThat(HttpStatusException.statusOf(e)).isEqualTo(302));
+            assertThat(elsewhere.requests())
+                    .as("the access token goes nowhere else")
+                    .isEmpty();
+        }
+    }
+
+    @Test
+    void aRecoveryRequestTheApiAcceptedIsDoneWhateverItsBodyDoes() {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofMillis(800)));
+        String path = "/v1/pre/recovery/initiate_request";
+        api.respond(path, Reply.of(202, "<accepted/>").cutOffMidBody());
+        client.postRecovery("pre", 1, null);
+        api.respond(path, Reply.of(202, "<accepted/>").stallingMidBody(Duration.ofSeconds(3)));
+        long started = System.nanoTime();
+        client.postRecovery("pre", 2, null);
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(1500));
+        assertThat(api.requests("POST", path)).as("neither is sent again").hasSize(2);
+    }
+
+    @Test
+    void nothingIsSentOnceTheDeadlineHasPassed() {
+        ApiClient client = client(b -> b);
+        assertThatThrownBy(() -> client.fetchProducers(Deadline.in(Duration.ZERO)))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("waiting for its turn");
+        assertThat(api.requests()).isEmpty();
     }
 
     @Test
