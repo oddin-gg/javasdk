@@ -422,6 +422,58 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aTransportClosedAsItOpensFailsTheOpenAndTellsNoUp() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        transport.addSession(allKeys());
+        transport.afterChannelsOpen = () -> {
+            Thread.ofVirtual().start(transport::close);
+            awaitQuietly(transport::isClosed);
+        };
+        assertThatThrownBy(transport::open)
+                .isInstanceOf(InitException.class)
+                .hasMessageContaining("closed as it opened");
+        assertThat(events.events).containsExactly("connecting");
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!feed().openConnections().isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(100);
+        }
+        assertThat(feed().openConnections()).isEmpty();
+    }
+
+    @Test
+    void aResetThatCannotOpenTheChannelLeavesItToTheReopenLoop() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+        feed().removeExchange(FakeFeed.EXCHANGE);
+        long failed;
+        try {
+            session.reset();
+            long deadline = System.nanoTime() + WAIT.toNanos();
+            while (session.failedReopens() < 2 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(session.failedReopens())
+                    .as("the reset's failure, and the loop's")
+                    .isGreaterThanOrEqualTo(2);
+        } finally {
+            failed = session.epoch();
+            feed().restoreExchange(FakeFeed.EXCHANGE);
+        }
+        awaitReopened(session, Math.max(before, failed));
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+    }
+
+    @Test
+    void theClientReportsCallbackFailuresWithoutTheTokenAndClosesNothing() {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var factory = transport.factory();
+        assertThat(factory.getExceptionHandler()).isInstanceOf(RedactingExceptionHandler.class);
+        assertThat(factory.getChannelRpcTimeout()).isEqualTo(5_000);
+    }
+
+    @Test
     void aClosedTransportReportsNoDown() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         transport.addSession(allKeys());
