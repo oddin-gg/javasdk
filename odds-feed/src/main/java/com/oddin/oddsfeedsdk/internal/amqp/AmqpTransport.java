@@ -27,6 +27,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import javax.net.ssl.SSLContext;
@@ -65,16 +66,17 @@ public final class AmqpTransport implements AutoCloseable {
     private final ReentrantLock lock = new ReentrantLock();
     private final CountDownLatch closing = new CountDownLatch(1);
     private final AtomicBoolean opened = new AtomicBoolean();
-    private final AtomicBoolean reconnecting = new AtomicBoolean();
+    /** Whether a reconnect is under way; package-private for a test to hold one off. */
+    final AtomicBoolean reconnecting = new AtomicBoolean();
+
     private final AtomicBoolean aliveReopening = new AtomicBoolean();
     private final AtomicInteger aliveFailedReopens = new AtomicInteger();
-    /** Whether the broker took the current alive channel or its consumer; cleared by one opening. */
-    private final AtomicBoolean aliveTaken = new AtomicBoolean();
+    private final AtomicLong aliveHandlerFailures = new AtomicLong();
 
     private @Nullable ExecutorService consumers;
     private volatile @Nullable Connection connection;
-    /** Changed under the lock; read without it. */
-    private volatile @Nullable Channel aliveChannel;
+    /** The alive channel's consumer, which knows its channel; changed under the lock. */
+    private volatile @Nullable Alives alive;
 
     private volatile boolean closed;
     private volatile boolean failed;
@@ -197,8 +199,7 @@ public final class AmqpTransport implements AutoCloseable {
         connection = made;
         made.addShutdownListener(this::connectionLost);
         if (alives != null) {
-            aliveChannel = openAlive(made, alives);
-            aliveTaken.set(false);
+            alive = openAlive(made, alives);
             aliveFailedReopens.set(0);
         }
         for (SessionChannel session : sessions) {
@@ -206,19 +207,36 @@ public final class AmqpTransport implements AutoCloseable {
         }
     }
 
-    private Channel openAlive(Connection on, Consumer<RawDelivery> handler) throws IOException {
+    private Alives openAlive(Connection on, Consumer<RawDelivery> handler) throws IOException {
         Channel channel = on.createChannel();
+        var consumer = new Alives(channel, handler);
         String queue = null;
         try {
             queue = channel.queueDeclare("", false, true, true, null).getQueue();
             channel.queueBind(queue, exchange, RoutingKeys.ALIVE);
-            channel.basicConsume(queue, true, new Alives(channel, handler));
+            channel.basicConsume(queue, true, consumer);
         } catch (IOException | RuntimeException e) {
             SessionChannel.closeQuietly(channel);
             SessionChannel.deleteQuietly(on, queue);
             throw e;
         }
-        return channel;
+        return consumer;
+    }
+
+    /** Whether the alive channel is open with a consumer the broker has not taken. */
+    boolean aliveOpen() {
+        Alives current = alive;
+        return current != null && !current.taken && current.getChannel().isOpen();
+    }
+
+    /** Alive reopens that failed in a row. */
+    int aliveFailedReopens() {
+        return aliveFailedReopens.get();
+    }
+
+    /** Alives the handler threw on, which the client would otherwise take for the SDK closing the channel. */
+    long aliveHandlerFailures() {
+        return aliveHandlerFailures.get();
     }
 
     private ConnectionFactory factory() {
@@ -275,11 +293,15 @@ public final class AmqpTransport implements AutoCloseable {
             try {
                 while (!pause(backoff(session.failedReopens() + 1)) && !reconnecting.get()) {
                     if (session.reopenIfStillLost(epoch)) {
-                        return;
+                        break;
                     }
                 }
             } finally {
                 session.reopenDone();
+            }
+            // taken again while this reopen held the claim: that loss found it held, and returned
+            if (!closed && !reconnecting.get() && !session.isOpen()) {
+                sessionLost(session, session.epoch());
             }
         });
     }
@@ -288,47 +310,64 @@ public final class AmqpTransport implements AutoCloseable {
      * The SDK's alive channel the broker closed or cancelled on a live connection: open it again,
      * unless it was replaced since by one that is open.
      */
-    @SuppressWarnings("ReferenceEquality") // the very channel: each opening is its own object
-    private void aliveLost(@Nullable Channel lost) {
+    private void aliveLost(@Nullable Alives lost) {
         Consumer<RawDelivery> handler = alives;
         if (handler == null || closed || reconnecting.get() || !aliveReopening.compareAndSet(false, true)) {
             return;
         }
         Thread.ofVirtual().name("oddsfeed-amqp-alive").start(() -> {
-            boolean again = false;
             try {
-                if (pause(backoff(aliveFailedReopens.get() + 1)) || reconnecting.get()) {
-                    return;
-                }
-                lock.lock();
-                try {
-                    Connection now = connection;
-                    if (closed || now == null || !now.isOpen()) {
-                        return;
-                    }
-                    Channel old = aliveChannel;
-                    if (old != null && old != lost && old.isOpen() && !aliveTaken.get()) {
-                        return;
-                    }
-                    if (old != null) {
-                        SessionChannel.closeQuietly(old);
-                    }
-                    aliveChannel = openAlive(now, handler);
-                    aliveTaken.set(false);
-                    aliveFailedReopens.set(0);
-                } catch (IOException | RuntimeException e) {
-                    aliveFailedReopens.incrementAndGet();
-                    again = true;
-                } finally {
-                    lock.unlock();
+                if (!pause(backoff(aliveFailedReopens.get() + 1)) && !reconnecting.get()) {
+                    reopenAlive(handler, lost);
                 }
             } finally {
                 aliveReopening.set(false);
             }
-            if (again) {
-                aliveLost(lost);
+            // failed, or taken again while this reopen held the claim: go on
+            if (!closed && !reconnecting.get() && !aliveOpen()) {
+                aliveLost(alive);
             }
         });
+    }
+
+    private void reopenAlive(Consumer<RawDelivery> handler, @Nullable Alives lost) {
+        lock.lock();
+        try {
+            Connection now = connection;
+            if (closed || now == null || !now.isOpen()) {
+                return;
+            }
+            Alives old = alive;
+            if (old != null && old != lost && aliveOpen()) {
+                // replaced since by one that is open, by a reconnect
+                return;
+            }
+            alive = null;
+            if (old != null) {
+                SessionChannel.closeQuietly(old.getChannel());
+            }
+            alive = openAlive(now, handler);
+            aliveFailedReopens.set(0);
+        } catch (IOException | RuntimeException e) {
+            aliveFailedReopens.incrementAndGet();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * After a reconnect: a channel the broker took while the others were opening found a reconnect
+     * running and was not reopened, so it is now.
+     */
+    void reopenWhatWasLost() {
+        for (SessionChannel session : sessions) {
+            if (!session.isOpen()) {
+                sessionLost(session, session.epoch());
+            }
+        }
+        if (alives != null && !aliveOpen()) {
+            aliveLost(alive);
+        }
     }
 
     private void reconnect(Throwable firstCause) {
@@ -363,16 +402,7 @@ public final class AmqpTransport implements AutoCloseable {
                 refusals.clear();
                 events.up();
                 reconnecting.set(false);
-                // a channel the broker took while the others were opening was not reopened: do it now
-                for (SessionChannel session : sessions) {
-                    if (!session.isOpen()) {
-                        sessionLost(session, session.epoch());
-                    }
-                }
-                Channel alive = aliveChannel;
-                if (alives != null && (alive == null || !alive.isOpen() || aliveTaken.get())) {
-                    aliveLost(alive);
-                }
+                reopenWhatWasLost();
                 Connection now = connection;
                 // lost again before the flag was down: its listener saw a reconnect running, so go on
                 if ((now != null && now.isOpen()) || !reconnecting.compareAndSet(false, true)) {
@@ -443,10 +473,10 @@ public final class AmqpTransport implements AutoCloseable {
     }
 
     private void closeConnectionQuietly() {
-        Channel alive = aliveChannel;
-        aliveChannel = null;
-        if (alive != null) {
-            SessionChannel.closeQuietly(alive);
+        Alives aliveNow = alive;
+        alive = null;
+        if (aliveNow != null) {
+            SessionChannel.closeQuietly(aliveNow.getChannel());
         }
         Connection current = connection;
         connection = null;
@@ -464,6 +494,8 @@ public final class AmqpTransport implements AutoCloseable {
     /** The SDK's alive consumer: hands each alive over; tells when the broker takes the channel. */
     private final class Alives extends DefaultConsumer {
         private final Consumer<RawDelivery> handler;
+        /** Whether the broker took this consumer or its channel: its own mark, never a later one's. */
+        private volatile boolean taken;
 
         Alives(Channel channel, Consumer<RawDelivery> handler) {
             super(channel);
@@ -474,14 +506,20 @@ public final class AmqpTransport implements AutoCloseable {
         public void handleDelivery(
                 String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) {
             var timestamp = properties.getTimestamp();
-            handler.accept(new RawDelivery(
-                    body.length > settings.maxMessageSize() ? null : body,
-                    body.length,
-                    envelope.getRoutingKey(),
-                    envelope.getDeliveryTag(),
-                    0,
-                    clock.instant(),
-                    timestamp == null ? null : timestamp.toInstant()));
+            try {
+                handler.accept(new RawDelivery(
+                        body.length > settings.maxMessageSize() ? null : body,
+                        body.length,
+                        envelope.getRoutingKey(),
+                        envelope.getDeliveryTag(),
+                        0,
+                        clock.instant(),
+                        timestamp == null ? null : timestamp.toInstant()));
+            } catch (RuntimeException e) {
+                // counted, not thrown on: the client would close the channel as if the SDK had, and
+                // no reopen would follow
+                aliveHandlerFailures.incrementAndGet();
+            }
         }
 
         @Override
@@ -496,13 +534,10 @@ public final class AmqpTransport implements AutoCloseable {
             }
         }
 
-        @SuppressWarnings("ReferenceEquality") // the very channel: each opening is its own object
         private void taken() {
-            Channel mine = getChannel();
-            if (mine == aliveChannel) {
-                aliveTaken.set(true);
-                aliveLost(mine);
-            }
+            taken = true;
+            // a replaced one's loss changes nothing: the reopen keeps a newer channel that is open
+            aliveLost(this);
         }
     }
 }

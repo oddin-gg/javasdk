@@ -28,7 +28,7 @@ enum Failure {
     /**
      * The kind of {@code failure}, from its cause chain. The client's "possible authentication
      * failure" is any close during the login, a broker shutting down included, so only the broker's
-     * own reply decides: a limit, on the connection or on a channel, is resources; {@code
+     * own reply decides, on the connection or on a channel: a limit is resources; {@code
      * ACCESS_REFUSED} or {@code NOT_ALLOWED} otherwise a refusal.
      */
     static Failure of(@Nullable Throwable failure) {
@@ -41,8 +41,8 @@ enum Failure {
                 if (text.contains("limit")) {
                     return RESOURCES;
                 }
-                if (shutdown.getReason() instanceof AMQP.Connection.Close close
-                        && (close.getReplyCode() == AMQP.ACCESS_REFUSED || close.getReplyCode() == AMQP.NOT_ALLOWED)) {
+                int code = replyCode(shutdown);
+                if (code == AMQP.ACCESS_REFUSED || code == AMQP.NOT_ALLOWED) {
                     return REFUSED;
                 }
             }
@@ -56,9 +56,8 @@ enum Failure {
      */
     static String describe(@Nullable Throwable failure, String token) {
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
-            if (cause instanceof ShutdownSignalException shutdown
-                    && shutdown.getReason() instanceof AMQP.Connection.Close close) {
-                return redact(close.getReplyCode() + " " + close.getReplyText(), token);
+            if (cause instanceof ShutdownSignalException shutdown && replyText(shutdown) != null) {
+                return redact(replyCode(shutdown) + " " + replyText(shutdown), token);
             }
             if (cause.getMessage() != null && cause.getCause() == null) {
                 return redact(cause.getMessage(), token);
@@ -78,6 +77,17 @@ enum Failure {
 
     static String redact(String text, String token) {
         return token.isEmpty() ? text : text.replace(token, TOKEN);
+    }
+
+    /** The broker's reply code, of a connection's close or a channel's; 0 for none. */
+    private static int replyCode(ShutdownSignalException shutdown) {
+        if (shutdown.getReason() instanceof AMQP.Connection.Close close) {
+            return close.getReplyCode();
+        }
+        if (shutdown.getReason() instanceof AMQP.Channel.Close close) {
+            return close.getReplyCode();
+        }
+        return 0;
     }
 
     private static @Nullable String replyText(ShutdownSignalException shutdown) {

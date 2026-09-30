@@ -14,6 +14,7 @@ import java.security.KeyStore;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import org.jspecify.annotations.Nullable;
@@ -163,19 +164,13 @@ class AmqpTransportTest {
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
 
         // and the SDK's own alive consumer
-        int alivesBefore = events.alives.size();
-        long deadline = System.nanoTime() + WAIT.toNanos();
-        while (events.alives.size() == alivesBefore && System.nanoTime() < deadline) {
-            feed().publishFixture("feed/alive/alive.xml");
-            Thread.sleep(200);
-        }
-        assertThat(events.alives).as("alives again").hasSizeGreaterThan(alivesBefore);
+        awaitAnAlive();
         assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
     }
 
     @Test
     void aChannelThatWillNotOpenIsTriedAgainWithoutLeavingQueuesBehind() throws Exception {
-        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
         SessionTransport session = transport.addSession(allKeys());
         transport.open();
         var channel = (SessionChannel) session;
@@ -184,13 +179,17 @@ class AmqpTransportTest {
             // the queue goes, and every new one fails to bind to the exchange that is gone
             feed().deleteClientQueues();
             long deadline = System.nanoTime() + WAIT.toNanos();
-            while (channel.failedReopens() < 2 && System.nanoTime() < deadline) {
+            while ((channel.failedReopens() < 2 || transport.aliveFailedReopens() < 2)
+                    && System.nanoTime() < deadline) {
                 Thread.sleep(20);
             }
             assertThat(channel.failedReopens()).as("reopens that failed").isGreaterThanOrEqualTo(2);
+            assertThat(transport.aliveFailedReopens())
+                    .as("alive reopens that failed")
+                    .isGreaterThanOrEqualTo(2);
             assertThat(feed().clientQueues())
                     .as("a queue that could not be bound is deleted")
-                    .hasSizeLessThanOrEqualTo(1);
+                    .hasSizeLessThanOrEqualTo(2);
         } finally {
             feed().restoreExchange(FakeFeed.EXCHANGE);
         }
@@ -200,7 +199,76 @@ class AmqpTransportTest {
                 .as("reset by the reopen that worked")
                 .isZero();
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+        awaitAnAlive();
+        assertThat(transport.aliveFailedReopens())
+                .as("reset by the reopen that worked")
+                .isZero();
         assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
+    }
+
+    @Test
+    void aReopenForALostChannelKeepsOneOpenedSince() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        long lost = session.epoch();
+        session.reset();
+        long since = session.epoch();
+        feed().publishFixture(ODDS_CHANGE);
+        awaitSize(session, 1);
+
+        assertThat(session.reopenIfStillLost(lost)).isTrue();
+        assertThat(session.epoch()).as("the channel opened since, kept").isEqualTo(since);
+        assertThat(session.queue().size()).as("with its delivery").isEqualTo(1);
+        assertThat(session.isOpen()).isTrue();
+
+        assertThat(session.reopenIfStillLost(since)).isTrue();
+        assertThat(session.epoch()).as("the channel lost, reopened").isEqualTo(since + 1);
+        assertThat(session.queue().size()).isZero();
+    }
+
+    @Test
+    void aChannelTakenWhileAReconnectRunsIsReopenedWhenItHandsOver() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+
+        // as while a reconnect opens the channels: a loss then leaves the reopening to the hand-off
+        transport.reconnecting.set(true);
+        feed().deleteClientQueues();
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while ((session.isOpen() || transport.aliveOpen()) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        Thread.sleep(500);
+        assertThat(session.isOpen())
+                .as("taken, and not reopened while reconnecting")
+                .isFalse();
+        assertThat(transport.aliveOpen()).isFalse();
+
+        transport.reconnecting.set(false);
+        transport.reopenWhatWasLost();
+        awaitReopened(session, before);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+        awaitAnAlive();
+    }
+
+    @Test
+    void anAliveHandlerThatThrowsKeepsTheAliveConsumer() throws Exception {
+        var calls = new AtomicInteger();
+        var transport = new AmqpTransport(settings(10, 1 << 20), FakeFeed.EXCHANGE, events, alive -> {
+            if (calls.incrementAndGet() == 1) {
+                throw new IllegalStateException("the first alive fails");
+            }
+            events.alive(alive);
+        });
+        open.add(transport);
+        transport.addSession(allKeys());
+        transport.open();
+        awaitAnAlive();
+        assertThat(transport.aliveHandlerFailures()).isEqualTo(1);
+        assertThat(transport.aliveOpen()).isTrue();
     }
 
     @Test
@@ -383,6 +451,17 @@ class AmqpTransportTest {
         RawDelivery delivery = session.queue().poll(WAIT);
         assertThat(delivery).as("a delivery within " + WAIT).isNotNull();
         return requireNonNull(delivery);
+    }
+
+    /** Publishes alives until the SDK's own consumer gets one more. */
+    private void awaitAnAlive() throws InterruptedException {
+        int before = events.alives.size();
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (events.alives.size() == before && System.nanoTime() < deadline) {
+            feed().publishFixture("feed/alive/alive.xml");
+            Thread.sleep(200);
+        }
+        assertThat(events.alives).as("an alive to the SDK's own consumer").hasSizeGreaterThan(before);
     }
 
     /** Waits for the session's channel to be open again in an epoch after {@code before}. */
