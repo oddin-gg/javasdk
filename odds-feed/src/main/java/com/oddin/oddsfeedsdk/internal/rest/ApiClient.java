@@ -20,6 +20,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RASportTournaments;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportsEndpoint;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentInfo;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.Locale;
@@ -50,7 +51,8 @@ public final class ApiClient implements AutoCloseable {
         this(configuration, new RestTransport(configuration, events, tls));
     }
 
-    private ApiClient(OddsFeedConfiguration configuration, RestTransport transport) {
+    /** Over a given transport, for a test. */
+    ApiClient(OddsFeedConfiguration configuration, RestTransport transport) {
         this.transport = transport;
         this.nodeId = configuration.getSdkNodeId();
     }
@@ -58,6 +60,15 @@ public final class ApiClient implements AutoCloseable {
     /** A deadline for one call: the HTTP client timeout from now. */
     Deadline deadline() {
         return transport.deadline();
+    }
+
+    boolean isClosed() {
+        return transport.isClosed();
+    }
+
+    /** Waits this long, or until the client is closed: true when it was. */
+    boolean closedWithin(Duration wait) throws InterruptedException {
+        return transport.closedWithin(wait);
     }
 
     public RABookmakerDetail fetchWhoAmI() {

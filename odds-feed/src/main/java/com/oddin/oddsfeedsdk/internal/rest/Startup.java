@@ -10,7 +10,7 @@ import java.time.Duration;
  * What opening the feed needs from the API before anything else: who the bookmaker is and which
  * producers there are. It keeps asking until the startup timeout, since an API that is briefly
  * away at startup should not stop the feed, then fails with an exception that says why. A refused
- * access token fails at once: asking again cannot change the answer.
+ * access token fails at once: asking again cannot change the answer. So does closing the client.
  *
  * @param bookmaker the whoami answer
  * @param producers the producer list
@@ -36,6 +36,9 @@ public record Startup(RABookmakerDetail bookmaker, RAProducers producers) {
             } catch (ApiException e) {
                 failure = e;
             }
+            if (api.isClosed()) {
+                throw new InitException("Failed to init odds feed: the feed was closed", failure);
+            }
             if (HttpStatusException.refused(failure)) {
                 throw new InitException(
                         "Failed to init odds feed: the API refused the access token ("
@@ -50,7 +53,9 @@ public record Startup(RABookmakerDetail bookmaker, RAProducers producers) {
                         failure);
             }
             try {
-                Thread.sleep(PAUSE);
+                if (api.closedWithin(PAUSE)) {
+                    throw new InitException("Failed to init odds feed: the feed was closed", failure);
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new InitException("Failed to init odds feed: interrupted", failure);

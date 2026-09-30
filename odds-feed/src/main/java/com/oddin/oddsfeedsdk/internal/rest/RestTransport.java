@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Flow;
 import java.util.concurrent.Semaphore;
@@ -74,6 +75,9 @@ public final class RestTransport implements AutoCloseable {
     private final Semaphore dataPermits;
     private final RestDecoder decoder = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES);
     private final ApiEvents events;
+    private final int maxBytes;
+    private final int maxErrorBytes;
+    private final CountDownLatch closing = new CountDownLatch(1);
     private volatile boolean closed;
 
     public RestTransport(OddsFeedConfiguration configuration, ApiEvents events) {
@@ -82,6 +86,18 @@ public final class RestTransport implements AutoCloseable {
 
     /** With the TLS a test's fake server needs; null for the JVM's default. */
     RestTransport(OddsFeedConfiguration configuration, ApiEvents events, @Nullable SSLContext tls) {
+        this(configuration, events, tls, RestDecoder.DEFAULT_MAX_BYTES, MAX_ERROR_BYTES);
+    }
+
+    /** With smaller body limits, for a test to reach them. */
+    RestTransport(
+            OddsFeedConfiguration configuration,
+            ApiEvents events,
+            @Nullable SSLContext tls,
+            int maxBytes,
+            int maxErrorBytes) {
+        this.maxBytes = maxBytes;
+        this.maxErrorBytes = maxErrorBytes;
         this.base = "https://" + configuration.getSelectedEnvironment().getApiHost() + "/v1";
         this.accessToken = configuration.getAccessToken();
         this.timeout = configuration.getHttpClientTimeout();
@@ -135,6 +151,7 @@ public final class RestTransport implements AutoCloseable {
     @Override
     public void close() {
         closed = true;
+        closing.countDown();
         http.shutdownNow();
     }
 
@@ -171,15 +188,19 @@ public final class RestTransport implements AutoCloseable {
             }
 
             IOException broken = answer.failure();
-            if (broken instanceof HttpTimeoutException) {
-                report(method, uri, answer.status(), started, attempt, broken);
+            int status = answer.status();
+            boolean refused = status == 401 || status == 403;
+            // a control call's success is done, whatever its body did afterwards
+            boolean done = status / 100 == 2 && !idempotent;
+            if (broken instanceof HttpTimeoutException && !refused && !done) {
+                report(method, uri, status, started, attempt, broken);
                 throw last.set(broken, null).failure(method, uri, late(deadline, "waiting for the answer"));
             }
             if (broken instanceof TooLarge) {
                 report(method, uri, answer.status(), started, attempt, broken);
                 throw last.set(broken, null).failure(method, uri, String.valueOf(broken.getMessage()));
             }
-            if (broken != null && answer.status() == 0) {
+            if (broken != null && status == 0) {
                 // nothing answered: the API may still have done the work
                 report(method, uri, 0, started, attempt, broken);
                 last.set(broken, null);
@@ -190,17 +211,15 @@ public final class RestTransport implements AutoCloseable {
                 continue;
             }
 
-            // an answer, even if its body broke off: its status decides
-            int status = answer.status();
-            // a control call has no body worth reading: its success is done even if the body broke
-            if (status / 100 == 2 && (broken == null || !idempotent)) {
+            // an answer, even if its body broke off or stalled: its status decides
+            if (status / 100 == 2 && (broken == null || done)) {
                 report(method, uri, status, started, attempt, null);
                 return new Answer(uri, answer.body());
             }
             var error = new HttpStatusException(method, uri, status);
             ApiCall call = report(method, uri, status, started, attempt, broken != null ? broken : error);
             last.set(error, apiError(answer.body()));
-            if (status == 401 || status == 403) {
+            if (refused) {
                 events.refused(call);
                 throw last.failure(method, uri, "answered " + status);
             }
@@ -222,7 +241,7 @@ public final class RestTransport implements AutoCloseable {
      * Before the next attempt: gives up when there are no attempts left, or no time for the pause
      * and something after it.
      */
-    private static void pause(String method, URI uri, int attempt, Duration wait, Deadline deadline, Last last) {
+    private void pause(String method, URI uri, int attempt, Duration wait, Deadline deadline, Last last) {
         if (attempt >= MAX_ATTEMPTS) {
             throw last.failure(method, uri, "gave up after " + attempt + " attempts");
         }
@@ -230,11 +249,22 @@ public final class RestTransport implements AutoCloseable {
             throw last.failure(method, uri, late(deadline, "before it could try again"));
         }
         try {
-            Thread.sleep(wait);
+            if (closedWithin(wait)) {
+                throw last.failure(method, uri, "the feed is closed");
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw last.set(e, null).failure(method, uri, "interrupted");
         }
+    }
+
+    /** Waits this long, or until the transport is closed: true when it was. */
+    boolean closedWithin(Duration wait) throws InterruptedException {
+        return closing.await(wait.toNanos(), TimeUnit.NANOSECONDS);
+    }
+
+    boolean isClosed() {
+        return closed;
     }
 
     /**
@@ -245,9 +275,7 @@ public final class RestTransport implements AutoCloseable {
         var info = new AtomicReference<HttpResponse.@Nullable ResponseInfo>();
         CompletableFuture<HttpResponse<byte[]>> exchange = http.sendAsync(request(method, uri, deadline), response -> {
             info.set(response);
-            return response.statusCode() / 100 == 2
-                    ? new Body(RestDecoder.DEFAULT_MAX_BYTES, false)
-                    : new Body(MAX_ERROR_BYTES, true);
+            return response.statusCode() / 100 == 2 ? new Body(maxBytes, false) : new Body(maxErrorBytes, true);
         });
         IOException failure;
         try {
