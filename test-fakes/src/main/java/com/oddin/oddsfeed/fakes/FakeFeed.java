@@ -82,6 +82,7 @@ public final class FakeFeed implements AutoCloseable {
     private final List<Login> logins = new CopyOnWriteArrayList<>();
     private final List<String> refusedLogins = new CopyOnWriteArrayList<>();
     private volatile boolean refusing;
+    private volatile boolean refusingVirtualHost;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     // HTTP/1.1: the default first asks to upgrade to HTTP/2, and the management API hangs up on that
     private final HttpClient http = HttpClient.newBuilder()
@@ -156,6 +157,15 @@ public final class FakeFeed implements AutoCloseable {
      */
     public void refuseLogins() {
         refusing = true;
+    }
+
+    /**
+     * Refuses the virtual host to every feed login from now on, the way the broker answers a token
+     * that has no access to it: the broker's reason then quotes the user name. Connections already
+     * open stay open.
+     */
+    public void refuseVirtualHost() {
+        refusingVirtualHost = true;
     }
 
     /** The user names of the logins refused so far, oldest first; for the SDK, its access token. */
@@ -485,6 +495,10 @@ public final class FakeFeed implements AutoCloseable {
                 }
                 case "/vhost" -> {
                     if (!virtualHost.equals(query.get("vhost"))) {
+                        yield "deny";
+                    }
+                    if (refusingVirtualHost && !username.equals(PUBLISHER)) {
+                        refusedLogins.add(username);
                         yield "deny";
                     }
                     if (!username.equals(PUBLISHER)) {

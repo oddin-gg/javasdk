@@ -14,7 +14,9 @@ import java.security.KeyStore;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import org.jspecify.annotations.Nullable;
@@ -174,6 +176,7 @@ class AmqpTransportTest {
         SessionTransport session = transport.addSession(allKeys());
         transport.open();
         var channel = (SessionChannel) session;
+        long failed;
         feed().removeExchange(FakeFeed.EXCHANGE);
         try {
             // the queue goes, and every new one fails to bind to the exchange that is gone
@@ -191,9 +194,9 @@ class AmqpTransportTest {
                     .as("a queue that could not be bound is deleted")
                     .hasSizeLessThanOrEqualTo(2);
         } finally {
+            failed = session.epoch();
             feed().restoreExchange(FakeFeed.EXCHANGE);
         }
-        long failed = session.epoch();
         awaitReopened(channel, failed);
         assertThat(channel.failedReopens())
                 .as("reset by the reopen that worked")
@@ -207,51 +210,120 @@ class AmqpTransportTest {
     }
 
     @Test
-    void aReopenForALostChannelKeepsOneOpenedSince() throws Exception {
+    void aReopenKeepsAChannelThatIsOpenAndReopensOneThatIsNot() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());
         transport.open();
-        long lost = session.epoch();
+        // a reset that was under way, or a reconnect, opened a channel since the loss
         session.reset();
         long since = session.epoch();
         feed().publishFixture(ODDS_CHANGE);
         awaitSize(session, 1);
 
-        assertThat(session.reopenIfStillLost(lost)).isTrue();
-        assertThat(session.epoch()).as("the channel opened since, kept").isEqualTo(since);
+        assertThat(session.reopenIfLost()).isTrue();
+        assertThat(session.epoch()).as("the open channel, kept").isEqualTo(since);
         assertThat(session.queue().size()).as("with its delivery").isEqualTo(1);
         assertThat(session.isOpen()).isTrue();
 
-        assertThat(session.reopenIfStillLost(since)).isTrue();
-        assertThat(session.epoch()).as("the channel lost, reopened").isEqualTo(since + 1);
+        // held off, as while reconnecting, so the loss is left to this reopen
+        transport.reconnecting.set(true);
+        feed().deleteClientQueues();
+        awaitTaken(transport, session, false);
+        assertThat(session.reopenIfLost()).isTrue();
+        assertThat(session.epoch()).as("the channel taken, reopened").isEqualTo(since + 1);
+        assertThat(session.isOpen()).isTrue();
         assertThat(session.queue().size()).isZero();
     }
 
     @Test
-    void aChannelTakenWhileAReconnectRunsIsReopenedWhenItHandsOver() throws Exception {
+    void aChannelTakenWhileAReconnectOpensTheOthersIsReopenedWhenItHandsOver() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        var once = new AtomicBoolean();
+        transport.afterChannelsOpen = () -> {
+            if (once.compareAndSet(false, true)) {
+                // taken while the reconnect still runs: its loss finds a reconnect, and leaves it
+                feed().deleteClientQueues();
+                awaitQuietly(() -> !session.isOpen() && !transport.aliveOpen());
+            }
+        };
+
+        feed().closeConnections();
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        assertThat(once).isTrue();
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!session.isOpen() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.isOpen()).as("reopened by the hand-off").isTrue();
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+        awaitAnAlive();
+    }
+
+    @Test
+    void aChannelTakenWhileAReopenHeldItsClaimIsReopenedWhenTheClaimEnds() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), true);
         var session = (SessionChannel) transport.addSession(allKeys());
         transport.open();
         long before = session.epoch();
+        assertThat(session.startReopen()).isTrue();
+        assertThat(transport.aliveReopening.compareAndSet(false, true)).isTrue();
 
-        // as while a reconnect opens the channels: a loss then leaves the reopening to the hand-off
-        transport.reconnecting.set(true);
         feed().deleteClientQueues();
-        long deadline = System.nanoTime() + WAIT.toNanos();
-        while ((session.isOpen() || transport.aliveOpen()) && System.nanoTime() < deadline) {
-            Thread.sleep(20);
-        }
+        awaitTaken(transport, session, true);
         Thread.sleep(500);
-        assertThat(session.isOpen())
-                .as("taken, and not reopened while reconnecting")
-                .isFalse();
+        assertThat(session.isOpen()).as("the loss found the claim held").isFalse();
         assertThat(transport.aliveOpen()).isFalse();
 
-        transport.reconnecting.set(false);
-        transport.reopenWhatWasLost();
+        transport.released(session);
+        transport.aliveReleased();
         awaitReopened(session, before);
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
         awaitAnAlive();
+    }
+
+    @Test
+    void aConnectionLostAsTheFeedOpensOrAsItComesUpIsMadeAgain() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        SessionTransport session = transport.addSession(allKeys());
+        var losses = new AtomicInteger();
+        transport.afterChannelsOpen = () -> {
+            // lost where the connection's listener ignores it: as the feed opens, then as it comes up
+            if (losses.getAndIncrement() < 2) {
+                feed().closeConnections();
+                awaitQuietly(() -> !transport.connectionOpen());
+            }
+        };
+        transport.open();
+        events.await(e -> e.equals("up") && events.count("up") == 3, WAIT);
+        assertThat(events.events)
+                .containsExactly("connecting", "up", "down", "recovering", "up", "down", "recovering", "up");
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+    }
+
+    @Test
+    void aTransportClosedWhileItReconnectsTellsNoUpAndLeavesNothingOpen() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        transport.addSession(allKeys());
+        transport.open();
+        transport.afterChannelsOpen = () -> {
+            Thread.ofVirtual().start(transport::close);
+            awaitQuietly(transport::isClosed);
+        };
+        feed().closeConnections();
+        events.await("recovering"::equals, WAIT);
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!transport.isClosed() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        Thread.sleep(500);
+        assertThat(events.count("up")).as("no up after the close").isEqualTo(1);
+        deadline = System.nanoTime() + WAIT.toNanos();
+        while (!feed().openConnections().isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(100);
+        }
+        assertThat(feed().openConnections()).isEmpty();
     }
 
     @Test
@@ -372,6 +444,7 @@ class AmqpTransportTest {
             Thread.sleep(100);
         }
         assertThat(feed().openConnections()).isEmpty();
+        assertThat(events.events).as("and no reconnect").containsExactly("connecting");
     }
 
     static AmqpSettings settings(FakeFeed broker, int prefetch, int maxMessageSize) {
@@ -451,6 +524,29 @@ class AmqpTransportTest {
         RawDelivery delivery = session.queue().poll(WAIT);
         assertThat(delivery).as("a delivery within " + WAIT).isNotNull();
         return requireNonNull(delivery);
+    }
+
+    /** Waits until the broker took the session's channel, and the alive channel with it. */
+    private static void awaitTaken(AmqpTransport transport, SessionChannel session, boolean alive)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while ((session.isOpen() || (alive && transport.aliveOpen())) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.isOpen()).as("taken").isFalse();
+    }
+
+    /** Waits, from a hook that cannot throw, until {@code done} or the limit. */
+    private static void awaitQuietly(BooleanSupplier done) {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!done.getAsBoolean() && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     /** Publishes alives until the SDK's own consumer gets one more. */
