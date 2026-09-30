@@ -226,6 +226,100 @@ class ApiClientTest {
     }
 
     @Test
+    void aBodyThatStallsMidwayIsCutOffAtTheDeadline() {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofMillis(800)));
+        api.respond(
+                SUMMARY,
+                Reply.of(200, Fixtures.read("rest/match_summary/match_summary.xml"))
+                        .stallingMidBody(Duration.ofSeconds(3)));
+        long started = System.nanoTime();
+        assertThatThrownBy(() -> client.fetchMatchSummary(MATCH, Locale.ENGLISH))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("waiting for the answer");
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(1500));
+    }
+
+    @Test
+    void aFailedConnectionIsRetriedForReadsAndRecoveryButNotForReplayControl() {
+        ApiClient client = unreachable(b -> b);
+        assertThatThrownBy(client::fetchWhoAmI).isInstanceOf(ApiException.class);
+        assertThat(events.calls)
+                .extracting(ApiCall::status, ApiCall::attempt)
+                .containsExactly(tuple(0, 1), tuple(0, 2), tuple(0, 3));
+
+        events.calls.clear();
+        assertThatThrownBy(() -> client.postRecovery("pre", 1, null)).isInstanceOf(ApiException.class);
+        assertThat(events.calls)
+                .as("recovery requests are deduplicated by the API")
+                .hasSize(3);
+
+        events.calls.clear();
+        assertThatThrownBy(() -> client.postReplayStart(null, null, null, null, null))
+                .isInstanceOf(ApiException.class)
+                .hasMessageStartingWith("Failed to post data");
+        assertThat(events.calls).as("replay control is not repeated").hasSize(1);
+    }
+
+    @Test
+    void aPermitIsFreeWhileAFailedCallWaitsToTryAgain() throws Exception {
+        ApiClient client = unreachable(b -> b.setRestConcurrencyLimit(1));
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<?> retrying = calls.submit(() -> client.fetchMatchSummary(MATCH, Locale.ENGLISH));
+            long waited = System.nanoTime();
+            while (events.calls.isEmpty()) {
+                assertThat(Duration.ofNanos(System.nanoTime() - waited)).isLessThan(Duration.ofSeconds(5));
+                Thread.sleep(5);
+            }
+
+            // the load above now waits at least 350 ms before its next attempt, without the permit
+            long started = System.nanoTime();
+            assertThatThrownBy(client::postReplayStop).isInstanceOf(ApiException.class);
+            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(300));
+            assertThatThrownBy(retrying::get).hasCauseInstanceOf(ApiException.class);
+        }
+    }
+
+    @Test
+    void anAnswerThatBreaksOffIsJudgedByItsStatus() {
+        ApiClient client = client(b -> b);
+        api.respond(WHOAMI, Reply.of(403, REFUSED).cutOffMidBody());
+        assertThatThrownBy(client::fetchWhoAmI)
+                .isInstanceOf(ApiException.class)
+                .satisfies(e -> assertThat(HttpStatusException.refused(e)).isTrue());
+        assertThat(events.refused).extracting(ApiCall::status).containsExactly(403);
+        assertThat(api.requests("GET", WHOAMI)).hasSize(1);
+
+        api.respond("/v1/replay/play", Reply.of(429, REFUSED).cutOffMidBody(), Reply.of(202, ""));
+        client.postReplayStart(null, null, null, null, null);
+        assertThat(api.requests("POST", "/v1/replay/play"))
+                .as("a 429 is retried")
+                .hasSize(2);
+    }
+
+    @Test
+    void aClosedClientCallsNothing() {
+        ApiClient client = client(b -> b);
+        client.close();
+        assertThatThrownBy(client::fetchWhoAmI)
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("the feed is closed");
+        assertThat(api.requests()).isEmpty();
+    }
+
+    @Test
+    void anInterruptedCallSaysSo() {
+        ApiClient client = client(b -> b);
+        Thread.currentThread().interrupt();
+        try {
+            assertThatThrownBy(client::fetchWhoAmI)
+                    .isInstanceOf(ApiException.class)
+                    .hasMessageEndingWith(": interrupted");
+        } finally {
+            assertThat(Thread.interrupted()).as("the interrupt is kept").isTrue();
+        }
+    }
+
+    @Test
     void aReadIsRetriedAfterAServerErrorAndControlIsNot() {
         ApiClient client = client(b -> b);
         api.respond(
@@ -389,6 +483,30 @@ class ApiClientTest {
     }
 
     @Test
+    void startupFailsAtOnceWhenTheProducerListIsRefused() {
+        ApiClient client = client(b -> b);
+        api.respond("/v1/descriptions/producers", 403, REFUSED);
+        assertThatThrownBy(() -> Startup.fetch(client, Duration.ofSeconds(30)))
+                .isInstanceOf(InitException.class)
+                .hasMessage("Failed to init odds feed: the API refused the access token (403)");
+        assertThat(api.requests("GET", "/v1/descriptions/producers")).hasSize(1);
+    }
+
+    @Test
+    void startupEndsAtItsTimeoutEvenWhenACallCouldTakeLonger() {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(10)));
+        api.respond(
+                WHOAMI,
+                Reply.of(200, Fixtures.read("rest/whoami/bookmaker_details.xml"))
+                        .after(Duration.ofSeconds(3)));
+        long started = System.nanoTime();
+        assertThatThrownBy(() -> Startup.fetch(client, Duration.ofMillis(800)))
+                .isInstanceOf(InitException.class)
+                .hasMessageContaining("within 800 ms");
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(2));
+    }
+
+    @Test
     void anIdIsOnePathSegmentWhateverItHolds() {
         assertThat(ApiClient.segment("od:match:1")).isEqualTo("od:match:1");
         assertThat(ApiClient.segment("od:dynamic_outcomes:27|v1")).isEqualTo("od:dynamic_outcomes:27%7Cv1");
@@ -404,6 +522,21 @@ class ApiClientTest {
                     .as("attempt %d", attempt)
                     .isBetween((long) (expected * 0.7), (long) (expected * 1.3));
         }
+    }
+
+    /** A client whose API host has nobody listening: every connection fails. */
+    private ApiClient unreachable(UnaryOperator<OddsFeedConfigurationBuilder> options) {
+        String host;
+        try (FakeRestServer gone = FakeRestServer.start()) {
+            host = gone.apiHost();
+        }
+        OddsFeedConfiguration configuration = options.apply(OddsFeed.getOddsFeedConfigurationBuilder()
+                        .selectEnvironment("mq.invalid", host)
+                        .setAccessToken("token"))
+                .build();
+        var client = new ApiClient(configuration, events, TestTls.clientContext());
+        open.add(client);
+        return client;
     }
 
     private ApiClient client(UnaryOperator<OddsFeedConfigurationBuilder> options) {

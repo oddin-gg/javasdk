@@ -6,6 +6,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpsConfigurator;
 import com.sun.net.httpserver.HttpsServer;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
@@ -257,9 +258,27 @@ public final class FakeRestServer implements AutoCloseable {
             exchange.getResponseHeaders().set("Content-Type", "application/xml");
             reply.headers().forEach(exchange.getResponseHeaders()::set);
             exchange.sendResponseHeaders(reply.status(), body.length == 0 ? -1 : body.length);
-            if (body.length > 0) {
-                exchange.getResponseBody().write(body);
+            if (body.length == 0) {
+                return;
             }
+            if (!reply.stall().isPositive() && !reply.cutOff()) {
+                exchange.getResponseBody().write(body);
+                return;
+            }
+            // the headers and half the body, then a pause or a dropped connection
+            OutputStream out = exchange.getResponseBody();
+            out.write(body, 0, body.length / 2);
+            out.flush();
+            if (reply.cutOff()) {
+                throw new IOException("the fake cut the answer off");
+            }
+            try {
+                Thread.sleep(reply.stall());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            out.write(body, body.length / 2, body.length - body.length / 2);
         } finally {
             // in this order, so whoever sees nothing in flight also sees when it finished
             lastFinishedAt = System.nanoTime();
@@ -302,29 +321,41 @@ public final class FakeRestServer implements AutoCloseable {
     }
 
     /**
-     * One answer: a status, a body, headers next to the XML content type, and how long to wait
-     * before sending it.
+     * One answer: a status, a body, headers next to the XML content type, how long to wait before
+     * sending it, and whether to stop halfway through the body - for a while, or for good by
+     * dropping the connection.
      */
-    public record Reply(int status, String body, Map<String, String> headers, Duration delay) {
+    public record Reply(
+            int status, String body, Map<String, String> headers, Duration delay, Duration stall, boolean cutOff) {
 
         public Reply {
             headers = Map.copyOf(headers);
         }
 
         public static Reply of(int status, String body) {
-            return new Reply(status, body, Map.of(), Duration.ZERO);
+            return new Reply(status, body, Map.of(), Duration.ZERO, Duration.ZERO, false);
         }
 
         /** The same reply with this header as well. */
         public Reply withHeader(String name, String value) {
             var more = new HashMap<>(headers);
             more.put(name, value);
-            return new Reply(status, body, more, delay);
+            return new Reply(status, body, more, delay, stall, cutOff);
         }
 
         /** The same reply, sent this long after the request arrived. */
         public Reply after(Duration wait) {
-            return new Reply(status, body, headers, wait);
+            return new Reply(status, body, headers, wait, stall, cutOff);
+        }
+
+        /** The same reply, pausing this long after the headers and half the body. */
+        public Reply stallingMidBody(Duration pause) {
+            return new Reply(status, body, headers, delay, pause, cutOff);
+        }
+
+        /** The same reply, dropping the connection after the headers and half the body. */
+        public Reply cutOffMidBody() {
+            return new Reply(status, body, headers, delay, stall, true);
         }
     }
 

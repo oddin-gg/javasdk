@@ -8,21 +8,32 @@ import com.oddin.oddsfeedsdk.internal.xml.DecodeException;
 import com.oddin.oddsfeedsdk.internal.xml.RestDecoder;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAError;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAResponseCode;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
+import java.io.Serial;
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Flow;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
 
@@ -30,9 +41,10 @@ import org.jspecify.annotations.Nullable;
  * Makes API calls: one {@link HttpClient} per feed, three permit pools, one deadline per call and
  * the retry policy.
  *
- * <p>A call's deadline is the HTTP client timeout. Waiting for a permit, every attempt and every
- * pause between attempts come out of it, so a call takes at most that long whatever happens. A
- * permit is held for one attempt, never across the pause before the next.
+ * <p>A call's deadline is the HTTP client timeout. Waiting for a permit, every attempt - its
+ * headers and its whole body - and every pause between attempts come out of it, so a call takes
+ * at most that long whatever the API does. A permit is held for one attempt, never across the
+ * pause before the next.
  *
  * <p>Retries, the Go SDK's policy: at most three attempts, with a backoff from half a second
  * doubling up to five, each with some jitter. A 429 is retried for every call - the API did not do
@@ -138,55 +150,69 @@ public final class RestTransport implements AutoCloseable {
             if (closed) {
                 throw last.failure(method, uri, "the feed is closed");
             }
-            if (!acquire(permit, deadline)) {
-                throw last.failure(method, uri, late(deadline, "waiting for its turn"));
+            try {
+                if (!permit.tryAcquire(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS)) {
+                    throw last.failure(method, uri, late(deadline, "waiting for its turn"));
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw last.set(e, null).failure(method, uri, "interrupted");
             }
             long started = System.nanoTime();
-            HttpResponse<InputStream> response;
-            byte[] body;
+            Attempt answer;
             try {
-                response = http.send(request(method, uri, deadline), HttpResponse.BodyHandlers.ofInputStream());
-                body = read(response, deadline);
-            } catch (HttpTimeoutException e) {
-                report(method, uri, 0, started, attempt, e);
-                throw last.set(e, null).failure(method, uri, late(deadline, "waiting for the answer"));
-            } catch (IOException e) {
-                report(method, uri, 0, started, attempt, e);
-                last.set(e, null);
-                if (!idempotent || closed) {
-                    throw last.failure(method, uri, e.toString());
-                }
-                pause(method, uri, attempt, backoff(attempt), deadline, last);
-                continue;
+                answer = attempt(method, uri, deadline);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw last.set(e, null).failure(method, uri, "interrupted");
             } finally {
+                // before any pause: the permit is for this attempt only
                 permit.release();
             }
 
-            int status = response.statusCode();
-            if (status / 100 == 2) {
+            IOException broken = answer.failure();
+            if (broken instanceof HttpTimeoutException) {
+                report(method, uri, answer.status(), started, attempt, broken);
+                throw last.set(broken, null).failure(method, uri, late(deadline, "waiting for the answer"));
+            }
+            if (broken instanceof TooLarge) {
+                report(method, uri, answer.status(), started, attempt, broken);
+                throw last.set(broken, null).failure(method, uri, String.valueOf(broken.getMessage()));
+            }
+            if (broken != null && answer.status() == 0) {
+                // nothing answered: the API may still have done the work
+                report(method, uri, 0, started, attempt, broken);
+                last.set(broken, null);
+                if (!idempotent || closed) {
+                    throw last.failure(method, uri, broken.toString());
+                }
+                pause(method, uri, attempt, backoff(attempt), deadline, last);
+                continue;
+            }
+
+            // an answer, even if its body broke off: its status decides
+            int status = answer.status();
+            // a control call has no body worth reading: its success is done even if the body broke
+            if (status / 100 == 2 && (broken == null || !idempotent)) {
                 report(method, uri, status, started, attempt, null);
-                return new Answer(uri, body);
+                return new Answer(uri, answer.body());
             }
             var error = new HttpStatusException(method, uri, status);
-            ApiCall call = report(method, uri, status, started, attempt, error);
-            last.set(error, apiError(body));
+            ApiCall call = report(method, uri, status, started, attempt, broken != null ? broken : error);
+            last.set(error, apiError(answer.body()));
             if (status == 401 || status == 403) {
                 events.refused(call);
                 throw last.failure(method, uri, "answered " + status);
             }
-            boolean retry = status == 429 || (status / 100 == 5 && idempotent);
+            // a success whose body broke off is read again, as a 5xx is
+            boolean retry = status == 429 || ((status / 100 == 5 || status / 100 == 2) && idempotent);
             if (!retry) {
-                throw last.failure(method, uri, "answered " + status);
+                throw last.failure(method, uri, "answered " + status + (broken != null ? ", then " + broken : ""));
             }
             Duration wait = backoff(attempt);
-            if (status == 429) {
-                Duration asked = retryAfter(response);
-                if (asked != null && asked.compareTo(wait) > 0) {
-                    wait = asked;
-                }
+            Duration asked = status == 429 ? retryAfter(answer.headers()) : null;
+            if (asked != null && asked.compareTo(wait) > 0) {
+                wait = asked;
             }
             pause(method, uri, attempt, wait, deadline, last);
         }
@@ -211,6 +237,36 @@ public final class RestTransport implements AutoCloseable {
         }
     }
 
+    /**
+     * One HTTP exchange, headers and body both inside the deadline: an answer that is still arriving
+     * when it passes is cancelled, whether the headers came or not.
+     */
+    private Attempt attempt(String method, URI uri, Deadline deadline) throws InterruptedException {
+        var info = new AtomicReference<HttpResponse.@Nullable ResponseInfo>();
+        CompletableFuture<HttpResponse<byte[]>> exchange = http.sendAsync(request(method, uri, deadline), response -> {
+            info.set(response);
+            return response.statusCode() / 100 == 2
+                    ? new Body(RestDecoder.DEFAULT_MAX_BYTES, false)
+                    : new Body(MAX_ERROR_BYTES, true);
+        });
+        IOException failure;
+        try {
+            byte[] body = exchange.get(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS)
+                    .body();
+            return Attempt.of(info.get(), body, null);
+        } catch (TimeoutException e) {
+            failure = new HttpTimeoutException("no complete answer before the deadline");
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            failure = cause instanceof IOException io ? io : new IOException(cause);
+        } catch (InterruptedException e) {
+            exchange.cancel(true);
+            throw e;
+        }
+        exchange.cancel(true);
+        return Attempt.of(info.get(), new byte[0], failure);
+    }
+
     private HttpRequest request(String method, URI uri, Deadline deadline) {
         return HttpRequest.newBuilder(uri)
                 .timeout(atLeastAMillisecond(deadline.remaining()))
@@ -220,31 +276,6 @@ public final class RestTransport implements AutoCloseable {
                 .header("X-Oddin-SDK-Version", SdkVersion.version())
                 .method(method, HttpRequest.BodyPublishers.noBody())
                 .build();
-    }
-
-    /**
-     * The whole body of a success, or the start of an error's. The request timeout covers only the
-     * wait for the headers, so a body still coming at the deadline is cut off here.
-     */
-    private static byte[] read(HttpResponse<InputStream> response, Deadline deadline) throws IOException {
-        int limit = response.statusCode() / 100 == 2 ? RestDecoder.DEFAULT_MAX_BYTES : MAX_ERROR_BYTES;
-        try (InputStream in = response.body()) {
-            // RestDecoder refuses a body over its limit, so one byte more is enough to tell
-            byte[] body = in.readNBytes(limit + 1);
-            if (deadline.passed()) {
-                throw new HttpTimeoutException("the answer was still arriving at the deadline");
-            }
-            return body;
-        }
-    }
-
-    private boolean acquire(Semaphore permit, Deadline deadline) {
-        try {
-            return permit.tryAcquire(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return false;
-        }
     }
 
     private ApiCall report(String method, URI uri, int status, long started, int attempt, @Nullable Exception failure) {
@@ -307,8 +338,8 @@ public final class RestTransport implements AutoCloseable {
     }
 
     /** {@code Retry-After} in seconds or as an HTTP date; null when absent or unreadable. */
-    static @Nullable Duration retryAfter(HttpResponse<?> response) {
-        String value = response.headers().firstValue("Retry-After").orElse(null);
+    static @Nullable Duration retryAfter(HttpHeaders headers) {
+        String value = headers.firstValue("Retry-After").orElse(null);
         if (value == null) {
             return null;
         }
@@ -334,4 +365,98 @@ public final class RestTransport implements AutoCloseable {
 
     @SuppressWarnings("ArrayRecordComponent") // private, and never compared or hashed
     private record Answer(URI uri, byte[] body) {}
+
+    /**
+     * What one exchange came to: the status and headers when there were any (0 and none when
+     * nothing answered), the body as far as it was read, and what broke it off.
+     */
+    @SuppressWarnings("ArrayRecordComponent") // private, and never compared or hashed
+    private record Attempt(
+            int status,
+            HttpHeaders headers,
+            byte[] body,
+            @Nullable IOException failure) {
+        static Attempt of(HttpResponse.@Nullable ResponseInfo info, byte[] body, @Nullable IOException failure) {
+            return info == null
+                    ? new Attempt(0, HttpHeaders.of(Map.of(), (name, value) -> true), body, failure)
+                    : new Attempt(info.statusCode(), info.headers(), body, failure);
+        }
+    }
+
+    /** A success's body is over the limit the decoder would refuse anyway: final, not retried. */
+    static final class TooLarge extends IOException {
+        @Serial
+        private static final long serialVersionUID = 1L;
+
+        TooLarge(int limit) {
+            super("the answer is over " + limit + " bytes");
+        }
+    }
+
+    /**
+     * Collects a body up to {@code limit} bytes. Past it, a success's body fails the exchange, and
+     * an error's is cut short, since its start is all the API's error needs.
+     */
+    private static final class Body implements HttpResponse.BodySubscriber<byte[]> {
+        private final int limit;
+        private final boolean truncate;
+        private final ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        private final CompletableFuture<byte[]> result = new CompletableFuture<>();
+        private Flow.@Nullable Subscription subscription;
+
+        Body(int limit, boolean truncate) {
+            this.limit = limit;
+            this.truncate = truncate;
+        }
+
+        @Override
+        public void onSubscribe(Flow.Subscription subscription) {
+            this.subscription = subscription;
+            subscription.request(Long.MAX_VALUE);
+        }
+
+        @Override
+        public void onNext(List<ByteBuffer> buffers) {
+            for (ByteBuffer buffer : buffers) {
+                int room = limit - bytes.size();
+                if (buffer.remaining() > room) {
+                    stop();
+                    if (truncate) {
+                        byte[] start = new byte[room];
+                        buffer.get(start);
+                        bytes.writeBytes(start);
+                        result.complete(bytes.toByteArray());
+                    } else {
+                        result.completeExceptionally(new TooLarge(limit));
+                    }
+                    return;
+                }
+                byte[] chunk = new byte[buffer.remaining()];
+                buffer.get(chunk);
+                bytes.writeBytes(chunk);
+            }
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+            result.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onComplete() {
+            result.complete(bytes.toByteArray());
+        }
+
+        @Override
+        public CompletionStage<byte[]> getBody() {
+            return result;
+        }
+
+        private void stop() {
+            Flow.Subscription current = subscription;
+            if (current != null) {
+                current.cancel();
+            }
+        }
+    }
 }
