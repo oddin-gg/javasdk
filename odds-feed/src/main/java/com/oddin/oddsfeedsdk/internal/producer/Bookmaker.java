@@ -4,6 +4,8 @@ import com.oddin.oddsfeedsdk.api.BookmakerDetail;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RABookmakerDetail;
 import java.math.BigInteger;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Date;
 import javax.xml.datatype.XMLGregorianCalendar;
 import org.jspecify.annotations.Nullable;
@@ -14,11 +16,10 @@ import org.jspecify.annotations.Nullable;
  * @param expireAt when the access token expires, read as 0.0.x read it: a time without a zone is in
  *     the JVM's default zone
  */
-public record Bookmaker(Date expireAt, int bookmakerId, String virtualHost) implements BookmakerDetail {
+public record Bookmaker(Instant expireAt, int bookmakerId, String virtualHost) implements BookmakerDetail {
 
-    public Bookmaker {
-        expireAt = new Date(expireAt.getTime());
-    }
+    /** How soon an expiry is worth a warning, as 0.0.x warned. */
+    static final Duration EXPIRES_SOON = Duration.ofDays(7);
 
     /**
      * The details whoami sent.
@@ -29,7 +30,7 @@ public record Bookmaker(Date expireAt, int bookmakerId, String virtualHost) impl
         XMLGregorianCalendar expireAt = required(whoami.getExpireAt(), "expire_at");
         BigInteger id = required(whoami.getBookmakerId(), "bookmaker_id");
         String virtualHost = required(whoami.getVirtualHost(), "virtual_host");
-        return new Bookmaker(expireAt.toGregorianCalendar().getTime(), id.intValue(), virtualHost);
+        return new Bookmaker(expireAt.toGregorianCalendar().toInstant(), id.intValue(), virtualHost);
     }
 
     private static <T> T required(@Nullable T value, String attribute) {
@@ -47,9 +48,17 @@ public record Bookmaker(Date expireAt, int bookmakerId, String virtualHost) impl
         return "of-sdk-" + bookmakerId + "-" + (nodeId == null ? -1 : nodeId);
     }
 
+    /**
+     * Whether the access token expires within seven days of {@code now}: 0.0.x warned then, so a
+     * client has notice before the broker refuses it.
+     */
+    public boolean expiresSoon(Instant now) {
+        return expireAt.isBefore(now.plus(EXPIRES_SOON));
+    }
+
     @Override
     public Date getExpireAt() {
-        return new Date(expireAt.getTime());
+        return Date.from(expireAt);
     }
 
     @Override

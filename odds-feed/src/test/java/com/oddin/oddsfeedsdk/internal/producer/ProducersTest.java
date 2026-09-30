@@ -23,6 +23,8 @@ import java.time.ZoneId;
 import java.util.Date;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** The producer manager and whoami over what the API sends at startup, and 0.0.x's answers. */
 class ProducersTest {
@@ -157,8 +159,13 @@ class ProducersTest {
         // an alive's generation time takes over once there is one; 0 clears the start
         producers.setLastAliveReceivedGenTimestamp(1L, NOW.toEpochMilli());
         assertThat(producer(producers, 1L).getTimestampForRecovery()).isEqualTo(NOW);
+        long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
+        producers.setProducerRecoveryFromTimestamp(2L, saved);
+        assertThat(producer(producers, 2L).getTimestampForRecovery()).isEqualTo(Instant.ofEpochMilli(saved));
         producers.setProducerRecoveryFromTimestamp(2L, 0);
-        assertThat(producer(producers, 2L).getTimestampForRecovery()).isNull();
+        assertThat(producer(producers, 2L).getTimestampForRecovery())
+                .as("0: a full snapshot")
+                .isNull();
     }
 
     @Test
@@ -186,18 +193,26 @@ class ProducersTest {
                         .atZone(ZoneId.systemDefault())
                         .toInstant()));
         assertThat(bookmaker.connectionName(7)).isEqualTo("of-sdk-53-7");
+        Instant expiry = bookmaker.getExpireAt().toInstant();
+        assertThat(bookmaker.expiresSoon(expiry.minus(Duration.ofDays(8)))).isFalse();
+        assertThat(bookmaker.expiresSoon(expiry.minus(Duration.ofDays(6)))).isTrue();
+        // the Date handed out is a copy
+        bookmaker.getExpireAt().setTime(0);
+        assertThat(bookmaker.getExpireAt().toInstant()).isEqualTo(expiry);
         assertThat(bookmaker.connectionName(null)).isEqualTo("of-sdk-53--1");
     }
 
-    @Test
-    void whoamiWithoutWhatTheFeedNeedsFailsTheStartup() {
-        api.respond(
-                "/v1/users/whoami",
-                200,
-                Fixtures.read("rest/whoami/bookmaker_details.xml").replace(" virtual_host=\"/oddinfeed/53\"", ""));
+    @ParameterizedTest
+    @ValueSource(
+            strings = {"expire_at=\"2099-12-31T23:59:59\"", "bookmaker_id=\"53\"", "virtual_host=\"/oddinfeed/53\""})
+    void whoamiWithoutWhatTheFeedNeedsFailsTheStartup(String attribute) {
+        String whoami = Fixtures.read("rest/whoami/bookmaker_details.xml");
+        assertThat(whoami).contains(" " + attribute);
+        api.respond("/v1/users/whoami", 200, whoami.replace(" " + attribute, ""));
         assertThatThrownBy(() -> Bookmaker.from(client.fetchWhoAmI()))
                 .isInstanceOf(InitException.class)
-                .hasMessage("Failed to init odds feed: whoami answered without virtual_host");
+                .hasMessage("Failed to init odds feed: whoami answered without "
+                        + attribute.substring(0, attribute.indexOf('=')));
     }
 
     private Producers producers() {

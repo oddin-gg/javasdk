@@ -16,7 +16,6 @@ import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.ProducerManager;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
-import com.oddin.oddsfeedsdk.exceptions.OddsFeedSdkException;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.Message;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
@@ -143,17 +142,9 @@ class ProducerRecoveryScenarioIT {
                                 .as("description of producer 7")
                                 .isEqualTo("unknown producer");
                     },
-                    () -> {
-                        Producer unknown;
-                        try {
-                            unknown = producers.getProducer(7);
-                        } catch (OddsFeedSdkException e) {
-                            return; // an error is what the design asks for
-                        }
-                        assertThat(unknown)
-                                .as("producer 7, which the producer list does not have")
-                                .isNull();
-                    });
+                    () -> assertThat(producers.getProducer(7))
+                            .as("producer 7, which the producer list does not have")
+                            .isNull());
         }
     }
 
