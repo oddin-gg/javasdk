@@ -18,8 +18,11 @@ public interface ConnectionEvents {
     /** The connection was lost, not closed by the feed; reconnection starts. */
     default void down(String reason) {}
 
-    /** Another try at reconnecting, after {@code waitMillis}. */
-    default void recovering(int attempt, long waitMillis) {}
+    /**
+     * Another try at reconnecting, after {@code waitMillis}, and why the last one failed - so a
+     * broker out of resources says so each time.
+     */
+    default void recovering(int attempt, long waitMillis, String reason) {}
 
     /**
      * No reconnect can succeed: the broker refused the login three times within a minute. The

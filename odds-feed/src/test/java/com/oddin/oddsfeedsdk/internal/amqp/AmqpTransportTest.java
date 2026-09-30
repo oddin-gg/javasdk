@@ -9,9 +9,15 @@ import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import java.net.InetAddress;
+import java.security.KeyStore;
+import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.TrustManagerFactory;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
@@ -148,6 +154,51 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aChannelTheBrokerTakesIsOpenedAgainOnTheLiveConnection() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
+        SessionTransport session = transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+
+        feed().deleteClientQueues();
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (session.epoch() == before && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.epoch()).as("the session's channel, opened again").isGreaterThan(before);
+        feed().publishFixture(ODDS_CHANGE);
+        assertThat(next(session).epoch()).isEqualTo(session.epoch());
+
+        // and the SDK's own alive consumer
+        int alivesBefore = events.alives.size();
+        deadline = System.nanoTime() + WAIT.toNanos();
+        while (events.alives.size() == alivesBefore && System.nanoTime() < deadline) {
+            feed().publishFixture("feed/alive/alive.xml");
+            Thread.sleep(200);
+        }
+        assertThat(events.alives).as("alives again").hasSizeGreaterThan(alivesBefore);
+        assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
+    }
+
+    @Test
+    void aBrokerWhoseCertificateIsNotTrustedIsRefused() throws Exception {
+        var onlyTheJdksTrust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        onlyTheJdksTrust.init((KeyStore) null);
+        SSLContext tls = SSLContext.getInstance("TLS");
+        tls.init(null, onlyTheJdksTrust.getTrustManagers(), null);
+        AmqpSettings base = settings(10, 1 << 20);
+        assertRefusedByTls(withTls(base, base.host(), tls), "PKIX");
+    }
+
+    @Test
+    void aHostTheCertificateDoesNotNameIsRefused() throws Exception {
+        // the machine's own name reaches the broker, and its certificate names only localhost
+        String host = InetAddress.getLocalHost().getHostName();
+        AmqpSettings base = settings(10, 1 << 20);
+        assertRefusedByTls(withTls(base, host, TestTls.clientContext()), "subject alternative");
+    }
+
+    @Test
     void aClosedTransportReportsNoDown() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         transport.addSession(allKeys());
@@ -187,6 +238,47 @@ class AmqpTransportTest {
                 Duration.ofMillis(100),
                 Duration.ofSeconds(1),
                 Duration.ofSeconds(1));
+    }
+
+    private void assertRefusedByTls(AmqpSettings settings, String why) throws InterruptedException {
+        int loginsBefore = feed().logins().size();
+        var transport = new AmqpTransport(settings, FakeFeed.EXCHANGE, events, null);
+        open.add(transport);
+        transport.addSession(allKeys());
+        assertThatThrownBy(transport::open)
+                .isInstanceOf(InitException.class)
+                .satisfies(e -> assertThat(chain(e))
+                        .as("the cause chain")
+                        .anySatisfy(cause -> assertThat(cause)
+                                .isInstanceOfAny(SSLHandshakeException.class, CertificateException.class))
+                        .anySatisfy(cause ->
+                                assertThat(String.valueOf(cause.getMessage())).contains(why)));
+        assertThat(feed().logins()).as("no login got as far as the broker").hasSize(loginsBefore);
+    }
+
+    private static List<Throwable> chain(Throwable failure) {
+        var chain = new ArrayList<Throwable>();
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            chain.add(cause);
+        }
+        return chain;
+    }
+
+    private static AmqpSettings withTls(AmqpSettings base, String host, SSLContext tls) {
+        return new AmqpSettings(
+                host,
+                base.port(),
+                base.virtualHost(),
+                base.accessToken(),
+                tls,
+                base.connectionName(),
+                base.prefetch(),
+                base.maxMessageSize(),
+                base.heartbeat(),
+                base.connectTimeout(),
+                base.firstBackoff(),
+                base.maxBackoff(),
+                base.resourceBackoff());
     }
 
     private AmqpSettings settings(int prefetch, int maxMessageSize) {

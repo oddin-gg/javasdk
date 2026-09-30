@@ -2,7 +2,6 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.AuthenticationFailureException;
-import com.rabbitmq.client.PossibleAuthenticationFailureException;
 import com.rabbitmq.client.ShutdownSignalException;
 import java.util.Locale;
 import org.jspecify.annotations.Nullable;
@@ -21,10 +20,14 @@ enum Failure {
     /** Anything else - the network, a restart, a lost heartbeat: retried with backoff. */
     NETWORK;
 
+    /**
+     * The kind of {@code failure}, from its cause chain. The client's "possible authentication
+     * failure" is any close during the login, a broker shutting down included, so only the broker's
+     * own reply decides: a refusal is {@code ACCESS_REFUSED} or {@code NOT_ALLOWED}, not a limit.
+     */
     static Failure of(@Nullable Throwable failure) {
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
-            if (cause instanceof AuthenticationFailureException
-                    || cause instanceof PossibleAuthenticationFailureException) {
+            if (cause instanceof AuthenticationFailureException) {
                 return REFUSED;
             }
             if (cause instanceof ShutdownSignalException shutdown
