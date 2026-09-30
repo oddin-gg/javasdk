@@ -1,4 +1,4 @@
-package com.oddin.oddsfeed.systemtests.fake;
+package com.oddin.oddsfeed.fakes;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 

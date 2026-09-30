@@ -1,4 +1,4 @@
-package com.oddin.oddsfeed.systemtests.fake;
+package com.oddin.oddsfeed.fakes;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
@@ -29,7 +29,8 @@ import java.util.regex.Pattern;
  * entity overrides that path with {@link #respond}, typically with a body built from
  * {@link Fixtures}. Anything without a route gets the API's 404. Requests other than GET -
  * recovery and replay control - are accepted with 202. Every request is recorded, in order, for
- * tests to check what the SDK asked for.
+ * tests to check what the SDK asked for. A path can also be given replies in turn, each with its
+ * own headers and delay, for a client that retries, waits or gives up.
  *
  * <p>It speaks HTTPS because the old SDK allows nothing else, with a certificate the test JVM
  * trusts (see {@link TestTls}).
@@ -62,8 +63,8 @@ public final class FakeRestServer implements AutoCloseable {
             route("/v1/sports/{lang}/players/{id}/profile", "rest/player/player_profile.xml"),
             route("/v1/replay", "rest/replay_content/replay_set_content.xml"));
 
-    private static final Response NOT_FOUND = new Response(404, Fixtures.read("rest/error/not_found.xml"));
-    private static final Response ACCEPTED = new Response(202, "");
+    private static final Reply NOT_FOUND = Reply.of(404, Fixtures.read("rest/error/not_found.xml"));
+    private static final Reply ACCEPTED = Reply.of(202, "");
     private static final String OUTAGE_BODY = """
       <?xml version="1.0" encoding="UTF-8"?>
       <response response_code="SERVICE_UNAVAILABLE">
@@ -75,9 +76,10 @@ public final class FakeRestServer implements AutoCloseable {
     private final HttpsServer server;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final List<RecordedRequest> requests = new CopyOnWriteArrayList<>();
-    private final Map<String, Response> overrides = new ConcurrentHashMap<>();
-    private volatile Response outage;
+    private final Map<String, Script> overrides = new ConcurrentHashMap<>();
+    private volatile Reply outage;
     private final AtomicInteger inFlight = new AtomicInteger();
+    private final AtomicInteger mostInFlight = new AtomicInteger();
     private volatile long lastFinishedAt = System.nanoTime();
 
     private FakeRestServer() throws IOException {
@@ -106,7 +108,18 @@ public final class FakeRestServer implements AutoCloseable {
 
     /** Answer this exact path, for any method, with this status and body until told otherwise. */
     public void respond(String path, int status, String body) {
-        overrides.put(path, new Response(status, body));
+        respond(path, Reply.of(status, body));
+    }
+
+    /**
+     * Answer this exact path, for any method, with these replies in turn, one per request; the last
+     * one keeps answering after the others are used up.
+     */
+    public void respond(String path, Reply... inTurn) {
+        if (inTurn.length == 0) {
+            throw new IllegalArgumentException("no replies for " + path);
+        }
+        overrides.put(path, new Script(List.of(inTurn), new AtomicInteger()));
     }
 
     /**
@@ -114,7 +127,7 @@ public final class FakeRestServer implements AutoCloseable {
      * {@link #endOutage}, the way the API looks to the SDK while it is down.
      */
     public void startOutage(int status) {
-        outage = new Response(status, OUTAGE_BODY);
+        outage = Reply.of(status, OUTAGE_BODY);
     }
 
     /** Back to the routes and overrides. */
@@ -128,6 +141,11 @@ public final class FakeRestServer implements AutoCloseable {
      */
     public List<RecordedRequest> requests() {
         return List.copyOf(requests);
+    }
+
+    /** The most requests the fake was answering at the same time, since it started. */
+    public int mostInFlight() {
+        return mostInFlight.get();
     }
 
     /** The requests received so far with this method and path, oldest first. */
@@ -219,17 +237,26 @@ public final class FakeRestServer implements AutoCloseable {
     }
 
     private void handle(HttpExchange exchange) throws IOException {
-        inFlight.incrementAndGet();
+        mostInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
         try (exchange) {
             String method = exchange.getRequestMethod();
             String path = exchange.getRequestURI().getPath();
             requests.add(
                     new RecordedRequest(method, path, exchange.getRequestURI().getRawQuery(), headers(exchange)));
 
-            Response response = answer(method, path);
-            byte[] body = response.body().getBytes(UTF_8);
+            Reply reply = answer(method, path);
+            if (reply.delay().isPositive()) {
+                try {
+                    Thread.sleep(reply.delay());
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+            byte[] body = reply.body().getBytes(UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/xml");
-            exchange.sendResponseHeaders(response.status(), body.length == 0 ? -1 : body.length);
+            reply.headers().forEach(exchange.getResponseHeaders()::set);
+            exchange.sendResponseHeaders(reply.status(), body.length == 0 ? -1 : body.length);
             if (body.length > 0) {
                 exchange.getResponseBody().write(body);
             }
@@ -240,14 +267,14 @@ public final class FakeRestServer implements AutoCloseable {
         }
     }
 
-    private Response answer(String method, String path) {
-        Response down = outage;
+    private Reply answer(String method, String path) {
+        Reply down = outage;
         if (down != null) {
             return down;
         }
-        Response override = overrides.get(path);
+        Script override = overrides.get(path);
         if (override != null) {
-            return override;
+            return override.next();
         }
         if (!"GET".equals(method)) {
             return ACCEPTED;
@@ -271,10 +298,42 @@ public final class FakeRestServer implements AutoCloseable {
     private static Route route(String template, String fixture) {
         String regex =
                 Pattern.quote(template).replace("{lang}", "\\E[a-z]{2}\\Q").replace("{id}", "\\E[^/]+\\Q");
-        return new Route(Pattern.compile(regex), new Response(200, Fixtures.read(fixture)));
+        return new Route(Pattern.compile(regex), Reply.of(200, Fixtures.read(fixture)));
     }
 
-    private record Route(Pattern pattern, Response response) {}
+    /**
+     * One answer: a status, a body, headers next to the XML content type, and how long to wait
+     * before sending it.
+     */
+    public record Reply(int status, String body, Map<String, String> headers, Duration delay) {
 
-    private record Response(int status, String body) {}
+        public Reply {
+            headers = Map.copyOf(headers);
+        }
+
+        public static Reply of(int status, String body) {
+            return new Reply(status, body, Map.of(), Duration.ZERO);
+        }
+
+        /** The same reply with this header as well. */
+        public Reply withHeader(String name, String value) {
+            var more = new HashMap<>(headers);
+            more.put(name, value);
+            return new Reply(status, body, more, delay);
+        }
+
+        /** The same reply, sent this long after the request arrived. */
+        public Reply after(Duration wait) {
+            return new Reply(status, body, headers, wait);
+        }
+    }
+
+    private record Route(Pattern pattern, Reply response) {}
+
+    /** Replies in turn; the last one repeats. */
+    private record Script(List<Reply> replies, AtomicInteger taken) {
+        Reply next() {
+            return replies.get(Math.min(taken.getAndIncrement(), replies.size() - 1));
+        }
+    }
 }

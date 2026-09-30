@@ -3,8 +3,8 @@ package com.oddin.oddsfeed.systemtests;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.oddin.oddsfeed.systemtests.fake.FakeRestServer;
-import com.oddin.oddsfeed.systemtests.fake.RecordedRequest;
+import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.RecordedRequest;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;

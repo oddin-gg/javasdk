@@ -72,6 +72,13 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!-- the fake REST API -->
+      <groupId>gg.oddin.oddsfeed</groupId>
+      <artifactId>test-fakes</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
