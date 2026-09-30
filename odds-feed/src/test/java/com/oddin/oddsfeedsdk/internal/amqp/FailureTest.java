@@ -85,6 +85,20 @@ class FailureTest {
                 .isEqualTo(Failure.RESOURCES);
     }
 
+    @Test
+    void aChannelTheBrokerRefusesIsARefusal() {
+        var close = new AMQP.Channel.Close.Builder()
+                .replyCode(AMQP.ACCESS_REFUSED)
+                .replyText("ACCESS_REFUSED - access to queue 'amq.gen-1' in vhost '/oddinfeed/53' refused for user"
+                        + " 'secret-token'")
+                .build();
+        var refused = new IOException(new ShutdownSignalException(false, false, close, null));
+        assertThat(Failure.of(refused)).isEqualTo(Failure.REFUSED);
+        assertThat(Failure.describe(refused, "secret-token"))
+                .startsWith("403 ACCESS_REFUSED")
+                .doesNotContain("secret-token");
+    }
+
     private static ShutdownSignalException closed(int code, String text) {
         var close = new AMQP.Connection.Close.Builder()
                 .replyCode(code)

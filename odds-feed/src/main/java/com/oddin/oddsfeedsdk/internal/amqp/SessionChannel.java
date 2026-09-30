@@ -44,12 +44,10 @@ final class SessionChannel implements SessionTransport {
     private final AtomicInteger failedReopens = new AtomicInteger();
     /** Whether a reopen is waiting or running, so the broker's closing and cancelling start one. */
     private final AtomicBoolean reopening = new AtomicBoolean();
-    /** Whether the broker took the current channel or its consumer; cleared by a channel opening. */
-    private final AtomicBoolean taken = new AtomicBoolean();
     /** Changed under the lock; read without it. */
     private final AtomicLong epoch = new AtomicLong();
-
-    private @Nullable Channel channel;
+    /** The current channel's consumer, which knows its channel; changed under the lock. */
+    private volatile @Nullable Deliveries current;
 
     /**
      * @param connection the transport's connection now, null while it has none
@@ -83,6 +81,7 @@ final class SessionChannel implements SessionTransport {
             long next = epoch.incrementAndGet();
             queue.removeEpochsBefore(next);
             Channel opened = on.createChannel();
+            var consumer = new Deliveries(opened, next);
             String name = null;
             try {
                 name = opened.queueDeclare("", false, true, true, null).getQueue();
@@ -90,14 +89,14 @@ final class SessionChannel implements SessionTransport {
                     opened.queueBind(name, exchange, key);
                 }
                 opened.basicQos(prefetch);
-                opened.basicConsume(name, false, new Deliveries(opened, next));
+                opened.basicConsume(name, false, consumer);
             } catch (IOException | RuntimeException e) {
                 closeQuietly(opened);
                 deleteQuietly(on, name);
                 throw e;
             }
-            channel = opened;
-            taken.set(false);
+            // a cancel from here on or before marks this consumer, which isOpen reads
+            current = consumer;
             failedReopens.set(0);
         } finally {
             lock.unlock();
@@ -108,12 +107,14 @@ final class SessionChannel implements SessionTransport {
     public void ack(RawDelivery delivery) {
         lock.lock();
         try {
-            Channel current = channel;
-            if (delivery.epoch() != epoch.get() || current == null || !current.isOpen()) {
+            Deliveries consumer = current;
+            if (delivery.epoch() != epoch.get()
+                    || consumer == null
+                    || !consumer.getChannel().isOpen()) {
                 skippedAcks.incrementAndGet();
                 return;
             }
-            current.basicAck(delivery.deliveryTag(), false);
+            consumer.getChannel().basicAck(delivery.deliveryTag(), false);
         } catch (IOException | RuntimeException e) {
             // the channel went while acknowledging: the broker has let the delivery go with it
             skippedAcks.incrementAndGet();
@@ -165,7 +166,7 @@ final class SessionChannel implements SessionTransport {
     boolean reopenIfStillLost(long lostEpoch) {
         lock.lock();
         try {
-            if (epoch.get() != lostEpoch && isOpen() && !taken.get()) {
+            if (epoch.get() != lostEpoch && isOpen()) {
                 return true;
             }
             return tryReset();
@@ -176,8 +177,8 @@ final class SessionChannel implements SessionTransport {
 
     /** Whether it has an open channel whose consumer the broker has not taken. */
     boolean isOpen() {
-        Channel current = channel;
-        return current != null && current.isOpen() && !taken.get();
+        Deliveries consumer = current;
+        return consumer != null && !consumer.taken && consumer.getChannel().isOpen();
     }
 
     @Override
@@ -219,10 +220,10 @@ final class SessionChannel implements SessionTransport {
     }
 
     private void closeChannel() {
-        Channel current = channel;
-        channel = null;
-        if (current != null) {
-            closeQuietly(current);
+        Deliveries consumer = current;
+        current = null;
+        if (consumer != null) {
+            closeQuietly(consumer.getChannel());
         }
     }
 
@@ -259,6 +260,8 @@ final class SessionChannel implements SessionTransport {
     /** Hands each delivery over and returns; runs on the connection's consumer thread. */
     private final class Deliveries extends DefaultConsumer {
         private final long epochOfChannel;
+        /** Whether the broker took this consumer or its channel: its own mark, never a later one's. */
+        private volatile boolean taken;
 
         Deliveries(Channel channel, long epochOfChannel) {
             super(channel);
@@ -266,8 +269,8 @@ final class SessionChannel implements SessionTransport {
         }
 
         @Override
-        public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body)
-                throws IOException {
+        public void handleDelivery(
+                String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) {
             var timestamp = properties.getTimestamp();
             SessionQueue.Offer offered = queue.offer(new RawDelivery(
                     body.length > maxMessageSize ? null : body,
@@ -279,7 +282,12 @@ final class SessionChannel implements SessionTransport {
                     timestamp == null ? null : timestamp.toInstant()));
             if (offered == SessionQueue.Offer.FULL) {
                 // refused and counted: acknowledged, or its prefetch credit would be gone for good
-                getChannel().basicAck(envelope.getDeliveryTag(), false);
+                try {
+                    getChannel().basicAck(envelope.getDeliveryTag(), false);
+                } catch (IOException | RuntimeException channelGone) {
+                    // not thrown on: the client would close the channel as if the SDK had, and no
+                    // reopen would follow; a channel that went tells so itself
+                }
             }
         }
 
@@ -298,8 +306,8 @@ final class SessionChannel implements SessionTransport {
         }
 
         private void taken(long ofEpoch) {
+            taken = true;
             if (ofEpoch == epoch.get()) {
-                taken.set(true);
                 lost.lost(SessionChannel.this, ofEpoch);
             }
         }
