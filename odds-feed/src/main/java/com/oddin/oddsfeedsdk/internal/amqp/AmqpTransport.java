@@ -262,7 +262,8 @@ public final class AmqpTransport implements AutoCloseable {
         return aliveHandlerFailures.get();
     }
 
-    private ConnectionFactory factory() {
+    /** Package-private for a test to see how the transport connects. */
+    ConnectionFactory factory() {
         var factory = new ConnectionFactory();
         factory.setHost(settings.host());
         factory.setPort(settings.port());
@@ -276,9 +277,14 @@ public final class AmqpTransport implements AutoCloseable {
         }
         // the context overload turns it on already; said again so no change of overload can drop it
         factory.enableHostnameVerification();
-        factory.setRequestedHeartbeat((int) Math.max(1, settings.heartbeat().toSeconds()));
-        factory.setConnectionTimeout((int) settings.connectTimeout().toMillis());
-        factory.setHandshakeTimeout((int) settings.connectTimeout().toMillis());
+        factory.setRequestedHeartbeat(Math.clamp(settings.heartbeat().toSeconds(), 1, Integer.MAX_VALUE));
+        factory.setConnectionTimeout(millis(settings.connectTimeout()));
+        factory.setHandshakeTimeout(millis(settings.connectTimeout()));
+        // a declare or bind the broker never answers holds the lock, and close() with it, this long
+        factory.setChannelRpcTimeout(millis(settings.connectTimeout()));
+        // the client names a channel by its connection, and that by its user - the token - when it logs
+        // a callback's failure; nor does it close the channel, as the default does: reopening is ours
+        factory.setExceptionHandler(new RedactingExceptionHandler(settings.accessToken()));
         // reconnection is this class's, with its epochs and its classification of failures
         factory.setAutomaticRecoveryEnabled(false);
         factory.setTopologyRecoveryEnabled(false);
@@ -475,6 +481,10 @@ public final class AmqpTransport implements AutoCloseable {
         }
     }
 
+    private static int millis(Duration duration) {
+        return Math.clamp(duration.toMillis(), 0, Integer.MAX_VALUE);
+    }
+
     private Duration backoff(int attempt) {
         long first = settings.firstBackoff().toNanos();
         long capped = Math.min(settings.maxBackoff().toNanos(), first << Math.min(attempt - 1, 20));
@@ -518,7 +528,7 @@ public final class AmqpTransport implements AutoCloseable {
         if (current != null) {
             try {
                 if (current.isOpen()) {
-                    current.close((int) settings.connectTimeout().toMillis());
+                    current.close(millis(settings.connectTimeout()));
                 }
             } catch (IOException | RuntimeException alreadyGone) {
                 // closing is all that was wanted

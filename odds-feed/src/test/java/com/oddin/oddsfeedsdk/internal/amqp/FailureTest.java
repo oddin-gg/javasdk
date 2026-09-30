@@ -2,6 +2,8 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.oddin.oddsfeedsdk.OddsFeed;
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.AuthenticationFailureException;
 import com.rabbitmq.client.PossibleAuthenticationFailureException;
@@ -120,6 +122,28 @@ class FailureTest {
                 .doesNotContain("secret-token")
                 .contains("accessToken=" + Failure.TOKEN)
                 .contains("virtualHost=/oddinfeed/53");
+    }
+
+    @Test
+    void theFeedsSettingsComeFromItsConfiguration() {
+        OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.example.invalid", "api.example.invalid")
+                .setAccessToken("secret-token")
+                .setAmqpPrefetch(50)
+                .setMaxMessageSize(4096)
+                .build();
+        AmqpSettings settings = AmqpSettings.of(configuration, "/oddinfeed/53", "of-sdk-53-1");
+        assertThat(settings.host()).isEqualTo("mq.example.invalid");
+        assertThat(settings.port())
+                .isEqualTo(configuration.getSelectedEnvironment().getMessagingPort());
+        assertThat(settings.virtualHost()).isEqualTo("/oddinfeed/53");
+        assertThat(settings.accessToken()).isEqualTo("secret-token");
+        assertThat(settings.tls()).as("the JVM's trust").isNull();
+        assertThat(settings.connectionName()).isEqualTo("of-sdk-53-1");
+        assertThat(settings.prefetch()).isEqualTo(50);
+        assertThat(settings.maxMessageSize()).isEqualTo(4096);
+        assertThat(settings.heartbeat()).isEqualTo(Duration.ofSeconds(10));
+        assertThat(settings.connectTimeout()).isEqualTo(configuration.getHttpClientTimeout());
     }
 
     private static ShutdownSignalException closed(int code, String text) {
