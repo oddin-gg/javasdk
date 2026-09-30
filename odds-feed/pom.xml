@@ -91,6 +91,22 @@
   </dependencies>
 
   <build>
+    <resources>
+      <resource>
+        <!-- the SDK's version, written into the jar for the telemetry; see SdkVersion -->
+        <directory>src/main/resources</directory>
+        <filtering>true</filtering>
+        <includes>
+          <include>com/oddin/oddsfeedsdk/internal/sdk.properties</include>
+        </includes>
+      </resource>
+      <resource>
+        <directory>src/main/resources</directory>
+        <excludes>
+          <exclude>com/oddin/oddsfeedsdk/internal/sdk.properties</exclude>
+        </excludes>
+      </resource>
+    </resources>
     <testResources>
       <testResource>
         <directory>src/test/resources</directory>
@@ -172,6 +188,8 @@
           <systemPropertyVariables>
             <baseline.jar>${settings.localRepository}/${api.baseline.groupPath}/odds-feed/${api.baseline.version}/odds-feed-${api.baseline.version}.jar</baseline.jar>
             <baseline.version>${api.baseline.version}</baseline.version>
+            <!-- SdkVersionTest checks the jar reports the version it was built as -->
+            <sdk.built.version>${project.version}</sdk.built.version>
             <examples.sources>${maven.multiModuleProjectDirectory}/examples/src/main/java</examples.sources>
             <!-- the same pins the system tests check the SDK they run against with -->
             <baseline.checksums>${maven.multiModuleProjectDirectory}/system-tests/src/test/resources/sdk-jar-checksums.properties</baseline.checksums>
