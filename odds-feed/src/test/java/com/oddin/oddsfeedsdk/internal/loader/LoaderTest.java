@@ -62,7 +62,7 @@ class LoaderTest {
     }
 
     @Test
-    void aWaiterThatRunsOutOfTimeFailsAndStartsNoFetchOfItsOwn() {
+    void waitersThatRunOutOfTimeFailAndStartNoFetchOfTheirOwn() throws Exception {
         var fetches = new AtomicInteger();
         var never = new CountDownLatch(1);
         var loader = new Loader<String, String>(
@@ -77,13 +77,40 @@ class LoaderTest {
                 virtualThreads);
 
         long started = System.nanoTime();
-        assertThatThrownBy(() -> loader.load("m1"))
+        Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
+        waitUntil(() -> loader.waiting("m1") == 1);
+        Future<String> second = virtualThreads.submit(() -> loader.load("m1"));
+        assertThatThrownBy(() -> first.get(5, TimeUnit.SECONDS))
+                .cause()
                 .isInstanceOf(ApiException.class)
                 .hasMessage("match m1 not loaded within 700 ms");
+        assertThatThrownBy(() -> second.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
         assertThat(Duration.ofNanos(System.nanoTime() - started))
-                .isBetween(Duration.ofMillis(650), Duration.ofSeconds(2));
-        assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
+                .isBetween(Duration.ofMillis(650), Duration.ofSeconds(3));
         assertThat(fetches).as("the second caller joined the first fetch").hasValue(1);
+        never.countDown();
+    }
+
+    @Test
+    void aFetchThatOverranEveryWaiterIsLetGo() {
+        var fetches = new AtomicInteger();
+        var never = new CountDownLatch(1);
+        var loader = new Loader<String, String>(
+                "match",
+                key -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        await(never);
+                    }
+                    return "value";
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
+        assertThat(loader.load("m1"))
+                .as("a fresh fetch, not the one still stuck")
+                .isEqualTo("value");
+        assertThat(fetches).hasValue(2);
         never.countDown();
     }
 

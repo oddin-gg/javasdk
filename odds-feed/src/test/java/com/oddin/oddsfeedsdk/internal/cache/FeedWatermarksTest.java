@@ -48,7 +48,9 @@ class FeedWatermarksTest {
     void aMessageOlderThanTheStatusAgeWritesNothingAndLeavesNoWatermark() {
         Duration backlog = FeedWatermarks.STATUS_AGE.plusSeconds(1);
         assertThat(marks.feedMayWrite("m1", LIVE, 9_000, backlog, now())).isFalse();
-        assertThat(marks.restMayWrite("m1", now())).as("no watermark was left").isTrue();
+        assertThat(marks.restWriteIfQuiet("m1", now(), () -> {}))
+                .as("no watermark was left")
+                .isTrue();
         assertThat(marks.feedMayWrite("m1", LIVE, 1_000, FeedWatermarks.STATUS_AGE, now()))
                 .as("exactly the status age still writes")
                 .isTrue();
@@ -56,18 +58,20 @@ class FeedWatermarksTest {
 
     @Test
     void restWritesOnlyOnceTheFeedHasBeenQuietForTheStatusAge() {
-        assertThat(marks.restMayWrite("m1", now())).as("the feed never wrote").isTrue();
+        assertThat(marks.restWriteIfQuiet("m1", now(), () -> {}))
+                .as("the feed never wrote")
+                .isTrue();
         marks.feedMayWrite("m1", LIVE, 1_000, FRESH, now());
-        assertThat(marks.restMayWrite("m1", now())).isFalse();
+        assertThat(marks.restWriteIfQuiet("m1", now(), () -> {})).isFalse();
 
         time.advance(Duration.ofMinutes(19));
         marks.feedMayWrite("m1", PREMATCH, 1_000, FRESH, now());
         time.advance(Duration.ofMinutes(2));
-        assertThat(marks.restMayWrite("m1", now()))
+        assertThat(marks.restWriteIfQuiet("m1", now(), () -> {}))
                 .as("the prematch producer wrote 2 minutes ago")
                 .isFalse();
         time.advance(Duration.ofMinutes(19));
-        assertThat(marks.restMayWrite("m1", now()))
+        assertThat(marks.restWriteIfQuiet("m1", now(), () -> {}))
                 .as("both quiet for over 20 minutes")
                 .isTrue();
     }
@@ -89,6 +93,41 @@ class FeedWatermarksTest {
             bounded.feedMayWrite("m" + i, LIVE, 1, FRESH, now());
         }
         assertThat(bounded.size()).isEqualTo(10);
+    }
+
+    @Test
+    void aLiveMessageWaitsForARestWriteInProgressAndThenOverwritesIt() throws Exception {
+        var writing = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var order = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        try (var threads = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var rest = threads.submit(() -> marks.restWriteIfQuiet("m1", now(), () -> {
+                writing.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                order.add("rest");
+            }));
+            assertThat(writing.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var feed = threads.submit(() -> {
+                boolean admitted = marks.feedMayWrite("m1", LIVE, 1_000, FRESH, now());
+                order.add("feed");
+                return admitted;
+            });
+            Thread.sleep(200);
+            assertThat(feed.isDone())
+                    .as("the feed waits for the REST write on the entity")
+                    .isFalse();
+            release.countDown();
+            assertThat(rest.get(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(feed.get(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(order).containsExactly("rest", "feed");
+        assertThat(marks.restWriteIfQuiet("m1", now(), () -> {}))
+                .as("the feed owns it now")
+                .isFalse();
     }
 
     private Instant now() {

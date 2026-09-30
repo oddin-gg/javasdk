@@ -55,9 +55,14 @@ class SideLoadsTest {
             sideLoads.offer(() -> {
                 throw new IllegalStateException("the API said no");
             });
+            sideLoads.offer(() -> {
+                throw new ExceptionInInitializerError("a binding did not load");
+            });
             sideLoads.offer(ran::countDown);
-            assertThat(ran.await(5, TimeUnit.SECONDS)).isTrue();
-            assertThat(sideLoads.failed()).isEqualTo(1);
+            assertThat(ran.await(5, TimeUnit.SECONDS))
+                    .as("the one worker is still there")
+                    .isTrue();
+            assertThat(sideLoads.failed()).isEqualTo(2);
         }
     }
 

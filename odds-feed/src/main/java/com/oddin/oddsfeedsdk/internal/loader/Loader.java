@@ -60,15 +60,20 @@ public final class Loader<K, V> {
                 // in the map before it starts, so it cannot finish and be removed before it is there
                 fetches.execute(() -> fetch(key, mine));
             } catch (RejectedExecutionException e) {
+                var failure = new ApiException(name + " " + key + ": no fetch could start", null, e);
                 inFlight.remove(key, mine);
-                mine.result().completeExceptionally(e);
-                throw new ApiException(name + " " + key + ": no fetch could start", null, e);
+                mine.result().completeExceptionally(failure);
+                throw failure;
             }
         }
         flight.waiters().incrementAndGet();
         try {
             return flight.result().get(wait.toNanos(), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
+            // the last to give up lets go of a fetch that overran, so the next miss starts afresh
+            if (flight.waiters().get() == 1) {
+                inFlight.remove(key, flight);
+            }
             throw new ApiException(name + " " + key + " not loaded within " + wait.toMillis() + " ms", null, e);
         } catch (ExecutionException e) {
             throw rethrown(key, e.getCause() != null ? e.getCause() : e);
