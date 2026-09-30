@@ -1,0 +1,10 @@
+# Commits git blame skips, so a line is blamed on the change that made it rather than on a
+# reformat. GitHub reads this file on its own; locally:
+#   git blame --ignore-revs-file .git-blame-ignore-revs <file>
+# (set as blame.ignoreRevsFile, it breaks git blame on branches without this file, such as the
+# 0.x line)
+# Full hashes as the commits are on next. When next lands on main by a rebase, they get new
+# hashes there: add those too.
+
+# style: format with Palantir Java Format, checked in verify
+a3830e557fc0055f2357be05d2a07109b2e049a5
