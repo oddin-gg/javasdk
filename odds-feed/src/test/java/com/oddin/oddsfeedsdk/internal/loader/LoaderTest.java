@@ -49,7 +49,7 @@ class LoaderTest {
         for (int i = 0; i < 20; i++) {
             callers.add(virtualThreads.submit(() -> loader.load("m1")));
         }
-        waitUntil(() -> loader.inFlight() == 1);
+        waitUntil(() -> loader.waiting("m1") == 20);
         release.countDown();
         for (Future<String> caller : callers) {
             assertThat(caller.get(5, TimeUnit.SECONDS)).isEqualTo("value of m1");
@@ -105,6 +105,32 @@ class LoaderTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("503");
         assertThat(loader.load("m1")).isEqualTo("value");
+    }
+
+    @Test
+    void anErrorFromAFetchReachesTheCallerAsItWas() {
+        var loader = new Loader<String, String>(
+                "match",
+                key -> {
+                    throw new ExceptionInInitializerError("the binding did not load");
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        assertThatThrownBy(() -> loader.load("m1"))
+                .isInstanceOf(ExceptionInInitializerError.class)
+                .hasMessage("the binding did not load");
+    }
+
+    @Test
+    void aFetchThatCannotStartLeavesNothingBehind() {
+        var loader = new Loader<String, String>("match", key -> "value", DEADLINE, MARGIN, task -> {
+            throw new java.util.concurrent.RejectedExecutionException("closed");
+        });
+        assertThatThrownBy(() -> loader.load("m1"))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("match m1: no fetch could start");
+        assertThat(loader.inFlight()).isZero();
     }
 
     @Test

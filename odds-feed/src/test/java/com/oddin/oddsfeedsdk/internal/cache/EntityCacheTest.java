@@ -31,6 +31,7 @@ class EntityCacheTest {
     private static final Endpoint ICONS = new Endpoint("icons", Set.of(ICON), Set.of());
 
     private static final Endpoint SCHEDULE = new Endpoint("schedule", Set.of(), Set.of());
+    private static final Endpoint NAME_ONLY = new Endpoint("name only", Set.of(NAME), Set.of());
 
     private final FakeTime time = new FakeTime();
     private final EntityCache<String> cache = new EntityCache<>("competitor", 100, Duration.ofHours(24), time, time);
@@ -43,10 +44,10 @@ class EntityCacheTest {
         assertThat(entry.get(COUNTRY, EN)).isEqualTo("CZ");
         assertThat(entry.get(ABBREVIATION, null)).isEqualTo("T1");
         assertThat(entry.get(PLAYERS, null)).containsExactly("p1", "p2");
-        assertThat(entry.loadedAt(EN)).isEqualTo(time.instant());
-        assertThat(entry.loadedAt(DE)).isNull();
-        assertThat(cache.isFresh("c1", EN)).isTrue();
-        assertThat(cache.isFresh("c1", DE)).isFalse();
+        assertThat(entry.loadedAt(PROFILE, EN)).isEqualTo(time.instant());
+        assertThat(entry.loadedAt(PROFILE, DE)).isNull();
+        assertThat(cache.isFresh("c1", PROFILE, EN)).isTrue();
+        assertThat(cache.isFresh("c1", PROFILE, DE)).isFalse();
 
         profile("c1", EN, "Team One Renamed", "CZ", "T1", List.of("p1"));
         assertThat(entry("c1").get(NAME, EN)).isEqualTo("Team One Renamed");
@@ -97,8 +98,10 @@ class EntityCacheTest {
         cache.fill("c1", Write.from(SCHEDULE, EN).put(NAME, "From A Schedule").put(ICON, "icon.png"));
         Entry filled = entry("c1");
         assertThat(filled.get(NAME, EN)).isEqualTo("From A Schedule");
-        assertThat(filled.loadedAt(EN)).as("a fill marks nothing loaded").isNull();
-        assertThat(cache.isFresh("c1", EN)).isFalse();
+        assertThat(filled.loadedAt(PROFILE, EN))
+                .as("a fill marks nothing loaded")
+                .isNull();
+        assertThat(cache.isFresh("c1", PROFILE, EN)).isFalse();
 
         profile("c1", EN, "Team One", "CZ", "T1", List.of());
         cache.fill(
@@ -113,7 +116,7 @@ class EntityCacheTest {
         // a fill in another locale adds that locale's name
         cache.fill("c1", Write.from(SCHEDULE, DE).put(NAME, "Mannschaft"));
         assertThat(entry("c1").get(NAME, DE)).isEqualTo("Mannschaft");
-        assertThat(entry("c1").loadedAt(DE)).isNull();
+        assertThat(entry("c1").loadedAt(PROFILE, DE)).isNull();
 
         // its own authoritative endpoint replaces what a fill put, and a fill no longer can
         cache.writeAuthoritative("c1", Write.from(ICONS, EN).put(ICON, "new.png"), cache.stamp("c1"));
@@ -128,9 +131,9 @@ class EntityCacheTest {
         cache.invalidate("c1");
 
         Entry tombstone = entry("c1");
-        assertThat(tombstone.generation()).isEqualTo(started.generation() + 1);
+        assertThat(tombstone.generation()).isNotEqualTo(started.generation());
         assertThat(tombstone.get(NAME, EN)).isNull();
-        assertThat(tombstone.loadedAt(EN)).isNull();
+        assertThat(tombstone.loadedAt(PROFILE, EN)).isNull();
 
         assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "Old Name"), started))
                 .isFalse();
@@ -158,6 +161,36 @@ class EntityCacheTest {
     }
 
     @Test
+    void anInvalidationStillCountsWhenItsTombstoneIsGone() {
+        // a fetch that started on nothing, its key invalidated, the tombstone expired
+        Stamp onNothing = cache.stamp("c1");
+        cache.invalidate("c1");
+        time.advance(Duration.ofHours(25));
+        assertThat(cache.get("c1")).isNull();
+        assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "Before The Change"), onNothing))
+                .isFalse();
+
+        // a fetch that started on an entry, which was invalidated, dropped, and made again by a fill
+        profile("c2", EN, "Two", "CZ", "T2", List.of());
+        Stamp onEntry = cache.stamp("c2");
+        cache.invalidate("c2");
+        time.advance(Duration.ofHours(25));
+        cache.fill("c2", Write.from(SCHEDULE, EN).put(COUNTRY, "SK"));
+        assertThat(cache.writeAuthoritative("c2", profileWrite(EN, "Before The Change"), onEntry))
+                .as("a new entry is not the one the fetch started with")
+                .isFalse();
+    }
+
+    @Test
+    void eachAuthoritativeEndpointIsFreshOnItsOwn() {
+        cache.writeAuthoritative("c1", Write.from(ICONS, EN).put(ICON, "icon.png"), cache.stamp("c1"));
+        assertThat(cache.isFresh("c1", ICONS, EN)).isTrue();
+        assertThat(cache.isFresh("c1", PROFILE, EN))
+                .as("the profile was never fetched")
+                .isFalse();
+    }
+
+    @Test
     void aFetchWhoseEntryWasDroppedMeanwhileIsThrownAway() {
         profile("c1", EN, "One", "CZ", "T1", List.of());
         Stamp started = cache.stamp("c1");
@@ -174,8 +207,12 @@ class EntityCacheTest {
         time.advance(Duration.ofHours(11));
         matches.writeAuthoritative("m1", profileWrite(DE, "Spiel"), matches.stamp("m1"));
         time.advance(Duration.ofHours(2));
-        assertThat(matches.isFresh("m1", EN)).as("fetched 13 hours ago").isFalse();
-        assertThat(matches.isFresh("m1", DE)).as("fetched 2 hours ago").isTrue();
+        assertThat(matches.isFresh("m1", NAME_ONLY, EN))
+                .as("fetched 13 hours ago")
+                .isFalse();
+        assertThat(matches.isFresh("m1", NAME_ONLY, DE))
+                .as("fetched 2 hours ago")
+                .isTrue();
         assertThat(requireNonNull(matches.get("m1")).get(NAME, EN))
                 .as("still held until refetched")
                 .isEqualTo("Match");
