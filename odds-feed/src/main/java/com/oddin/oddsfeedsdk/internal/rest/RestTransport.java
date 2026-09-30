@@ -123,7 +123,7 @@ public final class RestTransport implements AutoCloseable {
      * @throws ApiException when the call fails, or its answer cannot be read or says it is not OK
      */
     public <T> T get(Pool pool, String path, Class<T> type, Deadline deadline) {
-        Answer answer = call("GET", pool, path, true, deadline);
+        Answer answer = call("GET", pool, path, true, true, deadline);
         T decoded;
         try {
             decoded = decoder.decode(answer.body(), type);
@@ -145,7 +145,7 @@ public final class RestTransport implements AutoCloseable {
      * @throws ApiException when the call fails
      */
     public void send(String method, Pool pool, String path, boolean idempotent, Deadline deadline) {
-        call(method, pool, path, idempotent, deadline);
+        call(method, pool, path, idempotent, false, deadline);
     }
 
     @Override
@@ -155,7 +155,13 @@ public final class RestTransport implements AutoCloseable {
         http.shutdownNow();
     }
 
-    private Answer call(String method, Pool pool, String path, boolean idempotent, Deadline deadline) {
+    /**
+     * @param idempotent whether a 5xx or a failed connection may be retried
+     * @param needsBody whether the answer's body is what the call is for; a call without one is
+     *     done once the API answers with a success, whatever its body does afterwards
+     */
+    private Answer call(
+            String method, Pool pool, String path, boolean idempotent, boolean needsBody, Deadline deadline) {
         URI uri = URI.create(base + path);
         Semaphore permit = switch (pool) {
             case RECOVERY -> recoveryPermits;
@@ -169,6 +175,11 @@ public final class RestTransport implements AutoCloseable {
             }
             try {
                 if (!permit.tryAcquire(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS)) {
+                    throw last.failure(method, uri, late(deadline, "waiting for its turn"));
+                }
+                if (deadline.passed()) {
+                    // nothing is sent that could only fail, and might still be carried out
+                    permit.release();
                     throw last.failure(method, uri, late(deadline, "waiting for its turn"));
                 }
             } catch (InterruptedException e) {
@@ -188,10 +199,15 @@ public final class RestTransport implements AutoCloseable {
             }
 
             IOException broken = answer.failure();
+            if (closed) {
+                // close() cut the attempt off, or it began after the client shut down
+                report(method, uri, answer.status(), started, attempt, broken);
+                throw last.set(broken != null ? broken : new IOException("closed"), null)
+                        .failure(method, uri, "the feed is closed");
+            }
             int status = answer.status();
             boolean refused = status == 401 || status == 403;
-            // a control call's success is done, whatever its body did afterwards
-            boolean done = status / 100 == 2 && !idempotent;
+            boolean done = status / 100 == 2 && !needsBody;
             if (broken instanceof HttpTimeoutException && !refused && !done) {
                 report(method, uri, status, started, attempt, broken);
                 throw last.set(broken, null).failure(method, uri, late(deadline, "waiting for the answer"));
@@ -204,7 +220,7 @@ public final class RestTransport implements AutoCloseable {
                 // nothing answered: the API may still have done the work
                 report(method, uri, 0, started, attempt, broken);
                 last.set(broken, null);
-                if (!idempotent || closed) {
+                if (!idempotent) {
                     throw last.failure(method, uri, broken.toString());
                 }
                 pause(method, uri, attempt, backoff(attempt), deadline, last);
@@ -224,7 +240,7 @@ public final class RestTransport implements AutoCloseable {
                 throw last.failure(method, uri, "answered " + status);
             }
             // a success whose body broke off is read again, as a 5xx is
-            boolean retry = status == 429 || ((status / 100 == 5 || status / 100 == 2) && idempotent);
+            boolean retry = status == 429 || (status / 100 == 5 && idempotent) || (status / 100 == 2 && needsBody);
             if (!retry) {
                 throw last.failure(method, uri, "answered " + status + (broken != null ? ", then " + broken : ""));
             }
@@ -242,6 +258,9 @@ public final class RestTransport implements AutoCloseable {
      * and something after it.
      */
     private void pause(String method, URI uri, int attempt, Duration wait, Deadline deadline, Last last) {
+        if (closed) {
+            throw last.failure(method, uri, "the feed is closed");
+        }
         if (attempt >= MAX_ATTEMPTS) {
             throw last.failure(method, uri, "gave up after " + attempt + " attempts");
         }
