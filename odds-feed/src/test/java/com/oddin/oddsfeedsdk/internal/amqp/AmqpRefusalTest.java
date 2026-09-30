@@ -22,7 +22,8 @@ class AmqpRefusalTest {
                 transport.addSession(RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true));
                 transport.open();
 
-                feed.refuseLogins();
+                // the virtual host refused: the broker's reason quotes the user, which is the token
+                feed.refuseVirtualHost();
                 feed.closeConnections();
                 events.await(
                         event -> event.startsWith("fatal: the broker refused the login 3 times"),
@@ -33,14 +34,21 @@ class AmqpRefusalTest {
                         .contains("closed by the fake feed");
                 assertThat(events.reasons.subList(1, events.reasons.size()))
                         .as("why the next ones did")
-                        .allSatisfy(reason -> assertThat(reason).contains("ACCESS_REFUSED"));
+                        .allSatisfy(reason ->
+                                assertThat(reason).contains("NOT_ALLOWED").contains(Failure.TOKEN));
                 assertThat(String.join(" ", events.told)).doesNotContain("test-token");
+                assertThat(events.events)
+                        .anySatisfy(
+                                event -> assertThat(event).startsWith("fatal: ").contains(Failure.TOKEN));
                 assertThat(events.fatalCause).isNotNull();
+                var messages = new StringBuilder();
                 for (Throwable cause = events.fatalCause; cause != null; cause = cause.getCause()) {
-                    assertThat(String.valueOf(cause.getMessage()))
-                            .as("the fatal cause chain")
-                            .doesNotContain("test-token");
+                    messages.append(cause.getMessage()).append('\n');
                 }
+                assertThat(messages.toString())
+                        .as("the fatal cause chain")
+                        .doesNotContain("test-token")
+                        .contains(Failure.TOKEN);
                 assertThat(events.count("recovering")).isEqualTo(3);
                 int refused = feed.refusedLogins().size();
                 Thread.sleep(1_000);
@@ -49,6 +57,7 @@ class AmqpRefusalTest {
                         .hasSize(refused);
             }
 
+            feed.refuseLogins();
             try (var refused = new AmqpTransport(
                     AmqpTransportTest.settings(feed, 10, 1 << 20), FakeFeed.EXCHANGE, new Recorded(), null)) {
                 refused.addSession(RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true));

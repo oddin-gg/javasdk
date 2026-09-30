@@ -69,7 +69,9 @@ public final class AmqpTransport implements AutoCloseable {
     /** Whether a reconnect is under way; package-private for a test to hold one off. */
     final AtomicBoolean reconnecting = new AtomicBoolean();
 
-    private final AtomicBoolean aliveReopening = new AtomicBoolean();
+    /** Whether an alive reopen is waiting or running; package-private for a test to hold it. */
+    final AtomicBoolean aliveReopening = new AtomicBoolean();
+
     private final AtomicInteger aliveFailedReopens = new AtomicInteger();
     private final AtomicLong aliveHandlerFailures = new AtomicLong();
 
@@ -80,6 +82,8 @@ public final class AmqpTransport implements AutoCloseable {
 
     private volatile boolean closed;
     private volatile boolean failed;
+    /** A test's hook: runs under the lock once a connect has opened every channel, before up is told. */
+    volatile Runnable afterChannelsOpen = () -> {};
 
     /**
      * @param exchange the feed's exchange, or the replay one
@@ -160,8 +164,17 @@ public final class AmqpTransport implements AutoCloseable {
                                 + reason(e),
                         Failure.redacted(e, settings.accessToken()));
             }
-            opened.set(true);
+            afterChannelsOpen.run();
+            if (closed) {
+                // close() waits for the lock; the transport it closes is not told up
+                closeEverything();
+                throw new InitException(
+                        "Failed to open the feed: the feed was closed as it opened",
+                        new IOException("closed while opening"));
+            }
+            // up before opened: a loss the listener then ignores is found below, and told after up
             events.up();
+            opened.set(true);
             // lost between the last channel and now: its listener saw a transport not yet open
             Connection now = connection;
             if ((now == null || !now.isOpen()) && reconnecting.compareAndSet(false, true)) {
@@ -172,6 +185,16 @@ public final class AmqpTransport implements AutoCloseable {
         } finally {
             lock.unlock();
         }
+    }
+
+    /** Whether the connection is there and open. */
+    boolean connectionOpen() {
+        Connection now = connection;
+        return now != null && now.isOpen();
+    }
+
+    boolean isClosed() {
+        return closed;
     }
 
     /** Whether reconnecting gave up for good, after three refused logins. */
@@ -283,34 +306,41 @@ public final class AmqpTransport implements AutoCloseable {
     /**
      * A session's channel the broker closed or cancelled on a live connection: open it again, with a
      * growing pause while that fails, until it works, the connection goes, or the transport closes.
-     * A channel opened since the one lost in {@code epoch} - by a reconnect - is kept.
+     * A channel that is open by then - opened by a reconnect, say - is kept.
      */
-    private void sessionLost(SessionChannel session, long epoch) {
+    private void sessionLost(SessionChannel session) {
         if (closed || reconnecting.get() || !session.startReopen()) {
             return;
         }
         Thread.ofVirtual().name("oddsfeed-amqp-channel").start(() -> {
             try {
                 while (!pause(backoff(session.failedReopens() + 1)) && !reconnecting.get()) {
-                    if (session.reopenIfStillLost(epoch)) {
+                    if (session.reopenIfLost()) {
                         break;
                     }
                 }
             } finally {
-                session.reopenDone();
-            }
-            // taken again while this reopen held the claim: that loss found it held, and returned
-            if (!closed && !reconnecting.get() && !session.isOpen()) {
-                sessionLost(session, session.epoch());
+                released(session);
             }
         });
     }
 
     /**
-     * The SDK's alive channel the broker closed or cancelled on a live connection: open it again,
-     * unless it was replaced since by one that is open.
+     * Ends a session reopen's claim. A loss while it was held found it held and returned, so it is
+     * taken up here.
      */
-    private void aliveLost(@Nullable Alives lost) {
+    void released(SessionChannel session) {
+        session.reopenDone();
+        if (!closed && !reconnecting.get() && !session.isOpen()) {
+            sessionLost(session);
+        }
+    }
+
+    /**
+     * The SDK's alive channel the broker closed or cancelled on a live connection: open it again,
+     * unless one is open by then.
+     */
+    private void aliveLost() {
         Consumer<RawDelivery> handler = alives;
         if (handler == null || closed || reconnecting.get() || !aliveReopening.compareAndSet(false, true)) {
             return;
@@ -318,30 +348,34 @@ public final class AmqpTransport implements AutoCloseable {
         Thread.ofVirtual().name("oddsfeed-amqp-alive").start(() -> {
             try {
                 if (!pause(backoff(aliveFailedReopens.get() + 1)) && !reconnecting.get()) {
-                    reopenAlive(handler, lost);
+                    reopenAlive(handler);
                 }
             } finally {
-                aliveReopening.set(false);
-            }
-            // failed, or taken again while this reopen held the claim: go on
-            if (!closed && !reconnecting.get() && !aliveOpen()) {
-                aliveLost(alive);
+                aliveReleased();
             }
         });
     }
 
-    private void reopenAlive(Consumer<RawDelivery> handler, @Nullable Alives lost) {
+    /** Ends an alive reopen's claim: one that failed, or a loss while it was held, goes on. */
+    void aliveReleased() {
+        aliveReopening.set(false);
+        if (!closed && !reconnecting.get() && !aliveOpen()) {
+            aliveLost();
+        }
+    }
+
+    private void reopenAlive(Consumer<RawDelivery> handler) {
         lock.lock();
         try {
             Connection now = connection;
             if (closed || now == null || !now.isOpen()) {
                 return;
             }
-            Alives old = alive;
-            if (old != null && old != lost && aliveOpen()) {
-                // replaced since by one that is open, by a reconnect
+            if (aliveOpen()) {
+                // opened since, by a reconnect
                 return;
             }
+            Alives old = alive;
             alive = null;
             if (old != null) {
                 SessionChannel.closeQuietly(old.getChannel());
@@ -362,11 +396,11 @@ public final class AmqpTransport implements AutoCloseable {
     void reopenWhatWasLost() {
         for (SessionChannel session : sessions) {
             if (!session.isOpen()) {
-                sessionLost(session, session.epoch());
+                sessionLost(session);
             }
         }
         if (alives != null && !aliveOpen()) {
-            aliveLost(alive);
+            aliveLost();
         }
     }
 
@@ -394,6 +428,7 @@ public final class AmqpTransport implements AutoCloseable {
                 }
                 closeConnectionQuietly();
                 connectAndOpenChannels();
+                afterChannelsOpen.run();
                 if (closed) {
                     // closed while connecting: close() waits for the lock, but no up is told after it
                     closeConnectionQuietly();
@@ -536,8 +571,8 @@ public final class AmqpTransport implements AutoCloseable {
 
         private void taken() {
             taken = true;
-            // a replaced one's loss changes nothing: the reopen keeps a newer channel that is open
-            aliveLost(this);
+            // a replaced one's loss changes nothing: the reopen keeps a channel that is open
+            aliveLost();
         }
     }
 }

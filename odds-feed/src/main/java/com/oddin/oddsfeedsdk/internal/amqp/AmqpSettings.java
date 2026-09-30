@@ -33,6 +33,16 @@ public record AmqpSettings(
     /** The broker heartbeat, the Go SDK's: a dead connection shows in seconds. */
     static final Duration HEARTBEAT = Duration.ofSeconds(10);
 
+    /** The settings with the access token left out: it is a credential, and printing it leaks it. */
+    @Override
+    public String toString() {
+        return "AmqpSettings[host=" + host + ", port=" + port + ", virtualHost=" + virtualHost + ", accessToken="
+                + Failure.TOKEN + ", tls=" + tls + ", connectionName=" + connectionName + ", prefetch=" + prefetch
+                + ", maxMessageSize=" + maxMessageSize + ", heartbeat=" + heartbeat + ", connectTimeout="
+                + connectTimeout + ", firstBackoff=" + firstBackoff + ", maxBackoff=" + maxBackoff
+                + ", resourceBackoff=" + resourceBackoff + "]";
+    }
+
     /** For the feed: its environment and limits, the virtual host whoami named, a connection name. */
     public static AmqpSettings of(OddsFeedConfiguration configuration, String virtualHost, String connectionName) {
         return new AmqpSettings(

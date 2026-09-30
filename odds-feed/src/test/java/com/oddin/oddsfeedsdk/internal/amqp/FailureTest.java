@@ -8,6 +8,7 @@ import com.rabbitmq.client.PossibleAuthenticationFailureException;
 import com.rabbitmq.client.ShutdownSignalException;
 import java.io.IOException;
 import java.net.ConnectException;
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /** What each failure counts as when reconnecting. */
@@ -97,6 +98,28 @@ class FailureTest {
         assertThat(Failure.describe(refused, "secret-token"))
                 .startsWith("403 ACCESS_REFUSED")
                 .doesNotContain("secret-token");
+    }
+
+    @Test
+    void theSettingsDoNotPrintTheToken() {
+        var settings = new AmqpSettings(
+                "mq.example.invalid",
+                5671,
+                "/oddinfeed/53",
+                "secret-token",
+                null,
+                "of-sdk-53-1",
+                200,
+                1 << 20,
+                Duration.ofSeconds(10),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(1),
+                Duration.ofSeconds(30),
+                Duration.ofMinutes(1));
+        assertThat(settings.toString())
+                .doesNotContain("secret-token")
+                .contains("accessToken=" + Failure.TOKEN)
+                .contains("virtualHost=/oddinfeed/53");
     }
 
     private static ShutdownSignalException closed(int code, String text) {
