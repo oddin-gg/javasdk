@@ -68,6 +68,57 @@ class OddsFeedConfigurationBuilderTest {
     }
 
     @Test
+    void theApiLimitsNewInOneZeroHaveTheirDefaults() {
+        OddsFeedConfiguration configuration =
+                builder().selectProduction().setAccessToken("token").build();
+        assertThat(configuration.getHttpClientTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(configuration.getRestConcurrencyLimit()).isEqualTo(16);
+        assertThat(configuration.getStartupTimeout()).isEqualTo(Duration.ofSeconds(90));
+
+        OddsFeedConfiguration zeroZeroX = new OddsFeedConfiguration(
+                "token",
+                Locale.ENGLISH,
+                20,
+                360,
+                null,
+                ExceptionHandlingStrategy.THROW,
+                new Environment("mq", "api", 5672),
+                null,
+                1,
+                1,
+                1,
+                1);
+        assertThat(zeroZeroX.getHttpClientTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(zeroZeroX.getStartupTimeout()).isEqualTo(Duration.ofSeconds(90));
+    }
+
+    @Test
+    void theStartupTimeoutFollowsTheHttpTimeoutUnlessItIsSet() {
+        OddsFeedConfigurationBuilder builder = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setHttpClientTimeout(Duration.ofSeconds(5))
+                .setRestConcurrencyLimit(4);
+        assertThat(builder.build().getStartupTimeout()).isEqualTo(Duration.ofSeconds(15));
+        assertThat(builder.build().getRestConcurrencyLimit()).isEqualTo(4);
+        assertThat(builder.setStartupTimeout(Duration.ofMinutes(2)).build().getStartupTimeout())
+                .isEqualTo(Duration.ofMinutes(2));
+    }
+
+    @Test
+    void theApiLimitsMustBePositive() {
+        assertThatThrownBy(() -> builder().setHttpClientTimeout(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("HTTP client timeout");
+        assertThatThrownBy(() -> builder().setStartupTimeout(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("startup timeout");
+        assertThatThrownBy(() -> builder().setRestConcurrencyLimit(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least 1");
+    }
+
+    @Test
     void anAccessTokenAndAnEnvironmentAreRequired() {
         assertThatThrownBy(() -> builder().selectProduction().build())
                 .isInstanceOf(IllegalArgumentException.class)

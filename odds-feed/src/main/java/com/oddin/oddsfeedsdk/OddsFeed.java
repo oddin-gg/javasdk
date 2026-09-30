@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.api.MarketDescriptionManager;
 import com.oddin.oddsfeedsdk.api.SportsInfoManager;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
+import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
 
@@ -40,6 +41,15 @@ public final class OddsFeed {
 
     public static OddsFeedConfigurationBuilder getOddsFeedConfigurationBuilder() {
         return new OddsFeedConfigurationBuilder();
+    }
+
+    /**
+     * The SDK's version, as it reports it to the API and the broker: {@code 1.0.0}, or a version
+     * marked {@code -dev} for a build that is not a release. New in 1.0, for a client to log what
+     * it runs.
+     */
+    public static String getSdkVersion() {
+        return SdkVersion.version();
     }
 
     public OddsFeedSessionBuilder getSessionBuilder() {

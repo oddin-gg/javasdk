@@ -21,6 +21,9 @@ public final class OddsFeedConfigurationBuilder {
     private long maxFixtureCacheSize = OddsFeedConfiguration.DEFAULT_MAX_FIXTURE_CACHE_SIZE;
     private long maxCompetitorCacheSize = OddsFeedConfiguration.DEFAULT_MAX_COMPETITOR_CACHE_SIZE;
     private long maxPlayerCacheSize = OddsFeedConfiguration.DEFAULT_MAX_PLAYER_CACHE_SIZE;
+    private Duration httpClientTimeout = OddsFeedConfiguration.DEFAULT_HTTP_CLIENT_TIMEOUT;
+    private int restConcurrencyLimit = OddsFeedConfiguration.DEFAULT_REST_CONCURRENCY_LIMIT;
+    private @Nullable Duration startupTimeout;
 
     /** Public because 0.0.x's constructor was, to Java callers; {@code OddsFeed.getOddsFeedConfigurationBuilder()} makes one. */
     public OddsFeedConfigurationBuilder() {}
@@ -108,6 +111,48 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     /**
+     * The longest an API call takes, from waiting for its turn through every retry. 30 seconds
+     * unless set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive
+     */
+    public OddsFeedConfigurationBuilder setHttpClientTimeout(Duration timeout) {
+        this.httpClientTimeout = positive(timeout, "HTTP client timeout");
+        return this;
+    }
+
+    /**
+     * The most entity requests in flight at once. 16 unless set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is at least 1
+     */
+    public OddsFeedConfigurationBuilder setRestConcurrencyLimit(int limit) {
+        if (limit < 1) {
+            throw new IllegalArgumentException("REST concurrency limit must be at least 1, was " + limit);
+        }
+        this.restConcurrencyLimit = limit;
+        return this;
+    }
+
+    /**
+     * How long opening the feed keeps trying the API before it fails. Three HTTP timeouts unless
+     * set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive
+     */
+    public OddsFeedConfigurationBuilder setStartupTimeout(Duration timeout) {
+        this.startupTimeout = positive(timeout, "startup timeout");
+        return this;
+    }
+
+    private static Duration positive(Duration duration, String what) {
+        if (!duration.isPositive()) {
+            throw new IllegalArgumentException(what + " must be positive, was " + duration);
+        }
+        return duration;
+    }
+
+    /**
      * The configuration.
      *
      * @throws IllegalArgumentException without an access token or an environment
@@ -121,6 +166,7 @@ public final class OddsFeedConfigurationBuilder {
         if (environment == null) {
             throw new IllegalArgumentException("Missing environment. Please select environment.");
         }
+        Duration startup = startupTimeout;
         return new OddsFeedConfiguration(
                 token,
                 defaultLocale,
@@ -133,6 +179,9 @@ public final class OddsFeedConfigurationBuilder {
                 maxMatchCacheSize,
                 maxFixtureCacheSize,
                 maxCompetitorCacheSize,
-                maxPlayerCacheSize);
+                maxPlayerCacheSize,
+                httpClientTimeout,
+                restConcurrencyLimit,
+                startup != null ? startup : httpClientTimeout.multipliedBy(OddsFeedConfiguration.STARTUP_TIMEOUTS));
     }
 }
