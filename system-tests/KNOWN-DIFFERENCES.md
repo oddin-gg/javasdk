@@ -59,8 +59,9 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   unknown producer: 7". `ProducerManager.getProducer(7)` returns a made-up producer named
   "unknown", described as "unknown producer" - and, by the source, enabled and in both scopes.
 - **1.0:** "Unknown producer ids are an error, not a fabricated producer" (section 4, Recovery and
-  producers). The message is still not delivered; `getProducer` for an unknown id returns null or
-  throws an SDK exception - ticket 23 picks which, the test accepts either.
+  producers). The message is still not delivered; `getProducer` for an unknown id returns null,
+  as its signature allows (ticket 23). The other `ProducerManager` methods keep 0.0.x's answers for
+  it: not enabled, down, and setters that change nothing.
 - **Why:** A made-up producer hides a wrong id or a producer list the SDK did not load.
 - **Pinned by:** `ProducerRecoveryScenarioIT.aMessageFromAnUnknownProducerIsNotDelivered`
 - **Found:** by test against 0.0.56.
@@ -93,7 +94,8 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   `winner|handicap`. A producer whose scope is `live|prematch` has no scope at all - so, by the
   source, a live-only or prematch-only session never enables it and drops its messages.
 - **1.0:** To be decided. NEXT.md is silent; the schema documents the groups as a list separated
-  by a pipe.
+  by a pipe. The producer manager (ticket 23) splits the scopes, so a producer listed as
+  `live|prematch` has both; the bet stop groups come with the message factory (ticket 22).
 - **Why:** A client matching bet stop groups one by one never matches.
 - **Pinned by:** `FeedMessageScenarioIT.aBetStopForSeveralGroupsNamesEach`,
   `ProducerRecoveryScenarioIT.aProducerListedWithBothScopesHasBoth`
