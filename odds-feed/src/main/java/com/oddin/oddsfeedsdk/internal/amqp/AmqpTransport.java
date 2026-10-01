@@ -438,6 +438,8 @@ public final class AmqpTransport implements AutoCloseable {
                 }
                 failure = Failure.NETWORK;
                 cause = new IOException("the connection was lost again as it came up");
+                // it was up: a new loss, whose backoff starts again from the first pause
+                attempt = 0;
                 if (closed) {
                     return;
                 }
