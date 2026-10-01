@@ -50,7 +50,9 @@ import org.slf4j.LoggerFactory;
  * <p><b>The safety net.</b> A message's age is the time it was taken against its timestamp, with the
  * producer's clock offset measured on its own alives. When a session's live messages of a producer
  * stay older than the limit for the window, the net asks for a recovery of every producer of the
- * session, and only once the API has accepted them all has the session's channel replaced. It is
+ * session, and only once the API has accepted them all has the session's channel replaced. Once
+ * the transport reports that done, the session has lost its queue like a lost channel, and those
+ * recoveries, part of whose messages may have gone with the old queue, are asked for again. It is
  * off for a producer whose last alive is older than two alive intervals, and paused for a producer
  * with a recovery in flight or a gap open. It resets each session at most {@link
  * RecoverySettings#resets()} times per cool-down, with backoff between resets; when spent the
@@ -86,6 +88,8 @@ final class RecoveryMachine {
     private boolean connected = true;
     /** The number of the last gap opened; a recovery covers the gaps up to the number at its start. */
     private long gapSeq;
+    /** The number of the last reset the safety net set out to make. */
+    private long resetSeq;
 
     RecoveryMachine(
             Producers producers,
@@ -223,6 +227,7 @@ final class RecoveryMachine {
                 lane.above = false;
             }
         }
+        giveUpEvents(null);
         for (Track track : tracks.values()) {
             if (receivers(track) > 0) {
                 markDown(track, StatusCause.CONNECTION_LOST, now);
@@ -236,6 +241,7 @@ final class RecoveryMachine {
         long now = now();
         for (Track track : tracks.values()) {
             maybeRequest(track, now);
+            upIfNothingMissing(track, now);
         }
     }
 
@@ -248,8 +254,34 @@ final class RecoveryMachine {
         if (session == null) {
             return;
         }
-        long now = now();
         session.pending = null;
+        queueLost(session, StatusCause.CHANNEL_LOST, now());
+    }
+
+    /**
+     * The safety net's reset is made: the session's queue lost what it held, as with a lost
+     * channel. The recoveries it waited for were asked for before the reset, so part of what they
+     * sent went with the old queue: they are given up and asked for again.
+     *
+     * @param number the reset's own number, so a late report of an older reset changes nothing
+     */
+    void resetDone(int id, long number) {
+        SessionState session = sessions.get(id);
+        PendingReset pending = session == null ? null : session.pending;
+        if (session == null || pending == null || !pending.resetting || pending.number != number) {
+            return;
+        }
+        session.pending = null;
+        queueLost(session, StatusCause.SAFETY_NET_RESET, now());
+    }
+
+    /**
+     * The session's queue lost what it held: it misses everything after its checkpoints, and a
+     * recovery or event recovery that waited for its snapshot complete will not see it.
+     */
+    private void queueLost(SessionState session, StatusCause cause, long now) {
+        int id = session.info.id();
+        giveUpEvents(id);
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Lane lane = entry.getValue();
             lane.gap = openGap(lane.gap, lane.checkpoint, false);
@@ -259,7 +291,7 @@ final class RecoveryMachine {
             if (active != null && active.awaited.contains(id) && !active.seen.contains(id)) {
                 giveUp(track, now);
             }
-            markDown(track, StatusCause.CHANNEL_LOST, now);
+            markDown(track, cause, now);
             maybeRequest(track, now);
         }
     }
@@ -351,7 +383,9 @@ final class RecoveryMachine {
     /** A session has seen a snapshot complete; an id the actor has not in flight is counted, and ignored. */
     void snapshotComplete(int id, long producerId, long requestId) {
         Track track = known(producerId);
-        if (track == null) {
+        SessionState session = sessions.get(id);
+        if (track == null || (session != null && session.pending != null && session.pending.resetting)) {
+            // from the queue the reset replaces: what it completes is asked for again once it is done
             return;
         }
         Active active = track.active;
@@ -540,10 +574,6 @@ final class RecoveryMachine {
                 after = Math.min(after, lane.gap.from);
             }
         }
-        Duration initial = settings.initialSnapshotInterval();
-        if (after == 0 && initial != null) {
-            after = now - initial.toMillis();
-        }
         int window = track.producer.getStatefulRecoveryWindowInMinutes();
         if (after != 0 && window > 0) {
             after = Math.max(after, now - Duration.ofMinutes(window).toMillis());
@@ -557,7 +587,10 @@ final class RecoveryMachine {
                 track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), true));
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
-            if (pending != null && pending.unaccepted.remove(track.id) && pending.unaccepted.isEmpty()) {
+            if (pending != null
+                    && !pending.resetting
+                    && pending.unaccepted.remove(track.id)
+                    && pending.unaccepted.isEmpty()) {
                 reset(session, pending, now);
             }
         }
@@ -575,9 +608,10 @@ final class RecoveryMachine {
             producers.setRecoveryInfo(
                     track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), true));
         }
-        // a reset still waiting would drop what this recovery sent; it is not made
+        // a reset still waiting for the API would drop what this recovery sent; it is not made
         for (SessionState session : sessions.values()) {
-            if (session.pending != null && session.lanes.containsKey(track.id)) {
+            PendingReset pending = session.pending;
+            if (pending != null && !pending.resetting && session.lanes.containsKey(track.id)) {
                 cancelReset(session, now);
             }
         }
@@ -638,10 +672,12 @@ final class RecoveryMachine {
                 events.safetyNetRequestFailed(session.info.id(), track.id, reason);
             }
         }
-        track.failures++;
         if (!hasGaps(track)) {
+            // nothing is missing, so nothing is asked for again, and nothing failed in a row
+            track.failures = 0;
             return;
         }
+        track.failures++;
         if (track.failures > settings.reissues()) {
             track.capSpentAt = now;
             LOG.warn(
@@ -701,6 +737,11 @@ final class RecoveryMachine {
      * what is missing now is missing after any recovery already asked for.
      */
     private Gap openGap(@Nullable Gap open, long from, boolean pendingReset) {
+        Duration initial = settings.initialSnapshotInterval();
+        if (from == 0 && initial != null) {
+            // fixed now, so asking again does not move it
+            from = now() - initial.toMillis();
+        }
         if (open == null) {
             return new Gap(from, ++gapSeq, pendingReset);
         }
@@ -849,7 +890,7 @@ final class RecoveryMachine {
                 unaccepted.add(other.id);
             }
         }
-        session.pending = new PendingReset(unaccepted, track.id, age);
+        session.pending = new PendingReset(unaccepted, track.id, age, ++resetSeq);
         LOG.warn(
                 "Session {} is {} ms behind producer {}: the safety net asks for recoveries before it resets",
                 session.info.id(),
@@ -860,9 +901,14 @@ final class RecoveryMachine {
         }
     }
 
-    /** Every recovery the reset waited for is accepted: the session's channel is replaced. */
+    /**
+     * Every recovery the reset waited for is accepted: the session's channel is replaced. The
+     * reset stays pending until the transport reports it done, and meanwhile the session's snapshot
+     * completes are ignored: they come from the queue being replaced. Its producers' recoveries are
+     * in flight all the while, so nothing more is asked for them.
+     */
     private void reset(SessionState session, PendingReset pending, long now) {
-        session.pending = null;
+        pending.resetting = true;
         session.resets.addLast(now);
         session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size());
         for (Lane lane : session.lanes.values()) {
@@ -878,7 +924,7 @@ final class RecoveryMachine {
                 session.info.id(),
                 pending.age,
                 pending.producerId);
-        outbox.reset(session.info.id());
+        outbox.reset(session.info.id(), pending.number);
         events.safetyNetReset(session.info.id(), pending.producerId, pending.age);
         if (session.lagging) {
             session.lagging = false;
@@ -928,9 +974,13 @@ final class RecoveryMachine {
         }
     }
 
-    /** A producer down only for gaps that went away with a closed session comes back. */
+    /**
+     * A producer down only for gaps that went away with a closed session, or for a lost connection
+     * that no session it has now missed anything of, comes back.
+     */
     private void upIfNothingMissing(Track track, long now) {
         if (track.down
+                && connected
                 && track.everRecovered
                 && track.active == null
                 && track.cause != StatusCause.PROCESSING_DELAY
@@ -967,6 +1017,28 @@ final class RecoveryMachine {
     }
 
     // ---- small things
+
+    /**
+     * Gives up the event recoveries whose snapshot complete went with a lost queue: every one, for
+     * {@code session} null, else those waiting for that session. Whoever still waits for the API's
+     * answer hears null.
+     */
+    private void giveUpEvents(@Nullable Integer session) {
+        for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
+            if (session == null || (recovery.awaited.contains(session) && !recovery.seen.contains(session))) {
+                eventRecoveries.remove(recovery.requestId);
+                counters.eventAbandoned.incrementAndGet();
+                CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
+                if (reply != null) {
+                    reply.complete(null);
+                }
+                LOG.info(
+                        "Event recovery {} of {} given up: its snapshot went with a lost queue",
+                        recovery.requestId,
+                        recovery.eventId);
+            }
+        }
+    }
 
     private boolean aliveRecent(Track track, long now) {
         return track.lastAliveAt != 0
@@ -1208,11 +1280,23 @@ final class RecoveryMachine {
         }
     }
 
-    /**
-     * A reset the safety net waits to make.
-     *
-     * @param unaccepted the producers whose recoveries the API has not accepted yet
-     * @param producerId the producer whose messages were too old
-     */
-    private record PendingReset(Set<Long> unaccepted, long producerId, long age) {}
+    /** A reset the safety net waits to make, or has handed to the transport. */
+    private static final class PendingReset {
+        /** The producers whose recoveries the API has not accepted yet. */
+        final Set<Long> unaccepted;
+        /** The producer whose messages were too old. */
+        final long producerId;
+
+        final long age;
+        final long number;
+        /** Whether the transport is replacing the channel. */
+        boolean resetting;
+
+        PendingReset(Set<Long> unaccepted, long producerId, long age, long number) {
+            this.unaccepted = unaccepted;
+            this.producerId = producerId;
+            this.age = age;
+            this.number = number;
+        }
+    }
 }

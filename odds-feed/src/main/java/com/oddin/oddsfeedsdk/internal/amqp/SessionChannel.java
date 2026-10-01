@@ -64,7 +64,7 @@ final class SessionChannel implements SessionTransport {
     private volatile @Nullable Deliveries current;
     /** Whether a loss was told and no channel has replaced the lost one yet; under the lock. */
     private boolean lossTold;
-    /** Whether the channel is closed for good, so no loss is told; set under the lock. */
+    /** Whether the channel is closed for good: no loss is told, nothing opens it; under the lock. */
     private boolean closed;
     /** A test's hook: runs in the broker's callback before it marks its consumer taken. */
     volatile Runnable beforeTaken = () -> {};
@@ -103,6 +103,10 @@ final class SessionChannel implements SessionTransport {
     void open(Connection on) throws IOException {
         lock.lock();
         try {
+            if (closed) {
+                // a reset handed to a worker before the close: nothing is to read a new channel
+                return;
+            }
             closeChannel();
             long next = epoch.incrementAndGet();
             removeEpochsBefore(next);
@@ -269,6 +273,7 @@ final class SessionChannel implements SessionTransport {
         return skippedAcks.get();
     }
 
+    /** Closes the channel for good: a reset or a reopen after this opens nothing. */
     void close() {
         lock.lock();
         try {

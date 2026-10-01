@@ -58,10 +58,108 @@ class SafetyNetTest {
         assertThat(feed.lastStatus(LIVE))
                 .extracting(ProducerStatusChange::cause)
                 .isEqualTo(StatusCause.SAFETY_NET_RESET);
+        assertThat(feed.calls).as("nothing more while the transport resets").hasSize(before + 2);
 
-        feed.complete(pre, 1);
-        feed.complete(live, 1);
+        // what the first two sent before the reset may have gone with the old queue
+        feed.resetDone();
+        Outbox.Call.Snapshot preAgain = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot liveAgain = feed.lastSnapshot(LIVE);
+        assertThat(feed.calls).as("asked for again once the reset is done").hasSize(before + 4);
+        assertThat(preAgain.after()).isEqualTo(pre.after());
+        assertThat(liveAgain.after()).isEqualTo(live.after());
+        feed.complete(preAgain, 1);
+        feed.complete(liveAgain, 1);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
         assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
+    void aSnapshotCompleteWhileTheResetIsUnderWayIsIgnoredAndTheRecoveryAskedForAgain() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1, 2);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+        feed.accept(live);
+        assertThat(feed.resets).containsExactly(1);
+
+        // the transport has not replaced the channel yet: these come from the old queue
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.machine.snapshotComplete(2, PRE, pre.requestId());
+        feed.runWithAlives(Duration.ofSeconds(20));
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("while the reset is under way")
+                .isTrue();
+        assertThat(feed.calls).as("nothing asked for while it is").hasSize(before + 2);
+
+        feed.resetDone();
+        Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
+        assertThat(again.requestId()).isNotEqualTo(pre.requestId());
+        feed.complete(again, 1, 2);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        // a late report of the same reset changes nothing
+        feed.resetDone();
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+    }
+
+    @Test
+    void theNetWaitsWhileAnotherProducerOfTheSessionHasARecoveryInFlight() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        feed.unsubscribed(LIVE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(live);
+        int before = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .as("a request while the live producer recovers")
+                .isEqualTo(-1);
+        assertThat(feed.resets).isEmpty();
+
+        feed.machine.snapshotComplete(1, LIVE, live.requestId());
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .as("seconds to the net's request once it is done: stale all along")
+                .isEqualTo(1);
+        assertThat(feed.calls).hasSize(before + 2);
+    }
+
+    @Test
+    void theNetWaitsWhileAnotherProducerOfTheSessionWaitsToBeAskedForAgain() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        feed.unsubscribed(LIVE);
+        feed.refuse(feed.lastSnapshot(LIVE));
+        int pre = feed.snapshots(PRE).size();
+        // the live producer's recovery is refused each time it is asked for again
+        for (int second = 0; second < 180; second++) {
+            stale(feed, 1, OLD, Duration.ofSeconds(1), () -> false);
+            Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+            if (feed.counters.failed() < 4 && feed.machine.inFlightRecovery(LIVE) == live.requestId()) {
+                feed.refuse(live);
+            }
+        }
+        assertThat(feed.snapshots(PRE)).as("the net asked for nothing").hasSize(pre);
+        assertThat(feed.resets).isEmpty();
+    }
+
+    @Test
+    void aRefusedRequestOfTheNetLeavesTheProducersRetriesWhole() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.refuse(feed.lastSnapshot(PRE));
+        feed.refuse(feed.lastSnapshot(LIVE));
+        // a real recovery after that is refused once: asked for again after the first pause
+        feed.unsubscribed(PRE);
+        feed.refuse(feed.lastSnapshot(PRE));
+        int asked = feed.snapshots(PRE).size();
+        feed.runWithAlives(Duration.ofSeconds(5));
+        assertThat(feed.snapshots(PRE)).as("after 5 s").hasSize(asked + 1);
+        assertThat(feed.counters.reissued())
+                .as("a first request, not a re-issue")
+                .isEqualTo(1);
     }
 
     @Test
@@ -175,12 +273,11 @@ class SafetyNetTest {
                 .hasSize(2);
 
         feed.complete(live, 1);
-        long failedAt = feed.now();
         int after = feed.calls.size();
-        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after);
-        assertThat(feed.now() - failedAt)
-                .as("millis from the failure to the next try")
-                .isGreaterThanOrEqualTo(Duration.ofMinutes(1).toMillis());
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after))
+                .as("seconds to the next try: the window again, past the minute's backoff")
+                .isEqualTo(61);
+        assertThat(feed.calls).as("a recovery for each producer").hasSize(after + 2);
     }
 
     @Test
@@ -206,8 +303,9 @@ class SafetyNetTest {
             feed.accept(pre);
             feed.accept(live);
             resetAt.add((feed.now() - start) / 1_000);
-            feed.complete(pre, 1);
-            feed.complete(live, 1);
+            feed.resetDone();
+            feed.complete(feed.lastSnapshot(PRE), 1);
+            feed.complete(feed.lastSnapshot(LIVE), 1);
         }
         assertThat(resetAt)
                 .as("seconds of the resets: the window, then 1 and 2 minutes apart")

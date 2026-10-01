@@ -34,6 +34,7 @@ final class Harness {
     final RecoveryCounters counters = new RecoveryCounters();
     final List<Outbox.Call> calls = new ArrayList<>();
     final List<Integer> resets = new ArrayList<>();
+    final List<Long> resetNumbers = new ArrayList<>();
     final List<ProducerStatusChange> statuses = new ArrayList<>();
     final List<String> events = new ArrayList<>();
     /** The sessions opened, for the alives in their queues. */
@@ -55,8 +56,9 @@ final class Harness {
             }
 
             @Override
-            public void reset(int session) {
+            public void reset(int session, long number) {
                 resets.add(session);
+                resetNumbers.add(number);
             }
         };
         RecoveryEvents recorded = new RecoveryEvents() {
@@ -221,6 +223,11 @@ final class Harness {
             throw new AssertionError("no recovery of producer " + producer + " was asked for");
         }
         return snapshots.getLast();
+    }
+
+    /** The transport reports the last reset done. */
+    void resetDone() {
+        machine.resetDone(resets.getLast(), resetNumbers.getLast());
     }
 
     void accept(Outbox.Call call) {
