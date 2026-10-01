@@ -25,8 +25,9 @@ public interface ConnectionEvents {
     default void recovering(int attempt, long waitMillis, String reason) {}
 
     /**
-     * No reconnect can succeed: the broker refused the login three times within a minute. The
-     * transport stops trying; the feed has to be closed and made again.
+     * No reconnect can succeed: the broker has refused the login or the virtual host for a minute,
+     * three times at least, with no connection in between. The transport stops trying; the feed has
+     * to be closed and made again.
      */
     default void fatal(String reason, @Nullable Throwable cause) {}
 }

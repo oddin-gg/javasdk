@@ -13,8 +13,9 @@ import org.jspecify.annotations.Nullable;
  */
 enum Failure {
     /**
-     * The broker refused the login or the virtual host. Permanent after three in a minute; one alone
-     * can be a blip of the broker's auth backend.
+     * The broker refused the login or the virtual host. Permanent once refusals, three at least,
+     * have gone on for a minute with no connection in between; until then it can be the broker's
+     * auth backend being deployed, or a virtual host being written.
      */
     REFUSED,
     /** The broker is at a limit of connections or queues: transient, retried with a long pause. */
