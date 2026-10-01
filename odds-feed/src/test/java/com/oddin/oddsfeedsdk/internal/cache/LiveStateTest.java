@@ -229,123 +229,78 @@ class LiveStateTest {
             bounded.restWriteIfQuiet("m" + i, now(), status("not started"));
         }
         assertThat(bounded.size()).isEqualTo(10);
-        assertThat(bounded.keptAside()).as("the feed owned none of them").isZero();
+        assertThat(bounded.holds("m0")).as("the least recently written went").isFalse();
+        assertThat(bounded.holds("m99")).isTrue();
+        assertThat(bounded.dropped()).as("the feed owned none of them").isZero();
+
+        // by its last write, not its first
+        bounded.restWriteIfQuiet("m90", now(), status("not started"));
+        bounded.restWriteIfQuiet("m100", now(), status("not started"));
+        assertThat(bounded.holds("m90")).as("written again, the newest").isTrue();
+        assertThat(bounded.holds("m91")).as("the least recently written now").isFalse();
     }
 
     @Test
-    void anEntityEvictedForRoomWhileTheFeedOwnsItIsStillTheFeeds() {
+    void anEntityTheFeedOwnsStaysWhileOthersMakeRoom() {
         var bounded = new LiveState<String>(10, time);
         bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
-        evict(bounded, "live");
-
-        assertThat(requireNonNull(bounded.get("live")).get(STATUS))
-                .as("read from where it was kept aside")
-                .isEqualTo("live");
+        for (int i = 0; i < 1_000; i++) {
+            bounded.restWriteIfQuiet("other " + i, now(), status("not started"));
+        }
+        assertThat(bounded.size()).isEqualTo(10);
+        assertThat(statusOf(bounded, "live")).as("the oldest, but the feed's").isEqualTo("live");
         assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), status("older")))
                 .as("an older message from the producer still does not write")
                 .isFalse();
         assertThat(bounded.restWriteIfQuiet("live", now(), status("not started")))
                 .as("the feed wrote it a moment ago")
                 .isFalse();
-        assertThat(bounded.feedWriteIfNewer("live", LIVE, 6_000, FRESH, now(), status("ended")))
-                .isTrue();
-        assertThat(requireNonNull(bounded.get("live")).get(STATUS)).isEqualTo("ended");
-        assertThat(bounded.keptAside()).as("taken back by the write").isZero();
 
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        assertThat(bounded.restWriteIfQuiet("live", now(), status("closed")))
-                .as("quiet for longer than the status age")
-                .isTrue();
-    }
-
-    @Test
-    void aWriteThatThrowsLeavesAnEntityKeptAsideAsItWas() {
-        var bounded = new LiveState<String>(10, time);
-        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
-        evict(bounded, "live");
-        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        assertThatThrownBy(() -> bounded.restWriteIfQuiet("live", now(), status("ended"), () -> {
-                    throw new IllegalStateException("the loader failed");
-                }))
-                .isInstanceOf(IllegalStateException.class);
-        assertThat(bounded.keptAside()).as("still kept aside").isEqualTo(1);
-        assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), status("older")))
-                .as("its watermark is still there")
+        for (int i = 0; i < 10; i++) {
+            bounded.restWriteIfQuiet("later " + i, now(), status("not started"));
+        }
+        assertThat(bounded.holds("live"))
+                .as("no longer the feed's, it made room")
                 .isFalse();
+        assertThat(bounded.dropped()).isZero();
     }
 
     @Test
-    void anEntityKeptAsideCanBeReadWhileAWriteTakesItBack() {
-        var bounded = new LiveState<String>(10, time);
-        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
-        evict(bounded, "live");
-        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        var readMeanwhile = new java.util.concurrent.atomic.AtomicReference<LiveState.@Nullable LiveValues>();
-        // the abandoned check runs inside the record's compute, as the write takes the record back
-        assertThat(bounded.restWriteIfQuiet("live", now(), status("ended"), () -> {
-                    readMeanwhile.set(bounded.get("live"));
-                    return false;
-                }))
-                .isTrue();
-        assertThat(requireNonNull(readMeanwhile.get()).get(STATUS))
-                .as("still read from where it was kept aside")
-                .isEqualTo("live");
-        assertThat(bounded.keptAside())
-                .as("let go of once the write was in place")
-                .isZero();
-        assertThat(statusOf(bounded, "live")).isEqualTo("ended");
-    }
-
-    @Test
-    void anEntityKeptAsideThatARejectedWriteTookBackIsStillTheFeedsAfterAnotherEviction() {
-        var bounded = new LiveState<String>(10, time);
-        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
-        evict(bounded, "live");
-        assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), status("older")))
-                .isFalse();
-        evict(bounded, "live");
-        assertThat(bounded.restWriteIfQuiet("live", now(), status("not started")))
-                .as("its watermarks were not lost on the way")
-                .isFalse();
-        assertThat(statusOf(bounded, "live")).isEqualTo("live");
-    }
-
-    @Test
-    void aRecordKeptAsideAgesOutLikeOneInTheRecord() {
-        var bounded = new LiveState<String>(10, time);
-        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
-        evict(bounded, "live");
-        time.advance(LiveState.AGE.plusMinutes(1));
-        assertThat(bounded.get("live")).isNull();
-        assertThat(bounded.feedWriteIfNewer("live", LIVE, 1_000, FRESH, now(), status("live again")))
-                .as("its watermark aged out with it")
-                .isTrue();
-    }
-
-    @Test
-    void whatIsKeptAsideIsBoundedPrunedSparinglyAndWhatDoesNotFitIsCounted() {
+    void entitiesTheFeedOwnsGoPastTheBoundToTwiceItAndThenTheOldestAreDroppedAndCounted() {
         var bounded = new LiveState<String>(16, time);
-        // four times as many live entities as the record holds, all written within the status age
         for (int i = 0; i < 64; i++) {
             bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
         }
-        assertThat(bounded.size()).isEqualTo(16);
-        assertThat(bounded.keptAside()).as("bounded like the record").isLessThanOrEqualTo(16);
-        assertThat(bounded.dropped()).as("what did not fit, counted").isPositive();
-        // one scan when it first filled, then one per two records kept aside (16 / 8): not one per eviction
-        long prunes = bounded.prunes();
-        assertThat(prunes).isPositive().isLessThan(bounded.dropped());
+        assertThat(bounded.size()).as("twice the bound").isEqualTo(32);
+        assertThat(bounded.dropped()).as("what did not fit, counted").isEqualTo(32);
+        assertThat(bounded.holds("live 0")).as("the oldest dropped").isFalse();
+        assertThat(bounded.holds("live 63")).isTrue();
 
-        // what is kept aside is no longer owned; two more owned ones evicted are past the throttle
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        bounded.feedWriteIfNewer("later 1", LIVE, 1, FRESH, now(), status("live"));
-        evictOnly(bounded, "later 1");
-        bounded.feedWriteIfNewer("later 2", LIVE, 1, FRESH, now(), status("live"));
-        evictOnly(bounded, "later 2");
-        assertThat(bounded.prunes()).as("pruned again").isGreaterThan(prunes);
-        assertThat(requireNonNull(bounded.get("later 2")).get(STATUS))
-                .as("what the feed no longer owned made room for it")
-                .isEqualTo("live");
+        bounded.restWriteIfQuiet("later", now(), status("not started"));
+        assertThat(bounded.size())
+                .as("what the feed no longer owns makes room down to the bound")
+                .isEqualTo(16);
+        assertThat(bounded.holds("later")).isTrue();
+        assertThat(bounded.dropped()).isEqualTo(32);
+    }
+
+    @Test
+    void aWriteThatThrowsChangesNothing() {
+        live.feedWriteIfNewer("m1", LIVE, 5_000, FRESH, now(), status("live"));
+        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
+        assertThatThrownBy(() -> live.restWriteIfQuiet("m1", now(), status("ended"), () -> {
+                    throw new IllegalStateException("the loader failed");
+                }))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(statusOf("m1")).isEqualTo("live");
+        assertThat(feedWrite("m1", LIVE, 4_000, FRESH))
+                .as("its watermark is still there")
+                .isFalse();
+        assertThat(live.restWriteIfQuiet("m1", now(), status("ended")))
+                .as("and the lock was let go of")
+                .isTrue();
     }
 
     @Test
@@ -365,19 +320,6 @@ class LiveStateTest {
             }
             assertThat(timestampOf(entity)).as("the newest message's value").isEqualTo(50);
         }
-    }
-
-    private void evict(LiveState<String> bounded, String entity) {
-        evictOnly(bounded, entity);
-        assertThat(bounded.keptAside()).isEqualTo(1);
-    }
-
-    /** Evicts it with others that only REST wrote: evicted, they are not kept aside themselves. */
-    private void evictOnly(LiveState<String> bounded, String entity) {
-        for (int i = 0; i < 10_000 && bounded.holds(entity); i++) {
-            bounded.restWriteIfQuiet(entity + " other " + i, now(), status("not started"));
-        }
-        assertThat(bounded.holds(entity)).as("evicted for room").isFalse();
     }
 
     /** A live message carrying its own timestamp as a value, to tell which one wrote last. */

@@ -1,14 +1,12 @@
 package com.oddin.oddsfeedsdk.internal.cache;
 
-import com.github.benmanes.caffeine.cache.Cache;
-import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.BooleanSupplier;
@@ -19,8 +17,8 @@ import org.jspecify.annotations.Nullable;
  * kept with the watermarks that say who may write them: the feed, or REST once the feed has gone
  * quiet on the entity. They are not in an {@link EntityCache}: there one endpoint owns each field,
  * and these have two writers whose order only the watermarks know. A value and its watermark change
- * in one step, under the entity's record, so neither writer can put an older value over a newer one,
- * and nothing else is waited for: a write here never waits for an entity cache, or its clear.
+ * in one step, so neither writer can put an older value over a newer one, and nothing else is
+ * waited for: a write here never waits for an entity cache, or its clear.
  *
  * <p>The watermark is the timestamp of the last live message that wrote, per entity and producer,
  * with when the SDK received it. A message older than the watermark of its producer does not write;
@@ -29,13 +27,12 @@ import org.jspecify.annotations.Nullable;
  * whose corrected age is over the same limit writes nothing either, being a delayed backlog message
  * REST has since taken over from.
  *
- * <p>The record is bounded, and lives 24 hours after its last write. One the bound evicts while the
- * feed owns its entity - wrote within {@link #STATUS_AGE} - is kept aside, read from there, and
- * taken back by the entity's next write, so REST does not take over a live entity for want of room. What is
- * kept aside is bounded too: once it is as large as the record, it is pruned of what the feed no
- * longer owns - not again before more has been kept aside, when that freed nothing - and what still
- * does not fit is dropped and counted. A record evicted that the feed does not own is gone; whoever
- * reads the entity loads its summary again.
+ * <p>One lock guards it all; what it guards is a map lookup and a few small copies. Records are kept
+ * in the order they were last written, and live 24 hours after that. Over {@code maximumSize}, the
+ * least recently written record the feed does not own - not written by it within the status age,
+ * looked for among the oldest few -
+ * goes: its reader loads the summary again. One the feed owns stays, so REST does not take over a
+ * live entity for want of room; past twice the bound even those go, oldest first, and are counted.
  *
  * <p>Safe for concurrent use.
  */
@@ -46,42 +43,27 @@ public final class LiveState<K> {
 
     static final Duration AGE = Duration.ofHours(24);
 
+    /** How far from the oldest a trim looks for a record the feed does not own. */
+    static final int SCAN = 32;
+
     private final Ticker ticker;
     private final long maximumSize;
-    private final Cache<K, Live> records;
-    /** Records the bound evicted while the feed owned their entity. */
-    private final ConcurrentHashMap<K, Live> spilled = new ConcurrentHashMap<>();
-    /** How many records may be kept aside between two prunes that freed nothing. */
-    private final long pruneEvery;
+    private final ReentrantLock lock = new ReentrantLock();
+    /** In the order of their last write, oldest first; read and changed under the lock. */
+    private final LinkedHashMap<K, Live> records = new LinkedHashMap<>();
 
-    private final ReentrantLock pruning = new ReentrantLock();
-    private final AtomicLong spills = new AtomicLong();
-    private final AtomicLong prunes = new AtomicLong();
     private final AtomicLong dropped = new AtomicLong();
-    /** Changed under {@link #pruning}: whether the last prune freed anything, and when it ran. */
-    private volatile boolean lastPruneFreed = true;
-
-    private volatile long spillsAtLastPrune;
 
     public LiveState(long maximumSize) {
         this(maximumSize, Ticker.systemTicker());
     }
 
     LiveState(long maximumSize, Ticker ticker) {
+        if (maximumSize < 1) {
+            throw new IllegalArgumentException("a live state holds one record at least");
+        }
         this.ticker = ticker;
         this.maximumSize = maximumSize;
-        this.pruneEvery = Math.max(1, maximumSize / 8);
-        this.records = Caffeine.newBuilder()
-                .maximumSize(maximumSize)
-                .expireAfter(new AgedFromLastChange<K, Live>(AGE, Live::changedAt))
-                .ticker(ticker)
-                .executor(Runnable::run)
-                .<K, Live>evictionListener((entity, evicted, cause) -> {
-                    if (cause == RemovalCause.SIZE && entity != null && evicted != null && owns(evicted)) {
-                        spill(entity, evicted);
-                    }
-                })
-                .build();
     }
 
     /**
@@ -97,27 +79,29 @@ public final class LiveState<K> {
         if (correctedAge.compareTo(STATUS_AGE) > 0) {
             return false;
         }
-        var admitted = new boolean[1];
-        var taken = new Live[1];
-        records.asMap().compute(entity, (k, present) -> {
-            Live current = takeBack(k, present, taken);
+        lock.lock();
+        try {
+            long now = ticker.read();
+            Live current = current(entity, now);
             Mark last = current == null ? null : current.marks().get(producer);
             if (last != null && last.timestamp() > timestamp) {
-                return current;
+                return false;
             }
-            admitted[0] = true;
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
             marks.put(producer, new Mark(timestamp, receivedAt));
-            long now = ticker.read();
-            return new Live(
-                    Map.copyOf(marks),
-                    write.applyTo(valuesOf(current)),
-                    now,
-                    now,
-                    current == null ? null : current.restAt());
-        });
-        release(entity, taken[0]);
-        return admitted[0];
+            put(
+                    entity,
+                    new Live(
+                            Map.copyOf(marks),
+                            write.applyTo(valuesOf(current)),
+                            now,
+                            now,
+                            current == null ? null : current.restAt()),
+                    now);
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
@@ -132,27 +116,29 @@ public final class LiveState<K> {
      */
     public boolean restWriteIfQuiet(K entity, Instant now, LiveWrite write, BooleanSupplier abandoned) {
         Instant quietSince = now.minus(STATUS_AGE);
-        var wrote = new boolean[1];
-        var taken = new Live[1];
-        records.asMap().compute(entity, (k, present) -> {
-            // one evicted while the feed owned the entity comes back, and is the feed's still
-            Live current = takeBack(k, present, taken);
+        lock.lock();
+        try {
+            long ticks = ticker.read();
+            Live current = current(entity, ticks);
             boolean quiet = current == null
                     || current.marks().values().stream()
                             .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
             if (!quiet || abandoned.getAsBoolean()) {
-                return current;
+                return false;
             }
-            wrote[0] = true;
-            return new Live(
-                    current == null ? Map.of() : current.marks(),
-                    write.applyTo(valuesOf(current)),
-                    ticker.read(),
-                    current == null ? 0 : current.feedAt(),
-                    now);
-        });
-        release(entity, taken[0]);
-        return wrote[0];
+            put(
+                    entity,
+                    new Live(
+                            current == null ? Map.of() : current.marks(),
+                            write.applyTo(valuesOf(current)),
+                            ticks,
+                            current == null ? 0 : current.feedAt(),
+                            now),
+                    ticks);
+            return true;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /** The same, for a write no loader can abandon; for a test. */
@@ -162,13 +148,12 @@ public final class LiveState<K> {
 
     /** The entity's live values, or null when it has no record: then its summary is loaded again. */
     public @Nullable LiveValues get(K entity) {
-        Live live = records.getIfPresent(entity);
-        if (live == null) {
-            live = kept(entity);
-        }
-        if (live == null) {
-            // a write took it back, or the bound kept it aside, between the two looks
-            live = records.getIfPresent(entity);
+        Live live;
+        lock.lock();
+        try {
+            live = current(entity, ticker.read());
+        } finally {
+            lock.unlock();
         }
         if (live == null) {
             return null;
@@ -180,108 +165,87 @@ public final class LiveState<K> {
         return new LiveValues(live.values(), lastFeed, live.restAt());
     }
 
-    /** Records kept aside for the feed that did not fit, and were dropped. */
+    /** Records the feed owned that did not fit even past the bound, and were dropped. */
     public long dropped() {
         return dropped.get();
     }
 
-    /**
-     * The entity's record: the one held, or the one kept aside when the bound evicted it, which
-     * {@code taken} is told of, to be released once the compute has put its result in place.
-     */
-    private @Nullable Live takeBack(K entity, @Nullable Live present, @Nullable Live[] taken) {
-        if (present != null) {
-            return present;
-        }
-        Live live = spilled.get(entity);
-        taken[0] = live;
-        return live == null || aged(live) ? null : live;
-    }
-
-    private @Nullable Live kept(K entity) {
-        Live live = spilled.get(entity);
-        return live == null || aged(live) ? null : live;
-    }
-
-    /** Aged out while kept aside, as it would have in the record. */
-    private boolean aged(Live live) {
-        return ticker.read() - live.changedAt() > AGE.toNanos();
-    }
-
-    /**
-     * Lets go of what a compute took back from the spill, once its result is in the record: until
-     * then a read still finds it kept aside, and a write that threw leaves it there. Only while the
-     * record holds the entity: the bound can evict it again within the same call, and keep the very
-     * same record aside once more. A newer one kept aside since is left alone.
-     */
-    private void release(K entity, @Nullable Live taken) {
-        if (taken != null) {
-            spilled.computeIfPresent(
-                    entity,
-                    (k, kept) -> kept.equals(taken) && records.policy().getIfPresentQuietly(k) != null ? null : kept);
+    /** How many entities it holds a record for. */
+    public long size() {
+        lock.lock();
+        try {
+            return records.size();
+        } finally {
+            lock.unlock();
         }
     }
 
-    private void spill(K entity, Live evicted) {
-        long spilledSoFar = spills.incrementAndGet();
-        if (spilled.size() >= maximumSize && !spilled.containsKey(entity)) {
-            prune(spilledSoFar);
-            if (spilled.size() >= maximumSize) {
+    /** Whether it holds the entity; for a test. */
+    boolean holds(K entity) {
+        return get(entity) != null;
+    }
+
+    /** The entity's record, unless it aged out; under the lock. */
+    private @Nullable Live current(K entity, long now) {
+        Live live = records.get(entity);
+        return live == null || aged(live, now) ? null : live;
+    }
+
+    /** Writes the record as the newest, and keeps the bound; under the lock. */
+    private void put(K entity, Live live, long now) {
+        records.remove(entity);
+        records.put(entity, live);
+        trim(now);
+    }
+
+    /**
+     * Drops what aged out, then, over the bound, the least recently written records the feed does
+     * not own; past twice the bound, the oldest whatever they are, counted. Under the lock.
+     */
+    private void trim(long now) {
+        Iterator<Live> oldest = records.values().iterator();
+        while (oldest.hasNext()) {
+            if (!aged(oldest.next(), now)) {
+                break;
+            }
+            oldest.remove();
+        }
+        while (records.size() > maximumSize) {
+            if (!dropOneNotOwned(now)) {
+                if (records.size() <= 2 * maximumSize) {
+                    return;
+                }
+                Iterator<Live> owned = records.values().iterator();
+                owned.next();
+                owned.remove();
                 dropped.incrementAndGet();
-                return;
             }
         }
-        // what the record evicts is never older than what was kept aside for the same entity
-        spilled.merge(entity, evicted, (kept, newer) -> newer.changedAt() - kept.changedAt() >= 0 ? newer : kept);
     }
 
-    /**
-     * Drops what the feed no longer owns from what is kept aside, unless the last prune freed nothing
-     * and too little has been kept aside since: in a burst of live entities over the bound every
-     * kept record is owned, and scanning them again for each would free nothing each time.
-     */
-    private void prune(long spilledSoFar) {
-        if ((!lastPruneFreed && spilledSoFar - spillsAtLastPrune < pruneEvery) || !pruning.tryLock()) {
-            return;
+    /** Drops the least recently written record the feed does not own, among the oldest few. */
+    private boolean dropOneNotOwned(long now) {
+        Iterator<Live> oldest = records.values().iterator();
+        for (int looked = 0; looked < SCAN && oldest.hasNext(); looked++) {
+            if (!owns(oldest.next(), now)) {
+                oldest.remove();
+                return true;
+            }
         }
-        try {
-            prunes.incrementAndGet();
-            spillsAtLastPrune = spilledSoFar;
-            lastPruneFreed = spilled.values().removeIf(kept -> !owns(kept));
-        } finally {
-            pruning.unlock();
-        }
+        return false;
     }
 
     /** Whether the feed wrote the entity within the status age: whether it owns it. */
-    private boolean owns(Live live) {
-        return !live.marks().isEmpty() && ticker.read() - live.feedAt() <= STATUS_AGE.toNanos();
+    private static boolean owns(Live live, long now) {
+        return !live.marks().isEmpty() && now - live.feedAt() <= STATUS_AGE.toNanos();
+    }
+
+    private static boolean aged(Live live, long now) {
+        return now - live.changedAt() > AGE.toNanos();
     }
 
     private static Map<Field<?>, Object> valuesOf(@Nullable Live live) {
         return live == null ? Map.of() : live.values();
-    }
-
-    /** Whether the bounded record holds the entity, without counting as a use of it; for a test. */
-    boolean holds(K entity) {
-        records.cleanUp();
-        return records.policy().getIfPresentQuietly(entity) != null;
-    }
-
-    /** How many records are kept aside; for a test. */
-    int keptAside() {
-        return spilled.size();
-    }
-
-    /** How many times what is kept aside was scanned; for a test. */
-    long prunes() {
-        return prunes.get();
-    }
-
-    /** How many entities it holds a record for, those kept aside not counted. */
-    public long size() {
-        records.cleanUp();
-        return records.estimatedSize();
     }
 
     /** An entity's live values at one moment, all from the same write, and how recent they are. */
