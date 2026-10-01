@@ -2,11 +2,13 @@ package com.oddin.oddsfeedsdk.internal.catalog;
 
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.api.factories.OutcomeType;
+import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.catalog.LocalizedMarket.Outcome;
 import com.oddin.oddsfeedsdk.internal.catalog.LocalizedMarket.Specifier;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
@@ -128,6 +130,17 @@ class MarketDescriptionsTest {
         time.advance(Catalog.FIRST_BACKOFF.plusMillis(1));
         api.respond(VARIANT_EN, 200, variant(DYNAMIC, "Player Two"));
         assertThat(markets.market(768, DYNAMIC, EN)).isNotNull();
+    }
+
+    @Test
+    void aVariantThatFailsOtherwiseFailsTheReadAlsoWhileItBacksOff() {
+        api.respond(VARIANT_EN, 500, "");
+        assertThatThrownBy(() -> markets.market(768, DYNAMIC, EN)).isInstanceOf(ApiException.class);
+        int asked = api.requests("GET", VARIANT_EN).size();
+        assertThatThrownBy(() -> markets.market(768, DYNAMIC, EN))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("not fetched again before");
+        assertThat(api.requests("GET", VARIANT_EN)).as("backing off").hasSize(asked);
     }
 
     @Test

@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -112,10 +113,19 @@ class CatalogTest {
             return "v1";
         };
         List<Future<String>> reads = new ArrayList<>();
+        var readers = new ConcurrentLinkedQueue<Thread>();
         for (int i = 0; i < 20; i++) {
-            reads.add(threads.submit(() -> catalog.get("k")));
+            reads.add(threads.submit(() -> {
+                readers.add(Thread.currentThread());
+                return catalog.get("k");
+            }));
         }
-        while (fetches.get() == 0) {
+        // every reader waits for the one fetch before it is let go: one that came after it ended
+        // would find nothing held yet and start another
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (readers.size() < 20
+                || !readers.stream().allMatch(reader -> reader.getState() == Thread.State.TIMED_WAITING)) {
+            assertThat(System.nanoTime() - until).as("readers waiting").isNegative();
             Thread.onSpinWait();
         }
         release.countDown();
@@ -335,6 +345,67 @@ class CatalogTest {
         assertThat(catalog.peek("k")).as("a clear of another key").isEqualTo("after the clear");
         catalog.clear(key -> key.equals("k"));
         assertThat(catalog.peek("k")).isNull();
+    }
+
+    @Test
+    void aValueReplacedWhileAReadMarksItStaleIsNotReportedStale() {
+        catalog.get("k");
+        answer = () -> "v2";
+        time.advance(REFRESH_AGE.plus(TICK));
+        catalog.insideStaleRead = () -> catalog.reload("k");
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        catalog.insideStaleRead = () -> {};
+        time.advance(Duration.ofMinutes(5));
+        assertThat(catalog.health().staleFor()).as("v2 is fresh").isZero();
+        assertThat(catalog.get("k")).isEqualTo("v2");
+    }
+
+    @Test
+    void aValueClearedWhileAReadMarksItStaleIsNotReportedStale() {
+        catalog.get("k");
+        time.advance(REFRESH_AGE.plus(TICK));
+        catalog.insideStaleRead = catalog::clear;
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        catalog.insideStaleRead = () -> {};
+        time.advance(Duration.ofMinutes(5));
+        assertThat(catalog.health().staleFor()).as("nothing is held").isZero();
+    }
+
+    @Test
+    void aClearEndsTheBackoffOfTheKeysItClears() {
+        answer = () -> {
+            throw new ApiException("down");
+        };
+        assertThatThrownBy(() -> catalog.get("k")).hasMessage("down");
+        assertThatThrownBy(() -> catalog.get("other")).hasMessage("down");
+        catalog.clear(key -> key.equals("k"));
+        assertThat(catalog.health().failing()).isEqualTo(1);
+        answer = () -> "v1";
+        assertThat(catalog.get("k")).as("fetched at once").isEqualTo("v1");
+        assertThatThrownBy(() -> catalog.get("other"))
+                .as("still backing off")
+                .hasMessageContaining("not fetched again before");
+        assertThat(fetches).hasValue(3);
+    }
+
+    @Test
+    void aFetchFromBeforeAClearThatFailsAfterItBacksNothingOff() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            started.countDown();
+            await(release);
+            throw new ApiException("down");
+        };
+        Future<String> read = threads.submit(() -> catalog.get("k"));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        catalog.clear();
+        release.countDown();
+        assertThatThrownBy(() -> read.get(5, TimeUnit.SECONDS)).hasRootCauseMessage("down");
+        assertThat(catalog.health().failing()).isZero();
+        answer = () -> "v1";
+        assertThat(catalog.get("k")).as("fetched at once").isEqualTo("v1");
     }
 
     @Test
