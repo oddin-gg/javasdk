@@ -275,6 +275,42 @@ class LiveStateTest {
     }
 
     @Test
+    void anEntityKeptAsideCanBeReadWhileAWriteTakesItBack() {
+        var bounded = new LiveState<String>(10, time);
+        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
+        evict(bounded, "live");
+        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
+        var readMeanwhile = new java.util.concurrent.atomic.AtomicReference<LiveState.@Nullable LiveValues>();
+        // the abandoned check runs inside the record's compute, as the write takes the record back
+        assertThat(bounded.restWriteIfQuiet("live", now(), status("ended"), () -> {
+                    readMeanwhile.set(bounded.get("live"));
+                    return false;
+                }))
+                .isTrue();
+        assertThat(requireNonNull(readMeanwhile.get()).get(STATUS))
+                .as("still read from where it was kept aside")
+                .isEqualTo("live");
+        assertThat(bounded.keptAside())
+                .as("let go of once the write was in place")
+                .isZero();
+        assertThat(statusOf(bounded, "live")).isEqualTo("ended");
+    }
+
+    @Test
+    void anEntityKeptAsideThatARejectedWriteTookBackIsStillTheFeedsAfterAnotherEviction() {
+        var bounded = new LiveState<String>(10, time);
+        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
+        evict(bounded, "live");
+        assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), status("older")))
+                .isFalse();
+        evict(bounded, "live");
+        assertThat(bounded.restWriteIfQuiet("live", now(), status("not started")))
+                .as("its watermarks were not lost on the way")
+                .isFalse();
+        assertThat(statusOf(bounded, "live")).isEqualTo("live");
+    }
+
+    @Test
     void aRecordKeptAsideAgesOutLikeOneInTheRecord() {
         var bounded = new LiveState<String>(10, time);
         bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
@@ -360,6 +396,10 @@ class LiveStateTest {
 
     private @Nullable String statusOf(String key) {
         return requireNonNull(live.get(key)).get(STATUS);
+    }
+
+    private static @Nullable String statusOf(LiveState<String> state, String key) {
+        return requireNonNull(state.get(key)).get(STATUS);
     }
 
     private long timestampOf(String key) {
