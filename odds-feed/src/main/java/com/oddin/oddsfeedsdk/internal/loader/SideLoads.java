@@ -1,9 +1,11 @@
 package com.oddin.oddsfeedsdk.internal.loader;
 
+import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -19,6 +21,11 @@ public final class SideLoads implements AutoCloseable {
     private final ExecutorService workers;
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
+    /**
+     * Set before the workers are interrupted: a load can swallow the interrupt, and a worker must
+     * not go back to waiting on the queue after the close.
+     */
+    private volatile boolean closed;
 
     public SideLoads(int capacity, int workers) {
         this.queue = new ArrayBlockingQueue<>(capacity);
@@ -31,7 +38,7 @@ public final class SideLoads implements AutoCloseable {
 
     /** Queues the load, or drops and counts it when the queue is full; never waits. */
     public boolean offer(Runnable load) {
-        if (queue.offer(load)) {
+        if (!closed && queue.offer(load)) {
             return true;
         }
         dropped.incrementAndGet();
@@ -50,11 +57,17 @@ public final class SideLoads implements AutoCloseable {
 
     @Override
     public void close() {
+        closed = true;
         workers.shutdownNow();
     }
 
+    /** Waits for the workers to end after a close, for up to {@code limit}; for a test. */
+    boolean awaitClosed(Duration limit) throws InterruptedException {
+        return workers.awaitTermination(limit.toNanos(), TimeUnit.NANOSECONDS);
+    }
+
     private void work() {
-        while (!Thread.currentThread().isInterrupted()) {
+        while (!closed && !Thread.currentThread().isInterrupted()) {
             Runnable load;
             try {
                 load = queue.take();

@@ -86,6 +86,28 @@ class FeedWatermarksTest {
     }
 
     @Test
+    void anEntityEvictedForRoomWhileTheFeedOwnsItIsStillOwnedByTheFeed() {
+        var bounded = new FeedWatermarks<String>(10, time);
+        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), () -> {});
+        for (int i = 0; i < 10_000 && bounded.holds("live"); i++) {
+            bounded.feedWriteIfNewer("other " + i, LIVE, 1, FRESH, now(), () -> {});
+        }
+        assertThat(bounded.holds("live")).as("evicted for room").isFalse();
+
+        assertThat(bounded.restWriteIfQuiet("live", now(), () -> {}))
+                .as("the feed wrote it a moment ago")
+                .isFalse();
+        assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), () -> {}))
+                .as("and an older message from the producer still does not write")
+                .isFalse();
+
+        time.advance(FeedWatermarks.STATUS_AGE.plusMinutes(1));
+        assertThat(bounded.restWriteIfQuiet("live", now(), () -> {}))
+                .as("quiet for longer than the status age")
+                .isTrue();
+    }
+
+    @Test
     void aLiveMessageWaitsForARestWriteInProgressAndThenOverwritesIt() throws Exception {
         var writing = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);
