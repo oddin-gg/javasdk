@@ -2,11 +2,13 @@ package com.oddin.oddsfeedsdk.internal.cache;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Who may write the fields the feed owns - live status, scores, period scores, the match clock - of
@@ -20,7 +22,11 @@ import java.util.Map;
  * being a delayed backlog message REST has since taken over from.
  *
  * <p>The record is bounded, and a watermark lives 24 hours - longer than the match status it
- * protects, so an evicted status does not forget how recent the feed was.
+ * protects, so an evicted status does not forget how recent the feed was. A record the bound evicts
+ * while it still owns its entity - changed within {@link #STATUS_AGE} - is kept aside and taken
+ * back by the entity's next write, so REST does not take over a live entity for want of room. What
+ * is kept aside is pruned of records past the status age once it outgrows the bound; it holds no
+ * more than the entities the feed wrote within the status age.
  *
  * <p>Safe for concurrent use.
  */
@@ -32,7 +38,10 @@ public final class FeedWatermarks<K> {
     static final Duration AGE = Duration.ofHours(24);
 
     private final Ticker ticker;
+    private final long maximumSize;
     private final Cache<K, Marks> marks;
+    /** Records the bound evicted while they still owned their entity. */
+    private final ConcurrentHashMap<K, Marks> spilled = new ConcurrentHashMap<>();
 
     public FeedWatermarks(long maximumSize) {
         this(maximumSize, Ticker.systemTicker());
@@ -40,11 +49,17 @@ public final class FeedWatermarks<K> {
 
     FeedWatermarks(long maximumSize, Ticker ticker) {
         this.ticker = ticker;
+        this.maximumSize = maximumSize;
         this.marks = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
                 .expireAfter(new AgedFromLastChange<K, Marks>(AGE, Marks::changedAt))
                 .ticker(ticker)
                 .executor(Runnable::run)
+                .<K, Marks>evictionListener((entity, evicted, cause) -> {
+                    if (cause == RemovalCause.SIZE && entity != null && evicted != null && owns(evicted)) {
+                        spill(entity, evicted);
+                    }
+                })
                 .build();
     }
 
@@ -65,7 +80,8 @@ public final class FeedWatermarks<K> {
             return false;
         }
         var admitted = new boolean[1];
-        marks.asMap().compute(entity, (k, current) -> {
+        marks.asMap().compute(entity, (k, present) -> {
+            Marks current = present != null ? present : spilled.remove(k);
             Mark last = current == null ? null : current.byProducer().get(producer);
             if (last != null && last.timestamp() > timestamp) {
                 return current;
@@ -91,7 +107,9 @@ public final class FeedWatermarks<K> {
     public boolean restWriteIfQuiet(K entity, Instant now, Runnable write) {
         Instant quietSince = now.minus(STATUS_AGE);
         var wrote = new boolean[1];
-        marks.asMap().compute(entity, (k, current) -> {
+        marks.asMap().compute(entity, (k, present) -> {
+            // one evicted while it owned the entity comes back, and owns it still
+            Marks current = present != null ? present : spilled.remove(k);
             boolean quiet = current == null
                     || current.byProducer().values().stream()
                             .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
@@ -102,6 +120,24 @@ public final class FeedWatermarks<K> {
             return current;
         });
         return wrote[0];
+    }
+
+    private void spill(K entity, Marks evicted) {
+        spilled.merge(entity, evicted, (kept, newer) -> newer.changedAt() - kept.changedAt() > 0 ? newer : kept);
+        if (spilled.size() > maximumSize) {
+            spilled.values().removeIf(kept -> !owns(kept));
+        }
+    }
+
+    /** Whether the feed changed these watermarks within the status age: whether they own the entity. */
+    private boolean owns(Marks kept) {
+        return ticker.read() - kept.changedAt() <= STATUS_AGE.toNanos();
+    }
+
+    /** Whether the bounded record holds the entity, without counting as a use of it; for a test. */
+    boolean holds(K entity) {
+        marks.cleanUp();
+        return marks.policy().getIfPresentQuietly(entity) != null;
     }
 
     /** How many entities it holds watermarks for. */

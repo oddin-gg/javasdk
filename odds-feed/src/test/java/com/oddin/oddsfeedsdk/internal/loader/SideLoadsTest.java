@@ -66,6 +66,30 @@ class SideLoadsTest {
         }
     }
 
+    @Test
+    void aLoadThatSwallowsTheCloseDoesNotKeepItsWorker() throws InterruptedException {
+        var running = new CountDownLatch(1);
+        var sideLoads = new SideLoads(10, 1);
+        sideLoads.offer(() -> {
+            running.countDown();
+            try {
+                Thread.sleep(10_000);
+            } catch (InterruptedException swallowed) {
+                // what a careless load does: the interrupt is gone, and it fails some other way
+                throw new IllegalStateException("interrupted");
+            }
+        });
+        assertThat(running.await(5, TimeUnit.SECONDS)).isTrue();
+        sideLoads.close();
+        assertThat(sideLoads.awaitClosed(Duration.ofSeconds(5)))
+                .as("the worker ended")
+                .isTrue();
+        assertThat(sideLoads.failed()).isEqualTo(1);
+        assertThat(sideLoads.offer(() -> {}))
+                .as("nothing is taken after the close")
+                .isFalse();
+    }
+
     private static void await(CountDownLatch latch) {
         try {
             latch.await();
