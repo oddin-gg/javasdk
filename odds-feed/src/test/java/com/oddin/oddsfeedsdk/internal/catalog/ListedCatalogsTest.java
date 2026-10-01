@@ -150,6 +150,37 @@ class ListedCatalogsTest {
         assertThat(statuses.description(9, EN)).isEqualTo("Paused");
     }
 
+    @Test
+    void anEmptyListOfVoidReasonsDoesNotReplaceOneWithReasonsInIt() {
+        api.respond(VOID_REASONS, 200, reasons(""));
+        assertThat(voidReasons.all()).as("an empty list replaces nothing").isEmpty();
+        api.respond(VOID_REASONS, 200, reasons("<void_reason id=\"1\" name=\"NOT_PLAYED\" description=\"old\"/>"));
+        voidReasons.clear();
+        voidReasons.all();
+        api.respond(VOID_REASONS, 200, reasons(""));
+        time.advance(VoidReasons.REFRESH_AGE.plusSeconds(1));
+        voidReasons.all();
+        runRefreshes();
+        assertThat(voidReasons.all()).extracting(VoidReason::id).containsExactly(1);
+        assertThat(voidReasons.health().failedFetches()).isEqualTo(1);
+    }
+
+    @Test
+    void anEmptyListOfMatchStatusesDoesNotReplaceOneWithStatusesInIt() {
+        api.respond(STATUSES_DE, 200, statuses(""));
+        assertThat(statuses.description(0, DE))
+                .as("an empty list replaces nothing")
+                .isNull();
+        api.respond(STATUSES_EN, 200, statuses("<match_status id=\"0\" description=\"Not started\"/>"));
+        statuses.description(0, EN);
+        api.respond(STATUSES_EN, 200, statuses(""));
+        time.advance(MatchStatusDescriptions.REFRESH_AGE.plusSeconds(1));
+        statuses.description(0, EN);
+        runRefreshes();
+        assertThat(statuses.description(0, EN)).isEqualTo("Not started");
+        assertThat(statuses.health().failedFetches()).isEqualTo(1);
+    }
+
     private void runRefreshes() {
         var queued = List.copyOf(queuedRefreshes);
         queuedRefreshes.clear();

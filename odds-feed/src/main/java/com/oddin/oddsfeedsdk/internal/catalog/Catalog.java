@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -40,8 +41,8 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Ages count from when the fetch started, so they are the ages of the data. Fetching is
  * single-flight through a {@link Loader}: a read, a refresh and a reload of one key share one
- * fetch, under one deadline. A clear drops what is held, and a fetch that started before it writes
- * nothing.
+ * fetch, under one deadline. A clear drops what is held and the backoff of the keys it clears, and
+ * a fetch that started before it writes nothing, neither a value nor a failure.
  *
  * <p>Safe for concurrent use.
  */
@@ -105,8 +106,6 @@ final class Catalog<K, V> {
     private final AtomicLong order = new AtomicLong();
     /** The keys a background refresh was started for and has not ended. */
     private final Set<K> refreshing = ConcurrentHashMap.newKeySet();
-    /** When each key held was first served stale, until a fetch writes it again. */
-    private final ConcurrentHashMap<K, Instant> staleSince = new ConcurrentHashMap<>();
     /** Bumped by every clear: a fetch that started under an older one writes nothing. */
     private final AtomicLong generation = new AtomicLong();
     /**
@@ -114,6 +113,9 @@ final class Catalog<K, V> {
      * the clear drops anything, and every write after it sees the clear.
      */
     private final ReentrantReadWriteLock clearing = new ReentrantReadWriteLock();
+
+    /** A test's hook: runs in a read that found its value stale, before it marks it so. */
+    volatile Runnable insideStaleRead = () -> {};
 
     private final AtomicLong servedStale = new AtomicLong();
     private final AtomicLong failedFetches = new AtomicLong();
@@ -158,9 +160,6 @@ final class Catalog<K, V> {
                     if (cause == RemovalCause.SIZE) {
                         evictedForRoom.incrementAndGet();
                     }
-                    if (key != null) {
-                        staleSince.remove(key);
-                    }
                 })
                 .build();
         this.failures = Caffeine.newBuilder()
@@ -196,7 +195,9 @@ final class Catalog<K, V> {
         }
         if (current.fetchedAt().plus(refreshAge).isBefore(now)) {
             servedStale.incrementAndGet();
-            staleSince.putIfAbsent(key, now);
+            insideStaleRead.run();
+            // on the value served, so a value replaced, cleared or evicted since takes its mark along
+            current.staleSince().compareAndSet(null, now);
             refreshInBackground(key, now);
         }
         return current.value();
@@ -261,7 +262,10 @@ final class Catalog<K, V> {
         return all;
     }
 
-    /** Drops the values of the keys {@code which} accepts; a fetch under way then writes nothing. */
+    /**
+     * Drops the values of the keys {@code which} accepts, and their backoff, so the next read fetches
+     * them; a fetch under way then writes nothing, neither a value nor a failure.
+     */
     void clear(Predicate<? super K> which) {
         clearing.writeLock().lock();
         try {
@@ -269,7 +273,11 @@ final class Catalog<K, V> {
             for (K key : List.copyOf(held.asMap().keySet())) {
                 if (which.test(key)) {
                     held.invalidate(key);
-                    staleSince.remove(key);
+                }
+            }
+            for (K key : List.copyOf(failures.asMap().keySet())) {
+                if (which.test(key)) {
+                    failures.invalidate(key);
                 }
             }
         } finally {
@@ -285,10 +293,11 @@ final class Catalog<K, V> {
     CatalogHealth health() {
         Instant now = clock.instant();
         Duration staleFor = Duration.ZERO;
-        for (Instant since : staleSince.values()) {
-            Duration stale = Duration.between(since, now);
-            if (stale.compareTo(staleFor) > 0) {
-                staleFor = stale;
+        // only the values held now: one replaced, cleared or evicted is stale no longer
+        for (Held<V> value : held.asMap().values()) {
+            Instant since = value.staleSince().get();
+            if (since != null && Duration.between(since, now).compareTo(staleFor) > 0) {
+                staleFor = Duration.between(since, now);
             }
         }
         failures.cleanUp();
@@ -353,13 +362,19 @@ final class Catalog<K, V> {
             value = fetch.fetch(key, previous == null ? null : previous.value(), deadline);
         } catch (RuntimeException e) {
             failedFetches.incrementAndGet();
-            if (!abandoned.getAsBoolean()) {
-                Instant failedAt = clock.instant();
-                failures.asMap()
-                        .merge(
-                                key,
-                                new Failure(failedAt, 1, e),
-                                (last, _) -> new Failure(failedAt, last.attempts() + 1, e));
+            clearing.readLock().lock();
+            try {
+                // a fetch from before a clear backs nothing off: the clear asked for a fetch
+                if (!abandoned.getAsBoolean() && generation.get() == startedIn) {
+                    Instant failedAt = clock.instant();
+                    failures.asMap()
+                            .merge(
+                                    key,
+                                    new Failure(failedAt, 1, e),
+                                    (last, _) -> new Failure(failedAt, last.attempts() + 1, e));
+                }
+            } finally {
+                clearing.readLock().unlock();
             }
             throw e;
         }
@@ -371,9 +386,8 @@ final class Catalog<K, V> {
                                 key,
                                 (k, current) -> current != null && current.startedAs() > startedAs
                                         ? current
-                                        : new Held<>(value, startedAt, startedAs));
+                                        : new Held<>(value, startedAt, startedAs, new AtomicReference<>()));
                 failures.invalidate(key);
-                staleSince.remove(key);
             }
         } finally {
             clearing.readLock().unlock();
@@ -382,8 +396,11 @@ final class Catalog<K, V> {
         return value;
     }
 
-    /** A value, and when the fetch that got it started: on the clock, and in {@link #order}. */
-    private record Held<V>(V value, Instant fetchedAt, long startedAs) {}
+    /**
+     * A value, when the fetch that got it started - on the clock, and in {@link #order} - and when it
+     * was first served stale, null until it is.
+     */
+    private record Held<V>(V value, Instant fetchedAt, long startedAs, AtomicReference<@Nullable Instant> staleSince) {}
 
     /** A key's last failed fetch, how many failed in a row, and when the next may start. */
     private record Failure(Instant at, int attempts, RuntimeException cause) {
