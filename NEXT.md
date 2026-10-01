@@ -378,14 +378,14 @@ Ownership and ordering:
 - The feed-owned fields are not entity-cache fields, since they have two writers and
   only the watermarks know their order. They live in one bounded record per entity,
   the **live state**, next to the entity's watermarks; a value and its watermark change
-  in one step, under that record alone, and a write there never waits for an entity
-  cache or its clear. The feed writes there; a match summary offers its values there,
-  and they are taken only while the feed is quiet (below). The match façade reads the
-  live getters from it and everything else from the entity caches. A record the bound
-  evicts while the feed owns its entity is kept aside, in a bounded, counted spill, so
-  REST does not take over a live match for want of room; one the feed does not own is
-  gone, and the next read loads the summary again. Clearing the caches does not clear
-  the live state.
+  in one step, under the live state's one short lock, and a write there never waits for
+  an entity cache or its clear. The feed writes there; a match summary offers its
+  values there, and they are taken only while the feed is quiet (below). The match
+  façade reads the live getters from it and everything else from the entity caches.
+  Over its bound, the least recently written record the feed does not own goes, and
+  the next read loads the summary again; records the feed owns stay, so REST does not
+  take over a live match for want of room, up to twice the bound, past which the
+  oldest are dropped and counted. Clearing the caches does not clear the live state.
 - The feed watermark is the `timestamp` of the last live feed message that wrote
   feed-owned fields, kept per entity and producer in the live state, which lives 24
   hours after its last write. A message from the same producer with an older
