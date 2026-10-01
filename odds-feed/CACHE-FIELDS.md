@@ -1,11 +1,14 @@
 # Which endpoint writes which cached field
 
 The write rule of NEXT.md (section 4, Caches and loaders) gives every field of every cached entity
-one authoritative endpoint. An authoritative response replaces the fields it is authoritative for
-and clears the ones it omits - a shared, locale-independent one only when the endpoint always sends
-it, which is what the "always serialised" column says. A response from any other endpoint only
-fills what is absent and was never written by the authoritative one. This is the table the entity caches (tickets 17 to 19) are built from, with
-what 0.0.x did, and the questions still open.
+one authoritative endpoint. An authoritative response replaces the fields it is authoritative for,
+and clears the ones it omits only when the endpoint always sends them when they exist, localized or
+shared, which is what the "always serialised" column says; a field it may leave out is kept when it
+does, as 0.0.x kept a competitor's country, a player's full name and a tournament's abbreviation. A
+response from any other endpoint only fills what is absent and was never written by the
+authoritative one. The fields the feed owns (the match status section) are the exception: they are
+not in the entity caches but in the live state, with the feed watermarks. This is the table the
+entity caches (tickets 17 to 19) are built from, with what 0.0.x did, and the questions still open.
 
 Schema: the vendored oddsfeedschema (`vendor/oddsfeedschema/SOURCE`); XSD paths are relative to
 `vendor/oddsfeedschema/schema/`. The 0.0.x code is `library/src/main/kotlin/com/oddin/oddsfeedsdk/cache/entity/*.kt`
@@ -135,6 +138,8 @@ SportDataCache has no expiry and one global loaded-locale set for `getSports` (`
 
 REST path `SUM/sport_event_status` = rest/types/sport_event_status.xsd; feed path `OC/sport_event_status` = feed/types.xsd:78-90. No other endpoint or feed message carries these fields (SE@status in SUM/FIX/SCH is a string status of the event, not read).
 
+In 1.0 the fields whose owner is **FEED** are not entity-cache fields. They are kept in the live state (`internal/cache/LiveState`), one record per match next to its feed watermarks: an `odds_change` writes them unless it is older than its producer's watermark, and a summary writes them only while no producer has written within the match status age, 20 minutes. So the "authoritative" column names the REST source that writes them while the feed is quiet, not an entity cache's owner. A write says per field what it carries, what it clears and, by leaving it out, what it keeps; which of these an omission means is question 6. The match status description (MSD) and the winner stay with REST.
+
 | field | public getter(s) | localized | carried by (endpoints / feed) | authoritative | owner | always serialised | 0.0.x writer |
 |---|---|---|---|---|---|---|---|
 | status | `CompetitionStatus.getStatus` | no | REST `@status` string (rest/types/sport_event_status.xsd:19, required); OC `@status` int (feed/types.xsd:84, required) | SUM | **FEED** | **yes** | MatchStatusCache: OC (null → Unknown, `MatchStatusCache.kt:180`); SUM only if `generated_at` newer than stored watermark (:226-241, :247) |
@@ -159,7 +164,7 @@ REST path `SUM/sport_event_status` = rest/types/sport_event_status.xsd; feed pat
 3. **Tournament competitor list: which element?** TI has `tournament/competitors` (rest/types/tournament.xsd:28) and top-level `competitors` (rest/tournament_info.xsd:9). 0.0.x TournamentCache reads the first and CompetitorCache the second. The fixture `tournament_info.xml` has neither. We need to find out from the server which one it fills.
 4. **Winner on the feed.** feed/types.xsd:86 declares `winner_id` and a feed fixture sends it. 0.0.x drops it because its binding lacks the attribute, and its comment says "the feed never carries a winner". The design puts the winner under REST ownership. Should OC fill-only write it, or is SUM the only writer?
 5. **Owner of `isScoreboardAvailable` and `matchStatusId`.** The design names "live status, scores, period scores, match clock". The table treats both fields as FEED because they travel with the live status. Scoreboard fields other than the clock are treated as "scores". Please confirm.
-6. **Omission of feed-owned fields in SUM.** Scores, period scores, scoreboard and `match_status_code` are all optional in the REST XSD. So omission cannot safely mean "cleared". 0.0.x keeps scores but empties period scores on omission, which is inconsistent. `status` is the only required one.
+6. **Omission of feed-owned fields in SUM.** Scores, period scores, scoreboard and `match_status_code` are all optional in the REST XSD. So omission cannot safely mean "cleared". 0.0.x keeps scores but empties period scores on omission, which is inconsistent. `status` is the only required one. A live-state write can express either per field (kept when not put, or cleared), so this is a decision for ticket 17, not a limit of the cache.
 7. **`sport_event_status` minOccurs=1 in SUM** (rest/match_summary.xsd:10), but 0.0.x guards against a summary without it ("A scheduled event may carry no status yet", `MatchStatusCache.kt:92-93`). Either the XSD or that guard is wrong.
 8. **`SE@id`, `SE@name` and `SE/tournament` are optional** in the XSD (rest/types/sport_event.xsd:9,36-37). Omission-clear for a match's sport/tournament id cannot be proven. 0.0.x throws a NullPointerException when `tournament` is absent.
 9. **`liveodds` omission.** `fromApiEvent(null)` returns AVAILABLE. A response that omits the attribute therefore reads as "available" (the SUM fixture has no `liveodds`). Should omission mean unknown/keep instead?

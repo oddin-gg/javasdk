@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.loader;
 
+import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
@@ -11,13 +12,22 @@ import java.util.concurrent.atomic.AtomicLong;
 /**
  * Loads worth doing in the background, such as a match's competitors after the match: a bounded
  * queue and a fixed number of workers. Offering never blocks the one who offers; when the queue is
- * full the load is dropped and counted, and the next read fetches it if it is still needed.
+ * full the load is dropped and counted, and the next read fetches it if it is still needed. Each
+ * load has one deadline, the HTTP client timeout from when a worker starts it, for every REST call
+ * it makes.
  *
  * <p>Safe for concurrent use.
  */
 public final class SideLoads implements AutoCloseable {
 
-    private final BlockingQueue<Runnable> queue;
+    /** One load, with the deadline every REST call it makes is given. */
+    @FunctionalInterface
+    public interface Load {
+        void run(Deadline deadline);
+    }
+
+    private final BlockingQueue<Load> queue;
+    private final Duration deadline;
     private final ExecutorService workers;
     private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong failed = new AtomicLong();
@@ -27,8 +37,10 @@ public final class SideLoads implements AutoCloseable {
      */
     private volatile boolean closed;
 
-    public SideLoads(int capacity, int workers) {
+    /** @param deadline each load's deadline, the HTTP client timeout */
+    public SideLoads(int capacity, int workers, Duration deadline) {
         this.queue = new ArrayBlockingQueue<>(capacity);
+        this.deadline = deadline;
         this.workers = Executors.newThreadPerTaskExecutor(
                 Thread.ofVirtual().name("oddsfeed-side-load-", 0).factory());
         for (int i = 0; i < workers; i++) {
@@ -37,7 +49,7 @@ public final class SideLoads implements AutoCloseable {
     }
 
     /** Queues the load, or drops and counts it when the queue is full; never waits. */
-    public boolean offer(Runnable load) {
+    public boolean offer(Load load) {
         if (!closed && queue.offer(load)) {
             return true;
         }
@@ -68,14 +80,14 @@ public final class SideLoads implements AutoCloseable {
 
     private void work() {
         while (!closed && !Thread.currentThread().isInterrupted()) {
-            Runnable load;
+            Load load;
             try {
                 load = queue.take();
             } catch (InterruptedException e) {
                 return;
             }
             try {
-                load.run();
+                load.run(Deadline.in(deadline));
             } catch (Throwable e) {
                 // whatever one load throws, the worker stays for the next
                 failed.incrementAndGet();

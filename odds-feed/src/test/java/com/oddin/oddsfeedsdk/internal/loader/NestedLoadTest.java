@@ -45,27 +45,27 @@ class NestedLoadTest {
                                 .after(Duration.ofMillis(50)));
             }
             try (var client = new ApiClient(configuration, ApiEvents.NONE)) {
-                Duration deadline = configuration.getHttpClientTimeout();
+                Duration timeout = configuration.getHttpClientTimeout();
                 var competitors = new Loader<URN, String>(
                         "competitor",
-                        (id, _) -> client.fetchCompetitorProfile(id, Locale.ENGLISH)
+                        (id, deadline, _) -> client.fetchCompetitorProfile(id, Locale.ENGLISH, deadline)
                                 .getCompetitor()
                                 .getName(),
-                        deadline,
+                        timeout,
                         Duration.ofSeconds(1),
                         threads);
                 var matches = new Loader<URN, List<String>>(
                         "match",
-                        (id, _) -> {
-                            var summary = client.fetchMatchSummary(id, Locale.ENGLISH);
+                        (id, deadline, _) -> {
+                            var summary = client.fetchMatchSummary(id, Locale.ENGLISH, deadline);
                             var names = new ArrayList<String>();
                             for (var competitor :
                                     summary.getSportEvent().getCompetitors().getCompetitor()) {
-                                names.add(competitors.load(URN.parse(competitor.getId())));
+                                names.add(competitors.load(URN.parse(competitor.getId()), deadline));
                             }
                             return names;
                         },
-                        deadline,
+                        timeout,
                         Duration.ofSeconds(1),
                         threads);
 

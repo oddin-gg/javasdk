@@ -20,13 +20,18 @@ class EntityCacheTest {
 
     private static final Field<String> NAME = Field.localized("name");
     private static final Field<String> COUNTRY = Field.localized("country");
+    private static final Field<String> FULL_NAME = Field.localized("full name");
     private static final Field<String> ABBREVIATION = Field.shared("abbreviation");
     private static final Field<String> ICON = Field.shared("icon path");
     private static final Field<List<String>> PLAYERS = Field.shared("players");
 
-    /** Authoritative for everything but the icon; always sends the abbreviation and the players. */
+    private static final Duration LONGEST_FETCH = Duration.ofMinutes(1);
+
+    /** Authoritative for everything but the icon; sends all of it when it exists, but the full name. */
     private static final Endpoint PROFILE = new Endpoint(
-            "competitor profile", Set.of(NAME, COUNTRY, ABBREVIATION, PLAYERS), Set.of(ABBREVIATION, PLAYERS));
+            "competitor profile",
+            Set.of(NAME, COUNTRY, FULL_NAME, ABBREVIATION, PLAYERS),
+            Set.of(NAME, COUNTRY, ABBREVIATION, PLAYERS));
     /** Authoritative for the icon only; it also carries names. */
     private static final Endpoint ICONS = new Endpoint("icons", Set.of(ICON), Set.of());
 
@@ -34,7 +39,8 @@ class EntityCacheTest {
     private static final Endpoint NAME_ONLY = new Endpoint("name only", Set.of(NAME), Set.of());
 
     private final FakeTime time = new FakeTime();
-    private final EntityCache<String> cache = new EntityCache<>("competitor", 100, Duration.ofHours(24), time, time);
+    private final EntityCache<String> cache =
+            new EntityCache<>("competitor", 100, Duration.ofHours(24), LONGEST_FETCH, time, time);
 
     @Test
     void anAuthoritativeResponseReplacesItsFieldsAndMarksTheLocaleLoaded() {
@@ -66,6 +72,22 @@ class EntityCacheTest {
         // and nothing another endpoint carries brings it back
         fill("c1", Write.from(SCHEDULE, EN).put(COUNTRY, "SK"));
         assertThat(entry("c1").get(COUNTRY, EN)).isNull();
+    }
+
+    @Test
+    void aLocalizedFieldTheEndpointMayLeaveOutIsKeptWhenItDoes() {
+        cache.writeAuthoritative(
+                "c1", Write.from(PROFILE, EN).put(NAME, "Team One").put(FULL_NAME, "Team One FC"), stamp("c1"));
+        cache.writeAuthoritative("c1", Write.from(PROFILE, EN).put(NAME, "Team One"), stamp("c1"));
+        assertThat(entry("c1").isAuthoritative(FULL_NAME, EN)).isTrue();
+        assertThat(entry("c1").get(FULL_NAME, EN)).as("left out, not gone").isEqualTo("Team One FC");
+
+        cache.writeAuthoritative("c1", Write.from(PROFILE, DE).put(NAME, "Mannschaft Eins"), stamp("c1"));
+        assertThat(entry("c1").isAuthoritative(FULL_NAME, DE))
+                .as("nothing said of it in German")
+                .isFalse();
+        fill("c1", Write.from(SCHEDULE, DE).put(FULL_NAME, "Mannschaft Eins FC"));
+        assertThat(entry("c1").get(FULL_NAME, DE)).as("so a fill may add it").isEqualTo("Mannschaft Eins FC");
     }
 
     @Test
@@ -179,19 +201,48 @@ class EntityCacheTest {
 
     @Test
     void anInvalidationTheSizeBoundForgotStillStopsAFetchThatStartedOnNoEntry() {
-        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), time, time);
+        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), LONGEST_FETCH, time, time);
         Stamp onNothing = small.stamp("c1");
         small.invalidate("c1");
         for (int i = 0; i < 10_000 && small.remembersInvalidation("c1"); i++) {
             small.invalidate("other " + i);
         }
         assertThat(small.remembersInvalidation("c1"))
-                .as("evicted for room within the hour")
+                .as("evicted for room while a fetch could still run")
                 .isFalse();
+        assertThat(small.forgottenForRoom()).as("and counted").isPositive();
         assertThat(small.writeAuthoritative("c1", profileWrite(EN, "Before The Change"), onNothing))
                 .isFalse();
         assertThat(small.writeAuthoritative("c1", profileWrite(EN, "After"), small.stamp("c1")))
                 .as("a fetch that started after it writes")
+                .isTrue();
+    }
+
+    @Test
+    void unrelatedInvalidationsTwiceAsManyAsTheEntriesDoNotStopAnotherKeysFetch() {
+        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), LONGEST_FETCH, time, time);
+        Stamp onNothing = small.stamp("c1");
+        for (int i = 0; i < 20; i++) {
+            small.invalidate("other " + i);
+        }
+        assertThat(small.forgottenForRoom()).isZero();
+        assertThat(small.writeAuthoritative("c1", profileWrite(EN, "Team One"), onNothing))
+                .isTrue();
+    }
+
+    @Test
+    void anInvalidationIsRememberedForTheLongestFetchAndStillStopsAnOlderOne() {
+        Stamp onNothing = cache.stamp("c1");
+        cache.invalidate("c1");
+        time.advance(LONGEST_FETCH.plusSeconds(1));
+        assertThat(cache.remembersInvalidation("c1"))
+                .as("forgotten after the longest fetch")
+                .isFalse();
+        assertThat(cache.forgottenForRoom()).as("aged out, not for room").isZero();
+        assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "Before The Change"), onNothing))
+                .as("a fetch older than any fetch runs gives way all the same")
+                .isFalse();
+        assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "After"), cache.stamp("c1")))
                 .isTrue();
     }
 
@@ -228,7 +279,7 @@ class EntityCacheTest {
 
     @Test
     void eachLocaleIsFreshForTheAgeOfItsOwnFetch() {
-        var matches = new EntityCache<String>("match", 100, Duration.ofHours(12), time, time);
+        var matches = new EntityCache<String>("match", 100, Duration.ofHours(12), LONGEST_FETCH, time, time);
         matches.writeAuthoritative("m1", profileWrite(EN, "Match"), matches.stamp("m1"));
         time.advance(Duration.ofHours(11));
         matches.writeAuthoritative("m1", profileWrite(DE, "Spiel"), matches.stamp("m1"));
@@ -250,7 +301,7 @@ class EntityCacheTest {
         time.advance(Duration.ofHours(24).plusSeconds(1));
         assertThat(cache.get("c1")).isNull();
 
-        var bounded = new EntityCache<String>("competitor", 3, Duration.ofHours(24), time, time);
+        var bounded = new EntityCache<String>("competitor", 3, Duration.ofHours(24), LONGEST_FETCH, time, time);
         for (int i = 0; i < 10; i++) {
             bounded.fill("c" + i, Write.from(SCHEDULE, EN).put(NAME, "Team " + i), bounded.stamp("c" + i));
         }
