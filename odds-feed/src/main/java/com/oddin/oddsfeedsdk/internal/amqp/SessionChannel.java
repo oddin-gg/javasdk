@@ -19,17 +19,31 @@ import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /**
- * One session's channel: an exclusive queue of the broker's naming, bound with the session's keys,
- * a prefetch, manual acknowledgement, and a consumer that only hands each delivery to the session's
- * queue. Channel changes and acknowledgements take the session's lock, so an acknowledgement never
- * reaches a channel other than the one its delivery came from.
+ * One of the transport's channels: an exclusive queue of the broker's naming, bound with its keys,
+ * and a consumer that only hands each delivery over - to a session's queue, with a prefetch and
+ * manual acknowledgement, or, for the SDK's own alive consumer, to a handler, with the broker
+ * acknowledging each delivery as it sends it. A channel the broker takes is opened again the same
+ * way for both. Channel changes and acknowledgements take the channel's lock, so an acknowledgement
+ * never reaches a channel other than the one its delivery came from.
  */
 final class SessionChannel implements SessionTransport {
 
+    /** Where a channel's deliveries go. */
+    sealed interface Sink {
+
+        /** A session's queue, which the session acknowledges from, with this prefetch. */
+        record Queued(SessionQueue queue, int prefetch) implements Sink {}
+
+        /**
+         * A handler, called on the consumer thread; what it throws is counted, not thrown on, since
+         * the client would close the channel as if the SDK had, and no reopen would follow.
+         */
+        record Handled(Consumer<RawDelivery> handler) implements Sink {}
+    }
+
     private final String exchange;
     private final List<String> bindings;
-    private final SessionQueue queue;
-    private final int prefetch;
+    private final Sink sink;
     private final int maxMessageSize;
     private final InstantSource clock;
     private final Supplier<@Nullable Connection> connection;
@@ -37,6 +51,7 @@ final class SessionChannel implements SessionTransport {
     private final Consumer<Exception> reopenFailed;
     private final ReentrantLock lock = new ReentrantLock();
     private final AtomicLong skippedAcks = new AtomicLong();
+    private final AtomicLong handlerFailures = new AtomicLong();
     /** Reopens that failed in a row: the transport pauses longer before each next one. */
     private final AtomicInteger failedReopens = new AtomicInteger();
     /** Whether a reopen is waiting or running, so the broker's closing and cancelling start one. */
@@ -55,8 +70,7 @@ final class SessionChannel implements SessionTransport {
     SessionChannel(
             String exchange,
             List<String> bindings,
-            SessionQueue queue,
-            int prefetch,
+            Sink sink,
             int maxMessageSize,
             InstantSource clock,
             Supplier<@Nullable Connection> connection,
@@ -64,8 +78,7 @@ final class SessionChannel implements SessionTransport {
             Consumer<Exception> reopenFailed) {
         this.exchange = exchange;
         this.bindings = List.copyOf(bindings);
-        this.queue = queue;
-        this.prefetch = prefetch;
+        this.sink = sink;
         this.maxMessageSize = maxMessageSize;
         this.clock = clock;
         this.connection = connection;
@@ -79,7 +92,7 @@ final class SessionChannel implements SessionTransport {
         try {
             closeChannel();
             long next = epoch.incrementAndGet();
-            queue.removeEpochsBefore(next);
+            removeEpochsBefore(next);
             Channel opened = on.createChannel();
             var consumer = new Deliveries(opened, next);
             String name = null;
@@ -88,8 +101,10 @@ final class SessionChannel implements SessionTransport {
                 for (String key : bindings) {
                     opened.queueBind(name, exchange, key);
                 }
-                opened.basicQos(prefetch);
-                opened.basicConsume(name, false, consumer);
+                if (sink instanceof Sink.Queued(var _, var prefetch)) {
+                    opened.basicQos(prefetch);
+                }
+                opened.basicConsume(name, sink instanceof Sink.Handled, consumer);
             } catch (IOException | RuntimeException e) {
                 closeQuietly(opened);
                 deleteQuietly(on, name);
@@ -105,6 +120,9 @@ final class SessionChannel implements SessionTransport {
 
     @Override
     public void ack(RawDelivery delivery) {
+        if (!(sink instanceof Sink.Queued)) {
+            throw new IllegalStateException("the broker acknowledged a handled channel's deliveries already");
+        }
         lock.lock();
         try {
             Deliveries consumer = current;
@@ -141,7 +159,7 @@ final class SessionChannel implements SessionTransport {
             if (now == null || !now.isOpen()) {
                 // no connection to open one on: move the epoch on, and the reconnect opens the channel
                 closeChannel();
-                queue.removeEpochsBefore(epoch.incrementAndGet());
+                removeEpochsBefore(epoch.incrementAndGet());
                 failedReopens.set(0);
                 return true;
             }
@@ -189,7 +207,22 @@ final class SessionChannel implements SessionTransport {
 
     @Override
     public SessionQueue queue() {
-        return queue;
+        if (sink instanceof Sink.Queued(var queue, var _)) {
+            return queue;
+        }
+        throw new IllegalStateException("a handled channel has no queue");
+    }
+
+    /** The channel now, for a test to have the broker close it. */
+    @Nullable
+    Channel channel() {
+        Deliveries consumer = current;
+        return consumer == null ? null : consumer.getChannel();
+    }
+
+    /** Deliveries the handler threw on. */
+    long handlerFailures() {
+        return handlerFailures.get();
     }
 
     /** Reopens that failed in a row. */
@@ -217,6 +250,12 @@ final class SessionChannel implements SessionTransport {
             closeChannel();
         } finally {
             lock.unlock();
+        }
+    }
+
+    private void removeEpochsBefore(long next) {
+        if (sink instanceof Sink.Queued(var queue, var _)) {
+            queue.removeEpochsBefore(next);
         }
     }
 
@@ -273,21 +312,32 @@ final class SessionChannel implements SessionTransport {
         public void handleDelivery(
                 String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) {
             var timestamp = properties.getTimestamp();
-            SessionQueue.Offer offered = queue.offer(new RawDelivery(
+            var delivery = new RawDelivery(
                     body.length > maxMessageSize ? null : body,
                     body.length,
                     envelope.getRoutingKey(),
                     envelope.getDeliveryTag(),
                     epochOfChannel,
                     clock.instant(),
-                    timestamp == null ? null : timestamp.toInstant()));
-            if (offered == SessionQueue.Offer.FULL) {
-                // refused and counted: acknowledged, or its prefetch credit would be gone for good
-                try {
-                    getChannel().basicAck(envelope.getDeliveryTag(), false);
-                } catch (IOException | RuntimeException channelGone) {
-                    // not thrown on: the client would close the channel as if the SDK had, and no
-                    // reopen would follow; a channel that went tells so itself
+                    timestamp == null ? null : timestamp.toInstant());
+            switch (sink) {
+                case Sink.Queued(var queue, var _) -> {
+                    if (queue.offer(delivery) == SessionQueue.Offer.FULL) {
+                        // refused and counted: acknowledged, or its prefetch credit would be gone for good
+                        try {
+                            getChannel().basicAck(envelope.getDeliveryTag(), false);
+                        } catch (IOException | RuntimeException channelGone) {
+                            // not thrown on: the client would close the channel as if the SDK had, and
+                            // no reopen would follow; a channel that went tells so itself
+                        }
+                    }
+                }
+                case Sink.Handled(var handler) -> {
+                    try {
+                        handler.accept(delivery);
+                    } catch (RuntimeException e) {
+                        handlerFailures.incrementAndGet();
+                    }
                 }
             }
         }
