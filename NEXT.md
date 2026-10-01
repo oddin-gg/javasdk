@@ -523,7 +523,8 @@ and REST workers post facts to it; it decides and posts work out.
 
 - XML models are generated from the vendored schema. Binding customisations keep the
   old class names, packages and getters (section 3).
-- The decoder is the untrusted-input boundary. DTDs off, external entities off. Body
+- The decoder is the untrusted-input boundary: JAXB on Woodstox, chosen by name, not
+  by whatever StAX provider the application brings. DTDs off, external entities off. Body
   size is bounded before decoding by the maximum message size from the delivery
   section; the decoder's own limits bound parser work. One malformed document costs
   one unparsable callback, nothing more.
@@ -682,8 +683,9 @@ Performance is a requirement, not a follow-up.
   under the data permit pool.
 - Outage: serve stale data while a refresh is failing, back off per locale. Never
   collapse to one message per HTTP timeout.
-- Measure JAXB unmarshal cost early. If it is too slow, the generated classes stay
-  and a StAX reader replaces the unmarshaller.
+- JAXB's unmarshal cost, measured early: on the JDK's own parser three times a
+  hand-written StAX reader's, on Woodstox within a tenth of it. The decoder reads with
+  Woodstox, and the generated classes stay without a reader to maintain.
 
 ---
 
@@ -895,7 +897,8 @@ Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 4
   checklist carry the rule.
 - **Operator queue limit below prefetch.** Silent drop-head loss the SDK cannot see.
   The onboarding checklist carries the rule.
-- **JAXB speed.** Measured in Phase 1. Fallback is a StAX reader.
+- **JAXB speed.** Measured in Phase 1 and settled: the JDK's StAX parser was the cost, and
+  JAXB on Woodstox is within a tenth of a hand-written StAX reader (`benchmarks/README.md`).
 - **Two Java 8 clients.** They cannot use 1.0. The old line covers them until the
   end date. Anything beyond that is a business decision, not a technical one.
 - **Two lines to maintain.** Every wire change is done twice until the old line ends.
@@ -904,20 +907,18 @@ Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 4
 
 ## 12. Open questions
 
-1. JAXB or StAX for decoding? The numbers from ticket 15 are in (`benchmarks/README.md`):
-   a typical live odds change of 150 markets takes 0.9 ms with JAXB and 0.3 ms with a
-   hand-written StAX reader into the same generated classes; keeping one unmarshaller
-   instead of one per message changes nothing. Still to decide: StAX for odds changes
-   only, the large and frequent message, with JAXB for the rest, or JAXB everywhere
-   until the end-to-end numbers of Phase 2 show where the time goes.
-2. Which clients test the release candidates? Needs an answer from customer success.
-3. Do the priority-split session interests keep exactly today's semantics? Proposal:
+1. Which clients test the release candidates? Needs an answer from customer success.
+2. Do the priority-split session interests keep exactly today's semantics? Proposal:
    yes, they are public API.
-4. Does the feed define `bet_stop` at all? If not, the type stays as legacy and is
+3. Does the feed define `bet_stop` at all? If not, the type stays as legacy and is
    documented as never sent.
 
 Resolved since the first draft: the generated XML classes are public and keep their
-old names (section 3, difference 4).
+old names (section 3, difference 4). JAXB or StAX for decoding (2026-10-01): JAXB, on
+Woodstox, for the feed and REST alike. A typical live odds change of 150 markets took
+0.9 ms with JAXB on the JDK's own parser and 0.3 ms with a hand-written StAX reader; on
+Woodstox, JAXB takes 0.32 ms, so there is no parsing code to keep in step with the
+schema. Woodstox is Apache 2.0, its one dependency BSD.
 
 ---
 
