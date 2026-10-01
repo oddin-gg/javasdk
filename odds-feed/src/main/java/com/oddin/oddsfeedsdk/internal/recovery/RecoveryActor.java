@@ -33,8 +33,9 @@ import org.slf4j.LoggerFactory;
  * API. It looks at the time at least every {@link RecoverySettings#tick()}.
  *
  * <p>The requests go to REST workers, never run here; their answers come back as facts, the only
- * ones that wait, briefly, for room. A safety-net reset runs on a worker too, since replacing a
- * channel talks to the broker.
+ * ones that wait for room, on the worker, since a lost answer would leave its request in flight. A
+ * safety-net reset runs on a worker too, since replacing a channel talks to the broker, and reports
+ * back when it is done.
  *
  * <p>Safe for concurrent use.
  */
@@ -46,7 +47,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     static final int SAMPLE_CAPACITY = 10_000;
     /** How many samples the actor takes before it looks at the control facts again. */
     private static final int SAMPLES_PER_TURN = 1_000;
-    /** How long a REST worker waits for room for an answer, which must not be lost lightly. */
+    /** How long a REST worker waits for room for an answer before it says so and waits again. */
     private static final Duration ANSWER_WAIT = Duration.ofSeconds(1);
     /** How long close() waits for the actor's thread to end. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
@@ -223,6 +224,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             dropped(fact);
             return false;
         }
+        if (closed && queue.remove(fact)) {
+            // the close came between the check and the offer, and its last drain may be over
+            return false;
+        }
         LockSupport.unpark(thread);
         return true;
     }
@@ -259,13 +264,17 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
     }
 
+    /**
+     * Ends the machine. Taken one by one, so a fact posted meanwhile is either taken here or found
+     * by its poster, who sees the close and takes it back.
+     */
     private void closeMachine() {
-        for (Fact fact : control) {
+        Fact fact;
+        while ((fact = control.poll()) != null) {
             if (fact instanceof Fact.RecoverEvent recover) {
                 recover.reply().complete(null);
             }
         }
-        control.clear();
         samples.clear();
         machine.close();
     }
@@ -310,6 +319,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     }
                 }
                 case Fact.Answered(var requestId, var failure) -> machine.answered(requestId, failure);
+                case Fact.ResetDone(var session, var number) -> machine.resetDone(session, number);
                 case Fact.RecoverEvent(var producer, var event, var stateful, var reply) ->
                     machine.recoverEvent(producer, event, stateful, reply);
                 case Fact.Tick() -> machine.tick();
@@ -328,25 +338,29 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             try {
                 workers.execute(() -> send(call));
             } catch (RejectedExecutionException e) {
-                answer(new Fact.Answered(call.requestId(), e));
+                // the workers are closed, so the feed is: never wait on the actor's own queue here
+                if (!control.offer(new Fact.Answered(call.requestId(), e))) {
+                    dropped(new Fact.Answered(call.requestId(), e));
+                }
             }
         }
 
+        /** Replaces the channel on a worker, then reports it done, whatever came of it. */
         @Override
-        public void reset(int session) {
+        public void reset(int session, long number) {
             SessionTransport transport = transports.get(session);
-            if (transport == null) {
-                return;
-            }
             try {
                 workers.execute(() -> {
-                    int dropped = transport.queue().size();
-                    try {
-                        transport.reset();
-                        counters.resetDropped.addAndGet(dropped);
-                    } catch (RuntimeException e) {
-                        LOG.warn("The safety net could not reset session {}", session, e);
+                    if (transport != null) {
+                        int dropped = transport.queue().size();
+                        try {
+                            transport.reset();
+                            counters.resetDropped.addAndGet(dropped);
+                        } catch (RuntimeException e) {
+                            LOG.warn("The safety net could not reset session {}", session, e);
+                        }
                     }
+                    answer(new Fact.ResetDone(session, number));
                 });
             } catch (RejectedExecutionException e) {
                 LOG.warn("The safety net could not reset session {}: the workers are closed", session);
@@ -372,15 +386,23 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             answer(new Fact.Answered(call.requestId(), failure));
         }
 
-        private void answer(Fact.Answered answer) {
-            if (closed) {
-                return;
-            }
+        /**
+         * On a worker: hands an outcome to the actor, waiting for room as long as the actor is open,
+         * since a lost outcome would leave its request in flight until it times out. Once the actor
+         * is closed it is not needed: closing answers whoever still waits.
+         */
+        private void answer(Fact answer) {
+            boolean waited = false;
             try {
-                if (control.offer(answer, ANSWER_WAIT.toNanos(), TimeUnit.NANOSECONDS)) {
-                    LockSupport.unpark(thread);
-                } else {
-                    dropped(answer);
+                while (!closed) {
+                    if (control.offer(answer, ANSWER_WAIT.toNanos(), TimeUnit.NANOSECONDS)) {
+                        LockSupport.unpark(thread);
+                        return;
+                    }
+                    if (!waited) {
+                        waited = true;
+                        LOG.warn("The recovery actor's queue is full; an outcome waits for room");
+                    }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -457,6 +479,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         record Connection(boolean up) implements Fact {}
 
         record Answered(long requestId, @Nullable Exception failure) implements Fact {}
+
+        record ResetDone(int session, long number) implements Fact {}
 
         record RecoverEvent(long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply)
                 implements Fact {}
