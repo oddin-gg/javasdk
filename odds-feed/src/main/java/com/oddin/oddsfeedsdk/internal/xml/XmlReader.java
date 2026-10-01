@@ -9,8 +9,10 @@ import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Unmarshaller;
 import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import javax.xml.XMLConstants;
 import javax.xml.stream.XMLInputFactory;
@@ -50,6 +52,18 @@ final class XmlReader {
     /** The most attributes and namespace declarations on one element; the schemas' widest has 35. */
     static final int MAX_ATTRIBUTES = 64;
 
+    /**
+     * The longest attribute value, a namespace declared included: the API's values are names and
+     * ids, and Woodstox keeps recent namespaces in a cache of its own for as long as the JVM runs.
+     */
+    static final int MAX_ATTRIBUTE_LENGTH = 16_384;
+
+    /** The longest name: the schemas' are a few dozen characters; a name is compared whole, each time. */
+    static final int MAX_NAME_LENGTH = 128;
+
+    /** The most distinct names one hash may have: past a few, they are built to collide. */
+    static final int MAX_NAMES_PER_HASH = 8;
+
     private final JAXBContext context;
     private final String noun;
     private final String what;
@@ -82,6 +96,7 @@ final class XmlReader {
         inputs.setProperty(WstxInputProperties.P_MAX_ELEMENT_DEPTH, MAX_DEPTH);
         // Woodstox reads all of a start tag before the name limit sees it: this bounds one tag's names
         inputs.setProperty(WstxInputProperties.P_MAX_ATTRIBUTES_PER_ELEMENT, MAX_ATTRIBUTES);
+        inputs.setProperty(WstxInputProperties.P_MAX_ATTRIBUTE_SIZE, MAX_ATTRIBUTE_LENGTH);
         // text read in full as the parser reaches it: lazily, an error in it would surface later, from
         // inside JAXB, as an unchecked exception instead of the parser's
         inputs.setProperty(XMLInputFactory2.P_LAZY_PARSING, false);
@@ -159,6 +174,7 @@ final class XmlReader {
      */
     static final class NameLimit extends StreamReaderDelegate {
         private final Set<String> names = new HashSet<>();
+        private final Map<Integer, Integer> namesPerHash = new HashMap<>();
 
         NameLimit(XMLStreamReader reader) {
             super(reader);
@@ -168,17 +184,17 @@ final class XmlReader {
         public int next() throws XMLStreamException {
             int event = super.next();
             if (event == XMLStreamConstants.START_ELEMENT) {
-                seen(getLocalName());
-                seen(getPrefix());
-                seen(getNamespaceURI());
+                name(getLocalName());
+                name(getPrefix());
+                namespace(getNamespaceURI());
                 for (int i = 0, n = getNamespaceCount(); i < n; i++) {
-                    seen(getNamespacePrefix(i));
-                    seen(getNamespaceURI(i));
+                    name(getNamespacePrefix(i));
+                    namespace(getNamespaceURI(i));
                 }
                 for (int i = 0, n = getAttributeCount(); i < n; i++) {
-                    seen(getAttributeLocalName(i));
-                    seen(getAttributePrefix(i));
-                    seen(getAttributeNamespace(i));
+                    name(getAttributeLocalName(i));
+                    name(getAttributePrefix(i));
+                    namespace(getAttributeNamespace(i));
                 }
             } else if (event == XMLStreamConstants.PROCESSING_INSTRUCTION) {
                 throw new XMLStreamException("a processing instruction", getLocation());
@@ -223,9 +239,29 @@ final class XmlReader {
             return text.toString();
         }
 
+        /** An element's, an attribute's or a prefix's name. */
+        private void name(@Nullable String name) throws XMLStreamException {
+            if (name != null && name.length() > MAX_NAME_LENGTH) {
+                throw new XMLStreamException("a name longer than " + MAX_NAME_LENGTH, getLocation());
+            }
+            seen(name);
+        }
+
+        /** A namespace: a value, as long as an attribute value may be. */
+        private void namespace(@Nullable String uri) throws XMLStreamException {
+            seen(uri);
+        }
+
         private void seen(@Nullable String name) throws XMLStreamException {
-            if (name != null && !name.isEmpty() && names.add(name) && names.size() > MAX_NAMES) {
+            if (name == null || name.isEmpty() || !names.add(name)) {
+                return;
+            }
+            if (names.size() > MAX_NAMES) {
                 throw new XMLStreamException("more than " + MAX_NAMES + " distinct names", getLocation());
+            }
+            if (namesPerHash.merge(name.hashCode(), 1, Integer::sum) > MAX_NAMES_PER_HASH) {
+                throw new XMLStreamException(
+                        "more than " + MAX_NAMES_PER_HASH + " distinct names with one hash", getLocation());
             }
         }
     }

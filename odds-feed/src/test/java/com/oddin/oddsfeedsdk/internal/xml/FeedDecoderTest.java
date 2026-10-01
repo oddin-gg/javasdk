@@ -225,6 +225,35 @@ class FeedDecoderTest {
         assertThatThrownBy(byText::getElementText).hasMessageContaining("processing instruction");
     }
 
+    @Test
+    void longNamesLongValuesAndNamesSharingAHashAreRefused() throws DecodeException {
+        String longName = "n".repeat(XmlReader.MAX_NAME_LENGTH + 1);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + "<" + longName + "/></alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("longer than");
+        String longUri = "u".repeat(XmlReader.MAX_ATTRIBUTE_LENGTH + 1);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + "<x xmlns:p=\"" + longUri + "\"/></alive>")))
+                .isInstanceOf(DecodeException.class);
+        // a long namespace within the limit is fine: only names are held to their length
+        String uri = "urn:" + "u".repeat(200);
+        assertThat(lenient.decode(bytes(ROOT + "<x xmlns:p=\"" + uri + "\"/></alive>")))
+                .isInstanceOf(OFAlive.class);
+
+        // repeated, a few colliding names never pass the count of distinct names, but share one hash
+        var names = new ArrayList<String>();
+        colliding("", 4, names);
+        var repeated = new StringBuilder(ROOT);
+        for (int i = 0; i < 100; i++) {
+            for (String name : names) {
+                repeated.append('<').append(name).append("/>");
+            }
+        }
+        assertThatThrownBy(
+                        () -> lenient.decode(bytes(repeated.append("</alive>").toString())))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("with one hash");
+    }
+
     private static String attributes(int count) {
         var tag = new StringBuilder("<x");
         for (int i = 0; i < count; i++) {
@@ -235,8 +264,6 @@ class FeedDecoderTest {
 
     @Test
     void namesStayWithTheirDocument() throws Exception {
-        var names = new ArrayList<String>();
-        colliding("", 11, names);
         var reader = new XmlReader(
                 XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
                 "message",
@@ -248,8 +275,9 @@ class FeedDecoderTest {
         int before = ((com.ctc.wstx.util.SymbolTable) shared.get(reader.inputs())).size();
         for (int document = 0; document < 4; document++) {
             var body = new StringBuilder(ROOT);
-            names.subList(document * 400, document * 400 + 400)
-                    .forEach(name -> body.append('<').append(name).append("/>"));
+            for (int i = 0; i < 400; i++) {
+                body.append("<d").append(document).append('n').append(i).append("/>");
+            }
             reader.read(bytes(body.append("</alive>").toString()));
         }
         assertThat(((com.ctc.wstx.util.SymbolTable) shared.get(reader.inputs())).size())
