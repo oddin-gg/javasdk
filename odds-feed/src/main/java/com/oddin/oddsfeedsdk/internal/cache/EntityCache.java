@@ -151,10 +151,11 @@ public final class EntityCache<K> {
     /**
      * What a fetch of many entities - a schedule, a list - remembers when it starts, before it knows
      * their keys: whatever it writes gives way to any invalidation of a key since, as for a fetch
-     * that started on no entry, and to one still remembered from before, which it cannot tell apart.
+     * that started on no entry. Generations only grow, so one given out by then was before it.
      */
     public Stamp stampForMany(BooleanSupplier abandoned) {
-        return new Stamp(false, 0, 0, generations.get(), fetches.incrementAndGet(), abandoned);
+        long startedAt = generations.get();
+        return new Stamp(false, 0, startedAt, startedAt, fetches.incrementAndGet(), abandoned);
     }
 
     /**
