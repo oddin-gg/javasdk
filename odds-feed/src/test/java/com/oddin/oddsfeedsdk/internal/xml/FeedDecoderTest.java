@@ -27,6 +27,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeAll;
@@ -121,6 +123,32 @@ class FeedDecoderTest {
         // the same content, shallow, is only skipped
         assertThat(lenient.decode(bytes("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\"><x/></alive>")))
                 .isInstanceOf(OFAlive.class);
+    }
+
+    @Test
+    void manyNamesBuiltToShareAHashAreRefusedQuickly() {
+        // every concatenation of "Aa" and "BB" has the same String hash: 2^13 such names, as siblings
+        var names = new ArrayList<String>();
+        colliding("", 13, names);
+        var body = new StringBuilder("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">");
+        names.forEach(name -> body.append('<').append(name).append("/>"));
+        body.append("</alive>");
+        long started = System.nanoTime();
+        assertThatThrownBy(() -> lenient.decode(bytes(body.toString())))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("distinct names");
+        assertThat(Duration.ofNanos(System.nanoTime() - started))
+                .as("refused before the colliding names add up")
+                .isLessThan(Duration.ofSeconds(1));
+    }
+
+    private static void colliding(String prefix, int blocks, List<String> into) {
+        if (blocks == 0) {
+            into.add("q" + prefix);
+            return;
+        }
+        colliding(prefix + "Aa", blocks - 1, into);
+        colliding(prefix + "BB", blocks - 1, into);
     }
 
     @Test

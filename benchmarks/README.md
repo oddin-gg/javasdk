@@ -35,12 +35,13 @@ Only the SDK's decoder has a budget, so the build runs only it. For the comparis
 
 | markets | JAXB on Woodstox (the SDK) | JAXB on the JDK's parser | StAX, hand-written |
 |--------:|---------------------------:|-------------------------:|-------------------:|
-| 20 | 53 µs, 77 KB | 156 µs, 81 KB | 53 µs, 91 KB |
-| 150 | 321 µs, 452 KB | 926 µs, 396 KB | 301 µs, 330 KB |
-| 500 | 1.08 ms, 1.52 MB | 2.95 ms, 1.29 MB | 0.96 ms, 1.02 MB |
+| 20 | 57 µs, 81 KB | 150 µs, 81 KB | 50 µs, 91 KB |
+| 150 | 329 µs, 456 KB | 891 µs, 396 KB | 295 µs, 330 KB |
+| 500 | 1.12 ms, 1.52 MB | 2.97 ms, 1.29 MB | 0.97 ms, 1.02 MB |
 
 The JDK's own StAX parser was the cost, not JAXB: on Woodstox, JAXB is about three times as
-fast and within a tenth of the hand-written reader, which is why the decoder stays on JAXB and
+fast and within an eighth of the hand-written reader, with its name limit and per-document name
+table counted in, which is why the decoder stays on JAXB and
 the generated classes, with no parsing code to keep in step with the schema. It allocates
 somewhat more. On 2026-09-29, before the change, the SDK's column read as the middle one;
 keeping one unmarshaller instead of one per message changed nothing.

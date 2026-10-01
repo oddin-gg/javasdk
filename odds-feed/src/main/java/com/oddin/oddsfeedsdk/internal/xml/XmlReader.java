@@ -2,17 +2,22 @@ package com.oddin.oddsfeedsdk.internal.xml;
 
 import com.ctc.wstx.api.WstxInputProperties;
 import com.ctc.wstx.stax.WstxInputFactory;
+import com.ctc.wstx.util.SymbolTable;
 import jakarta.xml.bind.JAXBContext;
 import jakarta.xml.bind.JAXBElement;
 import jakarta.xml.bind.JAXBException;
 import jakarta.xml.bind.Unmarshaller;
 import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import javax.xml.XMLConstants;
 import javax.xml.stream.XMLInputFactory;
+import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
+import javax.xml.stream.util.StreamReaderDelegate;
 import javax.xml.validation.Schema;
 import org.codehaus.stax2.XMLInputFactory2;
 import org.jspecify.annotations.Nullable;
@@ -33,6 +38,14 @@ final class XmlReader {
     /** The deepest nesting read: the feed's messages and the API's responses are a few levels deep. */
     static final int MAX_DEPTH = 64;
 
+    /**
+     * The most distinct element and attribute names in one document; the schemas have about a
+     * hundred. Woodstox keeps names in a table that searches colliding ones one by one, so a document
+     * of many names built to share a hash would cost it time in the square of their number, where
+     * the JDK's parser randomises its hash.
+     */
+    static final int MAX_NAMES = 512;
+
     private final JAXBContext context;
     private final String noun;
     private final String what;
@@ -52,7 +65,12 @@ final class XmlReader {
         this.schema = schema;
         // Woodstox by name, not whichever StAX provider the application brings: the settings below
         // are Woodstox's, and another provider could reject or ignore them
-        this.inputs = new WstxInputFactory();
+        this.inputs = new WstxInputFactory() {
+            @Override
+            public synchronized void updateSymbolTable(SymbolTable table) {
+                // each document's names stay its own: none carries over to lengthen the next one's
+            }
+        };
         inputs.setProperty(XMLInputFactory.SUPPORT_DTD, false);
         inputs.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
         inputs.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
@@ -74,7 +92,7 @@ final class XmlReader {
         Object decoded;
         var problems = new ArrayList<String>();
         try {
-            XMLStreamReader reader = inputs.createXMLStreamReader(new ByteArrayInputStream(body));
+            XMLStreamReader reader = new NameLimit(inputs.createXMLStreamReader(new ByteArrayInputStream(body)));
             try {
                 decoded = unmarshaller(problems).unmarshal(reader);
                 // JAXB stops at the root's end; whatever follows must be well-formed too
@@ -125,6 +143,33 @@ final class XmlReader {
     /** The parser it reads with; for a test. */
     XMLInputFactory inputs() {
         return inputs;
+    }
+
+    /** Refuses a document once it has used more than {@link #MAX_NAMES} distinct names. */
+    private static final class NameLimit extends StreamReaderDelegate {
+        private final Set<String> names = new HashSet<>();
+
+        NameLimit(XMLStreamReader reader) {
+            super(reader);
+        }
+
+        @Override
+        public int next() throws XMLStreamException {
+            int event = super.next();
+            if (event == XMLStreamConstants.START_ELEMENT) {
+                seen(getLocalName());
+                for (int i = 0, n = getAttributeCount(); i < n; i++) {
+                    seen(getAttributeLocalName(i));
+                }
+            }
+            return event;
+        }
+
+        private void seen(String name) throws XMLStreamException {
+            if (names.add(name) && names.size() > MAX_NAMES) {
+                throw new XMLStreamException("more than " + MAX_NAMES + " distinct names", getLocation());
+            }
+        }
     }
 
     static JAXBContext context(Class<?> objectFactory) {
