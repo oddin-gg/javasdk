@@ -1,0 +1,208 @@
+package com.oddin.oddsfeedsdk.internal.entity;
+
+import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.*;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Objects.requireNonNull;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.OddsFeed;
+import com.oddin.oddsfeedsdk.internal.cache.Entry;
+import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
+import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
+import com.oddin.oddsfeedsdk.internal.xml.RestDecoder;
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint;
+import com.oddin.oddsfeedsdk.schema.utils.URN;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.InstantSource;
+import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+/** The competitor, player, tournament and sport caches over the real REST client, against the fake API. */
+class ProfileCachesTest {
+
+    private static final Locale EN = Locale.ENGLISH;
+    private static final URN COMPETITOR = URN.parse("od:competitor:47214");
+    private static final URN PLAYER = URN.parse("od:player:9001");
+    private static final URN TOURNAMENT = URN.parse("od:tournament:1042");
+    private static final URN LOL = URN.parse("od:sport:1");
+    private static final URN CS2 = URN.parse("od:sport:2");
+    private static final String COMPETITOR_PROFILE_EN = "/v1/sports/en/competitors/od:competitor:47214/profile";
+    private static final String PLAYER_PROFILE_EN = "/v1/sports/en/players/od:player:9001/profile";
+    private static final String TOURNAMENT_INFO_EN = "/v1/sports/en/tournaments/od:tournament:1042/info";
+    private static final String SPORTS_EN = "/v1/sports/en/sports";
+    private static final String LOL_TOURNAMENTS_EN = "/v1/sports/en/sports/od:sport:1/tournaments";
+
+    private final FakeTime time = new FakeTime();
+    private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
+    private FakeRestServer api;
+    private ApiClient client;
+    private ProfileCaches caches;
+
+    @BeforeEach
+    void start() {
+        api = FakeRestServer.start();
+        var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.invalid", api.apiHost())
+                .setAccessToken("token")
+                .setHttpClientTimeout(Duration.ofSeconds(10))
+                .build();
+        client = new ApiClient(configuration, ApiEvents.NONE);
+        caches = new ProfileCaches(client, Duration.ofSeconds(10), threads, time, time);
+    }
+
+    @AfterEach
+    void stop() {
+        threads.shutdownNow();
+        client.close();
+        api.close();
+    }
+
+    @Test
+    void aCompetitorProfileWritesTheCompetitorAndFillsItsPlayersAndSport() {
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        Entry competitor = caches.competitor(COMPETITOR, EN, null);
+        assertThat(competitor.get(COMPETITOR_NAME, EN)).isEqualTo("Team Alpha");
+        assertThat(competitor.get(COMPETITOR_ABBREVIATION, EN)).isEqualTo("TA");
+        assertThat(competitor.get(COUNTRY, EN)).isEqualTo("Czechia");
+        assertThat(competitor.get(COUNTRY_CODE, null)).isEqualTo("CZE");
+        assertThat(competitor.get(VIRTUAL, null)).isFalse();
+        assertThat(competitor.get(UNDERAGE, null)).isEqualTo(-1);
+        assertThat(competitor.get(ICON_PATH, null)).isEqualTo("/icons/alpha.svg");
+        assertThat(competitor.get(PLAYERS, null)).containsExactly(PLAYER);
+        caches.competitor(COMPETITOR, EN, null);
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).as("fresh").hasSize(1);
+
+        Entry listed = requireNonNull(caches.cachedPlayer(PLAYER));
+        assertThat(listed.get(PLAYER_NAME, EN)).isEqualTo("Player One");
+        assertThat(listed.get(FULL_NAME, EN)).isEqualTo("Player One Full");
+        assertThat(requireNonNull(caches.cachedSport(LOL)).get(SPORT_NAME, EN)).isEqualTo("League of Legends");
+
+        api.respond(PLAYER_PROFILE_EN, 200, Fixtures.read("rest/player/player_profile.xml"));
+        Entry player = caches.player(PLAYER, EN, null);
+        assertThat(api.requests("GET", PLAYER_PROFILE_EN))
+                .as("the listing only filled: the profile is loaded")
+                .hasSize(1);
+        assertThat(player.get(PLAYER_UNDERAGE, null)).as("the profile's").isEqualTo(1);
+        assertThat(player.get(FULL_NAME, EN))
+                .as("optional, and left out of the profile: kept")
+                .isEqualTo("Player One Full");
+        assertThat(player.get(PLAYER_SPORT, null)).isEqualTo("od:sport:1");
+    }
+
+    @Test
+    void aProfileWithAnEmptyPlayerListHasNoPlayers() {
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        caches.competitor(COMPETITOR, EN, null);
+        time.advance(ProfileCaches.PROFILE_AGE.plusMinutes(1));
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile_no_players.xml"));
+        Entry competitor = caches.competitor(COMPETITOR, EN, null);
+        assertThat(competitor.get(PLAYERS, null))
+                .as("always sent: the empty list replaces")
+                .isEmpty();
+        assertThat(competitor.get(COMPETITOR_ABBREVIATION, EN)).isEmpty();
+    }
+
+    @Test
+    void aTournamentsInfoIsItsAuthorityOverWhatItsSportListed() {
+        api.respond(LOL_TOURNAMENTS_EN, 200, Fixtures.read("rest/sport_tournaments/sport_tournaments.xml"));
+        Entry sport = caches.sportTournaments(LOL, EN, null);
+        assertThat(sport.get(SPORT_TOURNAMENTS, null)).containsExactly(TOURNAMENT, URN.parse("od:tournament:1043"));
+        caches.sportTournaments(LOL, EN, null);
+        assertThat(api.requests("GET", LOL_TOURNAMENTS_EN)).hasSize(1);
+
+        api.respond(TOURNAMENT_INFO_EN, 200, Fixtures.read("rest/tournament_info/tournament_info.xml"));
+        Entry tournament = caches.tournament(TOURNAMENT, EN, null);
+        assertThat(api.requests("GET", TOURNAMENT_INFO_EN))
+                .as("listed only: loaded")
+                .hasSize(1);
+        assertThat(tournament.get(TOURNAMENT_NAME, EN))
+                .as("the info's, over the list's")
+                .isEqualTo("Test Tournament");
+        assertThat(tournament.get(TOURNAMENT_SPORT_ID, null)).isEqualTo(LOL);
+        assertThat(tournament.get(RISK_TIER, null)).isEqualTo(1);
+        assertThat(tournament.get(TOURNAMENT_SCHEDULED, null)).isEqualTo(Instant.parse("2026-08-26T18:00:00Z"));
+        assertThat(tournament.get(TOURNAMENT_ABBREVIATION, EN)).isEmpty();
+    }
+
+    @Test
+    void theSportListIsLoadedWholeOncePerLocaleAndAgain() {
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        assertThat(caches.sports(EN, null)).containsExactly(LOL, CS2);
+        Entry cs2 = caches.sport(CS2, EN, null);
+        assertThat(cs2.get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
+        assertThat(cs2.get(SPORT_ICON_PATH, null)).isEqualTo("/icons/cs2.svg");
+        assertThat(caches.sport(LOL, EN, null).get(SPORT_ICON_PATH, null)).isEmpty();
+        assertThat(caches.sport(URN.parse("od:sport:99"), EN, null).get(SPORT_NAME, EN))
+                .as("not in the list")
+                .isNull();
+        assertThat(api.requests("GET", SPORTS_EN))
+                .as("one list for all of them")
+                .hasSize(1);
+
+        time.advance(ProfileCaches.PROFILE_AGE.plusMinutes(1));
+        caches.sports(EN, null);
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+    }
+
+    @Test
+    void whatAMatchSaysOfItsCompetitorsAndTournamentOnlyFills() throws Exception {
+        var summary = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES)
+                .decode(
+                        Fixtures.read("rest/match_summary/match_summary.xml").getBytes(UTF_8),
+                        RAMatchSummaryEndpoint.class);
+        var started = caches.startMany(() -> false);
+        caches.fillCompetitors(summary.getSportEvent().getCompetitors().getCompetitor(), EN, started);
+        caches.fillTournament(summary.getSportEvent().getTournament(), EN, started);
+        Entry filled = requireNonNull(caches.cachedCompetitor(COMPETITOR));
+        assertThat(filled.get(COMPETITOR_NAME, EN)).isEqualTo("Team Alpha");
+        assertThat(filled.isAuthoritative(COMPETITOR_NAME, EN)).isFalse();
+        assertThat(requireNonNull(caches.cachedSport(URN.parse("od:sport:23"))).get(SPORT_NAME, EN))
+                .isEqualTo("PenaltyArena");
+        assertThat(api.requests()).as("a fill loads nothing").isEmpty();
+
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        assertThat(caches.competitor(COMPETITOR, EN, null).get(COUNTRY, EN)).isEqualTo("Czechia");
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(1);
+    }
+
+    @Test
+    void clearDropsEverythingCached() {
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        caches.sports(EN, null);
+        caches.competitor(COMPETITOR, EN, null);
+        caches.clear();
+        assertThat(caches.sports(EN, null)).containsExactly(LOL, CS2);
+        caches.competitor(COMPETITOR, EN, null);
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(2);
+        assertThat(caches.cachedCompetitor(COMPETITOR)).isNotNull();
+    }
+
+    /** One clock for a test to move: the SDK's and Caffeine's. */
+    private static final class FakeTime implements InstantSource, Ticker {
+        private volatile Instant now = Instant.parse("2026-08-26T17:00:00Z");
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        @Override
+        public long read() {
+            return now.getEpochSecond() * 1_000_000_000L + now.getNano();
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+    }
+}

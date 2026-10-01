@@ -88,7 +88,12 @@ public final class ApiClient implements AutoCloseable {
     }
 
     public RASportsEndpoint fetchSports(Locale locale) {
-        return get(Pool.CATALOG, "/sports/" + language(locale) + "/sports", RASportsEndpoint.class);
+        return fetchSports(locale, deadline());
+    }
+
+    /** Within a loader's deadline. */
+    public RASportsEndpoint fetchSports(Locale locale, Deadline deadline) {
+        return transport.get(Pool.CATALOG, "/sports/" + language(locale) + "/sports", RASportsEndpoint.class, deadline);
     }
 
     public RAMatchStatusDescriptions fetchMatchStatusDescriptions(Locale locale) {
