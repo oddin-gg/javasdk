@@ -149,6 +149,75 @@ class LoaderTest {
     }
 
     @Test
+    void aFlightLeftPastItsDeadlineIsAbandonedAndReplacedByTheNextMiss() throws Exception {
+        var fetches = new AtomicInteger();
+        var never = new CountDownLatch(1);
+        var firstAbandoned = new AtomicReference<java.util.function.BooleanSupplier>();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, abandoned) -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        firstAbandoned.set(abandoned);
+                        await(never);
+                        return "late";
+                    }
+                    return "fresh";
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        var failure = new AtomicReference<ApiException>();
+        var stillInterrupted = new java.util.concurrent.atomic.AtomicBoolean();
+        Thread caller = Thread.ofVirtual().start(() -> {
+            try {
+                loader.load("m1");
+            } catch (ApiException e) {
+                failure.set(e);
+                stillInterrupted.set(Thread.currentThread().isInterrupted());
+            }
+        });
+        waitUntil(() -> loader.waiting("m1") == 1);
+        caller.interrupt();
+        caller.join(5_000);
+        assertThat(failure.get()).hasMessage("match m1: interrupted");
+        assertThat(stillInterrupted).as("the interrupt is kept").isTrue();
+        assertThat(loader.inFlight()).as("left without running out of time").isEqualTo(1);
+
+        Thread.sleep(DEADLINE.plus(MARGIN).toMillis() + 100);
+        assertThat(loader.load("m1")).as("a fresh fetch, not the expired one").isEqualTo("fresh");
+        assertThat(fetches).hasValue(2);
+        assertThat(firstAbandoned.get().getAsBoolean())
+                .as("the expired fetch was abandoned")
+                .isTrue();
+        never.countDown();
+    }
+
+    @Test
+    void aCallerThatJoinsLateSharesTheFlightsDeadline() throws Exception {
+        var never = new CountDownLatch(1);
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _) -> {
+                    await(never);
+                    return "late";
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        long started = System.nanoTime();
+        Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
+        Thread.sleep(400);
+        Future<String> late = virtualThreads.submit(() -> loader.load("m1"));
+        assertThatThrownBy(() -> late.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
+        Duration lateFailedAfter = Duration.ofNanos(System.nanoTime() - started);
+        assertThatThrownBy(() -> first.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
+        assertThat(lateFailedAfter)
+                .as("at the flight's deadline, 700 ms after it started, not 700 ms after joining")
+                .isBetween(Duration.ofMillis(650), Duration.ofMillis(1_000));
+        never.countDown();
+    }
+
+    @Test
     void aFailedFetchFailsEveryWaiterAndTheNextMissStartsAfresh() {
         var fetches = new AtomicInteger();
         var loader = new Loader<String, String>(

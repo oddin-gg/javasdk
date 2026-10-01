@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.cache;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -94,17 +95,73 @@ class FeedWatermarksTest {
         }
         assertThat(bounded.holds("live")).as("evicted for room").isFalse();
 
+        var ran = new java.util.concurrent.atomic.AtomicInteger();
+        assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), ran::incrementAndGet))
+                .as("an older message from the producer still does not write")
+                .isFalse();
+        assertThat(ran).hasValue(0);
         assertThat(bounded.restWriteIfQuiet("live", now(), () -> {}))
                 .as("the feed wrote it a moment ago")
                 .isFalse();
-        assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), () -> {}))
-                .as("and an older message from the producer still does not write")
-                .isFalse();
+        assertThat(bounded.feedWriteIfNewer("live", LIVE, 6_000, FRESH, now(), () -> {}))
+                .isTrue();
 
         time.advance(FeedWatermarks.STATUS_AGE.plusMinutes(1));
         assertThat(bounded.restWriteIfQuiet("live", now(), () -> {}))
                 .as("quiet for longer than the status age")
                 .isTrue();
+    }
+
+    @Test
+    void aWriteThatThrowsLeavesAnEvictedEntityOwnedByTheFeed() {
+        var bounded = new FeedWatermarks<String>(10, time);
+        bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), () -> {});
+        for (int i = 0; i < 10_000 && bounded.holds("live"); i++) {
+            bounded.feedWriteIfNewer("other " + i, LIVE, 1, FRESH, now(), () -> {});
+        }
+        assertThat(bounded.holds("live")).isFalse();
+        assertThatThrownBy(() -> bounded.feedWriteIfNewer("live", LIVE, 6_000, FRESH, now(), () -> {
+                    throw new IllegalStateException("the cache write failed");
+                }))
+                .isInstanceOf(IllegalStateException.class);
+        assertThat(bounded.restWriteIfQuiet("live", now(), () -> {}))
+                .as("still the feed's")
+                .isFalse();
+    }
+
+    @Test
+    void twoLiveMessagesForOneEntityWriteOneAfterTheOther() throws Exception {
+        var writing = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var order = new java.util.concurrent.CopyOnWriteArrayList<Long>();
+        try (var threads = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var older = threads.submit(() -> marks.feedWriteIfNewer("m1", LIVE, 2_000, FRESH, now(), () -> {
+                writing.countDown();
+                try {
+                    release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                order.add(2_000L);
+            }));
+            assertThat(writing.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var newer = threads.submit(
+                    () -> marks.feedWriteIfNewer("m1", LIVE, 3_000, FRESH, now(), () -> order.add(3_000L)));
+            try {
+                Thread.sleep(200);
+                assertThat(newer.isDone())
+                        .as("the newer waits for the older's write")
+                        .isFalse();
+            } finally {
+                release.countDown();
+            }
+            assertThat(older.get(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(newer.get(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(order).containsExactly(2_000L, 3_000L);
+        assertThat(feedWrite("m1", LIVE, 2_500, FRESH, now()))
+                .as("older than the newest")
+                .isFalse();
     }
 
     @Test
