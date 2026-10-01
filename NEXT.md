@@ -359,8 +359,10 @@ Write rule:
   **tombstone** with the new generation, bounded by the cache's own size and age. An
   authoritative fetch remembers the generation it started with and discards its result
   if the entry's generation differs or the entry is gone; the caller re-reads, which
-  by then holds a fresh value or starts a fresh fetch. Fill-only writes do not check
-  generations; they can only add what is absent and unmarked.
+  by then holds a fresh value or starts a fresh fetch. Fill-only writes check the
+  same stamp, so a side-load from before an invalidation fills nothing; they differ
+  only in what they write: what is absent and unmarked, and no locale marked loaded.
+  A fetch its loader abandoned writes nothing either way.
 
 Ownership and ordering:
 
