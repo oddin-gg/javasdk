@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.TestTls;
@@ -354,9 +355,33 @@ class AmqpTransportTest {
     }
 
     @Test
+    void withNoTrustGivenTheJvmsDefaultIsWhatChecksTheCertificate() throws Exception {
+        AmqpSettings base = settings(10, 1 << 20);
+        SSLContext before = SSLContext.getDefault();
+        try {
+            // the JVM default trusts the fake broker in these tests: then the feed connects
+            var trusted = transport(withTls(base, base.host(), null), false);
+            trusted.addSession(allKeys());
+            trusted.open();
+            trusted.close();
+
+            // and with only the JDK's trust as the default, the same settings are refused
+            var onlyTheJdksTrust = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            onlyTheJdksTrust.init((KeyStore) null);
+            SSLContext jdk = SSLContext.getInstance("TLS");
+            jdk.init(null, onlyTheJdksTrust.getTrustManagers(), null);
+            SSLContext.setDefault(jdk);
+            assertRefusedByTls(withTls(base, base.host(), null), "certification path");
+        } finally {
+            SSLContext.setDefault(before);
+        }
+    }
+
+    @Test
     void aHostTheCertificateDoesNotNameIsRefused() throws Exception {
         // the machine's own name reaches the broker, and its certificate names only localhost
         String host = InetAddress.getLocalHost().getHostName();
+        assumeTrue(reaches(host, feed().port()), "the machine's own name does not reach the broker here");
         AmqpSettings base = settings(10, 1 << 20);
         assertRefusedByTls(withTls(base, host, TestTls.clientContext()), "subject alternative");
     }
@@ -474,6 +499,62 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aResetWhileTheConnectionIsDownMovesTheEpochAndLeavesTheOpeningToTheReconnect() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        feed().publishFixture(ODDS_CHANGE);
+        feed().publishFixture(ODDS_CHANGE);
+        awaitSize(session, 2);
+        RawDelivery old = next(session);
+        long resetIn;
+        feed().limitConnections(0);
+        try {
+            feed().closeConnections();
+            events.await("down"::equals, WAIT);
+            long before = session.epoch();
+            session.reset();
+            resetIn = session.epoch();
+            assertThat(resetIn).isEqualTo(before + 1);
+            assertThat(session.queue().size())
+                    .as("the old epoch's deliveries are out")
+                    .isZero();
+            session.ack(old);
+            assertThat(session.skippedAcks()).isEqualTo(1);
+            assertThat(session.isOpen()).isFalse();
+            assertThat(session.failedReopens()).as("no reopen of its own").isZero();
+        } finally {
+            feed().limitConnections(-1);
+        }
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        RawDelivery after = deliveredAfterPublishing(session);
+        assertThat(after.epoch()).as("opened by the reconnect").isGreaterThan(resetIn);
+    }
+
+    @Test
+    void aChannelTheBrokerClosesIsOpenedAgainOnTheLiveConnection() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+
+        // an acknowledgement of a tag the broker never sent: it closes the channel, not the connection
+        session.ack(new RawDelivery(new byte[0], 0, "-", 9_999, before, java.time.Instant.now(), null));
+        awaitReopened(session, before);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+
+        var alive = requireNonNull(transport.aliveChannel());
+        alive.basicAck(9_999, false);
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while ((alive.isOpen() || !transport.aliveOpen()) && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(transport.aliveChannel()).as("a new alive channel").isNotSameAs(alive);
+        awaitAnAlive();
+        assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
+    }
+
+    @Test
     void aClosedTransportReportsNoDown() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         transport.addSession(allKeys());
@@ -541,7 +622,16 @@ class AmqpTransportTest {
         return chain;
     }
 
-    private static AmqpSettings withTls(AmqpSettings base, String host, SSLContext tls) {
+    private static boolean reaches(String host, int port) {
+        try (var socket = new java.net.Socket()) {
+            socket.connect(new java.net.InetSocketAddress(host, port), 1_000);
+            return true;
+        } catch (java.io.IOException e) {
+            return false;
+        }
+    }
+
+    private static AmqpSettings withTls(AmqpSettings base, String host, @Nullable SSLContext tls) {
         return new AmqpSettings(
                 host,
                 base.port(),

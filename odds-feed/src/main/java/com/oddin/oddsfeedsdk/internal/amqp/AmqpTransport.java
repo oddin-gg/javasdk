@@ -246,6 +246,13 @@ public final class AmqpTransport implements AutoCloseable {
         return consumer;
     }
 
+    /** The alive channel, for a test to have the broker close it. */
+    @Nullable
+    Channel aliveChannel() {
+        Alives current = alive;
+        return current == null ? null : current.getChannel();
+    }
+
     /** Whether the alive channel is open with a consumer the broker has not taken. */
     boolean aliveOpen() {
         Alives current = alive;
@@ -415,6 +422,10 @@ public final class AmqpTransport implements AutoCloseable {
         Throwable cause = firstCause;
         for (int attempt = 1; !closed; attempt++) {
             if (failure == Failure.REFUSED && refusedTooOften()) {
+                if (closed) {
+                    // closed while asking: a closed feed is told nothing more
+                    return;
+                }
                 failed = true;
                 events.fatal(
                         "the broker refused the login " + REFUSALS + " times within " + REFUSAL_WINDOW.toSeconds()
@@ -423,6 +434,9 @@ public final class AmqpTransport implements AutoCloseable {
                 return;
             }
             Duration wait = failure == Failure.RESOURCES ? settings.resourceBackoff() : backoff(attempt);
+            if (closed) {
+                return;
+            }
             events.recovering(attempt, wait.toMillis(), Failure.describe(cause, settings.accessToken()));
             if (pause(wait)) {
                 return;
