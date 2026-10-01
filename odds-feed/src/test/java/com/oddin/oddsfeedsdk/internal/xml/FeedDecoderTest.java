@@ -125,6 +125,8 @@ class FeedDecoderTest {
                 .isInstanceOf(OFAlive.class);
     }
 
+    private static final String ROOT = "<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">";
+
     @Test
     void manyNamesBuiltToShareAHashAreRefusedQuickly() {
         // every concatenation of "Aa" and "BB" has the same String hash: 2^13 such names, as siblings
@@ -140,6 +142,81 @@ class FeedDecoderTest {
         assertThat(Duration.ofNanos(System.nanoTime() - started))
                 .as("refused before the colliding names add up")
                 .isLessThan(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void collidingAttributeNamesPrefixesNamespacesAndInstructionsAreRefusedToo() {
+        var names = new ArrayList<String>();
+        colliding("", 13, names);
+        var attributes = new StringBuilder(ROOT);
+        for (int element = 0; element < 10; element++) {
+            attributes.append("<x");
+            for (int i = 0; i < 60; i++) {
+                attributes.append(' ').append(names.get(element * 60 + i)).append("=\"1\"");
+            }
+            attributes.append("/>");
+        }
+        var prefixes = new StringBuilder(ROOT);
+        var uris = new StringBuilder(ROOT);
+        var declaredUris = new StringBuilder(ROOT);
+        for (String name : names) {
+            prefixes.append("<x xmlns:").append(name).append("=\"u\"/>");
+            uris.append("<x xmlns=\"").append(name).append("\"/>");
+            // declared, but not the element's own: only the declaration names it
+            declaredUris.append("<x xmlns:p=\"").append(name).append("\"/>");
+        }
+        for (String hostile : List.of(
+                attributes.append("</alive>").toString(),
+                prefixes.append("</alive>").toString(),
+                uris.append("</alive>").toString(),
+                declaredUris.append("</alive>").toString())) {
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> lenient.decode(bytes(hostile))).isInstanceOf(DecodeException.class);
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .as("refused before the colliding names add up")
+                    .isLessThan(Duration.ofSeconds(1));
+        }
+        // a single start tag is read whole before any limit on names sees it: 2^15 colliding declarations
+        var many = new ArrayList<String>();
+        colliding("", 15, many);
+        var oneTag = new StringBuilder("<producers response_code=\"OK\"");
+        many.forEach(name -> oneTag.append(" xmlns:").append(name).append("=\"u\""));
+        String tag = oneTag.append("/>").toString();
+        long started = System.nanoTime();
+        assertThatThrownBy(
+                        () -> RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES).decode(bytes(tag)))
+                .isInstanceOf(DecodeException.class);
+        assertThat(Duration.ofNanos(System.nanoTime() - started))
+                .as("stopped by the attribute limit as the tag is read")
+                .isLessThan(Duration.ofSeconds(1));
+
+        assertThatThrownBy(() -> lenient.decode(bytes(ALIVE + "<?" + names.getFirst() + " x?>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("processing instruction");
+    }
+
+    @Test
+    void namesStayWithTheirDocument() throws Exception {
+        var names = new ArrayList<String>();
+        colliding("", 11, names);
+        var reader = new XmlReader(
+                XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
+                "message",
+                "feed message",
+                FeedDecoder.DEFAULT_MAX_BYTES,
+                null);
+        var shared = com.ctc.wstx.stax.WstxInputFactory.class.getDeclaredField("mSymbols");
+        shared.setAccessible(true);
+        int before = ((com.ctc.wstx.util.SymbolTable) shared.get(reader.inputs())).size();
+        for (int document = 0; document < 4; document++) {
+            var body = new StringBuilder(ROOT);
+            names.subList(document * 400, document * 400 + 400)
+                    .forEach(name -> body.append('<').append(name).append("/>"));
+            reader.read(bytes(body.append("</alive>").toString()));
+        }
+        assertThat(((com.ctc.wstx.util.SymbolTable) shared.get(reader.inputs())).size())
+                .as("no document's names left behind for the next")
+                .isEqualTo(before);
     }
 
     private static void colliding(String prefix, int blocks, List<String> into) {

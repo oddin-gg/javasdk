@@ -46,6 +46,9 @@ final class XmlReader {
      */
     static final int MAX_NAMES = 512;
 
+    /** The most attributes and namespace declarations on one element; the schemas' widest has 35. */
+    static final int MAX_ATTRIBUTES = 64;
+
     private final JAXBContext context;
     private final String noun;
     private final String what;
@@ -76,6 +79,8 @@ final class XmlReader {
         inputs.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
         // a million bytes of opening tags must not become a million levels to track
         inputs.setProperty(WstxInputProperties.P_MAX_ELEMENT_DEPTH, MAX_DEPTH);
+        // Woodstox reads all of a start tag before the name limit sees it: this bounds one tag's names
+        inputs.setProperty(WstxInputProperties.P_MAX_ATTRIBUTES_PER_ELEMENT, MAX_ATTRIBUTES);
         // text read in full as the parser reaches it: lazily, an error in it would surface later, from
         // inside JAXB, as an unchecked exception instead of the parser's
         inputs.setProperty(XMLInputFactory2.P_LAZY_PARSING, false);
@@ -145,7 +150,12 @@ final class XmlReader {
         return inputs;
     }
 
-    /** Refuses a document once it has used more than {@link #MAX_NAMES} distinct names. */
+    /**
+     * Refuses a document once it has used more than {@link #MAX_NAMES} distinct names - every name
+     * the parser keeps: element and attribute names, their prefixes and namespaces, and the
+     * namespaces declared - and refuses any processing instruction, which neither the feed nor the
+     * API sends.
+     */
     private static final class NameLimit extends StreamReaderDelegate {
         private final Set<String> names = new HashSet<>();
 
@@ -158,15 +168,25 @@ final class XmlReader {
             int event = super.next();
             if (event == XMLStreamConstants.START_ELEMENT) {
                 seen(getLocalName());
+                seen(getPrefix());
+                seen(getNamespaceURI());
+                for (int i = 0, n = getNamespaceCount(); i < n; i++) {
+                    seen(getNamespacePrefix(i));
+                    seen(getNamespaceURI(i));
+                }
                 for (int i = 0, n = getAttributeCount(); i < n; i++) {
                     seen(getAttributeLocalName(i));
+                    seen(getAttributePrefix(i));
+                    seen(getAttributeNamespace(i));
                 }
+            } else if (event == XMLStreamConstants.PROCESSING_INSTRUCTION) {
+                throw new XMLStreamException("a processing instruction", getLocation());
             }
             return event;
         }
 
-        private void seen(String name) throws XMLStreamException {
-            if (names.add(name) && names.size() > MAX_NAMES) {
+        private void seen(@Nullable String name) throws XMLStreamException {
+            if (name != null && !name.isEmpty() && names.add(name) && names.size() > MAX_NAMES) {
                 throw new XMLStreamException("more than " + MAX_NAMES + " distinct names", getLocation());
             }
         }
