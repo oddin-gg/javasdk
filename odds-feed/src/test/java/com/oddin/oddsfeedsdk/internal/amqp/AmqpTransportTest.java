@@ -114,6 +114,30 @@ class AmqpTransportTest {
     }
 
     @Test
+    void anAliveOverTheMaximumSizeReachesTheSdksConsumerWithoutItsBody() throws Exception {
+        String alive = com.oddin.oddsfeed.fakes.Fixtures.read("feed/alive/alive.xml");
+        int size = alive.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+
+        AmqpTransport atTheLimit = transport(settings(10, size), true);
+        atTheLimit.addSession(List.of("nothing.for.this.session"));
+        atTheLimit.open();
+        assertThat(feed().publishAsIs(alive)).isTrue();
+        RawDelivery whole = nextAlive(0);
+        assertThat(whole.body()).as("exactly the maximum").isNotNull().hasSize(size);
+        atTheLimit.close();
+
+        AmqpTransport overTheLimit = transport(settings(10, size - 1), true);
+        overTheLimit.addSession(List.of("nothing.for.this.session"));
+        overTheLimit.open();
+        assertThat(feed().publishAsIs(alive)).isTrue();
+        RawDelivery oversized = nextAlive(1);
+        assertThat(oversized.oversized()).as("one byte over").isTrue();
+        assertThat(oversized.size()).isEqualTo(size);
+        assertThat(feed().publishAsIs(alive)).isTrue();
+        assertThat(nextAlive(2).oversized()).as("and the consumer goes on").isTrue();
+    }
+
+    @Test
     void aReplacedChannelTakesItsDeliveriesWithItAndTheirAcknowledgementsAreSkipped() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         SessionTransport session = transport.addSession(allKeys());
@@ -683,6 +707,16 @@ class AmqpTransportTest {
                 return;
             }
         }
+    }
+
+    /** The SDK's own consumer's alive at this index, once it is there. */
+    private RawDelivery nextAlive(int index) throws InterruptedException {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (events.alives.size() <= index && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(events.alives).hasSizeGreaterThan(index);
+        return events.alives.get(index);
     }
 
     /** Publishes alives until the SDK's own consumer gets one more. */

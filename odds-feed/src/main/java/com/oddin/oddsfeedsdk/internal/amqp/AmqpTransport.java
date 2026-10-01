@@ -13,6 +13,7 @@ import com.rabbitmq.client.Envelope;
 import com.rabbitmq.client.ShutdownSignalException;
 import java.io.IOException;
 import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
 import java.time.Duration;
 import java.time.InstantSource;
 import java.util.ArrayList;
@@ -31,7 +32,6 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLException;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -220,7 +220,7 @@ public final class AmqpTransport implements AutoCloseable {
         AddressResolver asConfigured = () -> List.of(new Address(settings.host(), settings.port()));
         Connection made = factory().newConnection(consumers, asConfigured, settings.connectionName());
         connection = made;
-        made.addShutdownListener(this::connectionLost);
+        made.addShutdownListener(signal -> connectionLost(made, signal));
         if (alives != null) {
             alive = openAlive(made, alives);
             aliveFailedReopens.set(0);
@@ -306,18 +306,27 @@ public final class AmqpTransport implements AutoCloseable {
     }
 
     /** The broker or the network took the connection of an opened transport: tell, and make it again. */
-    private void connectionLost(ShutdownSignalException signal) {
+    private void connectionLost(Connection lost, ShutdownSignalException signal) {
         if (signal.isInitiatedByApplication() || closed || !opened.get()) {
             return;
         }
-        if (reconnecting.compareAndSet(false, true)) {
-            // told by the reconnect thread under the lock: not from here, where close() can be past
-            Thread.ofVirtual().name("oddsfeed-amqp-reconnect").start(() -> {
-                if (tellUnlessClosed(() -> events.down(Failure.describe(signal, settings.accessToken())))) {
-                    reconnect(signal);
+        // decided under the lock, off the client's thread: a listener late for a connection that was
+        // already replaced - by a reconnect that saw it closed first - must not take the new one down
+        Thread.ofVirtual().name("oddsfeed-amqp-reconnect").start(() -> {
+            boolean ours;
+            lock.lock();
+            try {
+                ours = !closed && lost.equals(connection) && reconnecting.compareAndSet(false, true);
+                if (ours) {
+                    events.down(Failure.describe(signal, settings.accessToken()));
                 }
-            });
-        }
+            } finally {
+                lock.unlock();
+            }
+            if (ours) {
+                reconnect(signal);
+            }
+        });
     }
 
     /**
@@ -522,8 +531,10 @@ public final class AmqpTransport implements AutoCloseable {
         }
     }
 
+    /** In the client's milliseconds, where 0 means no limit: a positive duration is at least 1. */
     private static int millis(Duration duration) {
-        return Math.clamp(duration.toMillis(), 0, Integer.MAX_VALUE);
+        long millis = duration.toMillis();
+        return Math.clamp(millis == 0 && duration.isPositive() ? 1 : millis, 0, Integer.MAX_VALUE);
     }
 
     private Duration backoff(int attempt) {
@@ -533,8 +544,10 @@ public final class AmqpTransport implements AutoCloseable {
     }
 
     private String reason(Throwable failure) {
+        // a certificate the checks refused, by its chain or by its host name; a handshake the network
+        // cut short is an SSLException too, but a broker out of reach, not one not to be trusted
         for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
-            if (cause instanceof SSLException) {
+            if (cause instanceof CertificateException) {
                 return "could not be trusted: " + Failure.describe(failure, settings.accessToken());
             }
         }
