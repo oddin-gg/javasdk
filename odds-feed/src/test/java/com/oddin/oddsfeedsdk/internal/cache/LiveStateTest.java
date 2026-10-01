@@ -257,7 +257,12 @@ class LiveStateTest {
                 .isFalse();
 
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        for (int i = 0; i < 10; i++) {
+        // it joins the others as the newest when the feed stops owning it, so the nine older go first
+        for (int i = 0; i < 9; i++) {
+            bounded.restWriteIfQuiet("later " + i, now(), status("not started"));
+        }
+        assertThat(bounded.holds("live")).isTrue();
+        for (int i = 9; i < 20; i++) {
             bounded.restWriteIfQuiet("later " + i, now(), status("not started"));
         }
         assertThat(bounded.holds("live"))
@@ -284,6 +289,37 @@ class LiveStateTest {
                 .isEqualTo(16);
         assertThat(bounded.holds("later")).isTrue();
         assertThat(bounded.dropped()).isEqualTo(32);
+    }
+
+    @Test
+    void theRecordJustWrittenIsNeverTheOneThatMakesRoom() {
+        var bounded = new LiveState<String>(10, time);
+        for (int i = 0; i < 10; i++) {
+            bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
+        }
+        assertThat(bounded.restWriteIfQuiet("new", now(), status("not started")))
+                .isTrue();
+        assertThat(bounded.holds("new"))
+                .as("over the bound only by those the feed owns")
+                .isTrue();
+        assertThat(bounded.size()).isEqualTo(11);
+    }
+
+    @Test
+    void othersMakeRoomBeforeAnyTheFeedOwnsHoweverManyItOwns() {
+        var bounded = new LiveState<String>(40, time);
+        for (int i = 0; i < 40; i++) {
+            bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
+        }
+        bounded.restWriteIfQuiet("quiet", now(), status("not started"));
+        for (int i = 40; i < 80; i++) {
+            bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
+        }
+        assertThat(bounded.holds("quiet"))
+                .as("behind forty the feed owns, it went first")
+                .isFalse();
+        assertThat(bounded.dropped()).as("none the feed owns").isZero();
+        assertThat(bounded.size()).isEqualTo(80);
     }
 
     @Test
