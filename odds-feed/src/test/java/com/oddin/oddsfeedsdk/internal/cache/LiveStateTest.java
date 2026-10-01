@@ -102,6 +102,51 @@ class LiveStateTest {
     }
 
     @Test
+    void aSummaryFromAnAbandonedFetchDoesNotWrite() {
+        live.restWriteIfQuiet("m1", now(), status("ended"), () -> false);
+        assertThat(live.restWriteIfQuiet("m1", now(), status("not started"), () -> true))
+                .as("its loader replaced it with the fetch that wrote ended")
+                .isFalse();
+        assertThat(statusOf("m1")).isEqualTo("ended");
+    }
+
+    @Test
+    void aLiveMessageWaitsForASummaryBeingWrittenAndThenOverwritesIt() throws Exception {
+        var writing = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            // the abandoned check runs inside the record's compute: holding it there holds the write
+            Future<Boolean> rest =
+                    threads.submit(() -> live.restWriteIfQuiet("m1", now(), status("not started"), () -> {
+                        writing.countDown();
+                        try {
+                            release.await(10, TimeUnit.SECONDS);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        return false;
+                    }));
+            assertThat(writing.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<Boolean> feed =
+                    threads.submit(() -> live.feedWriteIfNewer("m1", LIVE, 1_000, FRESH, now(), status("live")));
+            try {
+                Thread.sleep(200);
+                assertThat(feed.isDone())
+                        .as("the feed waits for the summary's write")
+                        .isFalse();
+            } finally {
+                release.countDown();
+            }
+            assertThat(rest.get(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(feed.get(5, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(statusOf("m1")).as("the feed's, written after").isEqualTo("live");
+        assertThat(live.restWriteIfQuiet("m1", now(), status("not started")))
+                .as("and the feed owns it now")
+                .isFalse();
+    }
+
+    @Test
     void liveStateHasNoValuePerLocale() {
         Field<String> localized = Field.localized("name");
         assertThatThrownBy(() -> LiveWrite.of().put(localized, "x")).isInstanceOf(IllegalArgumentException.class);

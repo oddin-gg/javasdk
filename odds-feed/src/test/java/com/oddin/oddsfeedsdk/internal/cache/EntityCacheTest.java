@@ -247,6 +247,18 @@ class EntityCacheTest {
     }
 
     @Test
+    void aFetchWhoseInvalidationAgesOutUnderItStillWrites() {
+        cache.invalidate("c1");
+        time.advance(LONGEST_FETCH.minusSeconds(1));
+        Stamp afterIt = cache.stamp("c1");
+        time.advance(Duration.ofSeconds(2));
+        assertThat(cache.remembersInvalidation("c1")).isFalse();
+        assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "Team One"), afterIt))
+                .as("nothing happened to the key since the fetch started")
+                .isTrue();
+    }
+
+    @Test
     void anEntryDroppedAndMadeAgainIsNotTheOneTheFetchStartedWith() {
         profile("c2", EN, "Two", "CZ", "T2", List.of());
         Stamp onEntry = cache.stamp("c2");
