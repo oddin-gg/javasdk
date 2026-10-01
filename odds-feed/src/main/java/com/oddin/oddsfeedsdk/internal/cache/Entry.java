@@ -44,6 +44,13 @@ public final class Entry {
         return new Entry(generation, Map.of(), Set.of(), Map.of(), 0);
     }
 
+    private static final Entry NONE = empty(0);
+
+    /** What a reader gets for a key its cache holds nothing of: no values, nothing loaded. */
+    public static Entry none() {
+        return NONE;
+    }
+
     /** When it last changed, on the cache's ticker: what its age counts from. */
     long changedAt() {
         return changedAt;

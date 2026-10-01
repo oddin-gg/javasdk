@@ -62,7 +62,8 @@ public final class LiveState<K> {
         this(maximumSize, Ticker.systemTicker());
     }
 
-    LiveState(long maximumSize, Ticker ticker) {
+    /** With the clock a test drives. */
+    public LiveState(long maximumSize, Ticker ticker) {
         if (maximumSize < 1) {
             throw new IllegalArgumentException("a live state holds one record at least");
         }

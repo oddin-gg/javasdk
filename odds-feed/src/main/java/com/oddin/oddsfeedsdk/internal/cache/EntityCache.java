@@ -72,7 +72,7 @@ public final class EntityCache<K> {
     }
 
     /** With the clocks a test drives: one for fetch times, one for Caffeine's ages. */
-    EntityCache(
+    public EntityCache(
             String name, long maximumSize, Duration age, Duration longestFetch, InstantSource clock, Ticker ticker) {
         this.name = name;
         this.age = age;
@@ -142,6 +142,15 @@ public final class EntityCache<K> {
         return entry == null
                 ? new Stamp(false, 0, lastInvalidation, startedAt, abandoned)
                 : new Stamp(true, entry.generation(), lastInvalidation, startedAt, abandoned);
+    }
+
+    /**
+     * What a fetch of many entities - a schedule, a list - remembers when it starts, before it knows
+     * their keys: whatever it writes gives way to any invalidation of a key since, as for a fetch
+     * that started on no entry, and to one still remembered from before, which it cannot tell apart.
+     */
+    public Stamp stampForMany(BooleanSupplier abandoned) {
+        return new Stamp(false, 0, 0, generations.get(), abandoned);
     }
 
     /**
