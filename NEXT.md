@@ -332,10 +332,13 @@ Bounds and freshness:
   entry: each locale's data carries its own fetch time, and a locale older than the
   entry's age is refetched on read even if another locale was written recently.
   Nothing is unbounded. No soft references.
-- Catalog caches refresh after write. An expired entry is served while the refresh runs
-  and while it fails, up to a maximum staleness of 24 hours. Past that the entry is
-  treated as missing and the caller gets the exception strategy. Serving stale raises a
-  health state. Failed refreshes back off per locale.
+- Catalog caches refresh after write, an hour after the fetch. An expired entry is served
+  while the refresh runs and while it fails, up to a maximum staleness of 24 hours. Past
+  that the entry is treated as missing and the caller gets the exception strategy.
+  Serving stale raises a health state. Failed refreshes back off per locale, and a
+  dynamic market variant on its own, from a second doubling to a minute; while a locale backs off, a read with nothing to serve
+  fails at once instead of waiting for another fetch. An empty list does not replace one
+  with entries in it; it counts as a failed refresh.
 - The caches hold entities, statuses and catalogs. They do not hold market state or
   odds; those live only in the messages the client receives.
 
@@ -421,7 +424,9 @@ Locales and catalogs:
   refresh of a list endpoint replaces the bulk-listed entries for that locale and
   leaves individually fetched ones (dynamic market variants) alone; those expire on
   their own age. A market or tournament removed upstream disappears on the next
-  refresh.
+  refresh. A market or match status missing from a list fetches the list again, once
+  per missing id and only when the list is at least a minute old, so one added
+  upstream shows up before the next refresh.
 - Every cache has a public clear method.
 
 ### Recovery and producers
@@ -992,3 +997,9 @@ schema. Woodstox is Apache 2.0, its one dependency BSD.
   `-dev`, and `OddsFeed.getSdkVersion()`. The fake REST API moved into a module of its
   own, since the SDK's tests cannot depend on the system tests, and learned replies in
   turn, delays and headers.
+- 2026-10-01, ticket 19 checked against 0.0.x and the Go SDK: catalogs refresh an hour
+  after their fetch, so most of the 24 hours of maximum staleness is left for an outage.
+  A dynamic market variant is always fetched from its own endpoint, also when the list
+  carries a row for it. A miss refetches the list once instead of on every miss as
+  0.0.x did. A read with nothing to serve fails at once while its key backs off, which
+  keeps a cold outage from costing one HTTP timeout per message.
