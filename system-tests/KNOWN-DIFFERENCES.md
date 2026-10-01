@@ -87,20 +87,16 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **Pinned by:** `FeedMessageScenarioIT.aBetCancelReachesOnBetCancelWithItsWindowAndVoidReasons`
 - **Found:** by test against 0.0.56, and in the source (`MarketCancelImpl`).
 
-## KD-6 Lists separated by a pipe are not split
+## KD-6 Bet stop groups separated by a pipe are not split
 
 - **0.0.x:** Kotlin's `split("\\|")` takes its argument literally, so it splits on the two
   characters `\|`, not on `|`. A bet stop with `groups="winner|handicap"` has one group,
-  `winner|handicap`. A producer whose scope is `live|prematch` has no scope at all - so, by the
-  source, a live-only or prematch-only session never enables it and drops its messages.
+  `winner|handicap`. The same split leaves a producer in both scopes with none (KD-18).
 - **1.0:** To be decided. NEXT.md is silent; the schema documents the groups as a list separated
-  by a pipe. The producer manager (ticket 23) splits the scopes, so a producer listed as
-  `live|prematch` has both; the bet stop groups come with the message factory (ticket 22).
+  by a pipe. The bet stop groups come with the message factory (ticket 22).
 - **Why:** A client matching bet stop groups one by one never matches.
-- **Pinned by:** `FeedMessageScenarioIT.aBetStopForSeveralGroupsNamesEach`,
-  `ProducerRecoveryScenarioIT.aProducerListedWithBothScopesHasBoth`
-- **Found:** by test against 0.0.56 for the groups and the scopes; the effect on sessions by
-  reading the source (`MessageInterest`).
+- **Pinned by:** `FeedMessageScenarioIT.aBetStopForSeveralGroupsNamesEach`
+- **Found:** by test against 0.0.56.
 
 ## KD-7 The producer watchdog first runs a minute after open
 
@@ -222,3 +218,14 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **Pinned by:** none yet; the limit and window are 1.0 settings a test compiled against 0.0.56
   cannot set. To be pinned with ticket 24.
 - **Found:** by reading the source (`RecoveryManagerImpl.timerTick`, `systemSessionAliveReceived`).
+
+## KD-18 A producer listed in both scopes has none
+
+- **0.0.x:** The producer list names a producer's scopes as `live|prematch`, and the same literal
+  split as in KD-6 leaves such a producer with no scope at all - so, by the source, a live-only or
+  prematch-only session never enables it and drops its messages.
+- **1.0:** The scopes are split: a producer listed as `live|prematch` has both (ticket 23).
+- **Why:** A producer with no scope is lost to every session that names one.
+- **Pinned by:** `ProducerRecoveryScenarioIT.aProducerListedWithBothScopesHasBoth`
+- **Found:** by test against 0.0.56; the effect on sessions by reading the source
+  (`MessageInterest`).

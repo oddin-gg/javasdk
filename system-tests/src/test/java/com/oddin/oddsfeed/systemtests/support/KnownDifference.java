@@ -32,7 +32,7 @@ public enum KnownDifference {
     UNKNOWN_PRODUCER_IS_MADE_UP("KD-3", true),
     FIXTURE_CHANGE_START_TIME_IS_ZERO("KD-4", true),
     VOID_REASON_IS_ALWAYS_NULL("KD-5", false),
-    PIPE_SEPARATED_LISTS_ARE_NOT_SPLIT("KD-6", false),
+    BET_STOP_GROUPS_ARE_NOT_SPLIT("KD-6", false),
     THROWING_CALLBACK_IS_REPORTED_AS_UNPARSABLE("KD-9", true),
     CATCH_GIVES_AN_EMPTY_COLLECTION("KD-10", true),
     FAILED_RECOVERY_IS_NOT_RETRIED("KD-11", true),
@@ -40,7 +40,8 @@ public enum KnownDifference {
     OLDER_MESSAGE_OVERWRITES_THE_STATUS("KD-13", true),
     STALE_MESSAGE_WRITES_THE_STATUS("KD-14", true),
     CLOSE_AFTER_A_FAILED_START_LOGS_AN_ERROR("KD-15", true),
-    REFUSED_LOGIN_ESCAPES_AS_A_BROKER_EXCEPTION("KD-16", false);
+    REFUSED_LOGIN_ESCAPES_AS_A_BROKER_EXCEPTION("KD-16", false),
+    PRODUCER_IN_BOTH_SCOPES_HAS_NONE("KD-18", true);
 
     /** The SDK lines a scenario can run against. */
     public enum Line {

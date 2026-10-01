@@ -16,6 +16,7 @@ import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.ProducerManager;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
+import com.oddin.oddsfeedsdk.api.entities.ProducerScope;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.Message;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
@@ -168,9 +169,13 @@ class ProducerRecoveryScenarioIT {
 
             Producer live = sdk.oddsFeed().getProducerManager().getProducer(2);
             assertThat(live.getName()).as("producer 2").isEqualTo("live");
-            KnownDifference.PIPE_SEPARATED_LISTS_ARE_NOT_SPLIT.expectLegacy(() -> assertThat(live.getProducerScopes())
-                    .as("scopes of producer 2, listed as live|prematch")
-                    .isEmpty());
+            KnownDifference.PRODUCER_IN_BOTH_SCOPES_HAS_NONE.expect(
+                    () -> assertThat(live.getProducerScopes())
+                            .as("scopes of producer 2, listed as live|prematch")
+                            .isEmpty(),
+                    () -> assertThat(live.getProducerScopes())
+                            .as("scopes of producer 2, listed as live|prematch")
+                            .containsExactlyInAnyOrder(ProducerScope.LIVE, ProducerScope.PREMATCH));
         }
     }
 
