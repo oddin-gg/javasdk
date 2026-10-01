@@ -93,14 +93,13 @@ public final class FakeFeed implements AutoCloseable {
     private final GenericContainer<?> broker;
     private boolean paused;
 
-    private FakeFeed() throws IOException {
+    private FakeFeed(TestTls.Pem tls) throws IOException {
         auth = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         auth.setExecutor(executor);
         auth.createContext("/", this::authorize);
         auth.start();
         Testcontainers.exposeHostPorts(auth.getAddress().getPort());
 
-        TestTls.Pem tls = TestTls.pem();
         broker = new GenericContainer<>(IMAGE)
                 .withAccessToHost(true)
                 // Start as the image's own user rather than as root dropping to it. On some Docker setups
@@ -125,8 +124,13 @@ public final class FakeFeed implements AutoCloseable {
     }
 
     public static FakeFeed start() {
+        return start(TestTls.pem());
+    }
+
+    /** A fake feed whose broker presents this certificate rather than the fakes' own. */
+    public static FakeFeed start(TestTls.Pem tls) {
         try {
-            return new FakeFeed();
+            return new FakeFeed(tls);
         } catch (IOException e) {
             throw new UncheckedIOException("could not start the fake feed", e);
         }

@@ -177,7 +177,7 @@ public final class AmqpTransport implements AutoCloseable {
             opened.set(true);
             // lost between the last channel and now: its listener saw a transport not yet open
             Connection now = connection;
-            if ((now == null || !now.isOpen()) && reconnecting.compareAndSet(false, true)) {
+            if (!closed && (now == null || !now.isOpen()) && reconnecting.compareAndSet(false, true)) {
                 var lost = new IOException("the connection was lost as the feed opened");
                 events.down(Failure.describe(lost, settings.accessToken()));
                 Thread.ofVirtual().name("oddsfeed-amqp-reconnect").start(() -> reconnect(lost));
@@ -311,8 +311,12 @@ public final class AmqpTransport implements AutoCloseable {
             return;
         }
         if (reconnecting.compareAndSet(false, true)) {
-            events.down(Failure.describe(signal, settings.accessToken()));
-            Thread.ofVirtual().name("oddsfeed-amqp-reconnect").start(() -> reconnect(signal));
+            // told by the reconnect thread under the lock: not from here, where close() can be past
+            Thread.ofVirtual().name("oddsfeed-amqp-reconnect").start(() -> {
+                if (tellUnlessClosed(() -> events.down(Failure.describe(signal, settings.accessToken())))) {
+                    reconnect(signal);
+                }
+            });
         }
     }
 
@@ -422,22 +426,23 @@ public final class AmqpTransport implements AutoCloseable {
         Throwable cause = firstCause;
         for (int attempt = 1; !closed; attempt++) {
             if (failure == Failure.REFUSED && refusedTooOften()) {
-                if (closed) {
-                    // closed while asking: a closed feed is told nothing more
-                    return;
-                }
-                failed = true;
-                events.fatal(
-                        "the broker refused the login " + REFUSALS + " times within " + REFUSAL_WINDOW.toSeconds()
-                                + " s: " + Failure.describe(cause, settings.accessToken()),
-                        Failure.redacted(cause, settings.accessToken()));
+                Throwable refused = cause;
+                tellUnlessClosed(() -> {
+                    failed = true;
+                    events.fatal(
+                            "the broker refused the login " + REFUSALS + " times within "
+                                    + REFUSAL_WINDOW.toSeconds() + " s: "
+                                    + Failure.describe(refused, settings.accessToken()),
+                            Failure.redacted(refused, settings.accessToken()));
+                });
                 return;
             }
             Duration wait = failure == Failure.RESOURCES ? settings.resourceBackoff() : backoff(attempt);
-            if (closed) {
+            int tries = attempt;
+            String why = Failure.describe(cause, settings.accessToken());
+            if (!tellUnlessClosed(() -> events.recovering(tries, wait.toMillis(), why))) {
                 return;
             }
-            events.recovering(attempt, wait.toMillis(), Failure.describe(cause, settings.accessToken()));
             if (pause(wait)) {
                 return;
             }
@@ -465,6 +470,9 @@ public final class AmqpTransport implements AutoCloseable {
                 }
                 failure = Failure.NETWORK;
                 cause = new IOException("the connection was lost again as it came up");
+                if (closed) {
+                    return;
+                }
                 events.down(Failure.describe(cause, settings.accessToken()));
             } catch (IOException | TimeoutException | RuntimeException e) {
                 failure = Failure.of(e);
@@ -473,6 +481,25 @@ public final class AmqpTransport implements AutoCloseable {
             } finally {
                 lock.unlock();
             }
+        }
+    }
+
+    /**
+     * Tells an event under the lock unless the transport is closed: close() takes the lock, so once
+     * it has returned nothing more is told.
+     *
+     * @return whether it was told
+     */
+    private boolean tellUnlessClosed(Runnable tell) {
+        lock.lock();
+        try {
+            if (closed) {
+                return false;
+            }
+            tell.run();
+            return true;
+        } finally {
+            lock.unlock();
         }
     }
 

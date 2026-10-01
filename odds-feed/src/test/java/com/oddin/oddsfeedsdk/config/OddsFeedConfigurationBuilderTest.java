@@ -90,6 +90,8 @@ class OddsFeedConfigurationBuilderTest {
                 1);
         assertThat(zeroZeroX.getHttpClientTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(zeroZeroX.getStartupTimeout()).isEqualTo(Duration.ofSeconds(90));
+        assertThat(zeroZeroX.getAmqpPrefetch()).isEqualTo(200);
+        assertThat(zeroZeroX.getMaxMessageSize()).isEqualTo(1 << 20);
     }
 
     @Test

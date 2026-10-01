@@ -59,31 +59,52 @@ public final class TestTls {
      */
     public static synchronized Pem pem() {
         create();
+        return pemOf(keyStore);
+    }
+
+    /** A certificate and its PKCS#8 private key, both PEM-encoded. */
+    public record Pem(String certificate, String privateKey) {}
+
+    /** A server's certificate as PEM, and a client context that trusts that certificate only. */
+    public record Identity(Pem pem, SSLContext trusting) {}
+
+    /**
+     * A certificate that names only {@code host}, for a broker to present to a client that dials it
+     * by another name: what a check of the host name must refuse, though the certificate is trusted.
+     */
+    public static Identity namingOnly(String host) {
+        try {
+            KeyStore generated = generate("CN=" + host, "SAN=dns:" + host);
+            SSLContext trusting = SSLContext.getInstance("TLS");
+            trusting.init(null, new TrustManager[] {trustManager(generated)}, null);
+            return new Identity(pemOf(generated), trusting);
+        } catch (Exception e) {
+            throw new IllegalStateException("could not make a certificate for " + host, e);
+        }
+    }
+
+    private static Pem pemOf(KeyStore store) {
         try {
             Base64.Encoder base64 = Base64.getMimeEncoder(64, "\n".getBytes(UTF_8));
             return new Pem(
                     "-----BEGIN CERTIFICATE-----\n"
-                            + base64.encodeToString(
-                                    keyStore.getCertificate(ALIAS).getEncoded())
+                            + base64.encodeToString(store.getCertificate(ALIAS).getEncoded())
                             + "\n-----END CERTIFICATE-----\n",
                     "-----BEGIN PRIVATE KEY-----\n"
                             + base64.encodeToString(
-                                    keyStore.getKey(ALIAS, PASSWORD).getEncoded())
+                                    store.getKey(ALIAS, PASSWORD).getEncoded())
                             + "\n-----END PRIVATE KEY-----\n");
         } catch (Exception e) {
             throw new IllegalStateException("could not export the fake servers' certificate", e);
         }
     }
 
-    /** A certificate and its PKCS#8 private key, both PEM-encoded. */
-    public record Pem(String certificate, String privateKey) {}
-
     private static void create() {
         if (serverContext != null) {
             return;
         }
         try {
-            KeyStore generated = generate();
+            KeyStore generated = generate("CN=localhost", "SAN=dns:localhost,ip:127.0.0.1");
 
             KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
             keys.init(generated, PASSWORD);
@@ -99,7 +120,7 @@ public final class TestTls {
     }
 
     /** keytool ships with every JDK and can write a SAN, which the JDK API cannot do without internals. */
-    private static KeyStore generate() throws Exception {
+    private static KeyStore generate(String name, String alternativeNames) throws Exception {
         Path dir = Files.createTempDirectory("fake-servers-tls");
         Path file = dir.resolve("fake-servers.p12");
         try {
@@ -114,9 +135,9 @@ public final class TestTls {
                             "-keysize",
                             "2048",
                             "-dname",
-                            "CN=localhost",
+                            name,
                             "-ext",
-                            "SAN=dns:localhost,ip:127.0.0.1",
+                            alternativeNames,
                             "-validity",
                             "2",
                             "-storetype",

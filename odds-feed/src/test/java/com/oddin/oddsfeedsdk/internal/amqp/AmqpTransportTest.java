@@ -3,14 +3,12 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
-import java.net.InetAddress;
 import java.security.KeyStore;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -379,11 +377,12 @@ class AmqpTransportTest {
 
     @Test
     void aHostTheCertificateDoesNotNameIsRefused() throws Exception {
-        // the machine's own name reaches the broker, and its certificate names only localhost
-        String host = InetAddress.getLocalHost().getHostName();
-        assumeTrue(reaches(host, feed().port()), "the machine's own name does not reach the broker here");
-        AmqpSettings base = settings(10, 1 << 20);
-        assertRefusedByTls(withTls(base, host, TestTls.clientContext()), "subject alternative");
+        // a broker whose trusted certificate names another host, dialled as the host it is
+        var identity = TestTls.namingOnly("feed.example.invalid");
+        try (FakeFeed other = FakeFeed.start(identity.pem())) {
+            AmqpSettings base = settings(other, 10, 1 << 20);
+            assertRefusedByTls(other, withTls(base, base.host(), identity.trusting()), "subject alternative");
+        }
     }
 
     @Test
@@ -598,7 +597,11 @@ class AmqpTransportTest {
     }
 
     private void assertRefusedByTls(AmqpSettings settings, String why) throws InterruptedException {
-        int loginsBefore = feed().logins().size();
+        assertRefusedByTls(feed(), settings, why);
+    }
+
+    private void assertRefusedByTls(FakeFeed broker, AmqpSettings settings, String why) {
+        int loginsBefore = broker.logins().size();
         var transport = new AmqpTransport(settings, FakeFeed.EXCHANGE, events, null);
         open.add(transport);
         transport.addSession(allKeys());
@@ -611,7 +614,7 @@ class AmqpTransportTest {
                                 .containsAnyOf("SSLHandshakeException", "CertificateException"))
                         .anySatisfy(cause ->
                                 assertThat(String.valueOf(cause.getMessage())).contains(why)));
-        assertThat(feed().logins()).as("no login got as far as the broker").hasSize(loginsBefore);
+        assertThat(broker.logins()).as("no login got as far as the broker").hasSize(loginsBefore);
     }
 
     private static List<Throwable> chain(Throwable failure) {
@@ -620,15 +623,6 @@ class AmqpTransportTest {
             chain.add(cause);
         }
         return chain;
-    }
-
-    private static boolean reaches(String host, int port) {
-        try (var socket = new java.net.Socket()) {
-            socket.connect(new java.net.InetSocketAddress(host, port), 1_000);
-            return true;
-        } catch (java.io.IOException e) {
-            return false;
-        }
     }
 
     private static AmqpSettings withTls(AmqpSettings base, String host, @Nullable SSLContext tls) {
