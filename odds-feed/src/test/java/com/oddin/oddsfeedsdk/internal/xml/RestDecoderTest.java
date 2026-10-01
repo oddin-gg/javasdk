@@ -63,6 +63,16 @@ class RestDecoderTest {
     }
 
     @Test
+    void malformedTextInsideAnElementIsRefusedAsWellFormednessNotThrownPast() {
+        // a character reference XML forbids, in text JAXB reads only once it reaches the element:
+        // a parser that reads text lazily finds it then, inside JAXB, and throws unchecked
+        String xml = "<response response_code=\"NOT_FOUND\"><message>a&#0;b</message></response>";
+        assertThatThrownBy(() -> lenient.decode(bytes(xml)))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("not a well-formed");
+    }
+
+    @Test
     void aResponseOfAnotherTypeIsRefused() {
         assertThatThrownBy(() -> lenient.decode(bytes(PRODUCERS), RAMatchStatusDescriptions.class))
                 .isInstanceOf(DecodeException.class)

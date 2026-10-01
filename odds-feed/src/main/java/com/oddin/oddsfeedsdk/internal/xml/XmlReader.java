@@ -14,6 +14,7 @@ import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import javax.xml.validation.Schema;
+import org.codehaus.stax2.XMLInputFactory2;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -57,6 +58,9 @@ final class XmlReader {
         inputs.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
         // a million bytes of opening tags must not become a million levels to track
         inputs.setProperty(WstxInputProperties.P_MAX_ELEMENT_DEPTH, MAX_DEPTH);
+        // text read in full as the parser reaches it: lazily, an error in it would surface later, from
+        // inside JAXB, as an unchecked exception instead of the parser's
+        inputs.setProperty(XMLInputFactory2.P_LAZY_PARSING, false);
     }
 
     /**
