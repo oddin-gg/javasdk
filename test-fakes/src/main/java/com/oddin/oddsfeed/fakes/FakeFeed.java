@@ -172,6 +172,12 @@ public final class FakeFeed implements AutoCloseable {
         refusingVirtualHost = true;
     }
 
+    /** Lets logins and the virtual host in again, as after {@link #refuseLogins} or {@link #refuseVirtualHost}. */
+    public void allowLogins() {
+        refusing = false;
+        refusingVirtualHost = false;
+    }
+
     /** The user names of the logins refused so far, oldest first; for the SDK, its access token. */
     public List<String> refusedLogins() {
         return List.copyOf(refusedLogins);

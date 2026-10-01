@@ -37,9 +37,10 @@ final class Recorded implements ConnectionEvents {
     @Override
     public void recovering(int attempt, long waitMillis, String reason) {
         events.add("recovering");
+        // the wait first: a test that saw the reason reads its wait next
+        waits.add(waitMillis);
         reasons.add(reason);
         told.add(reason);
-        waits.add(waitMillis);
     }
 
     @Override

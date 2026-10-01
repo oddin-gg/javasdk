@@ -14,6 +14,47 @@ import org.junit.jupiter.api.Test;
 class AmqpRefusalTest {
 
     @Test
+    void aConnectionThatCameUpInBetweenStartsTheCountOfRefusalsAgain() throws Exception {
+        try (FakeFeed feed = FakeFeed.start()) {
+            var events = new Recorded();
+            try (var transport =
+                    new AmqpTransport(AmqpTransportTest.settings(feed, 10, 1 << 20), FakeFeed.EXCHANGE, events, null)) {
+                transport.addSession(RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true));
+                transport.open();
+
+                // one refusal, then the connection comes up again
+                feed.refuseVirtualHost();
+                feed.closeConnections();
+                awaitRefusals(feed, 1);
+                feed.allowLogins();
+                events.await(event -> event.equals("up") && events.count("up") == 2, Duration.ofSeconds(30));
+
+                // refused again: the end comes with the third refusal since the connection was up, not
+                // with the second, which would be the third within the minute
+                int refusedBefore = feed.refusedLogins().size();
+                feed.refuseVirtualHost();
+                feed.closeConnections();
+                events.await(event -> event.startsWith("fatal"), Duration.ofSeconds(30));
+                List<String> sinceUp = events.events.subList(events.events.lastIndexOf("up") + 1, events.events.size());
+                assertThat(sinceUp)
+                        .as("the try after the loss, then one after each of two refusals")
+                        .startsWith("down", "recovering", "recovering", "recovering")
+                        .hasSize(5);
+                assertThat(feed.refusedLogins().size() - refusedBefore).isEqualTo(3);
+                assertThat(transport.hasFailed()).isTrue();
+            }
+        }
+    }
+
+    private static void awaitRefusals(FakeFeed feed, int count) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+        while (feed.refusedLogins().size() < count && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(feed.refusedLogins()).hasSizeGreaterThanOrEqualTo(count);
+    }
+
+    @Test
     void threeRefusalsWithinAMinuteEndTheReconnectingAndOneAtOpenFailsIt() throws Exception {
         try (FakeFeed feed = FakeFeed.start()) {
             var events = new Recorded();
