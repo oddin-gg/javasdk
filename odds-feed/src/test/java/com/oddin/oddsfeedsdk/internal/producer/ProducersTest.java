@@ -91,7 +91,11 @@ class ProducersTest {
 
     @ParameterizedTest
     @ValueSource(
-            strings = {"name=\"pre\"", "description=\"Prematch feed\"", "api_url=\"https://api.example.invalid/v1/pre\""
+            strings = {
+                "name=\"pre\"",
+                "description=\"Prematch feed\"",
+                "api_url=\"https://api.example.invalid/v1/pre\"",
+                "scope=\"prematch\""
             })
     void aProducerWithoutWhatTheSchemaRequiresFailsTheStartup(String attribute) {
         assertThat(fixture()).contains(" " + attribute);
@@ -175,6 +179,9 @@ class ProducersTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessage("Last received message timestamp can not be more than '4320' minutes ago, producerId:1"
                         + " timestamp:" + tooOld + " (max recovery = '4320' minutes ago)");
+        assertThat(producer(producers, 1L).getTimestampForRecovery())
+                .as("a rejected start leaves the saved one")
+                .isEqualTo(Instant.ofEpochMilli(insideTheWindow));
 
         // an alive's generation time takes over once there is one; 0 clears the start
         producers.setLastAliveReceivedGenTimestamp(1L, NOW.toEpochMilli());
