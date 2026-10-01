@@ -402,6 +402,14 @@ class ApiClientTest {
         api.respond("/v1/replay/clear", Reply.of(202, "<accepted/>").cutOffMidBody());
         client.postReplayClear();
         assertThat(api.requests("POST", "/v1/replay/clear")).hasSize(1);
+
+        // breaking off every time: it fails by the broken body, not by the 200 before it
+        String always = "/v1/sports/en/sport_events/od:match:2/summary";
+        api.respond(always, Reply.of(200, summary).cutOffMidBody());
+        assertThatThrownBy(() -> client.fetchMatchSummary(URN.parse("od:match:2"), Locale.ENGLISH))
+                .isInstanceOf(ApiException.class)
+                .hasCauseInstanceOf(java.io.IOException.class)
+                .satisfies(e -> assertThat(HttpStatusException.statusOf(e)).isZero());
     }
 
     @Test
@@ -561,6 +569,7 @@ class ApiClientTest {
         assertThatThrownBy(() -> client.fetchMatchSummary(MATCH, Locale.ENGLISH))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("could not be read");
+        assertThat(events.received).as("neither is handed on").isEmpty();
     }
 
     @Test
