@@ -78,11 +78,17 @@
       <version>${amqp-client.version}</version>
     </dependency>
 
-    <!-- the XML parser JAXB reads with: about three times the JDK's own, and with its own limits -->
+    <!--
+      The XML parser JAXB reads with: about three times the JDK's own, and with its own limits. It
+      ships inside the jar, relocated, and is optional here so clients do not get a copy of their own:
+      on the classpath, Woodstox registers itself as every application's StAX parser, and ignores the
+      JDK's XML hardening properties the application may rely on.
+    -->
     <dependency>
       <groupId>com.fasterxml.woodstox</groupId>
       <artifactId>woodstox-core</artifactId>
       <version>${woodstox.version}</version>
+      <optional>true</optional>
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
@@ -203,6 +209,83 @@
               </bindingIncludes>
               <generateDirectory>${project.build.directory}/generated-sources/xjc-rest</generateDirectory>
             </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>${maven-shade-plugin.version}</version>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <!-- the published POM is the flattened one, where the parser is optional -->
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <artifactSet>
+                <includes>
+                  <include>com.fasterxml.woodstox:woodstox-core</include>
+                  <include>org.codehaus.woodstox:stax2-api</include>
+                </includes>
+              </artifactSet>
+              <relocations>
+                <relocation>
+                  <pattern>com.ctc.wstx</pattern>
+                  <shadedPattern>com.oddin.oddsfeedsdk.internal.woodstox.wstx</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.codehaus.stax2</pattern>
+                  <shadedPattern>com.oddin.oddsfeedsdk.internal.woodstox.stax2</shadedPattern>
+                </relocation>
+              </relocations>
+              <filters>
+                <filter>
+                  <!-- no service registration: the SDK names its parser, and the application keeps its own -->
+                  <artifact>com.fasterxml.woodstox:woodstox-core</artifact>
+                  <excludes>
+                    <exclude>META-INF/services/**</exclude>
+                    <exclude>META-INF/LICENSE</exclude>
+                    <exclude>META-INF/MANIFEST.MF</exclude>
+                    <exclude>META-INF/maven/**</exclude>
+                    <exclude>META-INF/versions/**/module-info.class</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+                <filter>
+                  <artifact>org.codehaus.woodstox:stax2-api</artifact>
+                  <excludes>
+                    <exclude>META-INF/services/**</exclude>
+                    <exclude>META-INF/LICENSE</exclude>
+                    <exclude>META-INF/MANIFEST.MF</exclude>
+                    <exclude>META-INF/maven/**</exclude>
+                    <exclude>META-INF/versions/**/module-info.class</exclude>
+                    <exclude>module-info.class</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <!-- ShadedJarIT reads the packaged jar, so it runs after the shading, as an integration test -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <shaded.jar>${project.build.directory}/${project.build.finalName}.jar</shaded.jar>
+          </systemPropertyVariables>
+        </configuration>
+        <executions>
+          <execution>
+            <id>integration-tests</id>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
           </execution>
         </executions>
       </plugin>
