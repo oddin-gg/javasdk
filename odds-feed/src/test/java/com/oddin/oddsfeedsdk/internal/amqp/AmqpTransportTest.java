@@ -199,7 +199,6 @@ class AmqpTransportTest {
         SessionTransport session = transport.addSession(allKeys());
         transport.open();
         var channel = (SessionChannel) session;
-        long failed;
         feed().removeExchange(FakeFeed.EXCHANGE);
         try {
             // the queue goes, and every new one fails to bind to the exchange that is gone
@@ -217,10 +216,10 @@ class AmqpTransportTest {
                     .as("a queue that could not be bound is deleted")
                     .hasSizeLessThanOrEqualTo(2);
         } finally {
-            failed = session.epoch();
             feed().restoreExchange(FakeFeed.EXCHANGE);
         }
-        awaitReopened(channel, failed);
+        // open again: not "a later epoch", since an attempt under way may already have taken it
+        awaitOpen(channel);
         assertThat(channel.failedReopens())
                 .as("reset by the reopen that worked")
                 .isZero();
@@ -273,7 +272,8 @@ class AmqpTransportTest {
         };
 
         feed().closeConnections();
-        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        // the hook runs rabbitmqctl and waits inside the reconnect: more than the usual wait
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT.multipliedBy(3));
         assertThat(once).isTrue();
         long deadline = System.nanoTime() + WAIT.toNanos();
         while (!session.isOpen() && System.nanoTime() < deadline) {
@@ -493,9 +493,7 @@ class AmqpTransportTest {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());
         transport.open();
-        long before = session.epoch();
         feed().removeExchange(FakeFeed.EXCHANGE);
-        long failed;
         try {
             session.reset();
             long deadline = System.nanoTime() + WAIT.toNanos();
@@ -506,10 +504,9 @@ class AmqpTransportTest {
                     .as("the reset's failure, and the loop's")
                     .isGreaterThanOrEqualTo(2);
         } finally {
-            failed = session.epoch();
             feed().restoreExchange(FakeFeed.EXCHANGE);
         }
-        awaitReopened(session, Math.max(before, failed));
+        awaitOpen(session);
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
     }
 
@@ -578,13 +575,105 @@ class AmqpTransportTest {
     }
 
     @Test
-    void aClosedTransportReportsNoDown() throws Exception {
+    void aTransportClosedWhileItWaitsToTryAgainTellsNothingMore() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         transport.addSession(allKeys());
         transport.open();
-        transport.close();
-        Thread.sleep(300);
-        assertThat(events.events).containsExactly("connecting", "up");
+        feed().limitConnections(0);
+        try {
+            feed().closeConnections();
+            // refused for want of room, and waiting its pause to try again
+            events.await(e -> e.equals("recovering") && events.count("recovering") == 2, WAIT);
+            transport.close();
+            List<String> atTheClose = List.copyOf(events.events);
+            Thread.sleep(1_500);
+            assertThat(events.events).as("nothing after close() returned").isEqualTo(atTheClose);
+        } finally {
+            feed().limitConnections(-1);
+        }
+    }
+
+    @Test
+    void aListenerThatThrowsDoesNotBreakTheTransport() throws Exception {
+        ConnectionEvents throwingOnUp = new ConnectionEvents() {
+            @Override
+            public void connecting() {
+                events.connecting();
+            }
+
+            @Override
+            public void up() {
+                events.up();
+                throw new IllegalStateException("the listener failed");
+            }
+
+            @Override
+            public void down(String reason) {
+                events.down(reason);
+            }
+
+            @Override
+            public void recovering(int attempt, long waitMillis, String reason) {
+                events.recovering(attempt, waitMillis, reason);
+            }
+
+            @Override
+            public void fatal(String reason, @Nullable Throwable cause) {
+                events.fatal(reason, cause);
+            }
+        };
+        var transport = new AmqpTransport(settings(10, 1 << 20), FakeFeed.EXCHANGE, throwingOnUp, null);
+        open.add(transport);
+        SessionTransport session = transport.addSession(allKeys());
+        transport.open();
+        feed().closeConnections();
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+        Thread.sleep(500);
+        assertThat(events.count("up")).as("the connection it made was kept").isEqualTo(2);
+    }
+
+    @Test
+    void closeCutsOffADeclareTheBrokerDoesNotAnswer() throws Exception {
+        // a long timeout; the fake broker's heartbeat of 2 s would end the stalled call within about
+        // 4 s, so a close that waited for it would take that long
+        AmqpSettings slow = withTimeouts(settings(10, 1 << 20), Duration.ofSeconds(60), Duration.ofSeconds(20));
+        AmqpTransport transport = transport(slow, false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        feed().pause();
+        try {
+            var reset = Thread.ofVirtual().start(session::reset);
+            Thread.sleep(500);
+            long closing = System.nanoTime();
+            transport.close();
+            assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                    .as("close() with a channel waiting on the broker")
+                    .isLessThan(Duration.ofSeconds(2));
+            reset.join(5_000);
+            assertThat(reset.isAlive()).isFalse();
+        } finally {
+            feed().resume();
+        }
+    }
+
+    @Test
+    void aBrokerThatStopsAnsweringIsNoticedByTheHeartbeatAndReconnected() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        SessionTransport session = transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+        feed().pause();
+        try {
+            // frozen with the connection open, as a network that drops everything looks
+            events.await("down"::equals, Duration.ofSeconds(15));
+            assertThat(events.told).anySatisfy(reason -> assertThat(reason).containsIgnoringCase("heartbeat"));
+        } finally {
+            feed().resume();
+        }
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT.multipliedBy(3));
+        assertThat(session.epoch()).isGreaterThan(before);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
     }
 
     @Test
@@ -728,6 +817,32 @@ class AmqpTransportTest {
             Thread.sleep(200);
         }
         assertThat(events.alives).as("an alive to the SDK's own consumer").hasSizeGreaterThan(before);
+    }
+
+    /** Waits for the session's channel to be open. */
+    private static void awaitOpen(SessionChannel session) throws InterruptedException {
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!session.isOpen() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.isOpen()).as("the session's channel, open").isTrue();
+    }
+
+    private static AmqpSettings withTimeouts(AmqpSettings base, Duration heartbeat, Duration connectTimeout) {
+        return new AmqpSettings(
+                base.host(),
+                base.port(),
+                base.virtualHost(),
+                base.accessToken(),
+                base.tls(),
+                base.connectionName(),
+                base.prefetch(),
+                base.maxMessageSize(),
+                heartbeat,
+                connectTimeout,
+                base.firstBackoff(),
+                base.maxBackoff(),
+                base.resourceBackoff());
     }
 
     /** Waits for the session's channel to be open again in an epoch after {@code before}. */

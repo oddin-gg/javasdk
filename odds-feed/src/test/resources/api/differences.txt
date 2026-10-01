@@ -65,11 +65,13 @@ deprecated | mq/entities/CompetitorOutcomeOdds.getTeam ()Lcom/oddin/oddsfeedsdk/
 added | OddsFeed.getSdkVersion ()Ljava/lang/String; | the version the SDK reports to the API and the broker, for a client to log
 added | config/OddsFeedConfiguration.getAmqpPrefetch ()I | how many unacknowledged messages the broker hands a session
 added | config/OddsFeedConfiguration.getMaxMessageSize ()I | the largest message body decoded
+added | config/OddsFeedConfiguration.getMessagingSslContext ()Ljavax/net/ssl/SSLContext; | the TLS context the broker's certificate is checked with
 added | config/OddsFeedConfiguration.getHttpClientTimeout ()Ljava/time/Duration; | the deadline of an API call, from its turn through every retry
 added | config/OddsFeedConfiguration.getRestConcurrencyLimit ()I | the most entity requests in flight at once
 added | config/OddsFeedConfiguration.getStartupTimeout ()Ljava/time/Duration; | how long opening the feed keeps trying the API
 added | config/OddsFeedConfigurationBuilder.setAmqpPrefetch (I)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how many unacknowledged messages the broker hands a session
 added | config/OddsFeedConfigurationBuilder.setMaxMessageSize (I)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the largest message body decoded
+added | config/OddsFeedConfigurationBuilder.setMessagingSslContext (Ljavax/net/ssl/SSLContext;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the TLS context the broker's certificate is checked with
 added | config/OddsFeedConfigurationBuilder.setHttpClientTimeout (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the deadline of an API call, from its turn through every retry
 added | config/OddsFeedConfigurationBuilder.setRestConcurrencyLimit (I)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the most entity requests in flight at once
 added | config/OddsFeedConfigurationBuilder.setStartupTimeout (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long opening the feed keeps trying the API

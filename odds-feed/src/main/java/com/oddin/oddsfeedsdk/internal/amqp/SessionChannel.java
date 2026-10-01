@@ -34,6 +34,7 @@ final class SessionChannel implements SessionTransport {
     private final InstantSource clock;
     private final Supplier<@Nullable Connection> connection;
     private final Consumer<SessionChannel> lost;
+    private final Consumer<Exception> reopenFailed;
     private final ReentrantLock lock = new ReentrantLock();
     private final AtomicLong skippedAcks = new AtomicLong();
     /** Reopens that failed in a row: the transport pauses longer before each next one. */
@@ -49,6 +50,7 @@ final class SessionChannel implements SessionTransport {
      * @param connection the transport's connection now, null while it has none
      * @param lost told when the broker closes or cancels this channel on its own, or it cannot be
      *     opened again on a live connection
+     * @param reopenFailed told why each time it cannot be opened again on a live connection
      */
     SessionChannel(
             String exchange,
@@ -58,7 +60,8 @@ final class SessionChannel implements SessionTransport {
             int maxMessageSize,
             InstantSource clock,
             Supplier<@Nullable Connection> connection,
-            Consumer<SessionChannel> lost) {
+            Consumer<SessionChannel> lost,
+            Consumer<Exception> reopenFailed) {
         this.exchange = exchange;
         this.bindings = List.copyOf(bindings);
         this.queue = queue;
@@ -67,6 +70,7 @@ final class SessionChannel implements SessionTransport {
         this.clock = clock;
         this.connection = connection;
         this.lost = lost;
+        this.reopenFailed = reopenFailed;
     }
 
     /** Opens the channel on {@code on}, in a new epoch, the old epoch's deliveries taken out first. */
@@ -146,6 +150,7 @@ final class SessionChannel implements SessionTransport {
                 return true;
             } catch (IOException | RuntimeException e) {
                 failedReopens.incrementAndGet();
+                reopenFailed.accept(e);
                 return false;
             }
         } finally {

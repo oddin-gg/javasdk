@@ -15,29 +15,44 @@ class RefusalsTest {
     private final Refusals refusals = new Refusals(3, Duration.ofMinutes(1), clock);
 
     @Test
-    void threeWithinAMinuteAreEnough() {
+    void threeInAFewSecondsAreNotEnough() {
+        // the production backoff tries again after 1, 2 and 4 s
         assertThat(refusals.refusedTooOften()).isFalse();
-        now = now.plusSeconds(20);
+        now = now.plusSeconds(1);
         assertThat(refusals.refusedTooOften()).isFalse();
-        now = now.plusSeconds(20);
-        assertThat(refusals.refusedTooOften()).isTrue();
+        now = now.plusSeconds(2);
+        assertThat(refusals.refusedTooOften()).as("three, but over 3 s only").isFalse();
+        now = now.plusSeconds(4);
+        assertThat(refusals.refusedTooOften()).isFalse();
     }
 
     @Test
-    void oneOlderThanAMinuteNoLongerCounts() {
+    void refusalsThatGoOnForTheWindowAreEnough() {
         refusals.refusedTooOften();
+        now = now.plusSeconds(30);
         refusals.refusedTooOften();
-        now = now.plusSeconds(61);
+        now = now.plusSeconds(30);
         assertThat(refusals.refusedTooOften())
-                .as("the first two are over a minute old")
-                .isFalse();
+                .as("three, over the whole minute")
+                .isTrue();
+        assertThat(refusals.count()).isEqualTo(3);
+        assertThat(refusals.span()).isEqualTo(Duration.ofMinutes(1));
+    }
+
+    @Test
+    void fewerThanEnoughAreNotEnoughHoweverLong() {
+        refusals.refusedTooOften();
+        now = now.plusSeconds(120);
+        assertThat(refusals.refusedTooOften()).as("two, over two minutes").isFalse();
     }
 
     @Test
     void aConnectionInBetweenStartsTheCountAgain() {
         refusals.refusedTooOften();
-        refusals.clear();
         refusals.refusedTooOften();
+        now = now.plusSeconds(61);
+        refusals.clear();
         assertThat(refusals.refusedTooOften()).isFalse();
+        assertThat(refusals.count()).isEqualTo(1);
     }
 }

@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.config;
 
 import java.time.Duration;
 import java.util.Locale;
+import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
 
 /** Builds a feed's configuration: an environment and an access token are required, the rest has defaults. */
@@ -25,6 +26,7 @@ public final class OddsFeedConfigurationBuilder {
     private int restConcurrencyLimit = OddsFeedConfiguration.DEFAULT_REST_CONCURRENCY_LIMIT;
     private @Nullable Duration startupTimeout;
     private int amqpPrefetch = OddsFeedConfiguration.DEFAULT_AMQP_PREFETCH;
+    private @Nullable SSLContext messagingSslContext;
     private int maxMessageSize = OddsFeedConfiguration.DEFAULT_MAX_MESSAGE_SIZE;
 
     /** Public because 0.0.x's constructor was, to Java callers; {@code OddsFeed.getOddsFeedConfigurationBuilder()} makes one. */
@@ -174,6 +176,16 @@ public final class OddsFeedConfigurationBuilder {
         return this;
     }
 
+    /**
+     * The TLS context to check the feed broker's certificate with, instead of the JVM's default: for
+     * a truststore of its own, or a proxy that inspects TLS. The certificate and the broker's host
+     * name are always checked; 0.0.x trusted any certificate. New in 1.0.
+     */
+    public OddsFeedConfigurationBuilder setMessagingSslContext(SSLContext context) {
+        this.messagingSslContext = context;
+        return this;
+    }
+
     private static Duration positive(Duration duration, String what) {
         if (!duration.isPositive()) {
             throw new IllegalArgumentException(what + " must be positive, was " + duration);
@@ -213,6 +225,7 @@ public final class OddsFeedConfigurationBuilder {
                 restConcurrencyLimit,
                 startup != null ? startup : httpClientTimeout.multipliedBy(OddsFeedConfiguration.STARTUP_TIMEOUTS),
                 amqpPrefetch,
-                maxMessageSize);
+                maxMessageSize,
+                messagingSslContext);
     }
 }

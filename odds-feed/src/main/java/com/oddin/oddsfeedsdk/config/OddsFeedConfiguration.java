@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.config;
 
 import java.time.Duration;
 import java.util.Locale;
+import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
 
 /** A feed's configuration; {@link OddsFeedConfigurationBuilder} makes one. */
@@ -41,6 +42,7 @@ public final class OddsFeedConfiguration {
     private final int restConcurrencyLimit;
     private final Duration startupTimeout;
     private final int amqpPrefetch;
+    private final @Nullable SSLContext messagingSslContext;
     private final int maxMessageSize;
 
     /**
@@ -77,7 +79,8 @@ public final class OddsFeedConfiguration {
                 DEFAULT_REST_CONCURRENCY_LIMIT,
                 DEFAULT_HTTP_CLIENT_TIMEOUT.multipliedBy(STARTUP_TIMEOUTS),
                 DEFAULT_AMQP_PREFETCH,
-                DEFAULT_MAX_MESSAGE_SIZE);
+                DEFAULT_MAX_MESSAGE_SIZE,
+                null);
     }
 
     OddsFeedConfiguration(
@@ -97,7 +100,8 @@ public final class OddsFeedConfiguration {
             int restConcurrencyLimit,
             Duration startupTimeout,
             int amqpPrefetch,
-            int maxMessageSize) {
+            int maxMessageSize,
+            @Nullable SSLContext messagingSslContext) {
         this.accessToken = accessToken;
         this.defaultLocale = defaultLocale;
         this.maxInactivitySeconds = maxInactivitySeconds;
@@ -115,6 +119,7 @@ public final class OddsFeedConfiguration {
         this.startupTimeout = startupTimeout;
         this.amqpPrefetch = amqpPrefetch;
         this.maxMessageSize = maxMessageSize;
+        this.messagingSslContext = messagingSslContext;
     }
 
     public String getAccessToken() {
@@ -206,6 +211,15 @@ public final class OddsFeedConfiguration {
      */
     public int getMaxMessageSize() {
         return maxMessageSize;
+    }
+
+    /**
+     * The TLS context the feed's broker connection checks the broker's certificate with, or null for
+     * the JVM's default. The certificate and the broker's host name are always checked; 0.0.x trusted
+     * any certificate. New in 1.0.
+     */
+    public @Nullable SSLContext getMessagingSslContext() {
+        return messagingSslContext;
     }
 
     /** 0.0.x's companion object; the constants are on the class. */

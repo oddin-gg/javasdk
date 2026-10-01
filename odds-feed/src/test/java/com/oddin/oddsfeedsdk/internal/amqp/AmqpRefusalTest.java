@@ -7,43 +7,69 @@ import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import java.time.Duration;
+import java.time.InstantSource;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
-/** A broker that refuses the login: at open, and three times in a row while reconnecting. */
+/**
+ * A broker that refuses the login: at open, and over and over while reconnecting, which ends only
+ * once the refusals have gone on for the whole window - here two seconds, for the test to wait out.
+ */
 class AmqpRefusalTest {
 
+    private static final Duration WINDOW = Duration.ofSeconds(2);
+
     @Test
-    void aConnectionThatCameUpInBetweenStartsTheCountOfRefusalsAgain() throws Exception {
+    void aConnectionThatCameUpInBetweenStartsTheRefusalsAgain() throws Exception {
         try (FakeFeed feed = FakeFeed.start()) {
             var events = new Recorded();
-            try (var transport =
-                    new AmqpTransport(AmqpTransportTest.settings(feed, 10, 1 << 20), FakeFeed.EXCHANGE, events, null)) {
-                transport.addSession(RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true));
+            try (var transport = transport(feed, events)) {
                 transport.open();
 
-                // one refusal, then the connection comes up again
+                // two refusals, then the connection comes up again - and the window passes
+                long firstPhase = System.nanoTime();
                 feed.refuseVirtualHost();
                 feed.closeConnections();
-                awaitRefusals(feed, 1);
+                awaitRefusals(feed, 2);
                 feed.allowLogins();
                 events.await(event -> event.equals("up") && events.count("up") == 2, Duration.ofSeconds(30));
+                Thread.sleep(Math.max(0, WINDOW.toMillis() + 500 - (System.nanoTime() - firstPhase) / 1_000_000));
 
-                // refused again: the end comes with the third refusal since the connection was up, not
-                // with the second, which would be the third within the minute
-                int refusedBefore = feed.refusedLogins().size();
+                // refused again: counted from now, not from the refusals before the connection came up,
+                // which would end it at the first refusal
                 feed.refuseVirtualHost();
                 feed.closeConnections();
                 events.await(event -> event.startsWith("fatal"), Duration.ofSeconds(30));
-                List<String> sinceUp = events.events.subList(events.events.lastIndexOf("up") + 1, events.events.size());
-                assertThat(sinceUp)
-                        .as("the try after the loss, then one after each of two refusals")
-                        .startsWith("down", "recovering", "recovering", "recovering")
-                        .hasSize(5);
-                assertThat(feed.refusedLogins().size() - refusedBefore).isEqualTo(3);
+                assertThat(recoveringSinceTheLastUp(events))
+                        .as("tries since the connection was up, until their refusals went on for the window")
+                        .isGreaterThanOrEqualTo(4);
                 assertThat(transport.hasFailed()).isTrue();
             }
         }
+    }
+
+    private static AmqpTransport transport(FakeFeed feed, Recorded events) {
+        var transport = new AmqpTransport(
+                AmqpTransportTest.settings(feed, 10, 1 << 20),
+                FakeFeed.EXCHANGE,
+                events,
+                null,
+                InstantSource.system(),
+                WINDOW);
+        transport.addSession(RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true));
+        return transport;
+    }
+
+    /**
+     * The tries since the connection was last up: the one after the loss, then one after each
+     * refusal that did not end it. With backoffs from 100 ms, three refusals come within a second,
+     * and a window of two seconds takes four at least.
+     */
+    private static long recoveringSinceTheLastUp(Recorded events) {
+        List<String> told = List.copyOf(events.events);
+        return told.subList(told.lastIndexOf("up") + 1, told.size()).stream()
+                .filter("recovering"::equals)
+                .count();
     }
 
     private static void awaitRefusals(FakeFeed feed, int count) throws InterruptedException {
@@ -55,26 +81,29 @@ class AmqpRefusalTest {
     }
 
     @Test
-    void threeRefusalsWithinAMinuteEndTheReconnectingAndOneAtOpenFailsIt() throws Exception {
+    void refusalsThatGoOnForTheWindowEndTheReconnectingAndOneAtOpenFailsIt() throws Exception {
         try (FakeFeed feed = FakeFeed.start()) {
             var events = new Recorded();
-            try (var transport =
-                    new AmqpTransport(AmqpTransportTest.settings(feed, 10, 1 << 20), FakeFeed.EXCHANGE, events, null)) {
-                transport.addSession(RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true));
+            try (var transport = transport(feed, events)) {
                 transport.open();
 
                 // the virtual host refused: the broker's reason quotes the user, which is the token
                 feed.refuseVirtualHost();
                 feed.closeConnections();
-                events.await(
-                        event -> event.startsWith("fatal: the broker refused the login 3 times"),
-                        Duration.ofSeconds(30));
+                events.await(event -> event.startsWith("fatal"), Duration.ofSeconds(30));
+                assertThat(recoveringSinceTheLastUp(events))
+                        .as("not at the third refusal, within a second: once they went on for the window")
+                        .isGreaterThanOrEqualTo(4);
                 assertThat(transport.hasFailed()).isTrue();
+                assertThat(events.events)
+                        .anySatisfy(event -> assertThat(event)
+                                .matches("fatal: the broker refused the login \\d+ times over [2-9] s: .*"));
                 assertThat(events.reasons.getFirst())
                         .as("why the first try came")
                         .contains("closed by the fake feed");
                 assertThat(events.reasons.subList(1, events.reasons.size()))
                         .as("why the next ones did")
+                        .hasSizeGreaterThanOrEqualTo(3)
                         .allSatisfy(reason ->
                                 assertThat(reason).contains("NOT_ALLOWED").contains(Failure.TOKEN));
                 assertThat(String.join(" ", events.told)).doesNotContain("test-token");
@@ -90,11 +119,10 @@ class AmqpRefusalTest {
                         .as("the fatal cause chain")
                         .doesNotContain("test-token")
                         .contains(Failure.TOKEN);
-                assertThat(events.count("recovering")).isEqualTo(3);
                 int refused = feed.refusedLogins().size();
                 Thread.sleep(1_000);
                 assertThat(feed.refusedLogins())
-                        .as("no more tries after the third")
+                        .as("no more tries after the end")
                         .hasSize(refused);
             }
 
