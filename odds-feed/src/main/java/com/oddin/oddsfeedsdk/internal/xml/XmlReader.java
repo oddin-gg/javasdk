@@ -39,7 +39,8 @@ final class XmlReader {
     static final int MAX_DEPTH = 64;
 
     /**
-     * The most distinct element and attribute names in one document; the schemas have about a
+     * The most distinct names in one document - every name the parser keeps: element and attribute
+     * names, their prefixes and namespaces, and the namespaces declared; the schemas have about a
      * hundred. Woodstox keeps names in a table that searches colliding ones one by one, so a document
      * of many names built to share a hash would cost it time in the square of their number, where
      * the JDK's parser randomises its hash.
@@ -156,7 +157,7 @@ final class XmlReader {
      * namespaces declared - and refuses any processing instruction, which neither the feed nor the
      * API sends.
      */
-    private static final class NameLimit extends StreamReaderDelegate {
+    static final class NameLimit extends StreamReaderDelegate {
         private final Set<String> names = new HashSet<>();
 
         NameLimit(XMLStreamReader reader) {
@@ -183,6 +184,43 @@ final class XmlReader {
                 throw new XMLStreamException("a processing instruction", getLocation());
             }
             return event;
+        }
+
+        /** As the interface's own, but moving through {@link #next}, so nothing gets past the limit. */
+        @Override
+        public int nextTag() throws XMLStreamException {
+            int event = next();
+            while (((event == XMLStreamConstants.CHARACTERS || event == XMLStreamConstants.CDATA) && isWhiteSpace())
+                    || event == XMLStreamConstants.SPACE
+                    || event == XMLStreamConstants.COMMENT) {
+                event = next();
+            }
+            if (event != XMLStreamConstants.START_ELEMENT && event != XMLStreamConstants.END_ELEMENT) {
+                throw new XMLStreamException("expected a start or an end tag", getLocation());
+            }
+            return event;
+        }
+
+        /** As the interface's own, but moving through {@link #next}, so nothing gets past the limit. */
+        @Override
+        public String getElementText() throws XMLStreamException {
+            if (getEventType() != XMLStreamConstants.START_ELEMENT) {
+                throw new XMLStreamException("not at a start tag", getLocation());
+            }
+            var text = new StringBuilder();
+            for (int event = next(); event != XMLStreamConstants.END_ELEMENT; event = next()) {
+                switch (event) {
+                    case XMLStreamConstants.CHARACTERS,
+                            XMLStreamConstants.CDATA,
+                            XMLStreamConstants.SPACE,
+                            XMLStreamConstants.ENTITY_REFERENCE -> text.append(getText());
+                    case XMLStreamConstants.COMMENT -> {
+                        // skipped, as the interface says
+                    }
+                    default -> throw new XMLStreamException("an element's text holds more than text", getLocation());
+                }
+            }
+            return text.toString();
         }
 
         private void seen(@Nullable String name) throws XMLStreamException {

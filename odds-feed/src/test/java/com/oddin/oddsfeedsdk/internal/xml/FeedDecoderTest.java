@@ -182,10 +182,9 @@ class FeedDecoderTest {
         var oneTag = new StringBuilder("<producers response_code=\"OK\"");
         many.forEach(name -> oneTag.append(" xmlns:").append(name).append("=\"u\""));
         String tag = oneTag.append("/>").toString();
+        var rest = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES);
         long started = System.nanoTime();
-        assertThatThrownBy(
-                        () -> RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES).decode(bytes(tag)))
-                .isInstanceOf(DecodeException.class);
+        assertThatThrownBy(() -> rest.decode(bytes(tag))).isInstanceOf(DecodeException.class);
         assertThat(Duration.ofNanos(System.nanoTime() - started))
                 .as("stopped by the attribute limit as the tag is read")
                 .isLessThan(Duration.ofSeconds(1));
@@ -193,6 +192,45 @@ class FeedDecoderTest {
         assertThatThrownBy(() -> lenient.decode(bytes(ALIVE + "<?" + names.getFirst() + " x?>")))
                 .isInstanceOf(DecodeException.class)
                 .hasMessageContaining("processing instruction");
+    }
+
+    @Test
+    void anElementMayCarrySixtyFourAttributesAndNoMore() throws DecodeException {
+        assertThat(lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES + 1) + "</alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTES));
+    }
+
+    @Test
+    void movingByTagOrReadingTextGoesThroughTheLimitToo() throws Exception {
+        var names = new ArrayList<String>();
+        colliding("", 10, names);
+        var body = new StringBuilder("<r>");
+        names.forEach(name -> body.append('<').append(name).append("/>"));
+        String hostile = body.append("</r>").toString();
+        var inputs = javax.xml.stream.XMLInputFactory.newDefaultFactory();
+        var byTag = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader(hostile)));
+        assertThatThrownBy(() -> {
+                    while (byTag.hasNext()) {
+                        byTag.nextTag();
+                    }
+                })
+                .isInstanceOf(javax.xml.stream.XMLStreamException.class)
+                .hasMessageContaining("distinct names");
+        var byText =
+                new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>a<?x y?>b</r>")));
+        byText.nextTag();
+        assertThatThrownBy(byText::getElementText).hasMessageContaining("processing instruction");
+    }
+
+    private static String attributes(int count) {
+        var tag = new StringBuilder("<x");
+        for (int i = 0; i < count; i++) {
+            tag.append(" a").append(i).append("=\"1\"");
+        }
+        return tag.append("/>").toString();
     }
 
     @Test

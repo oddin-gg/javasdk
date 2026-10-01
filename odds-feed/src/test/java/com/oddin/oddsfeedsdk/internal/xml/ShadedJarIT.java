@@ -136,6 +136,10 @@ class ShadedJarIT {
 
         @Override
         protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            if (name.startsWith("com.ctc.wstx.") || name.startsWith("org.codehaus.stax2.")) {
+                // the build's own Woodstox: the jar must not need it
+                throw new ClassNotFoundException(name + " is not relocated in the jar");
+            }
             if (!name.startsWith("com.oddin.oddsfeedsdk.")) {
                 return super.loadClass(name, resolve);
             }
