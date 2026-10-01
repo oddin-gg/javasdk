@@ -13,6 +13,7 @@ import com.oddin.oddsfeedsdk.internal.cache.Write;
 import com.oddin.oddsfeedsdk.internal.entity.MatchFields.CompetitorRef;
 import com.oddin.oddsfeedsdk.internal.entity.MatchFields.PeriodScoreData;
 import com.oddin.oddsfeedsdk.internal.entity.MatchFields.TvChannelData;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFPeriodScoreType;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFPeriodscoresType;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFScoreboard;
@@ -53,10 +54,13 @@ final class MatchWrites {
 
     private MatchWrites() {}
 
-    /** A summary's match fields, its winner included. */
+    /**
+     * A summary's match fields, its winner included: a status without a winner retracts it, a
+     * summary without a status says nothing of it.
+     */
     static Write summary(RASportEvent event, @Nullable RASportEventStatus status, Locale locale) {
         Write write = match(Write.from(SUMMARY, locale), event);
-        return write.put(WINNER_ID, status == null ? null : urn(status.getWinnerId()));
+        return status == null ? write.unsaid(WINNER_ID) : write.put(WINNER_ID, urn(status.getWinnerId()));
     }
 
     /** What a fixture or a schedule says of the match: it only fills. */
@@ -90,8 +94,10 @@ final class MatchWrites {
     static LiveWrite live(OFSportEventStatus status) {
         OFPeriodscoresType periods = status.getPeriodScores();
         OFScoreboard scoreboard = status.getScoreboard();
+        OFEventStatus eventStatus = status.getStatus();
         return LiveWrite.of()
-                .put(STATUS, EventStatus.fromFeedEventStatus(status.getStatus()))
+                // a message without the attribute says nothing of the status, which is kept
+                .put(STATUS, eventStatus == null ? null : EventStatus.fromFeedEventStatus(eventStatus))
                 .put(MATCH_STATUS_ID, status.getMatchStatus())
                 .put(HOME_SCORE, status.getHomeScore())
                 .put(AWAY_SCORE, status.getAwayScore())
