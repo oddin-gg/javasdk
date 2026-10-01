@@ -52,7 +52,7 @@ public final class Producers implements ProducerManager {
                             required(producer.getDescription(), producer, "description"),
                             producer.isActive(),
                             required(producer.getApiUrl(), producer, "api_url"),
-                            scopes(producer.getScope()),
+                            scopes(required(producer.getScope(), producer, "scope")),
                             producer.getStatefulRecoveryWindowInMinutes(),
                             producer.isActive(),
                             true,
