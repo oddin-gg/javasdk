@@ -198,9 +198,10 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **0.0.x:** `open()` throws the AMQP client's `com.rabbitmq.client.AuthenticationFailureException`,
   not an SDK exception; its message carries the broker's `ACCESS_REFUSED`. The SDK tries once and
   does not retry.
-- **1.0:** To be decided. NEXT.md treats a refused login as permanent after three refusals within
-  one minute, with a fatal error event carrying the broker's reason, and `open()` as all or
-  nothing (section 4, Connection); it does not say what `open()` throws.
+- **1.0:** `open()` throws the SDK's `InitException`, saying the broker refused the login or the
+  virtual host, with the broker's reason as its cause and the access token taken out of both
+  (ticket 21). It tries once: `open()` is all or nothing. Once the feed is open, refusals while
+  reconnecting end it only after they have gone on for a minute, with a fatal event.
 - **Why:** A client catching the SDK's exceptions misses this one.
 - **Pinned by:** `StartupScenarioIT.aTokenTheBrokerRefusesStopsTheStart`
 - **Found:** by test against 0.0.56.
@@ -229,3 +230,17 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **Pinned by:** `ProducerRecoveryScenarioIT.aProducerListedWithBothScopesHasBoth`
 - **Found:** by test against 0.0.56; the effect on sessions by reading the source
   (`MessageInterest`).
+
+## KD-19 The feed's broker connection trusts any certificate
+
+- **0.0.x:** The AMQP connection is made with `useSslProtocol()` and no trust of its own, which
+  in the client 0.0.x uses accepts any certificate and checks no host name.
+- **1.0:** The broker's certificate is checked against the JVM's default trust, and its host name
+  against the certificate (ticket 21). A client with a truststore of its own, or behind a proxy that
+  inspects TLS, gives its own context with `OddsFeedConfigurationBuilder.setMessagingSslContext`. A
+  broker that fails the check fails `open()` with an `InitException` saying it could not be
+  trusted.
+- **Why:** Over a connection that trusts any certificate, anyone on the path can take the login,
+  whose user name is the access token.
+- **Pinned by:** none; the fake broker's certificate is trusted by the JVM default in every test.
+- **Found:** by reading the source (`AMQPConnectionProvider`).

@@ -40,7 +40,7 @@ public enum KnownDifference {
     OLDER_MESSAGE_OVERWRITES_THE_STATUS("KD-13", true),
     STALE_MESSAGE_WRITES_THE_STATUS("KD-14", true),
     CLOSE_AFTER_A_FAILED_START_LOGS_AN_ERROR("KD-15", true),
-    REFUSED_LOGIN_ESCAPES_AS_A_BROKER_EXCEPTION("KD-16", false),
+    REFUSED_LOGIN_ESCAPES_AS_A_BROKER_EXCEPTION("KD-16", true),
     PRODUCER_IN_BOTH_SCOPES_HAS_NONE("KD-18", true);
 
     /** The SDK lines a scenario can run against. */
