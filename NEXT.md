@@ -526,7 +526,9 @@ and REST workers post facts to it; it decides and posts work out.
   StAX parser, which would ignore the JDK's XML hardening the application may rely on.
   DTDs off, external entities off, text parsed as it is reached, not lazily. Woodstox
   searches colliding names one by one where the JDK's parser randomises its hash, so a
-  document may use at most 512 distinct names, and each document's names stay its own. Body
+  document may use at most 512 distinct names - elements, attributes, prefixes and
+  namespaces - an element at most 64 attributes and namespace declarations, and each
+  document's names stay its own. Processing instructions are refused. Body
   size is bounded before decoding by the maximum message size from the delivery
   section; the decoder's own limits bound parser work. One malformed document costs
   one unparsable callback, nothing more.
