@@ -53,9 +53,13 @@ public final class Loader<K, V> {
      */
     public V load(K key) {
         var mine = new Flight<V>();
-        Flight<V> running = inFlight.putIfAbsent(key, mine);
-        Flight<V> flight = running != null ? running : mine;
-        if (running == null) {
+        // joined and counted in one step, so the last to give up cannot miss a caller joining
+        Flight<V> flight = inFlight.compute(key, (k, running) -> {
+            Flight<V> joined = running != null ? running : mine;
+            joined.waiters().incrementAndGet();
+            return joined;
+        });
+        if (flight.equals(mine)) {
             try {
                 // in the map before it starts, so it cannot finish and be removed before it is there
                 fetches.execute(() -> fetch(key, mine));
@@ -66,14 +70,11 @@ public final class Loader<K, V> {
                 throw failure;
             }
         }
-        flight.waiters().incrementAndGet();
+        boolean overran = false;
         try {
             return flight.result().get(wait.toNanos(), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
-            // the last to give up lets go of a fetch that overran, so the next miss starts afresh
-            if (flight.waiters().get() == 1) {
-                inFlight.remove(key, flight);
-            }
+            overran = true;
             throw new ApiException(name + " " + key + " not loaded within " + wait.toMillis() + " ms", null, e);
         } catch (ExecutionException e) {
             throw rethrown(key, e.getCause() != null ? e.getCause() : e);
@@ -81,8 +82,20 @@ public final class Loader<K, V> {
             Thread.currentThread().interrupt();
             throw new ApiException(name + " " + key + ": interrupted", null, e);
         } finally {
-            flight.waiters().decrementAndGet();
+            leave(key, flight, overran);
         }
+    }
+
+    /**
+     * A caller stops waiting. The last of those that ran out of time lets go of the fetch that overran,
+     * so the next miss starts afresh; counted down in the same step as callers join, so two that give
+     * up together cannot both see the other still waiting.
+     */
+    private void leave(K key, Flight<V> flight, boolean overran) {
+        inFlight.compute(key, (k, current) -> {
+            int left = flight.waiters().decrementAndGet();
+            return overran && left == 0 && flight.equals(current) ? null : current;
+        });
     }
 
     /** How many keys are being fetched now. */

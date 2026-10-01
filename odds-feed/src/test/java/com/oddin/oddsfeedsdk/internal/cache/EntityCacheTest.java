@@ -179,6 +179,24 @@ class EntityCacheTest {
     }
 
     @Test
+    void anInvalidationTheSizeBoundForgotStillStopsAFetchThatStartedOnNoEntry() {
+        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), time, time);
+        Stamp onNothing = small.stamp("c1");
+        small.invalidate("c1");
+        for (int i = 0; i < 10_000 && small.remembersInvalidation("c1"); i++) {
+            small.invalidate("other " + i);
+        }
+        assertThat(small.remembersInvalidation("c1"))
+                .as("evicted for room within the hour")
+                .isFalse();
+        assertThat(small.writeAuthoritative("c1", profileWrite(EN, "Before The Change"), onNothing))
+                .isFalse();
+        assertThat(small.writeAuthoritative("c1", profileWrite(EN, "After"), small.stamp("c1")))
+                .as("a fetch that started after it writes")
+                .isTrue();
+    }
+
+    @Test
     void anEntryDroppedAndMadeAgainIsNotTheOneTheFetchStartedWith() {
         profile("c2", EN, "Two", "CZ", "T2", List.of());
         Stamp onEntry = cache.stamp("c2");
@@ -262,6 +280,33 @@ class EntityCacheTest {
         assertThat(entry("c2").get(NAME, EN)).isNull();
         assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "One"), started))
                 .isFalse();
+    }
+
+    @Test
+    void clearStopsAFetchThatStartedOnNoEntry() {
+        Stamp onNothing = cache.stamp("c5");
+        cache.clear();
+        assertThat(cache.writeAuthoritative("c5", profileWrite(EN, "Before The Clear"), onNothing))
+                .isFalse();
+        assertThat(cache.writeAuthoritative("c5", profileWrite(EN, "After"), cache.stamp("c5")))
+                .isTrue();
+    }
+
+    @Test
+    void anAuthoritativeResponseFillsWhatItCarriesOfFieldsAnotherEndpointOwns() {
+        assertThat(cache.writeAuthoritative(
+                        "c1", Write.from(ICONS, EN).put(ICON, "icon.png").put(NAME, "Team"), cache.stamp("c1")))
+                .isTrue();
+        assertThat(entry("c1").get(NAME, EN)).as("filled").isEqualTo("Team");
+        assertThat(entry("c1").isAuthoritative(NAME, EN)).isFalse();
+
+        profile("c1", EN, "Team One", "CZ", "T1", List.of());
+        cache.writeAuthoritative(
+                "c1", Write.from(ICONS, EN).put(ICON, "new.png").put(NAME, "Team"), cache.stamp("c1"));
+        assertThat(entry("c1").get(NAME, EN))
+                .as("the profile's name is not overwritten")
+                .isEqualTo("Team One");
+        assertThat(entry("c1").get(ICON, null)).isEqualTo("new.png");
     }
 
     @Test
