@@ -524,7 +524,10 @@ and REST workers post facts to it; it decides and posts work out.
 - XML models are generated from the vendored schema. Binding customisations keep the
   old class names, packages and getters (section 3).
 - The decoder is the untrusted-input boundary: JAXB on Woodstox, chosen by name, not
-  by whatever StAX provider the application brings. DTDs off, external entities off. Body
+  by whatever StAX provider the application brings. Woodstox ships inside the SDK's jar,
+  relocated and without its service registration, so it never becomes the application's
+  StAX parser, which would ignore the JDK's XML hardening the application may rely on.
+  DTDs off, external entities off, text parsed as it is reached, not lazily. Body
   size is bounded before decoding by the maximum message size from the delivery
   section; the decoder's own limits bound parser work. One malformed document costs
   one unparsable callback, nothing more.
