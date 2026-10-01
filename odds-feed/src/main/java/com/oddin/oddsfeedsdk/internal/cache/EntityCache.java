@@ -46,8 +46,8 @@ public final class EntityCache<K> {
      */
     private final Cache<K, Long> invalidated;
     /**
-     * The newest invalidation that may be forgotten: one whose record the size bound evicted, or a
-     * clear. A fetch that started on no entry before it gives way, since it cannot tell whether that
+     * The newest invalidation that may be forgotten: one whose record aged out or the size bound
+     * evicted, or a clear. A fetch that started on no entry before it gives way, since it cannot tell whether that
      * invalidation was of its key.
      */
     private final AtomicLong forgotten = new AtomicLong();

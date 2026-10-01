@@ -30,8 +30,8 @@ import org.jspecify.annotations.Nullable;
  * REST has since taken over from.
  *
  * <p>The record is bounded, and lives 24 hours after its last write. One the bound evicts while the
- * feed owns its entity - wrote within {@link #STATUS_AGE} - is kept aside, and taken back by the
- * entity's next write or read, so REST does not take over a live entity for want of room. What is
+ * feed owns its entity - wrote within {@link #STATUS_AGE} - is kept aside, read from there, and
+ * taken back by the entity's next write, so REST does not take over a live entity for want of room. What is
  * kept aside is bounded too: once it is as large as the record, it is pruned of what the feed no
  * longer owns - not again before more has been kept aside, when that freed nothing - and what still
  * does not fit is dropped and counted. A record evicted that the feed does not own is gone; whoever
@@ -98,26 +98,25 @@ public final class LiveState<K> {
             return false;
         }
         var admitted = new boolean[1];
+        var taken = new Live[1];
         records.asMap().compute(entity, (k, present) -> {
-            Live current = takeBack(k, present);
+            Live current = takeBack(k, present, taken);
             Mark last = current == null ? null : current.marks().get(producer);
             if (last != null && last.timestamp() > timestamp) {
-                return keep(k, present, current);
+                return current;
             }
             admitted[0] = true;
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
             marks.put(producer, new Mark(timestamp, receivedAt));
             long now = ticker.read();
-            return keep(
-                    k,
-                    present,
-                    new Live(
-                            Map.copyOf(marks),
-                            write.applyTo(valuesOf(current)),
-                            now,
-                            now,
-                            current == null ? null : current.restAt()));
+            return new Live(
+                    Map.copyOf(marks),
+                    write.applyTo(valuesOf(current)),
+                    now,
+                    now,
+                    current == null ? null : current.restAt());
         });
+        release(entity, taken[0]);
         return admitted[0];
     }
 
@@ -134,26 +133,25 @@ public final class LiveState<K> {
     public boolean restWriteIfQuiet(K entity, Instant now, LiveWrite write, BooleanSupplier abandoned) {
         Instant quietSince = now.minus(STATUS_AGE);
         var wrote = new boolean[1];
+        var taken = new Live[1];
         records.asMap().compute(entity, (k, present) -> {
             // one evicted while the feed owned the entity comes back, and is the feed's still
-            Live current = takeBack(k, present);
+            Live current = takeBack(k, present, taken);
             boolean quiet = current == null
                     || current.marks().values().stream()
                             .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
             if (!quiet || abandoned.getAsBoolean()) {
-                return keep(k, present, current);
+                return current;
             }
             wrote[0] = true;
-            return keep(
-                    k,
-                    present,
-                    new Live(
-                            current == null ? Map.of() : current.marks(),
-                            write.applyTo(valuesOf(current)),
-                            ticker.read(),
-                            current == null ? 0 : current.feedAt(),
-                            now));
+            return new Live(
+                    current == null ? Map.of() : current.marks(),
+                    write.applyTo(valuesOf(current)),
+                    ticker.read(),
+                    current == null ? 0 : current.feedAt(),
+                    now);
         });
+        release(entity, taken[0]);
         return wrote[0];
     }
 
@@ -183,26 +181,38 @@ public final class LiveState<K> {
         return dropped.get();
     }
 
-    /** The entity's record: the one held, or the one kept aside when the bound evicted it. */
-    private @Nullable Live takeBack(K entity, @Nullable Live present) {
-        return present != null ? present : kept(entity);
+    /**
+     * The entity's record: the one held, or the one kept aside when the bound evicted it, which
+     * {@code taken} is told of, to be released once the compute has put its result in place.
+     */
+    private @Nullable Live takeBack(K entity, @Nullable Live present, @Nullable Live[] taken) {
+        if (present != null) {
+            return present;
+        }
+        Live live = spilled.get(entity);
+        taken[0] = live;
+        return live == null || aged(live) ? null : live;
     }
 
     private @Nullable Live kept(K entity) {
         Live live = spilled.get(entity);
-        // aged out while kept aside, as it would have in the record
-        return live == null || ticker.read() - live.changedAt() > AGE.toNanos() ? null : live;
+        return live == null || aged(live) ? null : live;
+    }
+
+    /** Aged out while kept aside, as it would have in the record. */
+    private boolean aged(Live live) {
+        return ticker.read() - live.changedAt() > AGE.toNanos();
     }
 
     /**
-     * What a compute returns: one that took its record back from the spill leaves it there no
-     * longer, whatever it returns.
+     * Lets go of what a compute took back from the spill, once its result is in the record: until
+     * then a read still finds it kept aside, and a write that threw leaves it there. A newer one
+     * kept aside since is left alone.
      */
-    private @Nullable Live keep(K entity, @Nullable Live present, @Nullable Live result) {
-        if (present == null) {
-            spilled.remove(entity);
+    private void release(K entity, @Nullable Live taken) {
+        if (taken != null) {
+            spilled.remove(entity, taken);
         }
-        return result;
     }
 
     private void spill(K entity, Live evicted) {
