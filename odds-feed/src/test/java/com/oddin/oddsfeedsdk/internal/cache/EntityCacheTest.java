@@ -91,6 +91,40 @@ class EntityCacheTest {
     }
 
     @Test
+    void anOlderFetchOfAnotherLocaleWritesItsLocaleButLeavesTheNewerSharedFields() {
+        Stamp english = cache.stamp("c1");
+        Stamp german = cache.stamp("c1");
+        cache.writeAuthoritative(
+                "c1", Write.from(PROFILE, DE).put(NAME, "Mannschaft").put(ABBREVIATION, "NEW"), german);
+        assertThat(cache.isNewest("c1", english))
+                .as("a later fetch wrote since")
+                .isFalse();
+        assertThat(cache.isNewest("c1", german)).isTrue();
+        cache.writeAuthoritative("c1", Write.from(PROFILE, EN).put(NAME, "Team").put(ABBREVIATION, "OLD"), english);
+        Entry entry = entry("c1");
+        assertThat(entry.get(NAME, EN)).as("its own locale").isEqualTo("Team");
+        assertThat(entry.get(ABBREVIATION, null)).as("the later fetch's").isEqualTo("NEW");
+        assertThat(entry.get(PLAYERS, null))
+                .as("always sent, but not this older fetch's to clear")
+                .isNull();
+        assertThat(cache.isFresh("c1", PROFILE, EN)).isTrue();
+    }
+
+    @Test
+    void aFieldTheResponseSaysNothingOfIsKeptThoughItsEndpointAlwaysSendsIt() {
+        profile("c1", EN, "Team One", "CZ", "T1", List.of("p1"));
+        cache.writeAuthoritative(
+                "c1",
+                Write.from(PROFILE, EN)
+                        .put(NAME, "Team One")
+                        .put(COUNTRY, "CZ")
+                        .put(PLAYERS, List.of("p1"))
+                        .unsaid(ABBREVIATION),
+                stamp("c1"));
+        assertThat(entry("c1").get(ABBREVIATION, null)).isEqualTo("T1");
+    }
+
+    @Test
     void aSharedFieldIsClearedByOmissionOnlyWhenTheEndpointAlwaysSendsIt() {
         var alwaysSendsNothing = new Endpoint("profile, loosely", Set.of(NAME, ABBREVIATION), Set.of());
         cache.writeAuthoritative(

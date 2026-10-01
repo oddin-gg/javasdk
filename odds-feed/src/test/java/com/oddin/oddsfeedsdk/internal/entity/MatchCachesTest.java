@@ -4,6 +4,7 @@ import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.*;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.github.benmanes.caffeine.cache.Ticker;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
@@ -210,8 +211,106 @@ class MatchCachesTest {
     }
 
     @Test
+    void aSummaryFetchedBeforeAFixtureChangeWritesNeitherTheMatchNorItsLiveState() throws Exception {
+        api.respond(SUMMARY_EN, Reply.of(200, SUMMARY).after(Duration.ofMillis(500)), Reply.of(500, "<error/>"));
+        Future<Entry> reading = threads.submit(() -> caches.match(MATCH, Locale.ENGLISH));
+        api.awaitRequest("GET", SUMMARY_EN);
+        caches.fixtureChange(MATCH);
+        assertThatThrownBy(() -> reading.get(10, TimeUnit.SECONDS))
+                .as("asked again after the change, and the API failed")
+                .hasCauseInstanceOf(com.oddin.oddsfeedsdk.exceptions.ApiException.class);
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(caches.cachedMatch(MATCH))
+                .as("the tombstone only")
+                .satisfiesAnyOf(
+                        entry -> assertThat(entry).isNull(),
+                        entry -> assertThat(requireNonNull(entry).get(NAME, Locale.ENGLISH))
+                                .isNull());
+        assertThat(caches.cachedLive(MATCH)).as("nor its live status").isNull();
+    }
+
+    @Test
+    void aReadAfterAFixtureChangeLoadsTheChangedMatchThoughALoadFromBeforeWasUnderWay() throws Exception {
+        api.respond(
+                SUMMARY_EN,
+                Reply.of(200, SUMMARY).after(Duration.ofMillis(500)),
+                Reply.of(200, SUMMARY.replace("Team Alpha vs Team Beta", "Team Alpha vs Team Gamma")));
+        Future<Entry> before = threads.submit(() -> caches.match(MATCH, Locale.ENGLISH));
+        api.awaitRequest("GET", SUMMARY_EN);
+        caches.fixtureChange(MATCH);
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
+                .isEqualTo("Team Alpha vs Team Gamma");
+        assertThat(before.get(10, TimeUnit.SECONDS).get(NAME, Locale.ENGLISH)).isEqualTo("Team Alpha vs Team Gamma");
+    }
+
+    @Test
+    void aFixtureFetchedBeforeAFixtureChangeWritesNothing() throws Exception {
+        api.respond(
+                FIXTURE_EN,
+                Reply.of(200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"))
+                        .after(Duration.ofMillis(500)),
+                Reply.of(500, "<error/>"));
+        Future<Entry> reading = threads.submit(() -> caches.fixture(MATCH));
+        api.awaitRequest("GET", FIXTURE_EN);
+        caches.fixtureChange(MATCH);
+        assertThatThrownBy(() -> reading.get(10, TimeUnit.SECONDS))
+                .hasCauseInstanceOf(com.oddin.oddsfeedsdk.exceptions.ApiException.class);
+        Entry fixture = caches.cachedFixture(MATCH);
+        assertThat(fixture == null || fixture.get(START_TIME, null) == null).isTrue();
+        Entry match = caches.cachedMatch(MATCH);
+        assertThat(match == null || match.get(NAME, Locale.ENGLISH) == null)
+                .as("nor its fill of the match")
+                .isTrue();
+    }
+
+    @Test
+    void aSummaryWithoutAStatusKeepsTheWinnerAndIsNotAskedAgainForTheLiveState() {
+        String withoutStatus = SUMMARY.substring(0, SUMMARY.indexOf("    <sport_event_status")) + "</match_summary>\n";
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        api.respond(SUMMARY_DE, 200, withoutStatus);
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(WINNER_ID, null)).isNotNull();
+        // the newer summary, in another locale, has no status at all
+        Entry match = caches.match(MATCH, Locale.GERMAN);
+        assertThat(match.get(NAME, Locale.GERMAN)).isEqualTo("Team Alpha vs Team Beta");
+        assertThat(match.get(WINNER_ID, null))
+                .as("no status: nothing said of the winner")
+                .isNotNull();
+
+        var other = URN.parse("od:match:198316");
+        String otherSummary = "/v1/sports/en/sport_events/od:match:198316/summary";
+        api.respond(otherSummary, 200, withoutStatus.replace("od:match:198314", "od:match:198316"));
+        LiveValues live = caches.live(other);
+        caches.live(other);
+        assertThat(api.requests("GET", otherSummary))
+                .as("REST was asked, and answered: not again")
+                .hasSize(1);
+        assertThat(requireNonNull(live).get(STATUS)).isNull();
+    }
+
+    @Test
+    void aFixtureLoadedAfterTheSummaryLeavesItsFieldsAlone() {
+        api.respond(
+                SUMMARY_EN,
+                200,
+                SUMMARY.replace(
+                        "scheduled=\"2026-08-26T18:00:00\" status", "scheduled=\"2026-08-26T19:00:00\" status"));
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        caches.match(MATCH, Locale.ENGLISH);
+        assertThat(caches.fixture(MATCH).get(START_TIME, null)).isEqualTo(Instant.parse("2026-08-26T18:00:00Z"));
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(SCHEDULED, null))
+                .as("the summary's; the fixture only fills")
+                .isEqualTo(Instant.parse("2026-08-26T19:00:00Z"));
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(EXTRA_INFO, null))
+                .as("what the summary had not, the fixture filled")
+                .containsEntry("sport_format", "esports");
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(1);
+    }
+
+    @Test
     void clearDropsMatchesAndFixturesButNotTheLiveState() {
         api.respond(SUMMARY_EN, 200, SUMMARY);
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        caches.fixture(MATCH);
         caches.match(MATCH, Locale.ENGLISH);
         var live = new OFSportEventStatus();
         live.setStatus(OFEventStatus.LIVE);
@@ -219,6 +318,8 @@ class MatchCachesTest {
         caches.clear();
         caches.match(MATCH, Locale.ENGLISH);
         assertThat(api.requests("GET", SUMMARY_EN)).hasSize(2);
+        caches.fixture(MATCH);
+        assertThat(api.requests("GET", FIXTURE_EN)).hasSize(2);
         assertThat(statusOf(caches.live(MATCH))).isEqualTo(EventStatus.Live);
     }
 

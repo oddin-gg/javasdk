@@ -159,6 +159,28 @@ class MatchWritesTest {
     }
 
     @Test
+    void periodScoresAndAScoreboardLeftOutAreKeptFromEitherSide() throws DecodeException {
+        var cricket = decode("rest/match_summary/match_summary_cricket_scoreboard.xml", RAMatchSummaryEndpoint.class);
+        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(cricket.getSportEventStatus()), () -> false);
+        var before = requireNonNull(live.get(MATCH));
+
+        var bare = new com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus();
+        bare.setStatus("live");
+        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(bare), () -> false);
+        var feedBare = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(feedBare));
+
+        var after = requireNonNull(live.get(MATCH));
+        assertThat(after.get(PERIOD_SCORES))
+                .isEqualTo(before.get(PERIOD_SCORES))
+                .isNotEmpty();
+        assertThat(after.get(SCOREBOARD)).isEqualTo(before.get(SCOREBOARD)).isNotNull();
+        assertThat(after.get(STATUS))
+                .as("a feed status without its attribute says nothing of it")
+                .isEqualTo(EventStatus.Live);
+    }
+
+    @Test
     void aFixtureWritesItsOwnFieldsAndFillsTheMatch() throws DecodeException {
         var fixture = decode("rest/fixtures_fixture/fixtures_fixture.xml", RAFixturesEndpoint.class)
                 .getFixture();
