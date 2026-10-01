@@ -167,6 +167,10 @@ public final class LiveState<K> {
             live = kept(entity);
         }
         if (live == null) {
+            // a write took it back, or the bound kept it aside, between the two looks
+            live = records.getIfPresent(entity);
+        }
+        if (live == null) {
             return null;
         }
         Instant lastFeed = live.marks().values().stream()
@@ -206,12 +210,15 @@ public final class LiveState<K> {
 
     /**
      * Lets go of what a compute took back from the spill, once its result is in the record: until
-     * then a read still finds it kept aside, and a write that threw leaves it there. A newer one
-     * kept aside since is left alone.
+     * then a read still finds it kept aside, and a write that threw leaves it there. Only while the
+     * record holds the entity: the bound can evict it again within the same call, and keep the very
+     * same record aside once more. A newer one kept aside since is left alone.
      */
     private void release(K entity, @Nullable Live taken) {
         if (taken != null) {
-            spilled.remove(entity, taken);
+            spilled.computeIfPresent(
+                    entity,
+                    (k, kept) -> kept.equals(taken) && records.policy().getIfPresentQuietly(k) != null ? null : kept);
         }
     }
 
@@ -224,7 +231,8 @@ public final class LiveState<K> {
                 return;
             }
         }
-        spilled.merge(entity, evicted, (kept, newer) -> newer.changedAt() - kept.changedAt() > 0 ? newer : kept);
+        // what the record evicts is never older than what was kept aside for the same entity
+        spilled.merge(entity, evicted, (kept, newer) -> newer.changedAt() - kept.changedAt() >= 0 ? newer : kept);
     }
 
     /**
