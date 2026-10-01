@@ -281,17 +281,19 @@ public final class ProfileCaches {
         Stamp started = sports.stampForMany(abandoned);
         Instant at = clock.instant();
         var ids = new ArrayList<URN>();
+        boolean allWritten = true;
         for (RASportExtended sport : client.fetchSports(locale, deadline).getSport()) {
             URN id = ApiValues.urn(sport.getId());
             if (id != null) {
                 ids.add(id);
-                sports.writeAuthoritative(id, ProfileWrites.sport(sport, locale), started);
+                allWritten &= sports.writeAuthoritative(id, ProfileWrites.sport(sport, locale), started);
             }
         }
-        if (!abandoned.getAsBoolean()) {
+        // a list a clear overtook, or one a newer list overtook, is not the one to read from
+        if (allWritten && !abandoned.getAsBoolean()) {
             sportLists.put(locale, new SportList(List.copyOf(ids), at));
         }
-        return true;
+        return allWritten;
     }
 
     private void fillSport(@Nullable RASport sport, Locale locale, Stamp started) {

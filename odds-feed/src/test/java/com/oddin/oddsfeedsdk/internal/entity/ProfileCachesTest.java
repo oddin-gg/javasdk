@@ -185,6 +185,76 @@ class ProfileCachesTest {
         assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
         assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(2);
         assertThat(caches.cachedCompetitor(COMPETITOR)).isNotNull();
+        assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN))
+                .as("the list loaded after the clear writes its sports")
+                .isEqualTo("Counter-Strike 2");
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+    }
+
+    @Test
+    void aTournamentsCompetitorsAreItsOwnListsOrElseTheInfos() {
+        String own = Fixtures.read("rest/tournament_info/tournament_info.xml")
+                .replace(
+                        "<sport id=\"od:sport:1\" name=\"League of Legends\" abbreviation=\"LoL\"/>\n    </tournament>",
+                        "<sport id=\"od:sport:1\" name=\"League of Legends\" abbreviation=\"LoL\"/>\n"
+                                + "        <competitors><competitor id=\"od:competitor:2\" name=\"Two\" abbreviation=\"T2\" underage=\"0\"/>"
+                                + "<competitor id=\"od:competitor:1\" name=\"One\" abbreviation=\"T1\" underage=\"0\"/></competitors>\n"
+                                + "    </tournament>\n"
+                                + "    <competitors><competitor id=\"od:competitor:9\" name=\"Nine\" abbreviation=\"T9\" underage=\"0\"/></competitors>");
+        api.respond(TOURNAMENT_INFO_EN, 200, own);
+        assertThat(caches.tournament(TOURNAMENT, EN, null).get(TOURNAMENT_COMPETITORS, null))
+                .as("the tournament element's, in its order")
+                .containsExactly(URN.parse("od:competitor:2"), URN.parse("od:competitor:1"));
+        Entry listed = requireNonNull(caches.cachedCompetitor(URN.parse("od:competitor:9")));
+        assertThat(listed.get(COMPETITOR_NAME, EN)).as("both lists fill").isEqualTo("Nine");
+        assertThat(listed.isAuthoritative(COMPETITOR_NAME, EN)).isFalse();
+
+        var other = URN.parse("od:tournament:7");
+        api.respond(
+                "/v1/sports/en/tournaments/od:tournament:7/info",
+                200,
+                Fixtures.read("rest/tournament_info/tournament_info.xml")
+                        .replace("od:tournament:1042", "od:tournament:7")
+                        .replace(
+                                "</tournament>",
+                                "</tournament>\n    <competitors><competitor id=\"od:competitor:9\" name=\"Nine\""
+                                        + " abbreviation=\"T9\" underage=\"0\"/></competitors>"));
+        assertThat(caches.tournament(other, EN, null).get(TOURNAMENT_COMPETITORS, null))
+                .as("none in the element: the info's own")
+                .containsExactly(URN.parse("od:competitor:9"));
+    }
+
+    @Test
+    void aSportListAClearOvertookIsNotReadFrom() throws Exception {
+        api.respond(
+                SPORTS_EN,
+                FakeRestServer.Reply.of(200, Fixtures.read("rest/sports/sports.xml"))
+                        .after(Duration.ofMillis(500)),
+                FakeRestServer.Reply.of(
+                        200, Fixtures.read("rest/sports/sports.xml").replace("Counter-Strike 2", "CS2 again")));
+        var loading = threads.submit(() -> caches.sports(EN, null));
+        api.awaitRequest("GET", SPORTS_EN);
+        caches.clear();
+        loading.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN))
+                .as("the list from before the clear wrote nothing, so it is loaded again")
+                .isEqualTo("CS2 again");
+    }
+
+    @Test
+    void eachLocaleHasASportListOfItsOwn() {
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        api.respond(
+                "/v1/sports/de/sports",
+                200,
+                Fixtures.read("rest/sports/sports.xml").replace("Counter-Strike 2", "Gegenschlag 2"));
+        caches.sports(EN, null);
+        assertThat(caches.sport(CS2, Locale.GERMAN, null).get(SPORT_NAME, Locale.GERMAN))
+                .isEqualTo("Gegenschlag 2");
+        assertThat(api.requests("GET", "/v1/sports/de/sports")).hasSize(1);
+        caches.sports(EN, null);
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(1);
+        assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
     }
 
     /** One clock for a test to move: the SDK's and Caffeine's. */
