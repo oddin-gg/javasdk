@@ -9,6 +9,7 @@ import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.LogCapture;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
+import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.exceptions.OddsFeedSdkException;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
@@ -133,13 +134,26 @@ class StartupScenarioIT {
                     .isNotNull();
             assertThat(feed.refusedLogins()).as("refused logins").isNotEmpty().containsOnly(Sdk.TOKEN);
             assertThat(feed.openConnections()).as("connections on the broker").isEmpty();
-            KnownDifference.REFUSED_LOGIN_ESCAPES_AS_A_BROKER_EXCEPTION.expectLegacy(() -> {
-                assertThat(failure)
-                        .as("what open() threw")
-                        .isNotInstanceOf(OddsFeedSdkException.class)
-                        .hasMessageContaining("ACCESS_REFUSED");
-                assertThat(feed.refusedLogins()).as("refused logins, one try").hasSize(1);
-            });
+            KnownDifference.REFUSED_LOGIN_ESCAPES_AS_A_BROKER_EXCEPTION.expect(
+                    () -> {
+                        assertThat(failure)
+                                .as("what open() threw")
+                                .isNotInstanceOf(OddsFeedSdkException.class)
+                                .hasMessageContaining("ACCESS_REFUSED");
+                        assertThat(feed.refusedLogins())
+                                .as("refused logins, one try")
+                                .hasSize(1);
+                    },
+                    () -> {
+                        assertThat(failure)
+                                .as("what open() threw")
+                                .isInstanceOf(InitException.class)
+                                .hasMessageContaining("refused the login or the virtual host")
+                                .hasMessageNotContaining(Sdk.TOKEN);
+                        assertThat(feed.refusedLogins())
+                                .as("refused logins, one try")
+                                .hasSize(1);
+                    });
         }
     }
 }
