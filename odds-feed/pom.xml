@@ -239,6 +239,11 @@
                 <relocation>
                   <pattern>org.codehaus.stax2</pattern>
                   <shadedPattern>com.oddin.oddsfeedsdk.internal.woodstox.stax2</shadedPattern>
+                  <excludes>
+                    <!-- property names JAXB asks the parser for: renamed, it would intern every name itself -->
+                    <exclude>org.codehaus.stax2.internNames</exclude>
+                    <exclude>org.codehaus.stax2.internNsUris</exclude>
+                  </excludes>
                 </relocation>
               </relocations>
               <filters>
@@ -277,6 +282,7 @@
         <configuration>
           <systemPropertyVariables>
             <shaded.jar>${project.build.directory}/${project.build.finalName}.jar</shaded.jar>
+            <published.pom>${project.basedir}/.flattened-pom.xml</published.pom>
           </systemPropertyVariables>
         </configuration>
         <executions>
