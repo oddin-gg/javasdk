@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.loader;
 
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -204,16 +205,18 @@ class LoaderTest {
                 DEADLINE,
                 MARGIN,
                 virtualThreads);
-        long started = System.nanoTime();
-        Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
+        var failedAt = new java.util.concurrent.ConcurrentHashMap<String, Long>();
+        Future<?> first = virtualThreads.submit(() -> failsAt(loader, "first", failedAt));
+        waitUntil(() -> loader.waiting("m1") == 1);
         Thread.sleep(400);
-        Future<String> late = virtualThreads.submit(() -> loader.load("m1"));
-        assertThatThrownBy(() -> late.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
-        Duration lateFailedAfter = Duration.ofNanos(System.nanoTime() - started);
-        assertThatThrownBy(() -> first.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
-        assertThat(lateFailedAfter)
-                .as("at the flight's deadline, 700 ms after it started, not 700 ms after joining")
-                .isBetween(Duration.ofMillis(650), Duration.ofMillis(1_000));
+        Future<?> late = virtualThreads.submit(() -> failsAt(loader, "late", failedAt));
+        first.get(5, TimeUnit.SECONDS);
+        late.get(5, TimeUnit.SECONDS);
+        // with a deadline of its own the late caller would fail some 400 ms after the first
+        assertThat(Duration.ofNanos(
+                        Math.abs(requireNonNull(failedAt.get("late")) - requireNonNull(failedAt.get("first")))))
+                .as("both at the flight's one deadline")
+                .isLessThan(Duration.ofMillis(200));
         never.countDown();
     }
 
@@ -421,6 +424,12 @@ class LoaderTest {
         waitUntil(() -> matches.get().inFlight() == 0 && competitors.get().inFlight() == 0);
         assertThat(matches.get().load("m1")).isEqualTo("match");
         assertThat(competitors.get().load("c1")).isEqualTo("competitor");
+    }
+
+    /** Loads, expecting the load to fail, and records when it failed. */
+    private static void failsAt(Loader<String, String> loader, String caller, java.util.Map<String, Long> failedAt) {
+        assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
+        failedAt.put(caller, System.nanoTime());
     }
 
     private static void await(CountDownLatch latch) {
