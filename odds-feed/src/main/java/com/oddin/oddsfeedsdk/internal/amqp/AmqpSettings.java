@@ -50,7 +50,7 @@ public record AmqpSettings(
                 configuration.getSelectedEnvironment().getMessagingPort(),
                 virtualHost,
                 configuration.getAccessToken(),
-                null,
+                configuration.getMessagingSslContext(),
                 connectionName,
                 configuration.getAmqpPrefetch(),
                 configuration.getMaxMessageSize(),

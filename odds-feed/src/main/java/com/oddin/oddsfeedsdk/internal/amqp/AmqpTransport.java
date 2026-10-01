@@ -33,6 +33,8 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The feed's one connection to its broker: the SDK's own alive consumer, and a channel per session.
@@ -41,8 +43,9 @@ import org.jspecify.annotations.Nullable;
  * channel, or nothing left open and an exception. After that, a connection the broker or the network
  * takes away is made again, with backoff, and every channel opened again on it in a new epoch -
  * exclusive queues do not survive their connection, so what the broker held for them is gone, and
- * recovery covers it. A refused login or virtual host ends the reconnecting after three within a
- * minute, since one alone can be a blip of the broker's auth backend; a broker out of resources is
+ * recovery covers it. A refused login or virtual host ends the reconnecting only once refusals,
+ * three at least, have gone on for a minute with no connection in between, since an auth backend
+ * being deployed refuses for a while and then lets the same token in; a broker out of resources is
  * retried with a long pause, and reported each time. A channel the broker closes or cancels on a
  * live connection is opened again on its own, with growing pauses while that fails.
  *
@@ -51,7 +54,12 @@ import org.jspecify.annotations.Nullable;
  */
 public final class AmqpTransport implements AutoCloseable {
 
-    /** How many refusals within {@link #REFUSAL_WINDOW} end the reconnecting. */
+    private static final Logger LOG = LoggerFactory.getLogger(AmqpTransport.class);
+
+    /** How long close() waits for the broker to confirm an abort before it drops the socket. */
+    private static final int ABORT_MILLIS = 200;
+
+    /** How many refusals at least, over {@link #REFUSAL_WINDOW}, end the reconnecting. */
     static final int REFUSALS = 3;
 
     static final Duration REFUSAL_WINDOW = Duration.ofMinutes(1);
@@ -100,12 +108,23 @@ public final class AmqpTransport implements AutoCloseable {
             ConnectionEvents events,
             @Nullable Consumer<RawDelivery> alives,
             InstantSource clock) {
+        this(settings, exchange, events, alives, clock, REFUSAL_WINDOW);
+    }
+
+    /** With a window for refusals a test can wait out. */
+    AmqpTransport(
+            AmqpSettings settings,
+            String exchange,
+            ConnectionEvents events,
+            @Nullable Consumer<RawDelivery> alives,
+            InstantSource clock,
+            Duration refusalWindow) {
         this.settings = settings;
         this.exchange = exchange;
-        this.events = events;
+        this.events = new Guarded(events);
         this.alives = alives;
         this.clock = clock;
-        this.refusals = new Refusals(REFUSALS, REFUSAL_WINDOW, clock);
+        this.refusals = new Refusals(REFUSALS, refusalWindow, clock);
     }
 
     /** A session's channel, opened with the others by {@link #open}. */
@@ -128,7 +147,8 @@ public final class AmqpTransport implements AutoCloseable {
                     settings.maxMessageSize(),
                     clock,
                     () -> connection,
-                    this::sessionLost);
+                    this::sessionLost,
+                    e -> reopenFailed("a session's channel", e));
             sessions.add(session);
             return session;
         } finally {
@@ -187,6 +207,17 @@ public final class AmqpTransport implements AutoCloseable {
         }
     }
 
+    /**
+     * A channel that would not open again on a live connection: logged with its cause, since the
+     * connection still reads as up and nothing else would show it. It is tried again with backoff.
+     */
+    private void reopenFailed(String which, Exception cause) {
+        LOG.warn(
+                "{} could not be opened again on the live connection, and is tried again: {}",
+                which,
+                Failure.describe(cause, settings.accessToken()));
+    }
+
     /** Whether the connection is there and open. */
     boolean connectionOpen() {
         Connection now = connection;
@@ -206,6 +237,13 @@ public final class AmqpTransport implements AutoCloseable {
     public void close() {
         closed = true;
         closing.countDown();
+        // a declare or bind the broker does not answer holds the lock; cut the connection under it
+        // first, so it fails at once instead of at its timeout
+        Connection now = connection;
+        if (now != null) {
+            // briefly: a broker that does not answer the declare does not answer the close either
+            now.abort(ABORT_MILLIS);
+        }
         lock.lock();
         try {
             closeEverything();
@@ -226,6 +264,9 @@ public final class AmqpTransport implements AutoCloseable {
             aliveFailedReopens.set(0);
         }
         for (SessionChannel session : sessions) {
+            if (closed) {
+                throw new IOException("the feed was closed while its channels were opening");
+            }
             session.open(made);
         }
     }
@@ -410,6 +451,7 @@ public final class AmqpTransport implements AutoCloseable {
             aliveFailedReopens.set(0);
         } catch (IOException | RuntimeException e) {
             aliveFailedReopens.incrementAndGet();
+            reopenFailed("the SDK's alive channel", e);
         } finally {
             lock.unlock();
         }
@@ -436,11 +478,11 @@ public final class AmqpTransport implements AutoCloseable {
         for (int attempt = 1; !closed; attempt++) {
             if (failure == Failure.REFUSED && refusedTooOften()) {
                 Throwable refused = cause;
+                String observed = refusalsSoFar();
                 tellUnlessClosed(() -> {
                     failed = true;
                     events.fatal(
-                            "the broker refused the login " + REFUSALS + " times within "
-                                    + REFUSAL_WINDOW.toSeconds() + " s: "
+                            "the broker refused the login " + observed + ": "
                                     + Failure.describe(refused, settings.accessToken()),
                             Failure.redacted(refused, settings.accessToken()));
                 });
@@ -522,6 +564,16 @@ public final class AmqpTransport implements AutoCloseable {
         }
     }
 
+    /** What was seen of the refusals, as the fatal event says it: how many, over how long. */
+    private String refusalsSoFar() {
+        lock.lock();
+        try {
+            return refusals.count() + " times over " + refusals.span().toSeconds() + " s";
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private boolean refusedTooOften() {
         lock.lock();
         try {
@@ -586,6 +638,52 @@ public final class AmqpTransport implements AutoCloseable {
                 }
             } catch (IOException | RuntimeException alreadyGone) {
                 // closing is all that was wanted
+            }
+        }
+    }
+
+    /**
+     * The listener, kept from breaking the transport: a listener that throws is logged, and the
+     * transport goes on - else an exception from up would close the connection just made, and one from
+     * recovering would end the reconnecting.
+     */
+    private static final class Guarded implements ConnectionEvents {
+        private final ConnectionEvents listener;
+
+        Guarded(ConnectionEvents listener) {
+            this.listener = listener;
+        }
+
+        @Override
+        public void connecting() {
+            guard("connecting", listener::connecting);
+        }
+
+        @Override
+        public void up() {
+            guard("up", listener::up);
+        }
+
+        @Override
+        public void down(String reason) {
+            guard("down", () -> listener.down(reason));
+        }
+
+        @Override
+        public void recovering(int attempt, long waitMillis, String reason) {
+            guard("recovering", () -> listener.recovering(attempt, waitMillis, reason));
+        }
+
+        @Override
+        public void fatal(String reason, @Nullable Throwable cause) {
+            guard("fatal", () -> listener.fatal(reason, cause));
+        }
+
+        private static void guard(String event, Runnable tell) {
+            try {
+                tell.run();
+            } catch (RuntimeException e) {
+                LOG.error("The connection listener threw on {}; the transport goes on", event, e);
             }
         }
     }

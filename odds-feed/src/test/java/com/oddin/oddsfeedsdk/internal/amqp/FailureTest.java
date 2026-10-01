@@ -11,6 +11,7 @@ import com.rabbitmq.client.ShutdownSignalException;
 import java.io.IOException;
 import java.net.ConnectException;
 import java.time.Duration;
+import javax.net.ssl.SSLContext;
 import org.junit.jupiter.api.Test;
 
 /** What each failure counts as when reconnecting. */
@@ -137,7 +138,7 @@ class FailureTest {
     }
 
     @Test
-    void theFeedsSettingsComeFromItsConfiguration() {
+    void theFeedsSettingsComeFromItsConfiguration() throws Exception {
         OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectEnvironment("mq.example.invalid", "api.example.invalid")
                 .setAccessToken("secret-token")
@@ -156,6 +157,17 @@ class FailureTest {
         assertThat(settings.maxMessageSize()).isEqualTo(4096);
         assertThat(settings.heartbeat()).isEqualTo(Duration.ofSeconds(10));
         assertThat(settings.connectTimeout()).isEqualTo(configuration.getHttpClientTimeout());
+
+        SSLContext own = SSLContext.getDefault();
+        OddsFeedConfiguration withItsOwnTrust = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.example.invalid", "api.example.invalid")
+                .setAccessToken("secret-token")
+                .setMessagingSslContext(own)
+                .build();
+        assertThat(AmqpSettings.of(withItsOwnTrust, "/oddinfeed/53", "of-sdk-53-1")
+                        .tls())
+                .as("the client's own trust")
+                .isSameAs(own);
     }
 
     private static ShutdownSignalException closed(int code, String text) {
