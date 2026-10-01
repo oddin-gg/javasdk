@@ -37,7 +37,7 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>Safe for concurrent use.
  */
-public final class ApiClient implements AutoCloseable {
+public final class ApiClient implements RecoveryRequests, AutoCloseable {
 
     private final RestTransport transport;
     private final @Nullable Integer nodeId;
@@ -214,12 +214,12 @@ public final class ApiClient implements AutoCloseable {
                 deadline);
     }
 
-    /** Asks the producer to send the odds of one event again. */
+    @Override
     public void postEventOddsRecovery(String producer, URN eventId, long requestId) {
         recover("/" + segment(producer) + "/odds/events/" + segment(eventId) + "/initiate_request", requestId, null);
     }
 
-    /** Asks the producer to send the stateful messages of one event again. */
+    @Override
     public void postEventStatefulRecovery(String producer, URN eventId, long requestId) {
         recover(
                 "/" + segment(producer) + "/stateful_messages/events/" + segment(eventId) + "/initiate_request",
@@ -227,7 +227,7 @@ public final class ApiClient implements AutoCloseable {
                 null);
     }
 
-    /** Asks the producer for everything since {@code after}, or for a full snapshot when it is null. */
+    @Override
     public void postRecovery(String producer, long requestId, @Nullable Instant after) {
         recover("/" + segment(producer) + "/recovery/initiate_request", requestId, after);
     }

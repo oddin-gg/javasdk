@@ -40,7 +40,8 @@ public final class Producers implements ProducerManager {
         this(list, InstantSource.system());
     }
 
-    Producers(RAProducers list, InstantSource clock) {
+    /** With the clock the producers' delays and the recovery window are read by. */
+    public Producers(RAProducers list, InstantSource clock) {
         this.clock = clock;
         var byId = new LinkedHashMap<Long, AtomicReference<ProducerState>>();
         for (RAProducer producer : list.getProducer()) {
