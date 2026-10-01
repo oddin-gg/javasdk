@@ -157,6 +157,8 @@ In 1.0 the fields whose owner is **FEED** are not entity-cache fields. They are 
 
 0.0.x MatchStatusCache fetches SUM in `Locale.ENGLISH` only (`MatchStatusCache.kt:119`), side-loads every SUM response of any locale (:82-99), and orders REST against feed by comparing `generated_at` with the feed `timestamp` (:202-241). The design forbids that comparison (NEXT.md "Ownership and ordering").
 
+The match status descriptions (MSD) are a catalog, not an entity field: `internal/catalog/MatchStatusDescriptions` (ticket 19) keeps each locale's list whole, refreshes it an hour after its fetch, serves it stale for up to 24 hours, and fetches it again when an id is missing from it. The façade looks `matchStatusId` up in it per locale, as 0.0.x did (`MatchStatusCache.kt:461-472`).
+
 ## Open questions and ambiguities
 
 1. **`ref_id` is gone from schema v1.1.0.** No REST XSD declares `ref_id` for sport event, team, tournament or sport. 0.0.x read it from its own bindings (`RASportEvent.java:57`, `RATeam.java:51`, `RATournament.java:63`, `RASport.java:42`). The 1.0 `getRefId()` Javadoc says "the feed never sends this value". Suggestion: no authoritative endpoint; always null.
