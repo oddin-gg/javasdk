@@ -27,12 +27,14 @@ import org.jspecify.annotations.Nullable;
  * whose corrected age is over the same limit writes nothing either, being a delayed backlog message
  * REST has since taken over from.
  *
- * <p>One lock guards it all; what it guards is a map lookup and a few small copies. Records are kept
- * in the order they were last written, and live 24 hours after that. Over {@code maximumSize}, the
- * least recently written record the feed does not own - not written by it within the status age,
- * looked for among the oldest few -
- * goes: its reader loads the summary again. One the feed owns stays, so REST does not take over a
- * live entity for want of room; past twice the bound even those go, oldest first, and are counted.
+ * <p>One lock guards it all; what it guards is a map lookup and a few small copies. A record lives 24
+ * hours after its last write. Those the feed owns - wrote within the status age - are kept apart
+ * from the others, in the order the feed wrote them, and join the others, as their newest, when
+ * that ends. Over {@code maximumSize}, the oldest of the others goes - by its last REST write, or by
+ * when the feed stopped owning it - and never the one just written: its reader loads
+ * the summary again. One the feed owns stays, so REST does not take over a live entity for want of
+ * room; past twice the bound, with no other left to go, the oldest the feed owns go, and are
+ * counted.
  *
  * <p>Safe for concurrent use.
  */
@@ -43,14 +45,16 @@ public final class LiveState<K> {
 
     static final Duration AGE = Duration.ofHours(24);
 
-    /** How far from the oldest a trim looks for a record the feed does not own. */
-    static final int SCAN = 32;
-
     private final Ticker ticker;
     private final long maximumSize;
     private final ReentrantLock lock = new ReentrantLock();
-    /** In the order of their last write, oldest first; read and changed under the lock. */
-    private final LinkedHashMap<K, Live> records = new LinkedHashMap<>();
+    /** Those the feed owns, in the order it wrote them, oldest first; under the lock. */
+    private final LinkedHashMap<K, Live> owned = new LinkedHashMap<>();
+    /**
+     * The others, in the order of their last write or of when the feed stopped owning them, oldest
+     * first; under the lock.
+     */
+    private final LinkedHashMap<K, Live> others = new LinkedHashMap<>();
 
     private final AtomicLong dropped = new AtomicLong();
 
@@ -97,6 +101,7 @@ public final class LiveState<K> {
                             now,
                             now,
                             current == null ? null : current.restAt()),
+                    true,
                     now);
             return true;
         } finally {
@@ -134,6 +139,7 @@ public final class LiveState<K> {
                             ticks,
                             current == null ? 0 : current.feedAt(),
                             now),
+                    false,
                     ticks);
             return true;
         } finally {
@@ -174,7 +180,7 @@ public final class LiveState<K> {
     public long size() {
         lock.lock();
         try {
-            return records.size();
+            return (long) owned.size() + others.size();
         } finally {
             lock.unlock();
         }
@@ -187,47 +193,63 @@ public final class LiveState<K> {
 
     /** The entity's record, unless it aged out; under the lock. */
     private @Nullable Live current(K entity, long now) {
-        Live live = records.get(entity);
+        Live live = owned.get(entity);
+        if (live == null) {
+            live = others.get(entity);
+        }
         return live == null || aged(live, now) ? null : live;
     }
 
-    /** Writes the record as the newest, and keeps the bound; under the lock. */
-    private void put(K entity, Live live, long now) {
-        records.remove(entity);
-        records.put(entity, live);
-        trim(now);
+    /** Writes the record as the newest, with those the feed owns or the others, and keeps the bound. */
+    private void put(K entity, Live live, boolean byFeed, long now) {
+        owned.remove(entity);
+        others.remove(entity);
+        (byFeed ? owned : others).put(entity, live);
+        trim(entity, now);
     }
 
     /**
-     * Drops what aged out, then, over the bound, the least recently written records the feed does
-     * not own; past twice the bound, the oldest whatever they are, counted. Under the lock.
+     * Moves those the feed stopped owning to the others, drops what aged out, then, over the bound,
+     * the oldest of the others but {@code written}; past twice the bound, with none of those left, the
+     * oldest the feed owns, counted. Under the lock.
      */
-    private void trim(long now) {
-        Iterator<Live> oldest = records.values().iterator();
-        while (oldest.hasNext()) {
-            if (!aged(oldest.next(), now)) {
+    private void trim(K written, long now) {
+        // the feed wrote these in this order, so those it no longer owns are the oldest
+        for (var oldest = owned.entrySet().iterator(); oldest.hasNext(); ) {
+            var record = oldest.next();
+            if (owns(record.getValue(), now)) {
                 break;
             }
             oldest.remove();
+            others.put(record.getKey(), record.getValue());
         }
-        while (records.size() > maximumSize) {
-            if (!dropOneNotOwned(now)) {
-                if (records.size() <= 2 * maximumSize) {
-                    return;
-                }
-                Iterator<Live> owned = records.values().iterator();
-                owned.next();
-                owned.remove();
-                dropped.incrementAndGet();
+        dropAged(owned, now);
+        dropAged(others, now);
+        while (owned.size() + others.size() > maximumSize) {
+            if (dropOldestBut(others, written)) {
+                continue;
             }
+            if (owned.size() + others.size() <= 2 * maximumSize || !dropOldestBut(owned, written)) {
+                return;
+            }
+            dropped.incrementAndGet();
         }
     }
 
-    /** Drops the least recently written record the feed does not own, among the oldest few. */
-    private boolean dropOneNotOwned(long now) {
-        Iterator<Live> oldest = records.values().iterator();
-        for (int looked = 0; looked < SCAN && oldest.hasNext(); looked++) {
-            if (!owns(oldest.next(), now)) {
+    private static <K> void dropAged(Map<K, Live> records, long now) {
+        for (Iterator<Live> oldest = records.values().iterator(); oldest.hasNext(); ) {
+            if (!aged(oldest.next(), now)) {
+                return;
+            }
+            oldest.remove();
+        }
+    }
+
+    /** Drops the oldest record but {@code kept} of an insertion-ordered map; false when there is none. */
+    private static <K> boolean dropOldestBut(Map<K, Live> records, K kept) {
+        Iterator<K> oldest = records.keySet().iterator();
+        for (int looked = 0; looked < 2 && oldest.hasNext(); looked++) {
+            if (!oldest.next().equals(kept)) {
                 oldest.remove();
                 return true;
             }
