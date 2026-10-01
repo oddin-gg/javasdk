@@ -38,6 +38,9 @@ public final class EntityCache<K> {
     private final InstantSource clock;
     private final Ticker ticker;
     private final Cache<K, Entry> entries;
+    /** The order fetches start in, to tell an older response of one entity from a newer one. */
+    private final AtomicLong fetches = new AtomicLong();
+
     /** Where generations come from: no two entries of this cache, past or present, share one. */
     private final AtomicLong generations = new AtomicLong();
     /**
@@ -136,12 +139,13 @@ public final class EntityCache<K> {
      * not written, since a newer fetch of the key may have written already.
      */
     public Stamp stamp(K key, BooleanSupplier abandoned) {
+        long fetch = fetches.incrementAndGet();
         long startedAt = generations.get();
         long lastInvalidation = lastInvalidation(key);
         Entry entry = entries.getIfPresent(key);
         return entry == null
-                ? new Stamp(false, 0, lastInvalidation, startedAt, abandoned)
-                : new Stamp(true, entry.generation(), lastInvalidation, startedAt, abandoned);
+                ? new Stamp(false, 0, lastInvalidation, startedAt, fetch, abandoned)
+                : new Stamp(true, entry.generation(), lastInvalidation, startedAt, fetch, abandoned);
     }
 
     /**
@@ -150,7 +154,18 @@ public final class EntityCache<K> {
      * that started on no entry, and to one still remembered from before, which it cannot tell apart.
      */
     public Stamp stampForMany(BooleanSupplier abandoned) {
-        return new Stamp(false, 0, 0, generations.get(), abandoned);
+        return new Stamp(false, 0, 0, generations.get(), fetches.incrementAndGet(), abandoned);
+    }
+
+    /**
+     * Whether what a fetch from {@code started} got is still the newest word on the key: the entry
+     * was not invalidated or dropped since, the loader did not abandon the fetch, and no fetch that
+     * started later has written the entry's shared fields. For what the same response writes
+     * elsewhere, such as a match's live state.
+     */
+    public boolean isNewest(K key, Stamp started) {
+        Entry current = entries.getIfPresent(key);
+        return !stale(key, current, started) && (current == null || current.sharedFrom() <= started.fetch());
     }
 
     /**
@@ -172,7 +187,7 @@ public final class EntityCache<K> {
                 written[0] = true;
                 insideWrite.run();
                 Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
-                return base.authoritative(write, clock.instant(), ticker.read());
+                return base.authoritative(write, clock.instant(), ticker.read(), started.fetch());
             });
         } finally {
             clearing.readLock().unlock();
@@ -290,8 +305,14 @@ public final class EntityCache<K> {
      * @param generation its generation then
      * @param lastInvalidation the generation of the key's last invalidation then, 0 for none
      * @param startedAt the newest generation given out then: any invalidation after it is news
+     * @param fetch its place in the order the cache's fetches started in
      * @param abandoned whether the fetch's loader has given up on it
      */
     public record Stamp(
-            boolean present, long generation, long lastInvalidation, long startedAt, BooleanSupplier abandoned) {}
+            boolean present,
+            long generation,
+            long lastInvalidation,
+            long startedAt,
+            long fetch,
+            BooleanSupplier abandoned) {}
 }

@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.internal.cache.EntityCache.Stamp;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
+import com.oddin.oddsfeedsdk.internal.cache.LiveWrite;
 import com.oddin.oddsfeedsdk.internal.loader.Loader;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
@@ -105,15 +106,18 @@ public final class MatchCaches {
 
     /** The same, from inside another load, waiting no longer than its deadline. */
     public Entry match(URN id, Locale locale, @Nullable Deadline within) {
-        if (!matches.isFresh(id, SUMMARY, locale)) {
-            summaries.load(new MatchKey(id, locale), within);
+        var key = new MatchKey(id, locale);
+        // twice at most: a read just after a fixture change can join a load from before it, which
+        // then writes nothing
+        for (int tries = 0; tries < 2 && !matches.isFresh(id, SUMMARY, locale); tries++) {
+            summaries.load(key, within);
         }
         return entryOf(matches, id);
     }
 
     /** The match's fixture, loaded in the default locale when it is missing or out of date. */
     public Entry fixture(URN id) {
-        if (!fixtures.isFresh(id, FIXTURE, defaultLocale)) {
+        for (int tries = 0; tries < 2 && !fixtures.isFresh(id, FIXTURE, defaultLocale); tries++) {
             fixtureLoads.load(id);
         }
         return entryOf(fixtures, id);
@@ -121,7 +125,8 @@ public final class MatchCaches {
 
     /**
      * The match's live state, its summary loaded again when neither the feed nor REST wrote it within
-     * the match status age; null when even that has none, as for a match without a status yet.
+     * the match status age. A summary without a status leaves a live state without values, fresh as
+     * any; null only when the summary could not be loaded or written.
      */
     public @Nullable LiveValues live(URN id) {
         LiveValues values = live.get(id);
@@ -179,6 +184,18 @@ public final class MatchCaches {
         fixtures.clear();
     }
 
+    /** The match's live state as it is, loading nothing; for a test. */
+    @Nullable
+    LiveValues cachedLive(URN id) {
+        return live.get(id);
+    }
+
+    /** What is cached of the fixture, loading nothing; for a test. */
+    @Nullable
+    Entry cachedFixture(URN id) {
+        return fixtures.get(id);
+    }
+
     /** What is cached of the match, loading nothing; for a test. */
     @Nullable
     Entry cachedMatch(URN id) {
@@ -194,9 +211,13 @@ public final class MatchCaches {
         if (event != null) {
             written = matches.writeAuthoritative(key.id(), MatchWrites.summary(event, status, key.locale()), started);
         }
-        if (status != null) {
-            live.restWriteIfQuiet(key.id(), clock.instant(), MatchWrites.live(status), abandoned);
-        }
+        // the live state too gives way to a fixture change, or to a summary of another locale fetched
+        // since; a summary without a status still says REST was asked, so it is not asked again
+        live.restWriteIfQuiet(
+                key.id(),
+                clock.instant(),
+                status == null ? LiveWrite.of() : MatchWrites.live(status),
+                () -> abandoned.getAsBoolean() || !matches.isNewest(key.id(), started));
         return written;
     }
 
