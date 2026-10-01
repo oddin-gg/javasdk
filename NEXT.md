@@ -313,16 +313,22 @@ Structure:
   the build if the cache package depends on the loader, HTTP or AMQP packages. This
   is the structural form of decision 11; the latch-based deadlock tests remain as a
   second net.
-- Single-flight is in the loader. Concurrent misses for the same key wait for the one
-  fetch under the same deadline as the fetch itself plus a margin. Waiters that time
-  out fail with the exception strategy; they do not start their own fetch.
-- Side-loading queues never block the producer. When full, they drop and count.
+- Single-flight is in the loader. A fetch has one deadline, the HTTP client timeout
+  from when it starts, and every REST call it makes draws from it; a load it waits
+  for waits no longer than it. Concurrent misses for the same key wait for the one
+  fetch until that deadline plus a margin, however late they joined. Waiters that time
+  out fail with the exception strategy; they do not start their own fetch. A fetch
+  still running past its waiters' time is abandoned and replaced by the next miss,
+  and writes nothing from then on.
+- Side-loading queues never block the producer. When full, they drop and count. Each
+  side-load has one deadline too, from when a worker starts it.
 
 Bounds and freshness:
 
 - Caffeine. Entity caches have a maximum size and expire after write with the same
   ages as today: match, fixture and tournament 12 hours, competitor and player
-  24 hours, match status 20 minutes. Freshness is tracked per locale block inside an
+  24 hours. The live state of a match is fresh for the match status age, 20 minutes,
+  after the feed or REST last wrote it; past that the summary is loaded again. Freshness is tracked per locale block inside an
   entry: each locale's data carries its own fetch time, and a locale older than the
   entry's age is refetched on read even if another locale was written recently.
   Nothing is unbounded. No soft references.
@@ -337,16 +343,17 @@ Write rule:
 
 - Every field of every cached entity has one **authoritative endpoint**. For a
   competitor the authoritative endpoint of its player list is the competitor profile;
-  of its name per locale, the profile in that locale. For a match status it is the
-  match summary. The full table is `odds-feed/CACHE-FIELDS.md`, with what 0.0.x wrote
+  of its name per locale, the profile in that locale. The fields the feed owns are the
+  exception, and are not in the entity caches at all (see ownership below). The full table is `odds-feed/CACHE-FIELDS.md`, with what 0.0.x wrote
   from where and the questions tickets 17 to 19 settle.
 - An authoritative response replaces the fields it is authoritative for, in the locale
   it was fetched for, and marks them **authoritatively written**. A field the response
-  omits is cleared and stays marked. That is how a retracted winner disappears from
-  the summary. Locale-independent fields are written by every authoritative response
-  regardless of locale; two parallel locale fetches carry the same server state, so
-  last writer wins is correct, and omission-clear applies to them only when the
-  endpoint always serialises the field when it exists.
+  omits is cleared and stays marked when the endpoint always serialises it when it
+  exists; that is how a retracted winner disappears from the summary. A field the
+  endpoint may leave out is kept as it is when it does, localized or not.
+  Locale-independent fields are written by every authoritative response regardless of
+  locale; two parallel locale fetches carry the same server state, so last writer
+  wins is correct.
 - A response from any other endpoint that happens to carry data for an entity **fills
   only**: it writes fields that are absent and were never authoritatively written. It
   never touches a field the authoritative endpoint has written or cleared, so a
@@ -368,10 +375,20 @@ Ownership and ordering:
 
 - Feed messages own live status, scores, period scores and the match clock. REST owns
   everything else. Market state and odds are not cached.
+- The feed-owned fields are not entity-cache fields, since they have two writers and
+  only the watermarks know their order. They live in one bounded record per entity,
+  the **live state**, next to the entity's watermarks; a value and its watermark change
+  in one step, under that record alone, and a write there never waits for an entity
+  cache or its clear. The feed writes there; a match summary offers its values there,
+  and they are taken only while the feed is quiet (below). The match façade reads the
+  live getters from it and everything else from the entity caches. A record the bound
+  evicts while the feed owns its entity is kept aside, in a bounded, counted spill, so
+  REST does not take over a live match for want of room; one the feed does not own is
+  gone, and the next read loads the summary again. Clearing the caches does not clear
+  the live state.
 - The feed watermark is the `timestamp` of the last live feed message that wrote
-  feed-owned fields, kept per entity and producer in a bounded record with an age of
-  24 hours, longer than the status entry it protects, so an evicted status does not
-  forget how recent the feed was. A message from the same producer with an older
+  feed-owned fields, kept per entity and producer in the live state, which lives 24
+  hours after its last write. A message from the same producer with an older
   timestamp does not write feed-owned fields. It is still built and delivered; the
   watermark orders cache writes, never delivery. Messages that carry no feed-owned
   fields (settlements, cancels, bet stops) are not watermark-checked at all. Snapshot
@@ -738,9 +755,10 @@ group by group.
     single-flight and deadlines, the cache-versus-loader dependency test, bounds and
     per-locale ages, generations with tombstones, authoritative versus fill-only
     writes with the authoritatively-written marks and the per-field endpoint table,
-    locale marks, clear, the long-lived feed watermark record, REST fallback after
+    locale marks, clear, the live state with its feed watermarks, REST fallback after
     feed silence, stale-message write suppression, and the latch-based deadlock tests.
-17. Entity caches: match and fixture.
+17. Entity caches: match and fixture, and the match's live state written from the
+    summary.
 18. Entity caches: competitor, player, tournament, sport.
 19. Catalog caches: market descriptions, void reasons, match status descriptions,
     provenance-aware refresh with stale serving and maximum staleness.

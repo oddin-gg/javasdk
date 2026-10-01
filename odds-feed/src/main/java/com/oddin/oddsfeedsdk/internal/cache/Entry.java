@@ -81,10 +81,11 @@ public final class Entry {
 
     /**
      * An authoritative response: it replaces every field it is authoritative for in its locale, and
-     * its shared fields in any locale, and marks them. A localized field it does not carry is
-     * cleared; a shared one only when the endpoint always sends it, since two locales of one
-     * response carry the same shared values. What it carries of fields another endpoint owns it
-     * writes by the fill rule: only where absent and unmarked.
+     * its shared fields in any locale, and marks them. A field it does not carry is cleared and
+     * marked only when the endpoint always sends it when it exists - a localized one in its locale,
+     * a shared one in any - since only then does its absence say it is gone; one the endpoint may
+     * leave out is kept as it is. What it carries of fields another endpoint owns it writes by the
+     * fill rule: only where absent and unmarked.
      */
     Entry authoritative(Write write, Instant now, long ticks) {
         Locale locale = write.locale();
@@ -101,7 +102,7 @@ public final class Entry {
             if (value != null) {
                 nextValues.put(slot, value);
                 nextAuthoritative.add(slot);
-            } else if (field.isLocalized() || write.endpoint().alwaysSent().contains(field)) {
+            } else if (write.endpoint().alwaysSent().contains(field)) {
                 nextValues.remove(slot);
                 nextAuthoritative.add(slot);
             }

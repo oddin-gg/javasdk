@@ -117,10 +117,16 @@ public final class ApiClient implements AutoCloseable {
     }
 
     public RAFixturesEndpoint fetchFixture(URN id, Locale locale) {
-        return get(
+        return fetchFixture(id, locale, deadline());
+    }
+
+    /** Within a loader's deadline, which every call of one fetch shares. */
+    public RAFixturesEndpoint fetchFixture(URN id, Locale locale, Deadline deadline) {
+        return transport.get(
                 Pool.DATA,
                 "/sports/" + language(locale) + "/sport_events/" + segment(id) + "/fixture",
-                RAFixturesEndpoint.class);
+                RAFixturesEndpoint.class,
+                deadline);
     }
 
     /** The pre-match schedule from {@code startIndex}, {@code limit} events. */
@@ -144,38 +150,68 @@ public final class ApiClient implements AutoCloseable {
     }
 
     public RASportTournaments fetchTournaments(URN sportId, Locale locale) {
-        return get(
+        return fetchTournaments(sportId, locale, deadline());
+    }
+
+    /** Within a loader's deadline, which every call of one fetch shares. */
+    public RASportTournaments fetchTournaments(URN sportId, Locale locale, Deadline deadline) {
+        return transport.get(
                 Pool.DATA,
                 "/sports/" + language(locale) + "/sports/" + segment(sportId) + "/tournaments",
-                RASportTournaments.class);
+                RASportTournaments.class,
+                deadline);
     }
 
     public RATournamentInfo fetchTournament(URN id, Locale locale) {
-        return get(
+        return fetchTournament(id, locale, deadline());
+    }
+
+    /** Within a loader's deadline, which every call of one fetch shares. */
+    public RATournamentInfo fetchTournament(URN id, Locale locale, Deadline deadline) {
+        return transport.get(
                 Pool.DATA,
                 "/sports/" + language(locale) + "/tournaments/" + segment(id) + "/info",
-                RATournamentInfo.class);
+                RATournamentInfo.class,
+                deadline);
     }
 
     public RACompetitorProfileEndpoint fetchCompetitorProfile(URN id, Locale locale) {
-        return get(
+        return fetchCompetitorProfile(id, locale, deadline());
+    }
+
+    /** Within a loader's deadline, which every call of one fetch shares. */
+    public RACompetitorProfileEndpoint fetchCompetitorProfile(URN id, Locale locale, Deadline deadline) {
+        return transport.get(
                 Pool.DATA,
                 "/sports/" + language(locale) + "/competitors/" + segment(id) + "/profile",
-                RACompetitorProfileEndpoint.class);
+                RACompetitorProfileEndpoint.class,
+                deadline);
     }
 
     public RAPlayerProfileEndpoint fetchPlayerProfile(URN id, Locale locale) {
-        return get(
+        return fetchPlayerProfile(id, locale, deadline());
+    }
+
+    /** Within a loader's deadline, which every call of one fetch shares. */
+    public RAPlayerProfileEndpoint fetchPlayerProfile(URN id, Locale locale, Deadline deadline) {
+        return transport.get(
                 Pool.DATA,
                 "/sports/" + language(locale) + "/players/" + segment(id) + "/profile",
-                RAPlayerProfileEndpoint.class);
+                RAPlayerProfileEndpoint.class,
+                deadline);
     }
 
     public RAMatchSummaryEndpoint fetchMatchSummary(URN id, Locale locale) {
-        return get(
+        return fetchMatchSummary(id, locale, deadline());
+    }
+
+    /** Within a loader's deadline, which every call of one fetch shares. */
+    public RAMatchSummaryEndpoint fetchMatchSummary(URN id, Locale locale, Deadline deadline) {
+        return transport.get(
                 Pool.DATA,
                 "/sports/" + language(locale) + "/sport_events/" + segment(id) + "/summary",
-                RAMatchSummaryEndpoint.class);
+                RAMatchSummaryEndpoint.class,
+                deadline);
     }
 
     /** Asks the producer to send the odds of one event again. */

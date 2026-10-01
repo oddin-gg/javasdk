@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.cache;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 import java.time.Duration;
 import java.time.InstantSource;
@@ -26,8 +27,11 @@ import org.jspecify.annotations.Nullable;
  */
 public final class EntityCache<K> {
 
-    /** How long an invalidation is remembered for a key with no entry: longer than any fetch waits. */
-    static final Duration INVALIDATION_MEMORY = Duration.ofHours(1);
+    /**
+     * How many more invalidations than entries are remembered: they are held only as long as a fetch
+     * runs, so this many within that time is a flood, and the size bound evicting one is counted.
+     */
+    static final int INVALIDATIONS_PER_ENTRY = 4;
 
     private final String name;
     private final Duration age;
@@ -47,6 +51,8 @@ public final class EntityCache<K> {
      * invalidation was of its key.
      */
     private final AtomicLong forgotten = new AtomicLong();
+
+    private final AtomicLong forgottenForRoom = new AtomicLong();
     /**
      * Shared by the writes, held alone by a clear: a write that has passed its check finishes before
      * the clear looks at the entries, and every write after it sees the clear.
@@ -57,12 +63,17 @@ public final class EntityCache<K> {
     /** A test's hook: runs in an invalidation between taking its generation and recording it. */
     volatile Runnable insideInvalidate = () -> {};
 
-    public EntityCache(String name, long maximumSize, Duration age) {
-        this(name, maximumSize, age, InstantSource.system(), Ticker.systemTicker());
+    /**
+     * @param longestFetch how long a fetch of an entry can run: its loader's deadline plus margin,
+     *     which an invalidation of a key with no entry is remembered for
+     */
+    public EntityCache(String name, long maximumSize, Duration age, Duration longestFetch) {
+        this(name, maximumSize, age, longestFetch, InstantSource.system(), Ticker.systemTicker());
     }
 
     /** With the clocks a test drives: one for fetch times, one for Caffeine's ages. */
-    EntityCache(String name, long maximumSize, Duration age, InstantSource clock, Ticker ticker) {
+    EntityCache(
+            String name, long maximumSize, Duration age, Duration longestFetch, InstantSource clock, Ticker ticker) {
         this.name = name;
         this.age = age;
         this.clock = clock;
@@ -75,15 +86,23 @@ public final class EntityCache<K> {
                 .executor(Runnable::run)
                 .build();
         this.invalidated = Caffeine.newBuilder()
-                .maximumSize(maximumSize)
-                .expireAfterWrite(INVALIDATION_MEMORY)
+                .maximumSize(
+                        maximumSize > Long.MAX_VALUE / INVALIDATIONS_PER_ENTRY
+                                ? Long.MAX_VALUE
+                                : maximumSize * INVALIDATIONS_PER_ENTRY)
+                .expireAfterWrite(longestFetch)
                 .ticker(ticker)
                 .executor(Runnable::run)
                 .<K, Long>evictionListener((key, generation, cause) -> {
-                    // dropped for room, or aged out under a fetch slower than an hour: it must stop all the same
-                    if (cause.wasEvicted() && generation != null) {
-                        forgotten.accumulateAndGet(generation, Math::max);
+                    if (!cause.wasEvicted() || generation == null) {
+                        return;
                     }
+                    // aged out, it stops only fetches older than any fetch runs; dropped for room, it
+                    // must stop all the same, and the flood that dropped it is counted
+                    if (cause == RemovalCause.SIZE) {
+                        forgottenForRoom.incrementAndGet();
+                    }
+                    forgotten.accumulateAndGet(generation, Math::max);
                 })
                 .build();
     }
@@ -220,6 +239,14 @@ public final class EntityCache<K> {
         } finally {
             clearing.writeLock().unlock();
         }
+    }
+
+    /**
+     * Invalidations the size bound dropped while a fetch could still be running: each stopped every
+     * fetch that started on no entry before it, of whatever key.
+     */
+    public long forgottenForRoom() {
+        return forgottenForRoom.get();
     }
 
     /** The generation of the key's last invalidation as remembered, 0 for none; for a test. */

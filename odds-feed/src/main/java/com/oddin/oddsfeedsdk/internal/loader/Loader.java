@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.loader;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -10,19 +11,23 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Single-flight fetching by key: concurrent misses for one key share one fetch, run off the
- * callers' threads. Every caller waits at most the fetch's own deadline plus a margin, and a caller
- * that runs out of time fails; it never starts a fetch of its own. A fetch that fails fails every
- * caller waiting for it, and the next miss starts afresh: a fetch leaves before it tells anyone how
- * it went.
+ * callers' threads. A fetch has one deadline, the HTTP client timeout from when it starts, and every
+ * REST call it makes draws from it; every caller waits at most until that deadline plus a margin,
+ * however late it joined, and a caller that runs out of time fails - it never starts a fetch of its
+ * own. A fetch that fails fails every caller waiting for it, and the next miss starts afresh: a
+ * fetch leaves before it tells anyone how it went. One still running past its callers' time is
+ * abandoned and replaced by the next miss, and writes nothing from then on.
  *
  * <p>The fetch writes what it gets into the caches itself, and returns what the callers need. Since
  * nothing waits without a deadline, loads that wait for each other - a match for its competitors, a
- * competitor for its match - end in a timeout at worst, never in a deadlock.
+ * competitor for its match - end in a timeout at worst, never in a deadlock; a load inside a fetch
+ * waits no longer than that fetch's own deadline.
  *
  * <p>Safe for concurrent use.
  */
@@ -34,20 +39,25 @@ public final class Loader<K, V> {
         /**
          * Fetches the key and writes what it gets into the caches.
          *
-         * @param abandoned true once every caller gave up on this fetch: from then on its result must
-         *     not be written, since a newer fetch of the key may have written already
+         * @param deadline the fetch's one deadline: every REST call it makes is given it, and so is
+         *     every load it waits for
+         * @param abandoned true once the fetch was replaced: from then on its result must not be
+         *     written, since a newer fetch of the key may have written already
          */
-        V fetch(K key, BooleanSupplier abandoned);
+        V fetch(K key, Deadline deadline, BooleanSupplier abandoned);
     }
 
     private final String name;
     private final Fetch<K, V> fetch;
-    private final Duration wait;
+    private final Duration deadline;
+    private final Duration margin;
     private final Executor fetches;
     private final ConcurrentHashMap<K, Flight<V>> inFlight = new ConcurrentHashMap<>();
+    /** A test's hook: told the key once a caller has joined or started its flight. */
+    volatile Consumer<K> joined = _ -> {};
 
     /**
-     * @param fetch fetches one key, bounded by its own deadline
+     * @param fetch fetches one key, within the deadline it is given
      * @param deadline the fetch's deadline, the HTTP client timeout
      * @param margin how much longer than the deadline a caller waits
      * @param fetches where the fetches run: virtual threads
@@ -55,7 +65,8 @@ public final class Loader<K, V> {
     public Loader(String name, Fetch<K, V> fetch, Duration deadline, Duration margin, Executor fetches) {
         this.name = name;
         this.fetch = fetch;
-        this.wait = deadline.plus(margin);
+        this.deadline = deadline;
+        this.margin = margin;
         this.fetches = fetches;
     }
 
@@ -65,22 +76,29 @@ public final class Loader<K, V> {
      * @throws ApiException when the fetch fails, or does not finish in time
      */
     public V load(K key) {
-        var mine = new Flight<V>(System.nanoTime() + wait.toNanos());
-        // joined and counted in one step, so the last to give up cannot miss a caller joining; a
-        // flight past its deadline is abandoned and replaced, however many still wait for it
+        return load(key, null);
+    }
+
+    /**
+     * The same, from inside another fetch: waiting no longer than {@code within}, that fetch's own
+     * deadline, so the loads it waits for cannot keep it past it.
+     *
+     * @throws ApiException when the fetch fails, or does not finish in time
+     */
+    public V load(K key, @Nullable Deadline within) {
+        var mine = new Flight<V>(Deadline.in(deadline), margin);
+        // a flight past its callers' time is abandoned and replaced, in the same step as callers join
         Flight<V> flight = inFlight.compute(key, (k, running) -> {
-            Flight<V> joined;
             if (running == null) {
-                joined = mine;
-            } else if (running.expired()) {
-                running.abandoned().set(true);
-                joined = mine;
-            } else {
-                joined = running;
+                return mine;
             }
-            joined.waiters().incrementAndGet();
-            return joined;
+            if (running.expired()) {
+                running.abandoned().set(true);
+                return mine;
+            }
+            return running;
         });
+        joined.accept(key);
         if (flight.equals(mine)) {
             try {
                 // in the map before it starts, so it cannot finish and be removed before it is there
@@ -92,55 +110,32 @@ public final class Loader<K, V> {
                 throw failure;
             }
         }
-        boolean overran = false;
+        long until = within == null ? flight.expiresAt() : earlier(flight.expiresAt(), within.endNanos());
         try {
             // the flight's own deadline, not a fresh one per caller
-            return flight.result().get(Math.max(0, flight.expiresAt() - System.nanoTime()), TimeUnit.NANOSECONDS);
+            return flight.result().get(Math.max(0, until - System.nanoTime()), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
-            overran = true;
-            throw new ApiException(name + " " + key + " not loaded within " + wait.toMillis() + " ms", null, e);
+            String limit = until == flight.expiresAt()
+                    ? deadline.plus(margin).toMillis() + " ms of its fetch starting"
+                    : "its caller's deadline";
+            throw new ApiException(name + " " + key + " not loaded within " + limit, null, e);
         } catch (ExecutionException e) {
             throw rethrown(key, e.getCause() != null ? e.getCause() : e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new ApiException(name + " " + key + ": interrupted", null, e);
-        } finally {
-            leave(key, flight, overran);
         }
     }
 
-    /**
-     * A caller stops waiting. The last of those that ran out of time lets go of the fetch that overran,
-     * so the next miss starts afresh; counted down in the same step as callers join, so two that give
-     * up together cannot both see the other still waiting.
-     */
-    private void leave(K key, Flight<V> flight, boolean overran) {
-        inFlight.compute(key, (k, current) -> {
-            int left = flight.waiters().decrementAndGet();
-            if (overran && left == 0) {
-                // abandoned before it leaves the map, so no newer fetch can write before it is
-                flight.abandoned().set(true);
-                return flight.equals(current) ? null : current;
-            }
-            return current;
-        });
-    }
-
-    /** How many keys are being fetched now. */
+    /** How many keys are being fetched now, those abandoned but not yet replaced included. */
     public int inFlight() {
         return inFlight.size();
-    }
-
-    /** How many callers wait for the key's fetch now. */
-    int waiting(K key) {
-        Flight<V> flight = inFlight.get(key);
-        return flight == null ? 0 : flight.waiters().get();
     }
 
     private void fetch(K key, Flight<V> flight) {
         V value;
         try {
-            value = fetch.fetch(key, flight.abandoned()::get);
+            value = fetch.fetch(key, flight.deadline(), flight.abandoned()::get);
         } catch (RuntimeException | Error e) {
             inFlight.remove(key, flight);
             flight.result().completeExceptionally(e);
@@ -148,6 +143,10 @@ public final class Loader<K, V> {
         }
         inFlight.remove(key, flight);
         flight.result().complete(value);
+    }
+
+    private static long earlier(long a, long b) {
+        return a - b <= 0 ? a : b;
     }
 
     /** The fetch's own failure, as it was: an Error stays an Error, a runtime exception itself. */
@@ -162,11 +161,13 @@ public final class Loader<K, V> {
         return new ApiException(name + " " + key + " failed to load: " + cause, null, wrapped);
     }
 
-    /** One fetch: its result, how many callers wait for it, whether it was abandoned, its deadline. */
-    private record Flight<V>(
-            CompletableFuture<V> result, AtomicInteger waiters, AtomicBoolean abandoned, long expiresAt) {
-        Flight(long expiresAt) {
-            this(new CompletableFuture<>(), new AtomicInteger(), new AtomicBoolean(), expiresAt);
+    /**
+     * One fetch: its result, whether it was abandoned, its deadline, and until when its callers wait
+     * for it, on the {@link System#nanoTime()} clock.
+     */
+    private record Flight<V>(CompletableFuture<V> result, AtomicBoolean abandoned, Deadline deadline, long expiresAt) {
+        Flight(Deadline deadline, Duration margin) {
+            this(new CompletableFuture<>(), new AtomicBoolean(), deadline, deadline.endNanos() + margin.toNanos());
         }
 
         boolean expired() {

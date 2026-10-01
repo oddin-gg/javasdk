@@ -11,14 +11,29 @@ import org.junit.jupiter.api.Test;
 /** Background loads never hold up the one who offers them. */
 class SideLoadsTest {
 
+    private static final Duration BUDGET = Duration.ofSeconds(10);
+
+    @Test
+    void eachLoadHasTheWholeDeadlineFromWhenItStarts() throws Exception {
+        var remaining = new java.util.concurrent.CompletableFuture<Duration>();
+        try (var sideLoads = new SideLoads(10, 1, BUDGET)) {
+            sideLoads.offer(_ -> sleep(Duration.ofMillis(500)));
+            sideLoads.offer(deadline -> remaining.complete(deadline.remaining()));
+            assertThat(remaining.get(5, TimeUnit.SECONDS))
+                    .as("not counted from the offer, half a second earlier")
+                    .isGreaterThan(BUDGET.minusMillis(300))
+                    .isLessThanOrEqualTo(BUDGET);
+        }
+    }
+
     @Test
     void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException {
         var busy = new CountDownLatch(1);
         var working = new CountDownLatch(2);
         var done = new AtomicInteger();
-        try (var sideLoads = new SideLoads(3, 2)) {
+        try (var sideLoads = new SideLoads(3, 2, BUDGET)) {
             for (int i = 0; i < 2; i++) {
-                sideLoads.offer(() -> {
+                sideLoads.offer(_ -> {
                     working.countDown();
                     await(busy);
                     done.incrementAndGet();
@@ -31,7 +46,7 @@ class SideLoadsTest {
             long started = System.nanoTime();
             int accepted = 0;
             for (int i = 0; i < 10; i++) {
-                if (sideLoads.offer(done::incrementAndGet)) {
+                if (sideLoads.offer(_ -> done.incrementAndGet())) {
                     accepted++;
                 }
             }
@@ -51,14 +66,14 @@ class SideLoadsTest {
     @Test
     void aLoadThatThrowsIsCountedAndTheWorkerCarriesOn() throws InterruptedException {
         var ran = new CountDownLatch(1);
-        try (var sideLoads = new SideLoads(10, 1)) {
-            sideLoads.offer(() -> {
+        try (var sideLoads = new SideLoads(10, 1, BUDGET)) {
+            sideLoads.offer(_ -> {
                 throw new IllegalStateException("the API said no");
             });
-            sideLoads.offer(() -> {
+            sideLoads.offer(_ -> {
                 throw new ExceptionInInitializerError("a binding did not load");
             });
-            sideLoads.offer(ran::countDown);
+            sideLoads.offer(_ -> ran.countDown());
             assertThat(ran.await(5, TimeUnit.SECONDS))
                     .as("the one worker is still there")
                     .isTrue();
@@ -69,8 +84,8 @@ class SideLoadsTest {
     @Test
     void aLoadThatSwallowsTheCloseDoesNotKeepItsWorker() throws InterruptedException {
         var running = new CountDownLatch(1);
-        var sideLoads = new SideLoads(10, 1);
-        sideLoads.offer(() -> {
+        var sideLoads = new SideLoads(10, 1, BUDGET);
+        sideLoads.offer(_ -> {
             running.countDown();
             try {
                 Thread.sleep(10_000);
@@ -85,9 +100,17 @@ class SideLoadsTest {
                 .as("the worker ended")
                 .isTrue();
         assertThat(sideLoads.failed()).isEqualTo(1);
-        assertThat(sideLoads.offer(() -> {}))
+        assertThat(sideLoads.offer(_ -> {}))
                 .as("nothing is taken after the close")
                 .isFalse();
+    }
+
+    private static void sleep(Duration duration) {
+        try {
+            Thread.sleep(duration);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static void await(CountDownLatch latch) {
