@@ -26,9 +26,10 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 
 /**
- * Decoding one odds change, warm: the SDK's decoder (JAXB with an unmarshaller per message), JAXB
- * with one unmarshaller kept, and the hand-written StAX reader JAXB is weighed against. The time and
- * the allocation per message are what the budget holds.
+ * Decoding one odds change, warm: the SDK's decoder (JAXB on Woodstox, with an unmarshaller per
+ * message), JAXB on the JDK's own parser with one unmarshaller kept - the decoder as it was - and a
+ * hand-written StAX reader on the JDK's parser, which JAXB was weighed against. The SDK decoder's time
+ * and allocation per message are what the budget holds.
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.AverageTime)
@@ -57,9 +58,9 @@ public class DecodeBenchmark {
         return decoder.decode(body);
     }
 
-    /** What the decoder would cost with an unmarshaller per thread instead of per message. */
+    /** The decoder as it was, on the JDK's parser; the kept unmarshaller makes no difference. */
     @Benchmark
-    public Object jaxbKeptUnmarshaller() throws JAXBException, XMLStreamException {
+    public Object jaxbOnTheJdksParser() throws JAXBException, XMLStreamException {
         XMLStreamReader reader = inputs.createXMLStreamReader(new ByteArrayInputStream(body));
         try {
             return requireNonNull(unmarshaller).unmarshal(reader);
