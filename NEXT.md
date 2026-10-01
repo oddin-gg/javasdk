@@ -527,8 +527,10 @@ and REST workers post facts to it; it decides and posts work out.
   DTDs off, external entities off, text parsed as it is reached, not lazily. Woodstox
   searches colliding names one by one where the JDK's parser randomises its hash, so a
   document may use at most 512 distinct names - elements, attributes, prefixes and
-  namespaces - an element at most 64 attributes and namespace declarations, and each
-  document's names stay its own. Processing instructions are refused. Body
+  namespaces - at most 8 of them with one hash, none longer than 128 characters; an
+  element at most 64 attributes and namespace declarations, an attribute value at most
+  16 384 characters; and each document's names stay its own. Processing instructions
+  are refused. Body
   size is bounded before decoding by the maximum message size from the delivery
   section; the decoder's own limits bound parser work. One malformed document costs
   one unparsable callback, nothing more.
@@ -678,7 +680,7 @@ Performance is a requirement, not a follow-up.
 - Outage: serve stale data while a refresh is failing, back off per locale. Never
   collapse to one message per HTTP timeout.
 - JAXB's unmarshal cost, measured early: on the JDK's own parser three times a
-  hand-written StAX reader's, on Woodstox within a tenth of it. The decoder reads with
+  hand-written StAX reader's, on Woodstox about a sixth slower than it. The decoder reads with
   Woodstox, and the generated classes stay without a reader to maintain.
 
 ---
@@ -852,7 +854,7 @@ benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
 - **Operator queue limit below prefetch.** Silent drop-head loss the SDK cannot see.
   The onboarding checklist carries the rule.
 - **JAXB speed.** Measured in Phase 1 and settled: the JDK's StAX parser was the cost, and
-  JAXB on Woodstox is within a tenth of a hand-written StAX reader (`benchmarks/README.md`).
+  JAXB on Woodstox is about a sixth slower than a hand-written StAX reader (`benchmarks/README.md`).
 - **Two Java 8 clients.** They cannot use 1.0. The old line covers them until the
   end date. Anything beyond that is a business decision, not a technical one.
 - **Two lines to maintain.** Every wire change is done twice until the old line ends.

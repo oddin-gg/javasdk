@@ -40,7 +40,7 @@ Only the SDK's decoder has a budget, so the build runs only it. For the comparis
 | 500 | 1.12 ms, 1.52 MB | 2.97 ms, 1.29 MB | 0.97 ms, 1.02 MB |
 
 The JDK's own StAX parser was the cost, not JAXB: on Woodstox, JAXB is about three times as
-fast and within an eighth of the hand-written reader, with its name limit and per-document name
+fast and about a sixth (11-16 %) slower than the hand-written reader, with its name limit and per-document name
 table counted in, which is why the decoder stays on JAXB and
 the generated classes, with no parsing code to keep in step with the schema. It allocates
 somewhat more. On 2026-09-29, before the change, the SDK's column read as the middle one;
