@@ -173,7 +173,7 @@ public final class MatchCaches {
      */
     public void fill(Collection<RASportEvent> events, Locale locale, Stamp started) {
         for (RASportEvent event : events) {
-            URN id = MatchWrites.urn(event.getId());
+            URN id = ApiValues.urn(event.getId());
             if (id != null) {
                 matches.fill(id, MatchWrites.fill(SCHEDULE, event, locale), started);
             }
