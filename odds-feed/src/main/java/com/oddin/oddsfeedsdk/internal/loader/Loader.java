@@ -9,8 +9,9 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Function;
+import java.util.function.BooleanSupplier;
 
 /**
  * Single-flight fetching by key: concurrent misses for one key share one fetch, run off the
@@ -27,8 +28,20 @@ import java.util.function.Function;
  */
 public final class Loader<K, V> {
 
+    /** Fetches one key, and writes what it gets with a stamp that knows when it was abandoned. */
+    @FunctionalInterface
+    public interface Fetch<K, V> {
+        /**
+         * Fetches the key and writes what it gets into the caches.
+         *
+         * @param abandoned true once every caller gave up on this fetch: from then on its result must
+         *     not be written, since a newer fetch of the key may have written already
+         */
+        V fetch(K key, BooleanSupplier abandoned);
+    }
+
     private final String name;
-    private final Function<K, V> fetch;
+    private final Fetch<K, V> fetch;
     private final Duration wait;
     private final Executor fetches;
     private final ConcurrentHashMap<K, Flight<V>> inFlight = new ConcurrentHashMap<>();
@@ -39,7 +52,7 @@ public final class Loader<K, V> {
      * @param margin how much longer than the deadline a caller waits
      * @param fetches where the fetches run: virtual threads
      */
-    public Loader(String name, Function<K, V> fetch, Duration deadline, Duration margin, Executor fetches) {
+    public Loader(String name, Fetch<K, V> fetch, Duration deadline, Duration margin, Executor fetches) {
         this.name = name;
         this.fetch = fetch;
         this.wait = deadline.plus(margin);
@@ -52,10 +65,19 @@ public final class Loader<K, V> {
      * @throws ApiException when the fetch fails, or does not finish in time
      */
     public V load(K key) {
-        var mine = new Flight<V>();
-        // joined and counted in one step, so the last to give up cannot miss a caller joining
+        var mine = new Flight<V>(System.nanoTime() + wait.toNanos());
+        // joined and counted in one step, so the last to give up cannot miss a caller joining; a
+        // flight past its deadline is abandoned and replaced, however many still wait for it
         Flight<V> flight = inFlight.compute(key, (k, running) -> {
-            Flight<V> joined = running != null ? running : mine;
+            Flight<V> joined;
+            if (running == null) {
+                joined = mine;
+            } else if (running.expired()) {
+                running.abandoned().set(true);
+                joined = mine;
+            } else {
+                joined = running;
+            }
             joined.waiters().incrementAndGet();
             return joined;
         });
@@ -72,7 +94,8 @@ public final class Loader<K, V> {
         }
         boolean overran = false;
         try {
-            return flight.result().get(wait.toNanos(), TimeUnit.NANOSECONDS);
+            // the flight's own deadline, not a fresh one per caller
+            return flight.result().get(Math.max(0, flight.expiresAt() - System.nanoTime()), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
             overran = true;
             throw new ApiException(name + " " + key + " not loaded within " + wait.toMillis() + " ms", null, e);
@@ -94,7 +117,12 @@ public final class Loader<K, V> {
     private void leave(K key, Flight<V> flight, boolean overran) {
         inFlight.compute(key, (k, current) -> {
             int left = flight.waiters().decrementAndGet();
-            return overran && left == 0 && flight.equals(current) ? null : current;
+            if (overran && left == 0) {
+                // abandoned before it leaves the map, so no newer fetch can write before it is
+                flight.abandoned().set(true);
+                return flight.equals(current) ? null : current;
+            }
+            return current;
         });
     }
 
@@ -112,7 +140,7 @@ public final class Loader<K, V> {
     private void fetch(K key, Flight<V> flight) {
         V value;
         try {
-            value = fetch.apply(key);
+            value = fetch.fetch(key, flight.abandoned()::get);
         } catch (RuntimeException | Error e) {
             inFlight.remove(key, flight);
             flight.result().completeExceptionally(e);
@@ -134,10 +162,15 @@ public final class Loader<K, V> {
         return new ApiException(name + " " + key + " failed to load: " + cause, null, wrapped);
     }
 
-    /** One fetch: its result, and how many callers wait for it. */
-    private record Flight<V>(CompletableFuture<V> result, AtomicInteger waiters) {
-        Flight() {
-            this(new CompletableFuture<>(), new AtomicInteger());
+    /** One fetch: its result, how many callers wait for it, whether it was abandoned, its deadline. */
+    private record Flight<V>(
+            CompletableFuture<V> result, AtomicInteger waiters, AtomicBoolean abandoned, long expiresAt) {
+        Flight(long expiresAt) {
+            this(new CompletableFuture<>(), new AtomicInteger(), new AtomicBoolean(), expiresAt);
+        }
+
+        boolean expired() {
+            return System.nanoTime() - expiresAt > 0;
         }
     }
 }

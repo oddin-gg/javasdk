@@ -48,7 +48,7 @@ class NestedLoadTest {
                 Duration deadline = configuration.getHttpClientTimeout();
                 var competitors = new Loader<URN, String>(
                         "competitor",
-                        id -> client.fetchCompetitorProfile(id, Locale.ENGLISH)
+                        (id, _) -> client.fetchCompetitorProfile(id, Locale.ENGLISH)
                                 .getCompetitor()
                                 .getName(),
                         deadline,
@@ -56,7 +56,7 @@ class NestedLoadTest {
                         threads);
                 var matches = new Loader<URN, List<String>>(
                         "match",
-                        id -> {
+                        (id, _) -> {
                             var summary = client.fetchMatchSummary(id, Locale.ENGLISH);
                             var names = new ArrayList<String>();
                             for (var competitor :

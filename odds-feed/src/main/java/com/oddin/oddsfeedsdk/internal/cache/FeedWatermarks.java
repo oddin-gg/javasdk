@@ -49,14 +49,18 @@ public final class FeedWatermarks<K> {
     }
 
     /**
-     * Whether a live message may write the feed-owned fields of {@code entity}, recording its
-     * watermark when it may: not when it is older than the last one from its producer, nor when its
-     * corrected age is over {@link #STATUS_AGE}.
+     * Runs a live message's write of the feed-owned fields of {@code entity}, and records its
+     * watermark, unless it is older than the last one from its producer or its corrected age is over
+     * {@link #STATUS_AGE}. The write runs under the entity's watermark, so two sessions writing the
+     * same entity cannot leave the older message's fields behind the newer watermark. It must not
+     * touch these watermarks itself.
      *
      * @param timestamp the message's timestamp, the feed's clock
      * @param receivedAt when the SDK received it, the SDK's clock
+     * @return whether it wrote
      */
-    public boolean feedMayWrite(K entity, long producer, long timestamp, Duration correctedAge, Instant receivedAt) {
+    public boolean feedWriteIfNewer(
+            K entity, long producer, long timestamp, Duration correctedAge, Instant receivedAt, Runnable write) {
         if (correctedAge.compareTo(STATUS_AGE) > 0) {
             return false;
         }
@@ -66,6 +70,7 @@ public final class FeedWatermarks<K> {
             if (last != null && last.timestamp() > timestamp) {
                 return current;
             }
+            write.run();
             admitted[0] = true;
             var next = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.byProducer());
             next.put(producer, new Mark(timestamp, receivedAt));
@@ -79,7 +84,7 @@ public final class FeedWatermarks<K> {
      * written them within {@link #STATUS_AGE} of {@code now}, by the SDK's clock. The write runs under
      * the entity's watermark, so a live message admitted meanwhile either comes first, and the write
      * does not happen, or comes after and overwrites it: a REST answer from before the feed resumed
-     * cannot replace what the feed wrote.
+     * cannot replace what the feed wrote. It must not touch these watermarks itself.
      *
      * @return whether it wrote
      */

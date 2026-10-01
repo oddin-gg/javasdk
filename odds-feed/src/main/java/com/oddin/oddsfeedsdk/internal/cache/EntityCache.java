@@ -2,13 +2,13 @@ package com.oddin.oddsfeedsdk.internal.cache;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
-import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 import java.time.Duration;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -70,8 +70,8 @@ public final class EntityCache<K> {
                 .ticker(ticker)
                 .executor(Runnable::run)
                 .<K, Long>evictionListener((key, generation, cause) -> {
-                    // dropped for room, not for age: a fetch it was to stop must stop all the same
-                    if (cause == RemovalCause.SIZE && generation != null) {
+                    // dropped for room, or aged out under a fetch slower than an hour: it must stop all the same
+                    if (cause.wasEvicted() && generation != null) {
                         forgotten.accumulateAndGet(generation, Math::max);
                     }
                 })
@@ -97,14 +97,22 @@ public final class EntityCache<K> {
         return entry != null && entry.isFresh(endpoint, locale, clock.instant(), age);
     }
 
-    /** What an authoritative fetch remembers when it starts, to tell whether its result still applies. */
+    /** What a fetch remembers when it starts, to tell whether its result still applies. */
     public Stamp stamp(K key) {
+        return stamp(key, () -> false);
+    }
+
+    /**
+     * The same, for a fetch its loader can abandon: once {@code abandoned} says so, its result is
+     * not written, since a newer fetch of the key may have written already.
+     */
+    public Stamp stamp(K key, BooleanSupplier abandoned) {
         long startedAt = generations.get();
         long lastInvalidation = lastInvalidation(key);
         Entry entry = entries.getIfPresent(key);
         return entry == null
-                ? new Stamp(false, 0, lastInvalidation, startedAt)
-                : new Stamp(true, entry.generation(), lastInvalidation, startedAt);
+                ? new Stamp(false, 0, lastInvalidation, startedAt, abandoned)
+                : new Stamp(true, entry.generation(), lastInvalidation, startedAt, abandoned);
     }
 
     /**
@@ -118,10 +126,7 @@ public final class EntityCache<K> {
     public boolean writeAuthoritative(K key, Write write, Stamp started) {
         var written = new boolean[1];
         entries.asMap().compute(key, (k, current) -> {
-            boolean stale = started.present()
-                    ? current == null || current.generation() != started.generation()
-                    : lastInvalidation(key) != started.lastInvalidation() || forgotten.get() > started.startedAt();
-            if (stale) {
+            if (stale(key, current, started)) {
                 return current;
             }
             written[0] = true;
@@ -131,14 +136,36 @@ public final class EntityCache<K> {
         return written[0];
     }
 
-    /** Writes what another endpoint carries: only fields absent and never marked authoritative. */
-    public void fill(K key, Write write) {
+    /**
+     * Writes what another endpoint carries: only fields absent and never marked authoritative, and
+     * nothing when the entry was invalidated or dropped since {@code started}, as for an
+     * authoritative write - else a side-load from before an invalidation would fill its tombstone.
+     *
+     * @return whether it was applied
+     */
+    public boolean fill(K key, Write write, Stamp started) {
+        var applied = new boolean[1];
         entries.asMap().compute(key, (k, current) -> {
+            if (stale(key, current, started)) {
+                return current;
+            }
+            applied[0] = true;
             Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
             Entry filled = base.fill(write, ticker.read());
             // a fill that adds nothing to nothing leaves nothing behind
             return current == null && filled == base ? null : filled;
         });
+        return applied[0];
+    }
+
+    /** Whether a fetch's result no longer applies; asked under the key's lock, as the write happens. */
+    private boolean stale(K key, @Nullable Entry current, Stamp started) {
+        if (started.abandoned().getAsBoolean()) {
+            return true;
+        }
+        return started.present()
+                ? current == null || current.generation() != started.generation()
+                : lastInvalidation(key) != started.lastInvalidation() || forgotten.get() > started.startedAt();
     }
 
     /**
@@ -186,6 +213,8 @@ public final class EntityCache<K> {
      * @param generation its generation then
      * @param lastInvalidation the generation of the key's last invalidation then, 0 for none
      * @param startedAt the newest generation given out then: any invalidation after it is news
+     * @param abandoned whether the fetch's loader has given up on it
      */
-    public record Stamp(boolean present, long generation, long lastInvalidation, long startedAt) {}
+    public record Stamp(
+            boolean present, long generation, long lastInvalidation, long startedAt, BooleanSupplier abandoned) {}
 }
