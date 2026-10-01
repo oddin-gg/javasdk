@@ -37,7 +37,11 @@ enum Failure {
                 return REFUSED;
             }
             if (cause instanceof ShutdownSignalException shutdown) {
-                String text = String.valueOf(replyText(shutdown)).toLowerCase(Locale.ROOT);
+                // what the broker quotes - the user, which is the token, a queue, a virtual host - is
+                // left out, so a token with "limit" in it does not read as a limit
+                String text = String.valueOf(replyText(shutdown))
+                        .replaceAll("'[^']*'", "''")
+                        .toLowerCase(Locale.ROOT);
                 if (text.contains("limit")) {
                     return RESOURCES;
                 }

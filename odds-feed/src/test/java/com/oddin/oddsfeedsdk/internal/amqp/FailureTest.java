@@ -89,6 +89,18 @@ class FailureTest {
     }
 
     @Test
+    void aTokenWithLimitInItIsStillARefusal() {
+        var refused = closed(
+                AMQP.NOT_ALLOWED, "NOT_ALLOWED - access to vhost '/oddinfeed/53' refused for user 'unlimited-token'");
+        assertThat(Failure.of(refused)).isEqualTo(Failure.REFUSED);
+        var atTheLimit = closed(
+                AMQP.NOT_ALLOWED,
+                "NOT_ALLOWED - access to vhost '/oddinfeed/53' refused for user 'unlimited-token': connection limit"
+                        + " (0) is reached");
+        assertThat(Failure.of(atTheLimit)).isEqualTo(Failure.RESOURCES);
+    }
+
+    @Test
     void aChannelTheBrokerRefusesIsARefusal() {
         var close = new AMQP.Channel.Close.Builder()
                 .replyCode(AMQP.ACCESS_REFUSED)
