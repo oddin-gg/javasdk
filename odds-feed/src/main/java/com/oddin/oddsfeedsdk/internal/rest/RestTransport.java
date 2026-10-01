@@ -234,7 +234,12 @@ public final class RestTransport implements AutoCloseable {
             }
             var error = new HttpStatusException(method, uri, status);
             ApiCall call = report(method, uri, status, started, attempt, broken != null ? broken : error);
-            last.set(error, apiError(answer.body()));
+            if (status / 100 == 2 && broken != null) {
+                // a success that broke off fails by what cut it, not by its status
+                last.set(broken, null);
+            } else {
+                last.set(error, apiError(answer.body()));
+            }
             if (refused) {
                 events.refused(call);
                 throw last.failure(method, uri, "answered " + status);
