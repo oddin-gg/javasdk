@@ -22,7 +22,7 @@ import org.jspecify.annotations.Nullable;
  * however late it joined, and a caller that runs out of time fails - it never starts a fetch of its
  * own. A fetch that fails fails every caller waiting for it, and the next miss starts afresh: a
  * fetch leaves before it tells anyone how it went. One still running past its callers' time is
- * abandoned and replaced by the next miss, and writes nothing from then on.
+ * abandoned, writes nothing from then on, and is replaced by the next miss.
  *
  * <p>The fetch writes what it gets into the caches itself, and returns what the callers need. Since
  * nothing waits without a deadline, loads that wait for each other - a match for its competitors, a
@@ -41,8 +41,9 @@ public final class Loader<K, V> {
          *
          * @param deadline the fetch's one deadline: every REST call it makes is given it, and so is
          *     every load it waits for
-         * @param abandoned true once the fetch was replaced: from then on its result must not be
-         *     written, since a newer fetch of the key may have written already
+         * @param abandoned true once the fetch is past its callers' time, or was replaced: from then
+         *     on its result must not be written, since a newer fetch of the key may have written
+         *     already
          */
         V fetch(K key, Deadline deadline, BooleanSupplier abandoned);
     }
@@ -135,7 +136,9 @@ public final class Loader<K, V> {
     private void fetch(K key, Flight<V> flight) {
         V value;
         try {
-            value = fetch.fetch(key, flight.deadline(), flight.abandoned()::get);
+            // abandoned once past its callers' time, replaced or not: no fetch outlives that, which an
+            // entity cache remembering invalidations for that long relies on
+            value = fetch.fetch(key, flight.deadline(), () -> flight.abandoned().get() || flight.expired());
         } catch (RuntimeException | Error e) {
             inFlight.remove(key, flight);
             flight.result().completeExceptionally(e);

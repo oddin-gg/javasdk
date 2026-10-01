@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -124,11 +125,13 @@ public final class LiveState<K> {
      * Writes a REST response's values for {@code entity} if no producer has written within {@link
      * #STATUS_AGE} of {@code now}, by the SDK's clock. A live message admitted meanwhile either comes
      * first, and this does not write, or comes after and overwrites it: a REST answer from before the
-     * feed resumed cannot replace what the feed wrote.
+     * feed resumed cannot replace what the feed wrote. Nor can a fetch its loader abandoned replace
+     * what a newer one wrote: {@code abandoned} is asked in the same step as the write.
      *
+     * @param abandoned whether the fetch the values came from was abandoned
      * @return whether it wrote
      */
-    public boolean restWriteIfQuiet(K entity, Instant now, LiveWrite write) {
+    public boolean restWriteIfQuiet(K entity, Instant now, LiveWrite write, BooleanSupplier abandoned) {
         Instant quietSince = now.minus(STATUS_AGE);
         var wrote = new boolean[1];
         records.asMap().compute(entity, (k, present) -> {
@@ -137,7 +140,7 @@ public final class LiveState<K> {
             boolean quiet = current == null
                     || current.marks().values().stream()
                             .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
-            if (!quiet) {
+            if (!quiet || abandoned.getAsBoolean()) {
                 return keep(k, present, current);
             }
             wrote[0] = true;
@@ -152,6 +155,11 @@ public final class LiveState<K> {
                             now));
         });
         return wrote[0];
+    }
+
+    /** The same, for a write no loader can abandon; for a test. */
+    boolean restWriteIfQuiet(K entity, Instant now, LiveWrite write) {
+        return restWriteIfQuiet(entity, now, write, () -> false);
     }
 
     /** The entity's live values, or null when it has no record: then its summary is loaded again. */

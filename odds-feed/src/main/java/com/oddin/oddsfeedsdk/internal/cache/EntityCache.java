@@ -205,7 +205,8 @@ public final class EntityCache<K> {
         }
         return started.present()
                 ? current == null || current.generation() != started.generation()
-                : lastInvalidation(key) != started.lastInvalidation() || forgotten.get() > started.startedAt();
+                // only a newer invalidation: the one the fetch saw may age out under it, which says nothing new
+                : lastInvalidation(key) > started.lastInvalidation() || forgotten.get() > started.startedAt();
     }
 
     /**

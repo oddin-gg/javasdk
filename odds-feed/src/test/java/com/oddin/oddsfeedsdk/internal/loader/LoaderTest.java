@@ -243,6 +243,7 @@ class LoaderTest {
         long before = System.nanoTime();
         Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
         waitUntil(() -> joins.get() == 1);
+        long after = System.nanoTime();
         Future<String> second = virtualThreads.submit(() -> loader.load("m1"));
         waitUntil(() -> joins.get() == 2);
         release.countDown();
@@ -252,11 +253,32 @@ class LoaderTest {
         assertThat(given).as("one fetch, one deadline").hasSize(1);
         var deadline = given.getFirst();
         assertThat(deadline.budget()).isEqualTo(DEADLINE);
-        assertThat(deadline.endNanos() - before)
+        assertThat(deadline.endNanos())
                 .as("the HTTP client timeout from when the flight started, without the callers' margin")
-                .isBetween(
-                        DEADLINE.toNanos(),
-                        DEADLINE.toNanos() + Duration.ofMillis(300).toNanos());
+                .isBetween(before + DEADLINE.toNanos(), after + DEADLINE.toNanos());
+    }
+
+    @Test
+    void aFetchPastItsCallersTimeIsAbandonedThoughNothingReplacedIt() throws Exception {
+        var release = new CountDownLatch(1);
+        var abandonedAtTheEnd = new java.util.concurrent.CompletableFuture<Boolean>();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, abandoned) -> {
+                    boolean before = abandoned.getAsBoolean();
+                    await(release);
+                    abandonedAtTheEnd.complete(!before && abandoned.getAsBoolean());
+                    return "late";
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
+        Thread.sleep(100);
+        release.countDown();
+        assertThat(abandonedAtTheEnd.get(5, TimeUnit.SECONDS))
+                .as("not before its time, and abandoned after it with no newer miss")
+                .isTrue();
     }
 
     @Test
