@@ -1,0 +1,313 @@
+package com.oddin.oddsfeedsdk.internal.recovery;
+
+import static com.oddin.oddsfeedsdk.internal.recovery.Harness.LIVE;
+import static com.oddin.oddsfeedsdk.internal.recovery.Harness.PRE;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.function.BooleanSupplier;
+import org.junit.jupiter.api.Test;
+
+/**
+ * The stale-message safety net: when it acts, what it asks for first, when it is off or paused,
+ * and its own cap. The limit is two minutes and the window one, as {@link Harness#settings()} has
+ * them; the messages here are three minutes old.
+ */
+class SafetyNetTest {
+
+    private static final Duration OLD = Duration.ofMinutes(3);
+    private static final Duration FRESH = Duration.ofSeconds(1);
+
+    /** How far behind the SDK's clock each producer's clock is, in millis. */
+    private long preSkew;
+
+    private long liveSkew;
+
+    private boolean alives = true;
+    private boolean snapshot;
+
+    @Test
+    void liveMessagesTooOldForTheWindowGetRecoveriesFirstAndTheResetOnceAllAreAccepted() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        long seconds = stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        assertThat(seconds)
+                .as("seconds to the first request: the window after the first stale sample")
+                .isEqualTo(61);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        assertThat(feed.calls)
+                .as("one recovery for each producer of the session")
+                .hasSize(before + 2);
+        assertThat(pre.after()).isEqualTo(Instant.ofEpochMilli(feed.machine.checkpoint(1, PRE)));
+        assertThat(feed.resets).as("before the API has accepted").isEmpty();
+
+        feed.accept(pre);
+        assertThat(feed.resets).as("with one of two accepted").isEmpty();
+        feed.accept(live);
+        assertThat(feed.resets).containsExactly(1);
+        assertThat(feed.events).containsExactly("session 1 reset for producer 1");
+        assertThat(feed.counters.resets()).isEqualTo(1);
+        assertThat(feed.lastStatus(PRE))
+                .extracting(ProducerStatusChange::cause)
+                .isEqualTo(StatusCause.SAFETY_NET_RESET);
+        assertThat(feed.lastStatus(LIVE))
+                .extracting(ProducerStatusChange::cause)
+                .isEqualTo(StatusCause.SAFETY_NET_RESET);
+
+        feed.complete(pre, 1);
+        feed.complete(live, 1);
+        assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
+    void agesAreCorrectedByEachProducersOwnClockOffset() {
+        preSkew = Duration.ofHours(1).toMillis();
+        liveSkew = -Duration.ofMinutes(30).toMillis();
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        aliveBoth(feed);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        int before = feed.calls.size();
+
+        // an hour old by the SDK's clock, a second by the producer's
+        long seconds = stale(feed, 1, FRESH, Duration.ofMinutes(3), () -> feed.calls.size() > before);
+        assertThat(seconds).as("a request").isEqualTo(-1);
+        assertThat(feed.events).isEmpty();
+        stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
+        assertThat(feed.calls).as("three minutes old by the producer's clock").hasSize(before + 2);
+    }
+
+    @Test
+    void theNetIsOffForAProducerWhoseLastAliveIsOlderThanTwoIntervals() {
+        Harness feed = new Harness(Harness.settings(Duration.ofMinutes(5)));
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        alives = false;
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .as("a request without alives")
+                .isEqualTo(-1);
+        alives = true;
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .as("seconds to a request once alives resume: the first at 10 s, then the window")
+                .isEqualTo(70);
+    }
+
+    @Test
+    void snapshotMessagesAreNoSamples() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        long checkpoint = feed.machine.checkpoint(1, PRE);
+        snapshot = true;
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .isEqualTo(-1);
+        assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(checkpoint);
+    }
+
+    @Test
+    void theNetIsPausedOnEverySessionWhileARecoveryOfTheProducerIsInFlight() {
+        Harness feed = new Harness();
+        Outbox.Call.Snapshot recovery = recoveringWithTwoSessions(feed);
+        int before = feed.calls.size();
+        // the recovery's snapshot is ahead of session 2's live messages, which come out old
+        assertThat(stale(feed, 2, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .isEqualTo(-1);
+
+        feed.complete(recovery, 1, 2);
+        long seconds = stale(feed, 2, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
+        assertThat(seconds)
+                .as("seconds from the completion to the net's request: the window starts again")
+                .isEqualTo(61);
+    }
+
+    @Test
+    void aSampleTakenBeforeTheCompletionButHandledAfterItIsStillTheRecoverys() {
+        Harness feed = new Harness();
+        Outbox.Call.Snapshot recovery = recoveringWithTwoSessions(feed);
+        int before = feed.calls.size();
+        feed.complete(recovery, 1, 2);
+        long completedAt = feed.now();
+        feed.machine.processed(2, PRE, completedAt - OLD.toMillis() - 1_000, completedAt - 1_000, false);
+        long seconds = stale(feed, 2, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
+        assertThat(seconds)
+                .as("seconds from the completion to the net's request")
+                .isEqualTo(61);
+    }
+
+    /** Sessions 1 and 2, both producers up, and a recovery of producer 1 in flight, accepted. */
+    private static Outbox.Call.Snapshot recoveringWithTwoSessions(Harness feed) {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1, 2);
+        feed.unsubscribed(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        return recovery;
+    }
+
+    @Test
+    void aRequestTheApiDidNotAcceptMeansNoResetAndTheNetBacksOff() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(live);
+        feed.refuse(pre);
+        assertThat(feed.resets).isEmpty();
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+        assertThat(feed.statuses)
+                .as("the net took nothing down")
+                .noneMatch(change -> change.cause() == StatusCause.SAFETY_NET_RESET);
+        feed.runWithAlives(Duration.ofSeconds(10));
+        assertThat(feed.snapshots(PRE))
+                .as("nothing missing, so nothing to ask for again")
+                .hasSize(2);
+
+        feed.complete(live, 1);
+        long failedAt = feed.now();
+        int after = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after);
+        assertThat(feed.now() - failedAt)
+                .as("millis from the failure to the next try")
+                .isGreaterThanOrEqualTo(Duration.ofMinutes(1).toMillis());
+    }
+
+    @Test
+    void theNetResetsASessionThreeTimesPerCooldownWithBackoffThenTheSessionLags() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        long start = feed.now();
+        List<Long> resetAt = new ArrayList<>();
+        while (feed.now() - start < Duration.ofMinutes(10).toMillis()) {
+            int before = feed.calls.size();
+            boolean lagging = stale(
+                                    feed,
+                                    1,
+                                    OLD,
+                                    Duration.ofMinutes(10),
+                                    () -> feed.calls.size() > before || feed.machine.lagging(1))
+                            > 0
+                    && feed.machine.lagging(1);
+            if (lagging) {
+                break;
+            }
+            Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+            Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+            feed.accept(pre);
+            feed.accept(live);
+            resetAt.add((feed.now() - start) / 1_000);
+            feed.complete(pre, 1);
+            feed.complete(live, 1);
+        }
+        assertThat(resetAt)
+                .as("seconds of the resets: the window, then 1 and 2 minutes apart")
+                .containsExactly(61L, 122L, 242L);
+        assertThat(feed.machine.lagging(1)).isTrue();
+        assertThat(feed.events).last().isEqualTo("session 1 lagging");
+        assertThat(feed.statuses)
+                .filteredOn(change -> change.cause() == StatusCause.SAFETY_NET_RESET)
+                .as("producers the net took down, once per reset each")
+                .hasSize(6);
+
+        // caught up
+        stale(feed, 1, FRESH, Duration.ofSeconds(1), () -> false);
+        assertThat(feed.machine.lagging(1)).isFalse();
+        assertThat(feed.events).last().isEqualTo("session 1 caught up");
+
+        // the first reset ages out of the cool-down: the net may reset again
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(10), () -> feed.calls.size() > before);
+        assertThat((feed.now() - start) / 1_000).as("seconds to the next try").isEqualTo(661);
+    }
+
+    @Test
+    void aSnapshotCompleteBeforeTheApisAnswerCancelsTheReset() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.accept(pre);
+        feed.accept(live);
+        assertThat(feed.resets)
+                .as("a reset now would drop what the recovery sent")
+                .isEmpty();
+
+        // the reset given up, the net may act again once the other recovery is done
+        feed.machine.snapshotComplete(1, LIVE, live.requestId());
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after))
+                .as("seconds to the net's next request: still stale, so as its backoff of a minute ends")
+                .isEqualTo(60);
+    }
+
+    @Test
+    void aSnapshotCompleteBeforeTheApisAnswerLetsTheNetActAgainOnASessionOfOneProducer() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.machine.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.accept(pre);
+        assertThat(feed.resets).isEmpty();
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after))
+                .as("seconds to the net's next request, the reset it waited for given up")
+                .isEqualTo(60);
+    }
+
+    @Test
+    void aLostConnectionWhileAResetWaitsMakesNone() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.machine.connectionDown();
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).isEmpty();
+    }
+
+    /**
+     * Second by second, session {@code session} takes a live message of producer 1 that is {@code
+     * age} old by that producer's clock, with both producers' alives every ten seconds of the
+     * clock, until {@code until} holds.
+     *
+     * @return the seconds that took, or -1 when it did not hold within {@code limit}
+     */
+    private long stale(Harness feed, int session, Duration age, Duration limit, BooleanSupplier until) {
+        for (long second = 1; second <= limit.toSeconds(); second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            if (alives && Duration.between(Harness.START, feed.clock.instant()).toSeconds() % 10 == 0) {
+                aliveBoth(feed);
+            }
+            long now = feed.now();
+            feed.machine.processed(session, PRE, now - preSkew - age.toMillis(), now, snapshot);
+            feed.machine.tick();
+            if (until.getAsBoolean()) {
+                return second;
+            }
+        }
+        return -1;
+    }
+
+    private void aliveBoth(Harness feed) {
+        long now = feed.now();
+        feed.machine.alive(PRE, now - preSkew, now, true);
+        feed.machine.alive(LIVE, now - liveSkew, now, true);
+    }
+}
