@@ -83,7 +83,8 @@ public final class Entry {
      * An authoritative response: it replaces every field it is authoritative for in its locale, and
      * its shared fields in any locale, and marks them. A localized field it does not carry is
      * cleared; a shared one only when the endpoint always sends it, since two locales of one
-     * response carry the same shared values.
+     * response carry the same shared values. What it carries of fields another endpoint owns it
+     * writes by the fill rule: only where absent and unmarked.
      */
     Entry authoritative(Write write, Instant now, long ticks) {
         Locale locale = write.locale();
@@ -92,8 +93,10 @@ public final class Entry {
         }
         var nextValues = new HashMap<>(values);
         var nextAuthoritative = new HashSet<>(authoritative);
+        var owned = new HashSet<Slot>();
         for (Field<?> field : write.endpoint().authoritativeFor()) {
             Slot slot = field.slot(locale);
+            owned.add(slot);
             Object value = write.values().get(slot);
             if (value != null) {
                 nextValues.put(slot, value);
@@ -101,6 +104,12 @@ public final class Entry {
             } else if (field.isLocalized() || write.endpoint().alwaysSent().contains(field)) {
                 nextValues.remove(slot);
                 nextAuthoritative.add(slot);
+            }
+        }
+        for (var carried : write.values().entrySet()) {
+            Slot slot = carried.getKey();
+            if (!owned.contains(slot) && !nextValues.containsKey(slot) && !nextAuthoritative.contains(slot)) {
+                nextValues.put(slot, carried.getValue());
             }
         }
         var nextLoaded = new HashMap<>(loaded);

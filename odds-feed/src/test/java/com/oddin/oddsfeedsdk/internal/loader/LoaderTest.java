@@ -115,6 +115,34 @@ class LoaderTest {
     }
 
     @Test
+    void manyWaitersThatRunOutOfTimeTogetherLetGoOfTheFetch() throws Exception {
+        var fetches = new AtomicInteger();
+        var never = new CountDownLatch(1);
+        var loader = new Loader<String, String>(
+                "match",
+                key -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        await(never);
+                    }
+                    return "value";
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        var waiters = new java.util.ArrayList<Future<String>>();
+        for (int i = 0; i < 20; i++) {
+            waiters.add(virtualThreads.submit(() -> loader.load("m1")));
+        }
+        for (Future<String> waiter : waiters) {
+            assertThatThrownBy(() -> waiter.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
+        }
+        assertThat(loader.inFlight()).as("the last to give up let go").isZero();
+        assertThat(loader.load("m1")).as("a fresh fetch").isEqualTo("value");
+        assertThat(fetches).hasValue(2);
+        never.countDown();
+    }
+
+    @Test
     void aFailedFetchFailsEveryWaiterAndTheNextMissStartsAfresh() {
         var fetches = new AtomicInteger();
         var loader = new Loader<String, String>(

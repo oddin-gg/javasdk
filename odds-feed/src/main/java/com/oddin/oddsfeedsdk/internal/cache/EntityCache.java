@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.cache;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 import java.time.Duration;
 import java.time.InstantSource;
@@ -39,6 +40,12 @@ public final class EntityCache<K> {
      * since there is no entry to tell it, and what outlasts a tombstone that was evicted.
      */
     private final Cache<K, Long> invalidated;
+    /**
+     * The newest invalidation that may be forgotten: one whose record the size bound evicted, or a
+     * clear. A fetch that started on no entry before it gives way, since it cannot tell whether that
+     * invalidation was of its key.
+     */
+    private final AtomicLong forgotten = new AtomicLong();
 
     public EntityCache(String name, long maximumSize, Duration age) {
         this(name, maximumSize, age, InstantSource.system(), Ticker.systemTicker());
@@ -62,6 +69,12 @@ public final class EntityCache<K> {
                 .expireAfterWrite(INVALIDATION_MEMORY)
                 .ticker(ticker)
                 .executor(Runnable::run)
+                .<K, Long>evictionListener((key, generation, cause) -> {
+                    // dropped for room, not for age: a fetch it was to stop must stop all the same
+                    if (cause == RemovalCause.SIZE && generation != null) {
+                        forgotten.accumulateAndGet(generation, Math::max);
+                    }
+                })
                 .build();
     }
 
@@ -86,11 +99,12 @@ public final class EntityCache<K> {
 
     /** What an authoritative fetch remembers when it starts, to tell whether its result still applies. */
     public Stamp stamp(K key) {
+        long startedAt = generations.get();
         long lastInvalidation = lastInvalidation(key);
         Entry entry = entries.getIfPresent(key);
         return entry == null
-                ? new Stamp(false, 0, lastInvalidation)
-                : new Stamp(true, entry.generation(), lastInvalidation);
+                ? new Stamp(false, 0, lastInvalidation, startedAt)
+                : new Stamp(true, entry.generation(), lastInvalidation, startedAt);
     }
 
     /**
@@ -106,7 +120,7 @@ public final class EntityCache<K> {
         entries.asMap().compute(key, (k, current) -> {
             boolean stale = started.present()
                     ? current == null || current.generation() != started.generation()
-                    : lastInvalidation(key) != started.lastInvalidation();
+                    : lastInvalidation(key) != started.lastInvalidation() || forgotten.get() > started.startedAt();
             if (stale) {
                 return current;
             }
@@ -139,11 +153,19 @@ public final class EntityCache<K> {
         entries.asMap().computeIfPresent(key, (k, current) -> current.invalidated(generation, ticker.read()));
     }
 
-    /** Invalidates every entry. */
+    /** Invalidates every entry, and every fetch running, those that started on no entry included. */
     public void clear() {
+        forgotten.accumulateAndGet(generations.incrementAndGet(), Math::max);
         for (K key : List.copyOf(entries.asMap().keySet())) {
             invalidate(key);
         }
+    }
+
+    /** Whether the key's invalidation is still remembered; for a test of the size bound. */
+    boolean remembersInvalidation(K key) {
+        invalidated.cleanUp();
+        // quietly: a read counts towards keeping the record, which is what is being tested
+        return invalidated.policy().getIfPresentQuietly(key) != null;
     }
 
     /** How many entries it holds, tombstones included. */
@@ -163,6 +185,7 @@ public final class EntityCache<K> {
      * @param present whether there was an entry
      * @param generation its generation then
      * @param lastInvalidation the generation of the key's last invalidation then, 0 for none
+     * @param startedAt the newest generation given out then: any invalidation after it is news
      */
-    public record Stamp(boolean present, long generation, long lastInvalidation) {}
+    public record Stamp(boolean present, long generation, long lastInvalidation, long startedAt) {}
 }
