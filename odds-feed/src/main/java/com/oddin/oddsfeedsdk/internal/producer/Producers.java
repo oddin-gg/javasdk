@@ -4,6 +4,7 @@ import com.oddin.oddsfeedsdk.ProducerManager;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.ProducerScope;
 import com.oddin.oddsfeedsdk.api.entities.RecoveryInfo;
+import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducer;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducers;
 import java.time.Duration;
@@ -47,10 +48,10 @@ public final class Producers implements ProducerManager {
                     producer.getId(),
                     new AtomicReference<>(new ProducerState(
                             producer.getId(),
-                            String.valueOf(producer.getName()),
-                            String.valueOf(producer.getDescription()),
+                            required(producer.getName(), producer, "name"),
+                            required(producer.getDescription(), producer, "description"),
                             producer.isActive(),
-                            String.valueOf(producer.getApiUrl()),
+                            required(producer.getApiUrl(), producer, "api_url"),
                             scopes(producer.getScope()),
                             producer.getStatefulRecoveryWindowInMinutes(),
                             producer.isActive(),
@@ -62,6 +63,17 @@ public final class Producers implements ProducerManager {
                             null)));
         }
         this.producers = Collections.unmodifiableMap(byId);
+    }
+
+    /** An attribute the schema requires; without it the list fails the startup, as whoami does. */
+    private static String required(@Nullable String value, RAProducer producer, String attribute) {
+        if (value == null) {
+            throw new InitException(
+                    "Failed to init odds feed: the producer list answered producer " + producer.getId() + " without "
+                            + attribute,
+                    null);
+        }
+        return value;
     }
 
     /**

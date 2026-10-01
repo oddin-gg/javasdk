@@ -80,6 +80,26 @@ class ProducersTest {
         assertThat(producers.isProducerEnabled(2L))
                 .as("an inactive producer starts disabled")
                 .isFalse();
+
+        // available is what the list says; enabled is the client's
+        producers.setProducerState(1L, false);
+        assertThat(producers.getActiveProducers())
+                .as("a producer the client disabled is still active")
+                .containsOnlyKeys(1L);
+        assertThat(producers.isProducerEnabled(1L)).isFalse();
+    }
+
+    @ParameterizedTest
+    @ValueSource(
+            strings = {"name=\"pre\"", "description=\"Prematch feed\"", "api_url=\"https://api.example.invalid/v1/pre\""
+            })
+    void aProducerWithoutWhatTheSchemaRequiresFailsTheStartup(String attribute) {
+        assertThat(fixture()).contains(" " + attribute);
+        api.respond(PRODUCERS_PATH, 200, fixture().replace(" " + attribute, ""));
+        assertThatThrownBy(() -> new Producers(client.fetchProducers()))
+                .isInstanceOf(InitException.class)
+                .hasMessage("Failed to init odds feed: the producer list answered producer 1 without "
+                        + attribute.substring(0, attribute.indexOf('=')));
     }
 
     @Test

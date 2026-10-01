@@ -218,7 +218,7 @@ class FeedMessageScenarioIT {
 
             BetStop<?> betStop = received.next(BetStop.class);
             assertThat(betStop.getEvent().getId()).as("event").isEqualTo(MATCH);
-            KnownDifference.PIPE_SEPARATED_LISTS_ARE_NOT_SPLIT.expectLegacy(
+            KnownDifference.BET_STOP_GROUPS_ARE_NOT_SPLIT.expectLegacy(
                     () -> assertThat(betStop.getGroups()).as("groups").containsExactly("winner|handicap"));
         }
     }
