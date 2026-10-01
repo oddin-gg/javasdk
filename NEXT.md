@@ -458,7 +458,8 @@ and REST workers post facts to it; it decides and posts work out.
   a recovery that covers it completes. A client-supplied recovery-from timestamp
   (existing setter) seeds every session's checkpoint at `open()`. The point is clamped
   to the producer's stateful recovery window, as today, and a cold start with no seed
-  requests a full snapshot, or the configured initial snapshot interval.
+  requests a full snapshot, or the configured initial snapshot interval, counted back
+  from when the gap opened, so asking again does not move it.
 - A recovery is asked for only while an alive says the producer is there, as 0.0.x
   asks at the first alive: after `open()`, after a reconnect, after a gap in the
   alives. Nothing goes out while the connection is down.
@@ -485,7 +486,8 @@ and REST workers post facts to it; it decides and posts work out.
   the process lifetime without a further attempt.
 - Event recoveries take their ids from the same sequence. At most 128 are in flight per
   producer, and one without a `snapshot_complete` within the maximum recovery time is
-  dropped and counted.
+  dropped and counted, as is one whose `snapshot_complete` went with a lost queue; a
+  caller still waiting for the API's answer then hears it was not accepted.
 - Producer status keeps 0.0.x's public reasons. Each change also names its cause:
   unsubscribed, no alive, processed late, connection lost, channel lost, session
   opened, safety-net reset, recovery failed, and the recoveries and the catching up that
@@ -517,8 +519,14 @@ and REST workers post facts to it; it decides and posts work out.
     no reset: the actor backs off, counts, and raises an event. A `snapshot_complete`
     that arrives before the reset cancels it, since the reset would now drop what the
     recovery sent. Data is never dropped before its replacement is on the way. The
-    reset takes the session's producers down until their recoveries complete. Until the
-    options exist, the limit is two minutes and the window one.
+    reset stays pending until the AMQP layer reports it done; meanwhile the session's
+    `snapshot_complete`s, from the queue being replaced, are ignored, and nothing more is
+    asked for its producers, whose recoveries are in flight. Once done, the session counts as having lost its queue: the
+    recoveries asked for before the reset may have sent part of what they brought into
+    the old queue, so they are given up and asked for again. A reset therefore costs a
+    second recovery of the session's producers, which the first, accepted, has shown the
+    API will take. The reset takes the session's producers down until those recoveries
+    complete. Until the options exist, the limit is two minutes and the window one.
   - Each reset raises an event and increments counters (resets, messages dropped by
     the reset, epoch discards), so an operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
