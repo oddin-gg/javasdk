@@ -18,28 +18,24 @@ class FeedWatermarksTest {
 
     @Test
     void anOlderMessageFromTheSameProducerDoesNotWrite() {
-        assertThat(marks.feedMayWrite("m1", LIVE, 2_000, FRESH, now())).isTrue();
-        assertThat(marks.feedMayWrite("m1", LIVE, 1_000, FRESH, now()))
-                .as("older")
-                .isFalse();
-        assertThat(marks.feedMayWrite("m1", LIVE, 2_000, FRESH, now()))
+        assertThat(feedWrite("m1", LIVE, 2_000, FRESH, now())).isTrue();
+        assertThat(feedWrite("m1", LIVE, 1_000, FRESH, now())).as("older").isFalse();
+        assertThat(feedWrite("m1", LIVE, 2_000, FRESH, now()))
                 .as("the same again")
                 .isTrue();
-        assertThat(marks.feedMayWrite("m1", LIVE, 3_000, FRESH, now()))
-                .as("newer")
-                .isTrue();
-        assertThat(marks.feedMayWrite("m1", LIVE, 2_500, FRESH, now()))
+        assertThat(feedWrite("m1", LIVE, 3_000, FRESH, now())).as("newer").isTrue();
+        assertThat(feedWrite("m1", LIVE, 2_500, FRESH, now()))
                 .as("older than the newest")
                 .isFalse();
     }
 
     @Test
     void eachProducerHasItsOwnWatermark() {
-        assertThat(marks.feedMayWrite("m1", LIVE, 5_000, FRESH, now())).isTrue();
-        assertThat(marks.feedMayWrite("m1", PREMATCH, 1_000, FRESH, now()))
+        assertThat(feedWrite("m1", LIVE, 5_000, FRESH, now())).isTrue();
+        assertThat(feedWrite("m1", PREMATCH, 1_000, FRESH, now()))
                 .as("the clocks of two producers are not compared")
                 .isTrue();
-        assertThat(marks.feedMayWrite("m2", LIVE, 1_000, FRESH, now()))
+        assertThat(feedWrite("m2", LIVE, 1_000, FRESH, now()))
                 .as("another match")
                 .isTrue();
     }
@@ -47,9 +43,9 @@ class FeedWatermarksTest {
     @Test
     void aMessageOlderThanTheStatusAgeWritesNothingAndLeavesNoWatermark() {
         Duration backlog = FeedWatermarks.STATUS_AGE.plusSeconds(1);
-        assertThat(marks.feedMayWrite("m1", LIVE, 9_000, backlog, now())).isFalse();
+        assertThat(feedWrite("m1", LIVE, 9_000, backlog, now())).isFalse();
         assertThat(restWrite("m1")).as("no watermark was left").isTrue();
-        assertThat(marks.feedMayWrite("m1", LIVE, 1_000, FeedWatermarks.STATUS_AGE, now()))
+        assertThat(feedWrite("m1", LIVE, 1_000, FeedWatermarks.STATUS_AGE, now()))
                 .as("exactly the status age still writes")
                 .isTrue();
     }
@@ -57,11 +53,11 @@ class FeedWatermarksTest {
     @Test
     void restWritesOnlyOnceTheFeedHasBeenQuietForTheStatusAge() {
         assertThat(restWrite("m1")).as("the feed never wrote").isTrue();
-        marks.feedMayWrite("m1", LIVE, 1_000, FRESH, now());
+        feedWrite("m1", LIVE, 1_000, FRESH, now());
         assertThat(restWrite("m1")).isFalse();
 
         time.advance(Duration.ofMinutes(19));
-        marks.feedMayWrite("m1", PREMATCH, 1_000, FRESH, now());
+        feedWrite("m1", PREMATCH, 1_000, FRESH, now());
         time.advance(Duration.ofMinutes(2));
         assertThat(restWrite("m1"))
                 .as("the prematch producer wrote 2 minutes ago")
@@ -72,19 +68,19 @@ class FeedWatermarksTest {
 
     @Test
     void aWatermarkOutlivesTheStatusByADayAndTheRecordIsBounded() {
-        marks.feedMayWrite("m1", LIVE, 5_000, FRESH, now());
+        feedWrite("m1", LIVE, 5_000, FRESH, now());
         time.advance(Duration.ofHours(23));
-        assertThat(marks.feedMayWrite("m1", LIVE, 4_000, FRESH, now()))
+        assertThat(feedWrite("m1", LIVE, 4_000, FRESH, now()))
                 .as("still remembered")
                 .isFalse();
         time.advance(Duration.ofHours(2));
-        assertThat(marks.feedMayWrite("m1", LIVE, 4_000, FRESH, now()))
+        assertThat(feedWrite("m1", LIVE, 4_000, FRESH, now()))
                 .as("forgotten after 24 hours")
                 .isTrue();
 
         var bounded = new FeedWatermarks<String>(10, time);
         for (int i = 0; i < 100; i++) {
-            bounded.feedMayWrite("m" + i, LIVE, 1, FRESH, now());
+            bounded.feedWriteIfNewer("m" + i, LIVE, 1, FRESH, now(), () -> {});
         }
         assertThat(bounded.size()).isEqualTo(10);
     }
@@ -107,7 +103,7 @@ class FeedWatermarksTest {
             }));
             assertThat(writing.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
             var feed = threads.submit(() -> {
-                boolean admitted = marks.feedMayWrite("m1", LIVE, 1_000, FRESH, now());
+                boolean admitted = feedWrite("m1", LIVE, 1_000, FRESH, now());
                 order.add("feed");
                 return admitted;
             });
@@ -124,6 +120,14 @@ class FeedWatermarksTest {
         }
         assertThat(order).containsExactly("rest", "feed");
         assertThat(restWrite("m1")).as("the feed owns it now").isFalse();
+    }
+
+    /** A live message's write of the feed's fields, which must run exactly when it is admitted. */
+    private boolean feedWrite(String key, long producer, long timestamp, Duration age, Instant receivedAt) {
+        var ran = new java.util.concurrent.atomic.AtomicInteger();
+        boolean admitted = marks.feedWriteIfNewer(key, producer, timestamp, age, receivedAt, ran::incrementAndGet);
+        assertThat(ran.get()).as("the write ran as often as it was admitted").isEqualTo(admitted ? 1 : 0);
+        return admitted;
     }
 
     /** A REST write of the feed's fields, which must run exactly when it is admitted. */

@@ -64,7 +64,7 @@ class EntityCacheTest {
         assertThat(entry.isAuthoritative(COUNTRY, EN)).isTrue();
 
         // and nothing another endpoint carries brings it back
-        cache.fill("c1", Write.from(SCHEDULE, EN).put(COUNTRY, "SK"));
+        fill("c1", Write.from(SCHEDULE, EN).put(COUNTRY, "SK"));
         assertThat(entry("c1").get(COUNTRY, EN)).isNull();
     }
 
@@ -95,7 +95,7 @@ class EntityCacheTest {
 
     @Test
     void anotherEndpointOnlyFillsWhatIsAbsentAndNeverMarksALocaleLoaded() {
-        cache.fill("c1", Write.from(SCHEDULE, EN).put(NAME, "From A Schedule").put(ICON, "icon.png"));
+        fill("c1", Write.from(SCHEDULE, EN).put(NAME, "From A Schedule").put(ICON, "icon.png"));
         Entry filled = entry("c1");
         assertThat(filled.get(NAME, EN)).isEqualTo("From A Schedule");
         assertThat(filled.loadedAt(PROFILE, EN))
@@ -104,8 +104,7 @@ class EntityCacheTest {
         assertThat(cache.isFresh("c1", PROFILE, EN)).isFalse();
 
         profile("c1", EN, "Team One", "CZ", "T1", List.of());
-        cache.fill(
-                "c1", Write.from(SCHEDULE, EN).put(NAME, "Stale Schedule Name").put(COUNTRY, "SK"));
+        fill("c1", Write.from(SCHEDULE, EN).put(NAME, "Stale Schedule Name").put(COUNTRY, "SK"));
         Entry entry = entry("c1");
         assertThat(entry.get(NAME, EN)).as("written by the profile").isEqualTo("Team One");
         assertThat(entry.get(COUNTRY, EN)).isEqualTo("CZ");
@@ -114,13 +113,13 @@ class EntityCacheTest {
                 .isEqualTo("icon.png");
 
         // a fill in another locale adds that locale's name
-        cache.fill("c1", Write.from(SCHEDULE, DE).put(NAME, "Mannschaft"));
+        fill("c1", Write.from(SCHEDULE, DE).put(NAME, "Mannschaft"));
         assertThat(entry("c1").get(NAME, DE)).isEqualTo("Mannschaft");
         assertThat(entry("c1").loadedAt(PROFILE, DE)).isNull();
 
         // its own authoritative endpoint replaces what a fill put, and a fill no longer can
         cache.writeAuthoritative("c1", Write.from(ICONS, EN).put(ICON, "new.png"), cache.stamp("c1"));
-        cache.fill("c1", Write.from(SCHEDULE, EN).put(ICON, "old.png"));
+        fill("c1", Write.from(SCHEDULE, EN).put(ICON, "old.png"));
         assertThat(entry("c1").get(ICON, null)).isEqualTo("new.png");
     }
 
@@ -203,7 +202,7 @@ class EntityCacheTest {
         cache.invalidate("c2");
         time.advance(Duration.ofHours(25));
         assertThat(cache.get("c2")).as("the tombstone expired").isNull();
-        cache.fill("c2", Write.from(SCHEDULE, EN).put(COUNTRY, "SK"));
+        fill("c2", Write.from(SCHEDULE, EN).put(COUNTRY, "SK"));
         assertThat(cache.writeAuthoritative("c2", profileWrite(EN, "Before The Change"), onEntry))
                 .isFalse();
     }
@@ -253,7 +252,7 @@ class EntityCacheTest {
 
         var bounded = new EntityCache<String>("competitor", 3, Duration.ofHours(24), time, time);
         for (int i = 0; i < 10; i++) {
-            bounded.fill("c" + i, Write.from(SCHEDULE, EN).put(NAME, "Team " + i));
+            bounded.fill("c" + i, Write.from(SCHEDULE, EN).put(NAME, "Team " + i), bounded.stamp("c" + i));
         }
         assertThat(bounded.size()).isEqualTo(3);
     }
@@ -263,10 +262,10 @@ class EntityCacheTest {
         profile("c1", EN, "Team One", "CZ", "T1", List.of());
         time.advance(Duration.ofHours(20));
         // a schedule that carries only what the profile wrote adds nothing, and so is no write
-        cache.fill("c1", Write.from(SCHEDULE, EN).put(NAME, "Team One"));
+        fill("c1", Write.from(SCHEDULE, EN).put(NAME, "Team One"));
         time.advance(Duration.ofHours(5));
         assertThat(cache.get("c1")).as("24 hours after its last change").isNull();
-        cache.fill("c9", Write.from(SCHEDULE, EN));
+        fill("c9", Write.from(SCHEDULE, EN));
         assertThat(cache.get("c9")).as("a fill of nothing leaves nothing").isNull();
     }
 
@@ -280,6 +279,34 @@ class EntityCacheTest {
         assertThat(entry("c2").get(NAME, EN)).isNull();
         assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "One"), started))
                 .isFalse();
+    }
+
+    @Test
+    void aSideLoadThatStartedBeforeAnInvalidationFillsNothing() {
+        profile("c1", EN, "Team One", "CZ", "T1", List.of());
+        Stamp onEntry = cache.stamp("c1");
+        Stamp onNothing = cache.stamp("c2");
+        cache.invalidate("c1");
+        cache.invalidate("c2");
+        assertThat(cache.fill("c1", Write.from(SCHEDULE, EN).put(NAME, "Team One"), onEntry))
+                .isFalse();
+        assertThat(entry("c1").get(NAME, EN)).as("the tombstone stays empty").isNull();
+        assertThat(cache.fill("c2", Write.from(SCHEDULE, EN).put(NAME, "Team Two"), onNothing))
+                .isFalse();
+        assertThat(cache.get("c2")).isNull();
+        assertThat(fill("c1", Write.from(SCHEDULE, EN).put(NAME, "Team One"))).isTrue();
+        assertThat(entry("c1").get(NAME, EN)).isEqualTo("Team One");
+    }
+
+    @Test
+    void anAuthoritativeResponseDoesNotBringBackAFieldItsOwnerCleared() {
+        profile("c1", EN, "Team One", "CZ", "T1", List.of());
+        profile("c1", EN, "Team One", null, "T1", List.of());
+        cache.writeAuthoritative(
+                "c1", Write.from(ICONS, EN).put(ICON, "icon.png").put(COUNTRY, "SK"), cache.stamp("c1"));
+        assertThat(entry("c1").get(COUNTRY, EN)).as("retracted by the profile").isNull();
+        assertThat(entry("c1").isAuthoritative(COUNTRY, EN)).isTrue();
+        assertThat(entry("c1").get(ICON, null)).isEqualTo("icon.png");
     }
 
     @Test
@@ -337,6 +364,11 @@ class EntityCacheTest {
     private static Write profileWrite(Locale locale, String name) {
         return Write.from(new Endpoint("name only", Set.of(NAME), Set.of()), locale)
                 .put(NAME, name);
+    }
+
+    /** A fill from a side-load that started just now. */
+    private boolean fill(String key, Write write) {
+        return cache.fill(key, write, cache.stamp(key));
     }
 
     private Stamp stamp(String key) {

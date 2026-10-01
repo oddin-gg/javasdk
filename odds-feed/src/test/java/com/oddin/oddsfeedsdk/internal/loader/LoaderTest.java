@@ -4,9 +4,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
+import com.oddin.oddsfeedsdk.internal.cache.EntityCache;
+import com.oddin.oddsfeedsdk.internal.cache.Field;
+import com.oddin.oddsfeedsdk.internal.cache.Write;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,7 +42,7 @@ class LoaderTest {
         var release = new CountDownLatch(1);
         var loader = new Loader<String, String>(
                 "match",
-                key -> {
+                (key, _) -> {
                     fetches.incrementAndGet();
                     await(release);
                     return "value of " + key;
@@ -67,7 +73,7 @@ class LoaderTest {
         var never = new CountDownLatch(1);
         var loader = new Loader<String, String>(
                 "match",
-                key -> {
+                (key, _) -> {
                     fetches.incrementAndGet();
                     await(never);
                     return "late";
@@ -97,7 +103,7 @@ class LoaderTest {
         var never = new CountDownLatch(1);
         var loader = new Loader<String, String>(
                 "match",
-                key -> {
+                (key, _) -> {
                     if (fetches.incrementAndGet() == 1) {
                         await(never);
                     }
@@ -120,7 +126,7 @@ class LoaderTest {
         var never = new CountDownLatch(1);
         var loader = new Loader<String, String>(
                 "match",
-                key -> {
+                (key, _) -> {
                     if (fetches.incrementAndGet() == 1) {
                         await(never);
                     }
@@ -147,7 +153,7 @@ class LoaderTest {
         var fetches = new AtomicInteger();
         var loader = new Loader<String, String>(
                 "match",
-                key -> {
+                (key, _) -> {
                     if (fetches.incrementAndGet() == 1) {
                         throw new ApiException("Failed to get data: 503");
                     }
@@ -166,7 +172,7 @@ class LoaderTest {
     void anErrorFromAFetchReachesTheCallerAsItWas() {
         var loader = new Loader<String, String>(
                 "match",
-                key -> {
+                (key, _) -> {
                     throw new ExceptionInInitializerError("the binding did not load");
                 },
                 DEADLINE,
@@ -179,7 +185,7 @@ class LoaderTest {
 
     @Test
     void aFetchThatCannotStartLeavesNothingBehind() {
-        var loader = new Loader<String, String>("match", key -> "value", DEADLINE, MARGIN, task -> {
+        var loader = new Loader<String, String>("match", (key, _) -> "value", DEADLINE, MARGIN, task -> {
             throw new java.util.concurrent.RejectedExecutionException("closed");
         });
         assertThatThrownBy(() -> loader.load("m1"))
@@ -189,9 +195,105 @@ class LoaderTest {
     }
 
     @Test
+    void aCallerThatJoinedAFetchThatCannotStartGetsTheSameFailure() throws Exception {
+        var joined = new CountDownLatch(1);
+        var loader = new AtomicReference<Loader<String, String>>();
+        loader.set(new Loader<>("match", (key, _) -> "value", DEADLINE, MARGIN, task -> {
+            await(joined);
+            throw new java.util.concurrent.RejectedExecutionException("closed");
+        }));
+        Future<String> first = virtualThreads.submit(() -> loader.get().load("m1"));
+        waitUntil(() -> loader.get().waiting("m1") == 1);
+        Future<String> second = virtualThreads.submit(() -> loader.get().load("m1"));
+        waitUntil(() -> loader.get().waiting("m1") == 2);
+        joined.countDown();
+        for (Future<String> caller : List.of(first, second)) {
+            assertThatThrownBy(() -> caller.get(5, TimeUnit.SECONDS))
+                    .cause()
+                    .isInstanceOf(ApiException.class)
+                    .hasMessage("match m1: no fetch could start");
+        }
+        assertThat(loader.get().inFlight()).isZero();
+    }
+
+    @Test
+    void aFetchThatOverranAndFinishesLateLeavesTheNewerFetchAlone() throws Exception {
+        var fetches = new AtomicInteger();
+        var firstGoes = new CountDownLatch(1);
+        var firstDone = new CountDownLatch(1);
+        var secondGoes = new CountDownLatch(1);
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _) -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        await(firstGoes);
+                        firstDone.countDown();
+                        return "late";
+                    }
+                    await(secondGoes);
+                    return "newer";
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
+        Future<String> waiting = virtualThreads.submit(() -> loader.load("m1"));
+        waitUntil(() -> loader.waiting("m1") == 1);
+
+        firstGoes.countDown();
+        await(firstDone);
+        Thread.sleep(100);
+        assertThat(loader.waiting("m1"))
+                .as("the late fetch left the newer one in place")
+                .isEqualTo(1);
+        Future<String> joining = virtualThreads.submit(() -> loader.load("m1"));
+        waitUntil(() -> loader.waiting("m1") == 2);
+        assertThat(fetches).as("the third caller joined the newer fetch").hasValue(2);
+
+        secondGoes.countDown();
+        assertThat(waiting.get(5, TimeUnit.SECONDS)).isEqualTo("newer");
+        assertThat(joining.get(5, TimeUnit.SECONDS)).isEqualTo("newer");
+    }
+
+    @Test
+    void aFetchThatOverranDoesNotWriteOverTheNewerFetchsResult() throws Exception {
+        Field<String> status = Field.shared("status");
+        var summary = new Endpoint("summary", Set.of(status), Set.of(status));
+        var cache = new EntityCache<String>("match", 100, Duration.ofHours(1));
+        var fetches = new AtomicInteger();
+        var firstGoes = new CountDownLatch(1);
+        var firstWrote = new AtomicReference<Boolean>();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, abandoned) -> {
+                    var stamp = cache.stamp(key, abandoned);
+                    if (fetches.incrementAndGet() == 1) {
+                        await(firstGoes);
+                        firstWrote.set(cache.writeAuthoritative(
+                                key, Write.from(summary, Locale.ENGLISH).put(status, "not started"), stamp));
+                        return "late";
+                    }
+                    cache.writeAuthoritative(
+                            key, Write.from(summary, Locale.ENGLISH).put(status, "live"), stamp);
+                    return "newer";
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads);
+        assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
+        assertThat(loader.load("m1")).isEqualTo("newer");
+
+        firstGoes.countDown();
+        waitUntil(() -> firstWrote.get() != null);
+        assertThat(firstWrote.get()).as("the abandoned fetch's write").isFalse();
+        assertThat(java.util.Objects.requireNonNull(cache.get("m1")).get(status, null))
+                .isEqualTo("live");
+    }
+
+    @Test
     void aFetchThatFinishesAtOnceIsNotLeftBehind() {
         // the fetch can finish before the caller looks at it; it must still leave the map
-        var loader = new Loader<Integer, Integer>("match", key -> key * 2, DEADLINE, MARGIN, virtualThreads);
+        var loader = new Loader<Integer, Integer>("match", (key, _) -> key * 2, DEADLINE, MARGIN, virtualThreads);
         for (int i = 0; i < 1_000; i++) {
             assertThat(loader.load(i % 7)).isEqualTo((i % 7) * 2);
         }
@@ -211,7 +313,7 @@ class LoaderTest {
         var cycle = new java.util.concurrent.atomic.AtomicBoolean(true);
         matches.set(new Loader<>(
                 "match",
-                key -> {
+                (key, _) -> {
                     if (cycle.get()) {
                         bothFetching.countDown();
                         await(bothFetching);
@@ -224,7 +326,7 @@ class LoaderTest {
                 virtualThreads));
         competitors.set(new Loader<>(
                 "competitor",
-                key -> {
+                (key, _) -> {
                     if (cycle.get()) {
                         bothFetching.countDown();
                         await(bothFetching);
