@@ -20,10 +20,13 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -143,7 +146,109 @@ class RecoveryActorTest {
     }
 
     @Test
-    void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException, ExecutionException {
+    void aSnapshotCompleteWhileTheResetIsHeldOnItsWorkerIsAskedForAgainOnceTheResetIsDone()
+            throws InterruptedException {
+        var held = new Held();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        held.runNext();
+        held.runNext();
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+
+        // two samples past the limit, with a window of nothing: the net asks for both producers
+        long later = System.currentTimeMillis();
+        session.processed(PRE, later - 300_000, later + 1, false);
+        session.processed(PRE, later - 300_000, later + 2, false);
+        held.runNext();
+        held.runNext();
+        List<Request> probes = List.of(api.next(), api.next());
+        Runnable reset = held.next();
+
+        // what the session sees before the transport has replaced its channel is the old queue's
+        for (Request probe : probes) {
+            session.snapshotComplete(producerOf(probe), probe.requestId());
+        }
+        assertThat(held.tasks.poll(300, TimeUnit.MILLISECONDS))
+                .as("work while the reset is held")
+                .isNull();
+        assertThat(producers.isProducerDown(PRE)).isTrue();
+        assertThat(producers.isProducerDown(LIVE)).isTrue();
+
+        reset.run();
+        assertThat(transport.resets.getCount()).as("the channel replaced").isZero();
+        held.runNext();
+        held.runNext();
+        List<Request> again = List.of(api.next(), api.next());
+        assertThat(again)
+                .extracting(Request::requestId)
+                .as("asked for again, with new ids")
+                .doesNotContainAnyElementsOf(
+                        probes.stream().map(Request::requestId).toList());
+        for (Request request : again) {
+            session.snapshotComplete(producerOf(request), request.requestId());
+        }
+        // the first two, then the two asked for again; the probes were given up
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.counters().completed() < 4 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.counters().completed()).isEqualTo(4);
+        assertThat(actor.counters().abandoned()).isEqualTo(2);
+    }
+
+    @Test
+    void anAnswerWaitsForRoomInTheActorsQueueInsteadOfBeingLost()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        var held = new Held();
+        var wedge = new CountDownLatch(1);
+        var wedged = new CountDownLatch(1);
+        var slow = new RecoveryEvents() {
+            @Override
+            public void producerStatus(ProducerStatusChange change) {
+                wedged.countDown();
+                try {
+                    assertThat(wedge.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        var actor =
+                new RecoveryActor(producers, settings(), api, slow, held, InstantSource.system(), new Random(1), 4, 4);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        CompletableFuture<@Nullable Long> reply = actor.recoverEvent(LIVE, MATCH, false);
+        Runnable request = held.next();
+        long now = System.currentTimeMillis();
+        // a status change the listener holds the actor's thread in, then a full queue
+        actor.alive(PRE, now, now, false);
+        assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        while (actor.counters().factsDropped() == 0) {
+            actor.alive(LIVE, now, now, true);
+        }
+
+        Thread answering = Thread.ofVirtual().start(request);
+        answering.join(Duration.ofMillis(1_500));
+        assertThat(answering.isAlive()).as("the answer waits for room").isTrue();
+        assertThat(reply).isNotDone();
+        wedge.countDown();
+        assertThat(reply.get(WAIT_SECONDS, TimeUnit.SECONDS))
+                .isEqualTo(api.next().requestId());
+    }
+
+    @Test
+    void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException, ExecutionException, TimeoutException {
         // not started: nothing takes from the queues
         var actor = new RecoveryActor(
                 producers, Harness.settings(), api, events(), workers, InstantSource.system(), new Random(1), 2, 2);
@@ -155,20 +260,21 @@ class RecoveryActorTest {
         session.processed(PRE, 2, 2, false);
         session.processed(PRE, 3, 3, false);
         assertThat(actor.counters().factsDropped()).isEqualTo(2);
-        assertThat(actor.recoverEvent(PRE, MATCH, false).get())
+        assertThat(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("an event recovery with no room")
                 .isNull();
     }
 
     @Test
     void closingAnswersEveryoneStillWaitingAndTurnsAwayWhatComesAfter()
-            throws InterruptedException, ExecutionException {
+            throws InterruptedException, ExecutionException, TimeoutException {
         var actor = new RecoveryActor(
                 producers, Harness.settings(), api, events(), workers, InstantSource.system(), new Random(1), 10, 10);
         var waiting = actor.recoverEvent(PRE, MATCH, false);
         actor.close();
-        assertThat(waiting.get()).isNull();
-        assertThat(actor.recoverEvent(PRE, MATCH, false).get()).isNull();
+        assertThat(waiting.get(WAIT_SECONDS, TimeUnit.SECONDS)).isNull();
+        assertThat(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS))
+                .isNull();
 
         RecoveryActor started = actor(settings());
         started.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
@@ -179,7 +285,9 @@ class RecoveryActorTest {
         api.next();
         started.close();
         held.countDown();
-        assertThat(inFlight.get()).as("the API answers after the close").isNull();
+        assertThat(inFlight.get(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the API answers after the close")
+                .isNull();
     }
 
     @Test
@@ -286,6 +394,39 @@ class RecoveryActorTest {
                 events.add("event recovery " + requestId + " completed");
             }
         };
+    }
+
+    private void awaitUp(long producer) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (producers.isProducerDown(producer) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(producers.isProducerDown(producer))
+                .as("producer " + producer + " down")
+                .isFalse();
+    }
+
+    private static long producerOf(Request request) {
+        return request.producer().equals("pre") ? PRE : LIVE;
+    }
+
+    /** Workers that hold every task until the test runs it. */
+    private static final class Held implements Executor {
+        final BlockingQueue<Runnable> tasks = new LinkedBlockingQueue<>();
+
+        @Override
+        public void execute(Runnable task) {
+            tasks.add(task);
+        }
+
+        Runnable next() throws InterruptedException {
+            return requireNonNull(tasks.poll(WAIT_SECONDS, TimeUnit.SECONDS), "a task within the wait");
+        }
+
+        /** Runs the next task here, on the test's thread. */
+        void runNext() throws InterruptedException {
+            next().run();
+        }
     }
 
     /** One request the API got. */

@@ -13,8 +13,11 @@ interface Outbox {
 
     void request(Call call);
 
-    /** Replaces the session's channel; what its queue holds is dropped. */
-    void reset(int session);
+    /**
+     * Replaces the session's channel; what its queue holds is dropped. Once done, the transport's
+     * side reports it as {@link RecoveryMachine#resetDone} with the same number.
+     */
+    void reset(int session, long number);
 
     /** One recovery request. */
     sealed interface Call {

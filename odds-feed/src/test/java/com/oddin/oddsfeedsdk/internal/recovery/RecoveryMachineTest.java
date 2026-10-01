@@ -108,10 +108,20 @@ class RecoveryMachineTest {
         var feed = new Harness(withInterval);
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();
+        feed.clock.advance(Duration.ofSeconds(3));
         feed.alive(PRE);
+        Instant boundary = Instant.ofEpochMilli(
+                        feed.now() - Duration.ofSeconds(3).toMillis())
+                .minus(Duration.ofMinutes(30));
         assertThat(feed.lastSnapshot(PRE).after())
-                .isEqualTo(
-                        Instant.ofEpochMilli(feed.now() - Duration.ofMinutes(30).toMillis()));
+                .as("from when the feed opened")
+                .isEqualTo(boundary);
+
+        // asked for again a minute later: the boundary stays where it was
+        feed.refuse(feed.lastSnapshot(PRE));
+        feed.runWithAlives(Duration.ofMinutes(1));
+        assertThat(feed.snapshots(PRE)).hasSize(2);
+        assertThat(feed.lastSnapshot(PRE).after()).isEqualTo(boundary);
     }
 
     @Test
@@ -668,7 +678,7 @@ class RecoveryMachineTest {
         assertThat(call.stateful()).isFalse();
         assertThat(reply).as("before the API answers").isNotDone();
         feed.accept(call);
-        assertThat(reply.get()).isEqualTo(call.requestId());
+        assertThat(done(reply)).isEqualTo(call.requestId());
 
         feed.machine.snapshotComplete(1, LIVE, call.requestId());
         assertThat(feed.events).isEmpty();
@@ -686,7 +696,7 @@ class RecoveryMachineTest {
         CompletableFuture<@Nullable Long> reply = feed.recoverEvent(PRE);
         Outbox.Call call = feed.calls.getLast();
         feed.refuse(call);
-        assertThat(reply.get()).isNull();
+        assertThat(done(reply)).isNull();
         assertThat(feed.counters.eventRefused()).isEqualTo(1);
         feed.machine.snapshotComplete(1, PRE, call.requestId());
         assertThat(feed.events).isEmpty();
@@ -707,7 +717,7 @@ class RecoveryMachineTest {
             assertThat(feed.recoverEvent(LIVE)).isNotDone();
             feed.accept(feed.calls.getLast());
         }
-        assertThat(feed.recoverEvent(LIVE).get()).as("the 129th").isNull();
+        assertThat(done(feed.recoverEvent(LIVE))).as("the 129th").isNull();
         assertThat(feed.recoverEvent(PRE)).as("another producer's").isNotDone();
         feed.advance(Duration.ofHours(6));
         assertThat(feed.counters.eventExpired())
@@ -721,12 +731,74 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aLostConnectionGivesUpTheEventRecoveriesInFlightAndAnswersThoseStillWaiting()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        CompletableFuture<@Nullable Long> answered = feed.recoverEvent(LIVE);
+        Outbox.Call call = feed.calls.getLast();
+        feed.accept(call);
+        CompletableFuture<@Nullable Long> waiting = feed.recoverEvent(LIVE);
+        feed.machine.connectionDown();
+        assertThat(done(answered)).isEqualTo(call.requestId());
+        assertThat(done(waiting)).as("the API had not answered").isNull();
+        assertThat(feed.counters.eventAbandoned()).isEqualTo(2);
+        feed.machine.connectionUp();
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        assertThat(feed.events).as("given up").isEmpty();
+    }
+
+    @Test
+    void aSessionsLostChannelGivesUpTheEventRecoveriesWaitingForIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.machine.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        Outbox.Call seenByBoth = feed.calls.getLast();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        Outbox.Call seenByOne = feed.calls.getLast();
+        feed.accept(seenByBoth);
+        feed.accept(seenByOne);
+        feed.machine.snapshotComplete(2, LIVE, seenByBoth.requestId());
+        feed.machine.snapshotComplete(1, LIVE, seenByOne.requestId());
+
+        feed.machine.channelLost(2);
+        assertThat(feed.counters.eventAbandoned())
+                .as("the one session 2 had yet to see")
+                .isEqualTo(1);
+        feed.machine.snapshotComplete(1, LIVE, seenByBoth.requestId());
+        assertThat(feed.events)
+                .containsExactly("event recovery " + seenByBoth.requestId() + " of " + MATCH + " completed");
+    }
+
+    @Test
+    void closingTheLastSessionWhileTheConnectionIsDownKeepsTheProducerDownUntilItIsBack() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1);
+        feed.machine.connectionDown();
+        feed.close(1);
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+        feed.machine.connectionUp();
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("no session misses anything")
+                .isFalse();
+    }
+
+    @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();
         CompletableFuture<@Nullable Long> reply = feed.recoverEvent(PRE);
         feed.machine.close();
-        assertThat(reply.get()).isNull();
+        assertThat(done(reply)).isNull();
+    }
+
+    /** The value of a future that must be complete by now: the machine answers on its own thread. */
+    private static @Nullable Long done(CompletableFuture<@Nullable Long> reply)
+            throws ExecutionException, InterruptedException {
+        assertThat(reply).as("answered").isDone();
+        return reply.get();
     }
 
     @Test
