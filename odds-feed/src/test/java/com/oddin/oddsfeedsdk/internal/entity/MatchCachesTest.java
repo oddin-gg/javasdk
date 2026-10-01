@@ -202,7 +202,7 @@ class MatchCachesTest {
                 .as("the other match listed")
                 .isEqualTo("Team Gamma vs Team Delta");
 
-        time.advance(MatchCaches.MARGIN.plusSeconds(11));
+        // at once: an invalidation from before the fetch started is not news to it
         caches.fill(schedule.getSportEvent(), Locale.ENGLISH, caches.startMany(() -> false));
         assertThat(requireNonNull(caches.cachedMatch(MATCH)).get(NAME, Locale.ENGLISH))
                 .as("a schedule fetched after the change fills it")
