@@ -18,7 +18,9 @@ import org.junit.jupiter.api.Test;
  */
 class ShadedJarIT {
 
-    private static final Path JAR = Path.of(System.getProperty("shaded.jar", "target/odds-feed.jar"));
+    private static final Path JAR = Path.of(required("shaded.jar"));
+
+    private static final Path PUBLISHED_POM = Path.of(required("published.pom"));
 
     @Test
     void woodstoxIsInsideRelocatedAndRegistersNothing() throws IOException {
@@ -31,6 +33,37 @@ class ShadedJarIT {
                     .as("no copy under its own name, and no service file making it the application's parser")
                     .noneMatch(name -> name.startsWith("com/ctc/") || name.startsWith("org/codehaus/"))
                     .noneMatch(name -> name.startsWith("META-INF/services/"));
+        }
+    }
+
+    @Test
+    void thePublishedPomGivesClientsNoCopyOfTheirOwn() throws Exception {
+        var pom = javax.xml.parsers.DocumentBuilderFactory.newDefaultInstance()
+                .newDocumentBuilder()
+                .parse(PUBLISHED_POM.toFile());
+        var dependencies = pom.getElementsByTagName("dependency");
+        var parsers = new java.util.ArrayList<String>();
+        for (int i = 0; i < dependencies.getLength(); i++) {
+            var dependency = (org.w3c.dom.Element) dependencies.item(i);
+            String artifact = text(dependency, "artifactId");
+            if (artifact.equals("woodstox-core") || artifact.equals("stax2-api")) {
+                parsers.add(artifact + " optional=" + text(dependency, "optional"));
+            }
+        }
+        assertThat(parsers).containsExactly("woodstox-core optional=true");
+    }
+
+    @Test
+    void theParserInTheJarStillTellsJaxbItInternsNames() throws Exception {
+        try (var loader = new JarFirst(JAR, getClass().getClassLoader())) {
+            var factory = (javax.xml.stream.XMLInputFactory)
+                    loader.loadClass("com.oddin.oddsfeedsdk.internal.woodstox.wstx.stax.WstxInputFactory")
+                            .getConstructor()
+                            .newInstance();
+            var reader = factory.createXMLStreamReader(new java.io.StringReader("<a/>"));
+            // what JAXB asks: renamed by the relocation, the answer would be no, and JAXB intern every name
+            assertThat(reader.getProperty("org.codehaus.stax2.internNames")).isEqualTo(true);
+            assertThat(reader.getProperty("org.codehaus.stax2.internNsUris")).isEqualTo(true);
         }
     }
 
@@ -53,9 +86,36 @@ class ShadedJarIT {
             String deep = "<x>".repeat(FeedDecoder.MAX_DEPTH) + "</x>".repeat(FeedDecoder.MAX_DEPTH);
             String tooDeep = "<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">" + deep + "</alive>";
             assertThat(failure(decode, decoder, tooDeep)).isEqualTo(DecodeException.class.getName());
-            String badText = "<alive product=\"1\" timestamp=\"1\" subscribed=\"1\"><x>a&#0;b</x></alive>";
-            assertThat(failure(decode, decoder, badText)).isEqualTo(DecodeException.class.getName());
+            var names = new StringBuilder("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">");
+            for (int i = 0; i <= XmlReader.MAX_NAMES; i++) {
+                names.append("<n").append(i).append("/>");
+            }
+            assertThat(failure(decode, decoder, names.append("</alive>").toString()))
+                    .as("too many distinct names")
+                    .isEqualTo(DecodeException.class.getName());
+
+            // text the decoder binds, so read in full only if lazy parsing is off
+            Class<?> restDecoders = loader.loadClass(RestDecoder.class.getName());
+            Object rest = restDecoders.getMethod("lenient", int.class).invoke(null, RestDecoder.DEFAULT_MAX_BYTES);
+            Method restDecode = restDecoders.getMethod("decode", byte[].class);
+            String badText = "<response response_code=\"NOT_FOUND\"><message>a&#0;b</message></response>";
+            assertThat(failure(restDecode, rest, badText)).isEqualTo(DecodeException.class.getName());
         }
+    }
+
+    private static String required(String property) {
+        String value = System.getProperty(property);
+        if (value == null) {
+            throw new IllegalStateException(property + " is not set: run this through failsafe, which sets it");
+        }
+        return value;
+    }
+
+    private static String text(org.w3c.dom.Element parent, String child) {
+        var children = parent.getElementsByTagName(child);
+        return children.getLength() == 0
+                ? ""
+                : children.item(0).getTextContent().trim();
     }
 
     private static String failure(Method decode, Object decoder, String xml) throws IllegalAccessException {

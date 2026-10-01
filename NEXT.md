@@ -524,7 +524,9 @@ and REST workers post facts to it; it decides and posts work out.
   by whatever StAX provider the application brings. Woodstox ships inside the SDK's jar,
   relocated and without its service registration, so it never becomes the application's
   StAX parser, which would ignore the JDK's XML hardening the application may rely on.
-  DTDs off, external entities off, text parsed as it is reached, not lazily. Body
+  DTDs off, external entities off, text parsed as it is reached, not lazily. Woodstox
+  searches colliding names one by one where the JDK's parser randomises its hash, so a
+  document may use at most 512 distinct names, and each document's names stay its own. Body
   size is bounded before decoding by the maximum message size from the delivery
   section; the decoder's own limits bound parser work. One malformed document costs
   one unparsable callback, nothing more.
