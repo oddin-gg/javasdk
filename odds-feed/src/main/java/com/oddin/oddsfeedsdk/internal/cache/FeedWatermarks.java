@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Who may write the fields the feed owns - live status, scores, period scores, the match clock - of
@@ -81,16 +82,16 @@ public final class FeedWatermarks<K> {
         }
         var admitted = new boolean[1];
         marks.asMap().compute(entity, (k, present) -> {
-            Marks current = present != null ? present : spilled.remove(k);
+            Marks current = takeBack(k, present);
             Mark last = current == null ? null : current.byProducer().get(producer);
             if (last != null && last.timestamp() > timestamp) {
-                return current;
+                return keep(k, present, current);
             }
             write.run();
             admitted[0] = true;
             var next = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.byProducer());
             next.put(producer, new Mark(timestamp, receivedAt));
-            return new Marks(Map.copyOf(next), ticker.read());
+            return keep(k, present, new Marks(Map.copyOf(next), ticker.read()));
         });
         return admitted[0];
     }
@@ -109,7 +110,7 @@ public final class FeedWatermarks<K> {
         var wrote = new boolean[1];
         marks.asMap().compute(entity, (k, present) -> {
             // one evicted while it owned the entity comes back, and owns it still
-            Marks current = present != null ? present : spilled.remove(k);
+            Marks current = takeBack(k, present);
             boolean quiet = current == null
                     || current.byProducer().values().stream()
                             .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
@@ -117,9 +118,25 @@ public final class FeedWatermarks<K> {
                 write.run();
                 wrote[0] = true;
             }
-            return current;
+            return keep(k, present, current);
         });
         return wrote[0];
+    }
+
+    /** The entity's watermarks: those held, or those kept aside when the bound evicted them. */
+    private @Nullable Marks takeBack(K entity, @Nullable Marks present) {
+        return present != null ? present : spilled.get(entity);
+    }
+
+    /**
+     * What a compute returns, once its write has run: only then does a record kept aside leave the
+     * spill, so a write that throws leaves the entity owned as it was.
+     */
+    private @Nullable Marks keep(K entity, @Nullable Marks present, @Nullable Marks result) {
+        if (present == null) {
+            spilled.remove(entity);
+        }
+        return result;
     }
 
     private void spill(K entity, Marks evicted) {

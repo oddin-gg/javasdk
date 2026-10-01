@@ -200,7 +200,10 @@ public final class EntityCache<K> {
         // remembered before the tombstone is there, so no fetch can miss both; the newest kept, so
         // an invalidation that records late cannot put an older generation over a newer one
         invalidated.asMap().merge(key, generation, Math::max);
-        entries.asMap().computeIfPresent(key, (k, current) -> current.invalidated(generation, ticker.read()));
+        // compute, not computeIfPresent: that returns at once for a key whose entry a write is still
+        // making, and the write would then make it after the invalidation; this waits for it
+        entries.asMap()
+                .compute(key, (k, current) -> current == null ? null : current.invalidated(generation, ticker.read()));
     }
 
     /**
