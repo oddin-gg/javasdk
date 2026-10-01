@@ -58,6 +58,8 @@
     <jetbrains-annotations.version>13.0</jetbrains-annotations.version>
     <jaxb.version>4.0.9</jaxb.version>
     <caffeine.version>3.3.0</caffeine.version>
+    <!-- odds-feed's own, set there and not managed here: managed, it would also replace the older client
+         0.0.x brings into the system tests, and change how 0.0.x behaves under test -->
     <amqp-client.version>5.36.0</amqp-client.version>
     <jaxb-maven-plugin.version>4.0.16</jaxb-maven-plugin.version>
     <junit.version>5.12.2</junit.version>
@@ -90,11 +92,6 @@
         <groupId>com.github.ben-manes.caffeine</groupId>
         <artifactId>caffeine</artifactId>
         <version>${caffeine.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>com.rabbitmq</groupId>
-        <artifactId>amqp-client</artifactId>
-        <version>${amqp-client.version}</version>
       </dependency>
       <dependency>
         <groupId>org.jetbrains</groupId>
