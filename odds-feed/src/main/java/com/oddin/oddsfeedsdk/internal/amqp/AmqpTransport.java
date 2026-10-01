@@ -228,7 +228,7 @@ public final class AmqpTransport implements AutoCloseable {
         return closed;
     }
 
-    /** Whether reconnecting gave up for good, after three refused logins. */
+    /** Whether reconnecting gave up for good, after refusals that went on for a minute. */
     public boolean hasFailed() {
         return failed;
     }
@@ -259,15 +259,22 @@ public final class AmqpTransport implements AutoCloseable {
         Connection made = factory().newConnection(consumers, asConfigured, settings.connectionName());
         connection = made;
         made.addShutdownListener(signal -> connectionLost(made, signal));
+        // a close that came while connecting found no connection to cut: cut it here
+        abortIfClosed(made);
         if (alives != null) {
             alive = openAlive(made, alives);
             aliveFailedReopens.set(0);
         }
         for (SessionChannel session : sessions) {
-            if (closed) {
-                throw new IOException("the feed was closed while its channels were opening");
-            }
+            abortIfClosed(made);
             session.open(made);
+        }
+    }
+
+    private void abortIfClosed(Connection made) throws IOException {
+        if (closed) {
+            made.abort(ABORT_MILLIS);
+            throw new IOException("the feed was closed while its connection was being made");
         }
     }
 
