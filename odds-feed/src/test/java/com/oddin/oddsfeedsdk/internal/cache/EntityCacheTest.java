@@ -320,6 +320,37 @@ class EntityCacheTest {
     }
 
     @Test
+    void clearWaitsForAWriteUnderWaySoItCannotMakeAnEntryAfterTheClear() throws Exception {
+        var inside = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        cache.insideWrite = () -> {
+            inside.countDown();
+            try {
+                release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        Stamp onNothing = cache.stamp("c6");
+        try (var threads = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var write = threads.submit(() -> cache.writeAuthoritative("c6", profileWrite(EN, "Before"), onNothing));
+            assertThat(inside.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            var clear = threads.submit(cache::clear);
+            try {
+                Thread.sleep(200);
+                assertThat(clear.isDone()).as("the clear waits for the write").isFalse();
+            } finally {
+                release.countDown();
+            }
+            assertThat(write.get(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            clear.get(5, java.util.concurrent.TimeUnit.SECONDS);
+        }
+        assertThat(entry("c6").get(NAME, EN))
+                .as("the write came first, and the clear emptied it")
+                .isNull();
+    }
+
+    @Test
     void anAuthoritativeResponseFillsWhatItCarriesOfFieldsAnotherEndpointOwns() {
         assertThat(cache.writeAuthoritative(
                         "c1", Write.from(ICONS, EN).put(ICON, "icon.png").put(NAME, "Team"), cache.stamp("c1")))

@@ -8,14 +8,15 @@ import java.time.InstantSource;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
 
 /**
  * A bounded cache of entities by key: at most {@code maximumSize} entries, each dropped {@code age}
  * after it last changed, and each authoritative endpoint of an entry fresh in a locale for {@code
- * age} after its own fetch in that locale, whatever the others. It does no I/O and never waits for
- * anything but the lock of the one key it writes.
+ * age} after its own fetch in that locale, whatever the others. It does no I/O, and a write waits
+ * for nothing but the lock of the one key it writes - and for a {@link #clear} under way.
  *
  * <p>Writes follow the write rule: an authoritative response replaces and marks the fields its
  * endpoint is authoritative for, unless the entry was invalidated since its fetch started; a
@@ -46,6 +47,13 @@ public final class EntityCache<K> {
      * invalidation was of its key.
      */
     private final AtomicLong forgotten = new AtomicLong();
+    /**
+     * Shared by the writes, held alone by a clear: a write that has passed its check finishes before
+     * the clear looks at the entries, and every write after it sees the clear.
+     */
+    private final ReentrantReadWriteLock clearing = new ReentrantReadWriteLock();
+    /** A test's hook: runs inside a write that has passed its check, before the entry is there. */
+    volatile Runnable insideWrite = () -> {};
 
     public EntityCache(String name, long maximumSize, Duration age) {
         this(name, maximumSize, age, InstantSource.system(), Ticker.systemTicker());
@@ -125,14 +133,20 @@ public final class EntityCache<K> {
      */
     public boolean writeAuthoritative(K key, Write write, Stamp started) {
         var written = new boolean[1];
-        entries.asMap().compute(key, (k, current) -> {
-            if (stale(key, current, started)) {
-                return current;
-            }
-            written[0] = true;
-            Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
-            return base.authoritative(write, clock.instant(), ticker.read());
-        });
+        clearing.readLock().lock();
+        try {
+            entries.asMap().compute(key, (k, current) -> {
+                if (stale(key, current, started)) {
+                    return current;
+                }
+                written[0] = true;
+                insideWrite.run();
+                Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
+                return base.authoritative(write, clock.instant(), ticker.read());
+            });
+        } finally {
+            clearing.readLock().unlock();
+        }
         return written[0];
     }
 
@@ -145,16 +159,21 @@ public final class EntityCache<K> {
      */
     public boolean fill(K key, Write write, Stamp started) {
         var applied = new boolean[1];
-        entries.asMap().compute(key, (k, current) -> {
-            if (stale(key, current, started)) {
-                return current;
-            }
-            applied[0] = true;
-            Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
-            Entry filled = base.fill(write, ticker.read());
-            // a fill that adds nothing to nothing leaves nothing behind
-            return current == null && filled == base ? null : filled;
-        });
+        clearing.readLock().lock();
+        try {
+            entries.asMap().compute(key, (k, current) -> {
+                if (stale(key, current, started)) {
+                    return current;
+                }
+                applied[0] = true;
+                Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
+                Entry filled = base.fill(write, ticker.read());
+                // a fill that adds nothing to nothing leaves nothing behind
+                return current == null && filled == base ? null : filled;
+            });
+        } finally {
+            clearing.readLock().unlock();
+        }
         return applied[0];
     }
 
@@ -180,11 +199,19 @@ public final class EntityCache<K> {
         entries.asMap().computeIfPresent(key, (k, current) -> current.invalidated(generation, ticker.read()));
     }
 
-    /** Invalidates every entry, and every fetch running, those that started on no entry included. */
+    /**
+     * Invalidates every entry, and every fetch running, those that started on no entry included. It
+     * waits for the writes under way, so none of them can make an entry after it has looked.
+     */
     public void clear() {
-        forgotten.accumulateAndGet(generations.incrementAndGet(), Math::max);
-        for (K key : List.copyOf(entries.asMap().keySet())) {
-            invalidate(key);
+        clearing.writeLock().lock();
+        try {
+            forgotten.accumulateAndGet(generations.incrementAndGet(), Math::max);
+            for (K key : List.copyOf(entries.asMap().keySet())) {
+                invalidate(key);
+            }
+        } finally {
+            clearing.writeLock().unlock();
         }
     }
 
