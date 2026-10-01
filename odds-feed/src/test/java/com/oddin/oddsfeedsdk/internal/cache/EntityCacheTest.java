@@ -320,6 +320,35 @@ class EntityCacheTest {
     }
 
     @Test
+    void anInvalidationThatRecordsLateDoesNotPutAnOlderGenerationOverANewerOne() throws Exception {
+        var inside = new java.util.concurrent.CountDownLatch(1);
+        var release = new java.util.concurrent.CountDownLatch(1);
+        var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+        cache.insideInvalidate = () -> {
+            if (first.getAndSet(false)) {
+                inside.countDown();
+                try {
+                    release.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        try (var threads = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var older = threads.submit(() -> cache.invalidate("c7"));
+            assertThat(inside.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            cache.invalidate("c7");
+            long newer = cache.invalidationOf("c7");
+            release.countDown();
+            older.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(cache.invalidationOf("c7"))
+                    .as("the newer invalidation stays remembered")
+                    .isEqualTo(newer)
+                    .isEqualTo(cache.stamp("c7").startedAt());
+        }
+    }
+
+    @Test
     void clearWaitsForAWriteUnderWaySoItCannotMakeAnEntryAfterTheClear() throws Exception {
         var inside = new java.util.concurrent.CountDownLatch(1);
         var release = new java.util.concurrent.CountDownLatch(1);

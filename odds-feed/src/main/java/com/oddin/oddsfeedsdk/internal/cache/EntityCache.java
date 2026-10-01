@@ -54,6 +54,8 @@ public final class EntityCache<K> {
     private final ReentrantReadWriteLock clearing = new ReentrantReadWriteLock();
     /** A test's hook: runs inside a write that has passed its check, before the entry is there. */
     volatile Runnable insideWrite = () -> {};
+    /** A test's hook: runs in an invalidation between taking its generation and recording it. */
+    volatile Runnable insideInvalidate = () -> {};
 
     public EntityCache(String name, long maximumSize, Duration age) {
         this(name, maximumSize, age, InstantSource.system(), Ticker.systemTicker());
@@ -194,8 +196,10 @@ public final class EntityCache<K> {
      */
     public void invalidate(K key) {
         long generation = generations.incrementAndGet();
-        // remembered before the tombstone is there, so no fetch can miss both
-        invalidated.put(key, generation);
+        insideInvalidate.run();
+        // remembered before the tombstone is there, so no fetch can miss both; the newest kept, so
+        // an invalidation that records late cannot put an older generation over a newer one
+        invalidated.asMap().merge(key, generation, Math::max);
         entries.asMap().computeIfPresent(key, (k, current) -> current.invalidated(generation, ticker.read()));
     }
 
@@ -213,6 +217,12 @@ public final class EntityCache<K> {
         } finally {
             clearing.writeLock().unlock();
         }
+    }
+
+    /** The generation of the key's last invalidation as remembered, 0 for none; for a test. */
+    long invalidationOf(K key) {
+        Long generation = invalidated.policy().getIfPresentQuietly(key);
+        return generation == null ? 0 : generation;
     }
 
     /** Whether the key's invalidation is still remembered; for a test of the size bound. */
