@@ -114,6 +114,27 @@ class AmqpTransportTest {
     }
 
     @Test
+    void theSdksAliveConsumerLeavesTheBrokerNothingToAcknowledge() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
+        transport.addSession(List.of("nothing.for.this.session"));
+        transport.open();
+        for (int i = 0; i < 3; i++) {
+            assertThat(feed().publishFixture("feed/alive/alive.xml")).isTrue();
+        }
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (events.alives.size() < 3 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(events.alives).hasSize(3);
+        // acknowledged by the broker as it sent them: none of the prefetch credit a session's are held to
+        assertThat(feed().unacknowledged()).isZero();
+        var alive = alive(transport);
+        assertThatThrownBy(alive::queue).isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> alive.ack(events.alives.getFirst())).isInstanceOf(IllegalStateException.class);
+        assertThat(alive.isOpen()).isTrue();
+    }
+
+    @Test
     void anAliveOverTheMaximumSizeReachesTheSdksConsumerWithoutItsBody() throws Exception {
         String alive = com.oddin.oddsfeed.fakes.Fixtures.read("feed/alive/alive.xml");
         int size = alive.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
@@ -204,12 +225,12 @@ class AmqpTransportTest {
             // the queue goes, and every new one fails to bind to the exchange that is gone
             feed().deleteClientQueues();
             long deadline = System.nanoTime() + WAIT.toNanos();
-            while ((channel.failedReopens() < 2 || transport.aliveFailedReopens() < 2)
+            while ((channel.failedReopens() < 2 || alive(transport).failedReopens() < 2)
                     && System.nanoTime() < deadline) {
                 Thread.sleep(20);
             }
             assertThat(channel.failedReopens()).as("reopens that failed").isGreaterThanOrEqualTo(2);
-            assertThat(transport.aliveFailedReopens())
+            assertThat(alive(transport).failedReopens())
                     .as("alive reopens that failed")
                     .isGreaterThanOrEqualTo(2);
             assertThat(feed().clientQueues())
@@ -225,7 +246,7 @@ class AmqpTransportTest {
                 .isZero();
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
         awaitAnAlive();
-        assertThat(transport.aliveFailedReopens())
+        assertThat(alive(transport).failedReopens())
                 .as("reset by the reopen that worked")
                 .isZero();
         assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
@@ -267,7 +288,7 @@ class AmqpTransportTest {
             if (once.compareAndSet(false, true)) {
                 // taken while the reconnect still runs: its loss finds a reconnect, and leaves it
                 feed().deleteClientQueues();
-                awaitQuietly(() -> !session.isOpen() && !transport.aliveOpen());
+                awaitQuietly(() -> !session.isOpen() && !alive(transport).isOpen());
             }
         };
 
@@ -291,16 +312,16 @@ class AmqpTransportTest {
         transport.open();
         long before = session.epoch();
         assertThat(session.startReopen()).isTrue();
-        assertThat(transport.aliveReopening.compareAndSet(false, true)).isTrue();
+        assertThat(alive(transport).startReopen()).isTrue();
 
         feed().deleteClientQueues();
         awaitTaken(transport, session, true);
         Thread.sleep(500);
         assertThat(session.isOpen()).as("the loss found the claim held").isFalse();
-        assertThat(transport.aliveOpen()).isFalse();
+        assertThat(alive(transport).isOpen()).isFalse();
 
         transport.released(session);
-        transport.aliveReleased();
+        transport.released(alive(transport));
         awaitReopened(session, before);
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
         awaitAnAlive();
@@ -362,8 +383,8 @@ class AmqpTransportTest {
         transport.addSession(allKeys());
         transport.open();
         awaitAnAlive();
-        assertThat(transport.aliveHandlerFailures()).isEqualTo(1);
-        assertThat(transport.aliveOpen()).isTrue();
+        assertThat(alive(transport).handlerFailures()).isEqualTo(1);
+        assertThat(alive(transport).isOpen()).isTrue();
     }
 
     @Test
@@ -563,13 +584,13 @@ class AmqpTransportTest {
         awaitReopened(session, before);
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
 
-        var alive = requireNonNull(transport.aliveChannel());
+        var alive = requireNonNull(alive(transport).channel());
         alive.basicAck(9_999, false);
         long deadline = System.nanoTime() + WAIT.toNanos();
-        while ((alive.isOpen() || !transport.aliveOpen()) && System.nanoTime() < deadline) {
+        while ((alive.isOpen() || !alive(transport).isOpen()) && System.nanoTime() < deadline) {
             Thread.sleep(20);
         }
-        assertThat(transport.aliveChannel()).as("a new alive channel").isNotSameAs(alive);
+        assertThat(alive(transport).channel()).as("a new alive channel").isNotSameAs(alive);
         awaitAnAlive();
         assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
     }
@@ -765,6 +786,10 @@ class AmqpTransportTest {
         return transport;
     }
 
+    private static SessionChannel alive(AmqpTransport transport) {
+        return requireNonNull(transport.aliveChannel());
+    }
+
     private static List<String> allKeys() {
         return RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true);
     }
@@ -779,7 +804,7 @@ class AmqpTransportTest {
     private static void awaitTaken(AmqpTransport transport, SessionChannel session, boolean alive)
             throws InterruptedException {
         long deadline = System.nanoTime() + WAIT.toNanos();
-        while ((session.isOpen() || (alive && transport.aliveOpen())) && System.nanoTime() < deadline) {
+        while ((session.isOpen() || (alive && alive(transport).isOpen())) && System.nanoTime() < deadline) {
             Thread.sleep(20);
         }
         assertThat(session.isOpen()).as("taken").isFalse();

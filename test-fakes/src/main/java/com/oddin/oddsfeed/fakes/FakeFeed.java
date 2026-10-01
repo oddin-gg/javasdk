@@ -246,6 +246,24 @@ public final class FakeFeed implements AutoCloseable {
                 .toList();
     }
 
+    /** The deliveries the clients' queues have handed out and not had acknowledged, all together. */
+    public long unacknowledged() {
+        return rabbitmqctl(
+                        "list_queues",
+                        "--quiet",
+                        "--no-table-headers",
+                        "-p",
+                        virtualHost(),
+                        "name",
+                        "messages_unacknowledged")
+                .lines()
+                .map(String::trim)
+                .filter(line -> line.startsWith("amq.gen-"))
+                .mapToLong(line -> Long.parseLong(
+                        line.substring(line.lastIndexOf('\t') + 1).trim()))
+                .sum();
+    }
+
     private void management(String method, String path, String body) {
         HttpRequest request = HttpRequest.newBuilder(
                         URI.create("http://" + broker.getHost() + ":" + broker.getMappedPort(MANAGEMENT) + path))
