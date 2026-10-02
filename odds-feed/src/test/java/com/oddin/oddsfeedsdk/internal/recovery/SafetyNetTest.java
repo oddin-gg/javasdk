@@ -365,6 +365,26 @@ class SafetyNetTest {
     }
 
     @Test
+    void aResetWithTheTransportWhenTheSessionsChannelGoesStillCountsWhenItIsDone() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
+
+        feed.machine.channelLost(1);
+        feed.alive(PRE);
+        feed.alive(LIVE);
+        assertThat(feed.calls)
+                .as("nothing asked for while the reset may still drop the new channel's queue")
+                .hasSize(before + 2);
+        feed.resetDone();
+        assertThat(feed.calls).as("asked for once it is done").hasSize(before + 4);
+        assertThat(feed.counters.resets()).isEqualTo(1);
+    }
+
+    @Test
     void aReportOfNoResetUnderWayChangesNothing() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();

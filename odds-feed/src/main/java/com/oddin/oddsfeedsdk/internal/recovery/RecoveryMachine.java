@@ -436,7 +436,11 @@ final class RecoveryMachine {
                     // the session has what the recovery sent: a reset now would drop it
                     cancelReset(session, now());
                 }
-                if (active.seen.containsAll(active.awaited)) {
+                if (!active.accepted) {
+                    // a snapshot complete says the API took the request, whatever it answers later
+                    accepted(track, active, now());
+                }
+                if (track.active == active && active.seen.containsAll(active.awaited)) {
                     complete(track, active, now(), true);
                 }
             }
@@ -446,6 +450,11 @@ final class RecoveryMachine {
         if (event != null && event.producerId == producerId) {
             if (event.awaited.contains(id)) {
                 event.seen.add(id);
+                CompletableFuture<@Nullable Long> reply = replies.remove(requestId);
+                if (reply != null) {
+                    // a snapshot complete says the API took the request: the caller hears so now
+                    outbox.reply(reply, requestId);
+                }
                 if (event.seen.containsAll(event.awaited)) {
                     eventCompleted(event);
                 }
@@ -481,7 +490,10 @@ final class RecoveryMachine {
         for (Track track : tracks.values()) {
             Active active = track.active;
             if (active != null && active.requestId == requestId) {
-                if (failure == null) {
+                if (active.accepted) {
+                    // a snapshot complete came first and said the API took it: the answer changes nothing
+                    LOG.debug("Request {} answered after a snapshot complete of it", requestId);
+                } else if (failure == null) {
                     accepted(track, active, now);
                 } else {
                     failed(track, active, now, "the API did not accept it: " + failure.getMessage());
@@ -1064,6 +1076,8 @@ final class RecoveryMachine {
                 && track.active == null
                 && track.cause != StatusCause.PROCESSING_DELAY
                 && !hasDownGaps(track)) {
+            // nothing is missing: what failed before does not count against what comes next
+            rearm(track);
             bringUp(track, StatusCause.RECOVERY_COMPLETED, now);
         }
     }
