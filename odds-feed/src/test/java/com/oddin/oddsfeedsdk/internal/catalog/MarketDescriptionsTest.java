@@ -88,6 +88,27 @@ class MarketDescriptionsTest {
     }
 
     @Test
+    void aFixedVariantIsTheListsOwnRow() {
+        api.respond(
+                LIST_EN,
+                200,
+                list(
+                        market(5, "Handicap"),
+                        "<market id=\"5\" name=\"Handicap, three way\" variant=\"way:three\">"
+                                + "<outcomes><outcome id=\"1\" name=\"home\"/></outcomes></market>"));
+        LocalizedMarket threeWay = requireNonNull(markets.market(5, "way:three", EN));
+        assertThat(threeWay.name()).isEqualTo("Handicap, three way");
+        assertThat(threeWay.variant()).isEqualTo("way:three");
+        assertThat(threeWay.key()).isEqualTo(MarketKey.of(5, "way:three"));
+        assertThat(requireNonNull(markets.market(5, null, EN)).name()).isEqualTo("Handicap");
+        assertThat(markets.market(5, "way:two", EN)).isNull();
+        assertThat(api.requests("GET", LIST_EN)).hasSize(1);
+        assertThat(api.requests().stream().filter(request -> request.path().contains("/variants/")))
+                .as("not fetched on its own")
+                .isEmpty();
+    }
+
+    @Test
     void aDynamicVariantIsFetchedOnItsOwnInEachLocale() {
         api.respond(VARIANT_EN, 200, variant(DYNAMIC, "Player Two"));
         LocalizedMarket market = requireNonNull(markets.market(768, DYNAMIC, EN));

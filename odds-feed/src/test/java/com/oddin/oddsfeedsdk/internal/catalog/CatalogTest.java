@@ -230,13 +230,20 @@ class CatalogTest {
         answer = () -> {
             throw new ApiException("down");
         };
-        for (int failure = 1; failure <= 10; failure++) {
-            int before = fetches.get();
-            assertThatThrownBy(() -> catalog.get("k")).isInstanceOf(ApiException.class);
-            assertThat(fetches).as("failure %d fetched", failure).hasValue(before + 1);
-            time.advance(Catalog.LONGEST_BACKOFF.plus(TICK));
+        long[] seconds = {1, 2, 4, 8, 16, 32, 60, 60, 60};
+        assertThatThrownBy(() -> catalog.get("k")).hasMessage("down");
+        for (int failure = 0; failure < seconds.length; failure++) {
+            Duration backoff = Duration.ofSeconds(seconds[failure]);
+            time.advance(backoff.minus(TICK));
+            assertThatThrownBy(() -> catalog.get("k")).hasMessageContaining("not fetched again before");
+            assertThat(fetches)
+                    .as("still backing off after failure %d", failure + 1)
+                    .hasValue(failure + 1);
+            time.advance(TICK);
+            assertThatThrownBy(() -> catalog.get("k")).hasMessage("down");
+            assertThat(fetches).as("%s after failure %d", backoff, failure + 1).hasValue(failure + 2);
         }
-        assertThat(catalog.health().failedFetches()).isEqualTo(10);
+        assertThat(catalog.health().failedFetches()).isEqualTo(seconds.length + 1);
     }
 
     @Test
@@ -394,6 +401,108 @@ class CatalogTest {
         release.countDown();
         assertThat(before.get(5, TimeUnit.SECONDS)).isEqualTo("before the clear");
         assertThat(catalog.peek("k")).isEqualTo("after the clear");
+    }
+
+    @Test
+    void duringAnOutageAMissingItemDoesNotWaitEachTimeTheBackoffEnds() {
+        answer = () -> "a,b";
+        catalog.get("k");
+        answer = () -> {
+            throw new ApiException("down");
+        };
+        time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        assertThat(find("c")).as("the first read pays, the API looked well").isNull();
+        assertThat(fetches).hasValue(2);
+        for (int cycle = 0; cycle < 5; cycle++) {
+            time.advance(Catalog.LONGEST_BACKOFF.plus(TICK));
+            assertThat(find("c")).isNull();
+            assertThat(find("d")).isNull();
+            assertThat(fetches).as("no read waited, cycle %d", cycle).hasValue(2 + cycle);
+            assertThat(queuedRefreshes).as("one refresh in the background").hasSize(1);
+            runRefreshes();
+        }
+        answer = () -> "a,b,c";
+        time.advance(Catalog.LONGEST_BACKOFF.plus(TICK));
+        assertThat(find("c")).isNull();
+        runRefreshes();
+        assertThat(find("c")).as("back, found by a later read").isEqualTo("c");
+        assertThat(catalog.health().failing()).isZero();
+    }
+
+    @Test
+    void aMissingItemIsFoundInWhatAFetchWroteSinceTheReadLooked() {
+        answer = () -> "a,b";
+        assertThat(find("c")).as("missed while the value is young").isNull();
+        time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        answer = () -> "a,b,c";
+        catalog.insideMiss = () -> {
+            catalog.insideMiss = () -> {};
+            catalog.reload("k");
+        };
+        assertThat(find("c")).isEqualTo("c");
+        assertThat(fetches).as("the reload's fetch, no other").hasValue(2);
+    }
+
+    @Test
+    void anOlderFetchThatEndsAfterANewerOneWritesNothingAndRecordsNoFailure() throws Exception {
+        var refreshed = new Semaphore(0);
+        catalog = catalog(
+                10,
+                threads,
+                task -> threads.execute(() -> {
+                    task.run();
+                    refreshed.release();
+                }));
+        catalog.get("k");
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            started.countDown();
+            await(release);
+            throw new ApiException("down");
+        };
+        time.advance(REFRESH_AGE.plus(TICK));
+        catalog.get("k");
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        answer = () -> "new";
+        assertThat(catalog.reload("k")).isEqualTo("new");
+        release.countDown();
+        assertThat(refreshed.tryAcquire(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(catalog.peek("k")).isEqualTo("new");
+        assertThat(catalog.health().failing()).as("the newer fetch did well").isZero();
+    }
+
+    @Test
+    void anOlderFetchThatSucceedsAfterANewerOneDoesNotReplaceItsValueOrClearItsFailure() throws Exception {
+        var refreshed = new Semaphore(0);
+        catalog = catalog(
+                10,
+                threads,
+                task -> threads.execute(() -> {
+                    task.run();
+                    refreshed.release();
+                }));
+        catalog.get("k");
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            started.countDown();
+            await(release);
+            return "old";
+        };
+        time.advance(REFRESH_AGE.plus(TICK));
+        catalog.get("k");
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        answer = () -> "new";
+        assertThat(catalog.reload("k")).isEqualTo("new");
+        answer = () -> {
+            throw new ApiException("down");
+        };
+        assertThatThrownBy(() -> catalog.reload("k")).hasMessage("down");
+        release.countDown();
+        assertThat(refreshed.tryAcquire(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(catalog.peek("k")).as("the newer fetch wins").isEqualTo("new");
+        assertThat(catalog.health().failing()).as("the newest fetch failed").isEqualTo(1);
     }
 
     @Test
