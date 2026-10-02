@@ -22,7 +22,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * The void reasons: one list, in no locale, fetched whole, refreshed after {@link #REFRESH_AGE}
  * and served while a refresh runs or fails, up to {@link #MAX_STALENESS}; see {@link Catalog}. A
- * refresh replaces the list; an id missing from it refreshes the list once in the background.
+ * refresh replaces the list; an id missing from it fetches the list again once.
  *
  * <p>Safe for concurrent use.
  */
