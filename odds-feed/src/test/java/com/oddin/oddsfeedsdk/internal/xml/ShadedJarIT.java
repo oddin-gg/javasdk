@@ -9,6 +9,7 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.jar.JarFile;
 import org.junit.jupiter.api.Test;
 
@@ -29,6 +30,17 @@ class ShadedJarIT {
             assertThat(names)
                     .contains("com/oddin/oddsfeedsdk/internal/woodstox/wstx/stax/WstxInputFactory.class")
                     .contains("META-INF/licenses/woodstox-core.txt", "META-INF/licenses/stax2-api.txt");
+            for (String library : List.of("com.fasterxml.woodstox/woodstox-core", "org.codehaus.woodstox/stax2-api")) {
+                var entry = jar.getEntry("META-INF/maven/" + library + "/pom.properties");
+                assertThat(entry)
+                        .as("a dependency scanner finds the bundled %s by its Maven metadata", library)
+                        .isNotNull();
+                var properties = new java.util.Properties();
+                try (var in = jar.getInputStream(entry)) {
+                    properties.load(in);
+                }
+                assertThat(properties.getProperty("version")).isNotBlank();
+            }
             assertThat(names)
                     .as("no copy under its own name, and no service file making it the application's parser")
                     .noneMatch(name -> name.startsWith("com/ctc/") || name.startsWith("org/codehaus/"))

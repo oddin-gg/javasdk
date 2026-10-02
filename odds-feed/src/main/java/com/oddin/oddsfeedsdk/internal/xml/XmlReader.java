@@ -66,7 +66,7 @@ final class XmlReader {
 
     /**
      * The most distinct names one {@link String#hashCode} may have: past a few, they are built to
-     * collide. Woodstox seeds its hash for each factory and mixes it, so names cannot be aimed at
+     * collide. Woodstox seeds its hash, at random once in each JVM, so names cannot be aimed at
      * one of its chains unless their hashes are equal whatever the seed - and names of one length
      * and first character with equal {@code String} hashes are: the seed changes only the first
      * character's share. Woodstox then mixes the hash with murmur's finalizer, which is not

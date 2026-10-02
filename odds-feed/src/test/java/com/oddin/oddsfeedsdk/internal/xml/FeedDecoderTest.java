@@ -435,6 +435,94 @@ class FeedDecoderTest {
         }
     }
 
+    /**
+     * The seed and the spread, in the table the decoder's own reader keeps its names in: Woodstox
+     * draws one seed for the JVM, at random, every factory and reader takes it, and names whose
+     * hashes share only their low bits sit about one probe deep there, where names with one hash
+     * queue up.
+     */
+    @Test
+    void theDecodersParserSeedsItsTableAndSpreadsNamesSharingOnlyLowBits() throws Exception {
+        var inputs = decoderInputs();
+        var factoryTable = com.ctc.wstx.stax.WstxInputFactory.class.getDeclaredField("mSymbols");
+        factoryTable.setAccessible(true);
+        int seed = ((com.ctc.wstx.util.SymbolTable) factoryTable.get(inputs)).getHashSeed();
+        assertThat(((com.ctc.wstx.util.SymbolTable) factoryTable.get(decoderInputs())).getHashSeed())
+                .as("one seed for the JVM, drawn as any table's is")
+                .isEqualTo(seed);
+
+        var sharingLowBits = new ArrayList<String>();
+        for (int i = 0; sharingLowBits.size() < XmlReader.MAX_NAMES - 1; i++) {
+            String name = "q" + (10_000_000 + i);
+            if ((name.hashCode() & 4095) == 0) {
+                sharingLowBits.add(name);
+            }
+        }
+        var oneHash = new ArrayList<String>();
+        colliding("", 6, oneHash);
+        var spread = readersTable(inputs, sharingLowBits);
+        assertThat(spread.getHashSeed())
+                .as("the reader's table takes its factory's seed")
+                .isEqualTo(seed);
+        assertThat(spread.calcAvgSeek()).isLessThan(2.0);
+        assertThat(readersTable(inputs, oneHash).calcAvgSeek())
+                .as("names with one hash do queue up, so the measure would show a shared chain")
+                .isGreaterThan(10.0);
+    }
+
+    private static javax.xml.stream.XMLInputFactory decoderInputs() {
+        return new XmlReader(
+                        XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
+                        "message",
+                        "feed message",
+                        FeedDecoder.DEFAULT_MAX_BYTES,
+                        null)
+                .inputs();
+    }
+
+    /** The symbol table a reader of the decoder's factory filled reading these names, without the name limit. */
+    private static com.ctc.wstx.util.SymbolTable readersTable(
+            javax.xml.stream.XMLInputFactory inputs, List<String> names) throws Exception {
+        var body = new StringBuilder("<r>");
+        names.forEach(name -> body.append('<').append(name).append("/>"));
+        var reader = inputs.createXMLStreamReader(
+                new java.io.StringReader(body.append("</r>").toString()));
+        while (reader.hasNext()) {
+            reader.next();
+        }
+        var table = com.ctc.wstx.sr.StreamScanner.class.getDeclaredField("mSymbols");
+        table.setAccessible(true);
+        return (com.ctc.wstx.util.SymbolTable) table.get(reader);
+    }
+
+    @Test
+    void movingByTagAndReadingTextThroughTheLimitWorkAsTheInterfaceSays() throws Exception {
+        var inputs = javax.xml.stream.XMLInputFactory.newDefaultFactory();
+        var reader = new XmlReader.NameLimit(inputs.createXMLStreamReader(
+                new java.io.StringReader("<r> <!--c--> <a>x<![CDATA[y]]><!--c-->z&amp;</a> <!--c--> </r>")));
+        assertThat(reader.nextTag()).isEqualTo(javax.xml.stream.XMLStreamConstants.START_ELEMENT);
+        assertThat(reader.getLocalName()).isEqualTo("r");
+        assertThat(reader.nextTag())
+                .as("whitespace and comments skipped")
+                .isEqualTo(javax.xml.stream.XMLStreamConstants.START_ELEMENT);
+        assertThat(reader.getLocalName()).isEqualTo("a");
+        assertThat(reader.getElementText())
+                .as("text, CDATA and an entity joined, comments skipped")
+                .isEqualTo("xyz&");
+        assertThat(reader.getEventType()).isEqualTo(javax.xml.stream.XMLStreamConstants.END_ELEMENT);
+        assertThat(reader.nextTag()).isEqualTo(javax.xml.stream.XMLStreamConstants.END_ELEMENT);
+        assertThat(reader.getLocalName()).isEqualTo("r");
+
+        var text = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>t<a/></r>")));
+        text.nextTag();
+        assertThatThrownBy(text::nextTag).hasMessageContaining("expected a start or an end tag");
+        var offTag = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>t</r>")));
+        assertThatThrownBy(offTag::getElementText).hasMessageContaining("not at a start tag");
+        var child = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>t<a/></r>")));
+        child.nextTag();
+        assertThatThrownBy(child::getElementText).hasMessageContaining("more than text");
+    }
+
     @Test
     void namesStayWithTheirDocument() throws Exception {
         var reader = new XmlReader(
