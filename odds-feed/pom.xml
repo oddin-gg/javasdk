@@ -249,12 +249,12 @@
               <filters>
                 <filter>
                   <!-- no service registration: the SDK names its parser, and the application keeps its own -->
+                  <!-- its Maven metadata stays: dependency scanners find a bundled Woodstox by it -->
                   <artifact>com.fasterxml.woodstox:woodstox-core</artifact>
                   <excludes>
                     <exclude>META-INF/services/**</exclude>
                     <exclude>META-INF/LICENSE</exclude>
                     <exclude>META-INF/MANIFEST.MF</exclude>
-                    <exclude>META-INF/maven/**</exclude>
                     <exclude>META-INF/versions/**/module-info.class</exclude>
                     <exclude>module-info.class</exclude>
                   </excludes>
@@ -265,7 +265,6 @@
                     <exclude>META-INF/services/**</exclude>
                     <exclude>META-INF/LICENSE</exclude>
                     <exclude>META-INF/MANIFEST.MF</exclude>
-                    <exclude>META-INF/maven/**</exclude>
                     <exclude>META-INF/versions/**/module-info.class</exclude>
                     <exclude>module-info.class</exclude>
                   </excludes>
