@@ -40,9 +40,10 @@ import org.jspecify.annotations.Nullable;
  * </ul>
  *
  * <p>Ages count from when the fetch started, so they are the ages of the data. Fetching is
- * single-flight through a {@link Loader}: a read, a refresh and a reload of one key share one
- * fetch, under one deadline. A clear drops what is held and the backoff of the keys it clears, and
- * a fetch that started before it writes nothing, neither a value nor a failure.
+ * single-flight through a {@link Loader}: the reads and the refreshes of one key share one fetch,
+ * under one deadline; a reload has its own. A clear drops what is held and the backoff of the keys
+ * it clears. A fetch that started before it writes nothing, neither a value nor a failure, and a
+ * read after it does not join that fetch but starts its own.
  *
  * <p>Safe for concurrent use.
  */
@@ -93,7 +94,7 @@ final class Catalog<K, V> {
     private final Fetch<K, V> fetch;
     private final InstantSource clock;
     private final Executor refreshes;
-    private final Loader<K, V> loader;
+    private final Loader<Flight<K>, V> loader;
     private final Cache<K, Held<V>> held;
     /** The last failure of each key whose last fetch failed. */
     private final Cache<K, Failure> failures;
@@ -114,6 +115,8 @@ final class Catalog<K, V> {
      */
     private final ReentrantReadWriteLock clearing = new ReentrantReadWriteLock();
 
+    /** A test's hook: runs in a read with nothing to serve, before it asks the loader for a fetch. */
+    volatile Runnable insideColdRead = () -> {};
     /** A test's hook: runs in a read that found its value stale, before it marks it so. */
     volatile Runnable insideStaleRead = () -> {};
 
@@ -191,7 +194,7 @@ final class Catalog<K, V> {
         Instant now = clock.instant();
         Held<V> current = usable(key, now);
         if (current == null) {
-            return fetchNow(key, now);
+            return fetchNow(key);
         }
         if (current.fetchedAt().plus(refreshAge).isBefore(now)) {
             servedStale.incrementAndGet();
@@ -204,10 +207,11 @@ final class Catalog<K, V> {
     }
 
     /**
-     * An item of the key's value, such as one market of a locale's list. When the value lacks it,
-     * the value is fetched again - once per item, and only when it was fetched before the item was
-     * first missed and at least {@link #MISS_INTERVAL} ago - so that what is new upstream shows up
-     * before the next refresh. Null when it is not there even then, or that fetch fails.
+     * An item of the key's value, such as one market of a locale's list, or null when the value lacks
+     * it. Then the value is refreshed in the background - once per item, and only when it was
+     * fetched before the item was first missed and at least {@link #MISS_INTERVAL} ago - so that what
+     * is new upstream shows up on a later read, before the next refresh. The read does not wait for
+     * that, so a missing item never holds up its reader, not even while the API is down.
      *
      * @throws ApiException when there is no value to look in and the fetch fails
      */
@@ -219,18 +223,12 @@ final class Catalog<K, V> {
         Instant now = clock.instant();
         long firstMissed = misses.asMap().computeIfAbsent(new Miss<>(key, item), _ -> order.incrementAndGet());
         Held<V> current = held.getIfPresent(key);
-        if (current == null
-                || current.startedAs() > firstMissed
-                || current.fetchedAt().plus(MISS_INTERVAL).isAfter(now)
-                || backingOff(key, now) != null) {
-            return null;
+        if (current != null
+                && current.startedAs() < firstMissed
+                && !current.fetchedAt().plus(MISS_INTERVAL).isAfter(now)) {
+            refreshInBackground(key, now);
         }
-        try {
-            return finder.find(loader.load(key), item);
-        } catch (ApiException failed) {
-            // counted where it failed; the item is as unknown as it was
-            return null;
-        }
+        return null;
     }
 
     /**
@@ -240,7 +238,7 @@ final class Catalog<K, V> {
      * @throws ApiException when the fetch fails
      */
     V reload(K key) {
-        return loader.load(key);
+        return loader.load(new Flight<>(key, generation.get(), true));
     }
 
     /** What is held for the key and not older than the maximum staleness, fetching nothing. */
@@ -314,16 +312,10 @@ final class Catalog<K, V> {
         return value.fetchedAt().plus(maxStaleness).isBefore(now);
     }
 
-    private V fetchNow(K key, Instant now) {
-        Failure failure = backingOff(key, now);
-        if (failure != null) {
-            throw new ApiException(
-                    name + " " + key + ": not fetched again before " + failure.retryAt() + ", " + failure.attempts()
-                            + " fetches in a row failed, the last at " + failure.at(),
-                    null,
-                    failure.cause());
-        }
-        return loader.load(key);
+    /** A fetch the reader waits for; one that would start while the key backs off fails at once. */
+    private V fetchNow(K key) {
+        insideColdRead.run();
+        return loader.load(new Flight<>(key, generation.get(), false));
     }
 
     private void refreshInBackground(K key, Instant now) {
@@ -333,7 +325,7 @@ final class Catalog<K, V> {
         try {
             refreshes.execute(() -> {
                 try {
-                    loader.load(key);
+                    loader.load(new Flight<>(key, generation.get(), false));
                 } catch (RuntimeException failed) {
                     // counted where it failed; the stale value is served until the next try
                 } finally {
@@ -345,15 +337,35 @@ final class Catalog<K, V> {
         }
     }
 
+    private ApiException backingOff(K key, Failure failure) {
+        return new ApiException(
+                name + " " + key + ": not fetched again before " + failure.retryAt() + ", " + failure.attempts()
+                        + " fetches in a row failed, the last at " + failure.at(),
+                null,
+                failure.cause());
+    }
+
     /** The key's last failure while it still backs the key off, else null. */
     private @Nullable Failure backingOff(K key, Instant now) {
         Failure failure = failures.getIfPresent(key);
         return failure != null && failure.retryAt().isAfter(now) ? failure : null;
     }
 
-    /** One fetch, as the loader runs it: the value written unless a clear or a newer fetch came first. */
-    private V fetch(K key, Deadline deadline, BooleanSupplier abandoned) {
-        long startedIn = generation.get();
+    /**
+     * One fetch, as the loader runs it: the value written unless a clear or a newer fetch came first.
+     * A flight that is no reload does not start while its key backs off. It is checked here, as the
+     * flight starts, because a reader that checked before can be late: a flight that failed in the
+     * meantime has recorded its failure before it left the loader.
+     */
+    private V fetch(Flight<K> flight, Deadline deadline, BooleanSupplier abandoned) {
+        K key = flight.key();
+        long startedIn = flight.generation();
+        if (!flight.reload()) {
+            Failure failure = backingOff(key, clock.instant());
+            if (failure != null) {
+                throw backingOff(key, failure);
+            }
+        }
         long startedAs = order.incrementAndGet();
         Instant startedAt = clock.instant();
         Held<V> previous = held.getIfPresent(key);
@@ -407,6 +419,17 @@ final class Catalog<K, V> {
         Instant retryAt() {
             long nanos = FIRST_BACKOFF.toNanos() << Math.min(attempts - 1, 30);
             return at.plus(nanos > LONGEST_BACKOFF.toNanos() ? LONGEST_BACKOFF : Duration.ofNanos(nanos));
+        }
+    }
+
+    /**
+     * What the loader fetches: a key, in the generation its reader saw, so that a read after a clear
+     * never joins a fetch from before it; and whether it is a reload, which does not wait out a backoff.
+     */
+    private record Flight<K>(K key, long generation, boolean reload) {
+        @Override
+        public String toString() {
+            return key.toString();
         }
     }
 
