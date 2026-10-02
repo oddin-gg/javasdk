@@ -543,6 +543,32 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aStreamOfEventRecoveryRequestsHoldsUpNoTurn() throws InterruptedException {
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        // each request taken posts the next, so the requests' queue is never empty
+        var turnsSeen = new java.util.concurrent.ConcurrentSkipListSet<Long>();
+        var left = new AtomicInteger(2_500);
+        var done = new CountDownLatch(1);
+        actor.beforeRequestPoll = () -> {
+            if (left.get() > 0) {
+                // only while the stream runs: idle turns after it come on their own
+                turnsSeen.add(actor.turns());
+            }
+            if (left.getAndDecrement() > 0) {
+                assertThat(actor.recoverEvent(9, MATCH, false)).isNotNull();
+            } else {
+                done.countDown();
+            }
+        };
+        assertThat(actor.recoverEvent(9, MATCH, false)).isNotNull();
+        assertThat(done.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(turnsSeen).as("turns the stream ran through").hasSizeGreaterThanOrEqualTo(3);
+    }
+
+    @Test
     void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException, ExecutionException, TimeoutException {
         // not started: nothing takes from the queues
         var actor = new RecoveryActor(

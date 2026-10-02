@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.random.RandomGenerator;
 import org.jspecify.annotations.Nullable;
@@ -56,6 +57,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     static final int SAMPLE_CAPACITY = 10_000;
     /** How many samples the actor takes before it looks at the other facts again. */
     private static final int SAMPLES_PER_TURN = 1_000;
+    /** How many event recovery requests it takes in a turn, so a stream of them holds up no tick. */
+    private static final int REQUESTS_PER_TURN = 1_000;
     /** How long close() waits for the actor's thread to end. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
 
@@ -77,6 +80,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private volatile long turnedAt;
     /** A test's hook, run before each take from the samples, after the look at the essential facts. */
     volatile Runnable beforeSamplePoll = () -> {};
+    /** A test's hook, run before each take from the event recovery requests. */
+    volatile Runnable beforeRequestPoll = () -> {};
+    /** The turns the actor has taken; for the watchdog and a test. */
+    private final AtomicLong turns = new AtomicLong();
 
     /**
      * @param workers where the requests and the resets run: REST workers, virtual threads
@@ -204,6 +211,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         return thread.isAlive();
     }
 
+    /** How many turns the actor has taken. */
+    public long turns() {
+        return turns.get();
+    }
+
     /** When the actor last began a turn, epoch millis by its clock, 0 before the first. */
     public long turnedAt() {
         return turnedAt;
@@ -264,8 +276,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             long nextTick = clock.millis();
             while (!closed) {
                 turnedAt = clock.millis();
+                turns.incrementAndGet();
                 boolean worked = drainEssential();
-                worked |= drainLesser(control, Integer.MAX_VALUE, () -> {});
+                worked |= drainLesser(control, REQUESTS_PER_TURN, beforeRequestPoll);
                 worked |= drainLesser(samples, SAMPLES_PER_TURN, beforeSamplePoll);
                 long now = clock.millis();
                 if (now >= nextTick) {
