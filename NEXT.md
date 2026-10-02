@@ -501,9 +501,11 @@ and REST workers post facts to it; it decides and posts work out.
 - Event recoveries take their ids from the same sequence. At most 128 are in flight per
   producer, and one without a `snapshot_complete` within the maximum recovery time is
   dropped and counted, as is one whose `snapshot_complete` went with a lost queue; a
-  caller still waiting for the API's answer then hears it was not accepted. A
-  `snapshot_complete` that comes before the API's answer says the API took the request:
-  the caller hears the request id then, and a late answer changes nothing. One asked
+  caller still waiting for the API's answer then hears it was not accepted. The first
+  `snapshot_complete` of a request, from any session, says the API took it: an event
+  recovery's caller hears the request id then, while the completion still waits for the
+  other sessions, and for a producer or an event recovery alike a late answer, even a
+  failure, changes nothing - no second request, no failure counted. One asked
   for while the connection is down is refused at once, since its snapshot would have no
   queue to go to. The caller's future is completed on a thread of its own, never the
   actor's, so nothing the caller chains to it can hold the actor up.
@@ -529,10 +531,13 @@ and REST workers post facts to it; it decides and posts work out.
   producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, without a recovery, and on
   time again brings it back with `RETURNED_FROM_INACTIVITY`, as in 0.0.x. A recovery
   that completes while a session processes its producer late leaves the producer down
-  for that, rather than up for the moment until the next look at the delay. The first
-  time a producer comes up after `open()`, whatever brings it up - its first recovery,
-  a follow-up one, a session closing, the session catching up - the reason is
-  `FIRST_RECOVERY_COMPLETED`, so the client hears it once per producer, as in 0.0.x.
+  for that, rather than up for the moment until the next look at the delay. A
+  producer that comes back with nothing missing, as when the session whose gap held it
+  down closes, starts its retries afresh: a cap spent on that gap does not hold up the
+  next one. The first time a producer comes up after `open()`, whatever brings it up -
+  its first recovery, a follow-up one, a session closing, the session catching up - the
+  reason is `FIRST_RECOVERY_COMPLETED`, so the client hears it once per producer, as in
+  0.0.x.
 - The safety net. Message rates depend on what a client has booked, and the SDK does
   not promise to keep up with every queue. Backpressure protects the JVM and the
   broker connection. The safety net bounds how far behind a client can fall: past a
