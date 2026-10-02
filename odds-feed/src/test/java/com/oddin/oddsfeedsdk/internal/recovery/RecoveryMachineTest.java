@@ -822,6 +822,71 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aSessionClosingBeforeTheApiAnswersLeavesTheAnswerToDecide() {
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot accepted = feed.lastSnapshot(PRE);
+        feed.alive(LIVE);
+        Outbox.Call.Snapshot refused = feed.lastSnapshot(LIVE);
+        // the only session that takes snapshot completes closes while both requests wait for the API
+        feed.close(1);
+        assertThat(feed.counters.completed())
+                .as("no snapshot complete, no answer yet")
+                .isZero();
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+
+        feed.accept(accepted);
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("accepted, with nothing to wait for")
+                .isFalse();
+        feed.refuse(refused);
+        assertThat(feed.producers.isProducerDown(LIVE)).as("refused").isTrue();
+        assertThat(feed.counters.completed()).isEqualTo(1);
+        assertThat(feed.counters.failed()).isEqualTo(1);
+        assertThat(requireNonNull(
+                                requireNonNull(feed.producers.getProducer(LIVE)).getRecoveryInfo())
+                        .getSuccessful())
+                .isFalse();
+    }
+
+    @Test
+    void aSessionClosingBeforeTheApiAnswersAnEventRecoveryLeavesTheAnswerToDecide()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        CompletableFuture<@Nullable Long> accepted = feed.recoverEvent(LIVE);
+        Outbox.Call acceptedCall = feed.calls.getLast();
+        CompletableFuture<@Nullable Long> refused = feed.recoverEvent(LIVE);
+        Outbox.Call refusedCall = feed.calls.getLast();
+        feed.close(1);
+        assertThat(feed.events).as("no snapshot complete, no answer yet").isEmpty();
+
+        feed.refuse(refusedCall);
+        assertThat(done(refused)).isNull();
+        assertThat(feed.events).as("refused").isEmpty();
+        feed.accept(acceptedCall);
+        assertThat(done(accepted)).isEqualTo(acceptedCall.requestId());
+        assertThat(feed.events)
+                .containsExactly("event recovery " + acceptedCall.requestId() + " of " + MATCH + " completed");
+    }
+
+    @Test
+    void aSessionThatSawTheSnapshotCompleteAndClosedStillCompletesIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.machine.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        // quicker than the API's answer, as a snapshot complete may be
+        feed.machine.snapshotComplete(2, PRE, recovery.requestId());
+        feed.close(1);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+    }
+
+    @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();

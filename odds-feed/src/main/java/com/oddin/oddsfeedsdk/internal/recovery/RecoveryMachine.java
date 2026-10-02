@@ -161,8 +161,11 @@ final class RecoveryMachine {
             Track track = track(producerId);
             Active active = track.active;
             if (active != null && active.awaited.remove(id)) {
+                boolean seenAny = !active.seen.isEmpty();
                 active.seen.remove(id);
-                if (active.seen.containsAll(active.awaited)) {
+                // a snapshot complete stands for the API's acceptance; with none seen, and none left
+                // to wait for, the API's answer decides
+                if (active.seen.containsAll(active.awaited) && (active.accepted || seenAny)) {
                     complete(track, active, now);
                 }
             } else if (active == null) {
@@ -171,8 +174,10 @@ final class RecoveryMachine {
         }
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
             if (recovery.awaited.remove(id)) {
+                boolean seenAny = !recovery.seen.isEmpty();
                 recovery.seen.remove(id);
-                if (recovery.seen.containsAll(recovery.awaited)) {
+                boolean answered = !replies.containsKey(recovery.requestId);
+                if (recovery.seen.containsAll(recovery.awaited) && (answered || seenAny)) {
                     eventCompleted(recovery);
                 }
             }
@@ -268,14 +273,22 @@ final class RecoveryMachine {
      * channel late can still drop what the new one holds, so its report counts all the same.
      *
      * @param number the reset's own number, so a report of no reset underway changes nothing
+     * @param replaced whether the channel was replaced; it was not when the transport could not take
+     *     the reset at all, and then nothing was dropped
      */
-    void resetDone(int id, long number) {
+    void resetDone(int id, long number, boolean replaced) {
         SessionState session = sessions.get(id);
         if (session == null || session.underway == 0 || session.underway != number) {
             return;
         }
         session.underway = 0;
-        queueLost(session, StatusCause.SAFETY_NET_RESET, now());
+        if (replaced) {
+            queueLost(session, StatusCause.SAFETY_NET_RESET, now());
+        } else {
+            // nothing was dropped, but the snapshot completes ignored meanwhile are gone
+            LOG.warn("The safety net's reset of session {} was not made", id);
+            notSeen(session, now());
+        }
     }
 
     /**
@@ -283,18 +296,30 @@ final class RecoveryMachine {
      * recovery or event recovery that waited for its snapshot complete will not see it.
      */
     private void queueLost(SessionState session, StatusCause cause, long now) {
-        int id = session.info.id();
-        giveUpEvents(id);
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Lane lane = entry.getValue();
             lane.gap = openGap(lane.gap, lane.checkpoint, false);
             lane.above = false;
-            Track track = track(entry.getKey());
+        }
+        for (Long producerId : session.lanes.keySet()) {
+            markDown(track(producerId), cause, now);
+        }
+        notSeen(session, now);
+    }
+
+    /**
+     * The session will not see the snapshot completes it has not seen yet: the recoveries and event
+     * recoveries waiting for them are given up, and asked for again as far as anything is missing.
+     */
+    private void notSeen(SessionState session, long now) {
+        int id = session.info.id();
+        giveUpEvents(id);
+        for (Long producerId : session.lanes.keySet()) {
+            Track track = track(producerId);
             Active active = track.active;
             if (active != null && active.awaited.contains(id) && !active.seen.contains(id)) {
                 giveUp(track, now);
             }
-            markDown(track, cause, now);
             maybeRequest(track, now);
         }
     }

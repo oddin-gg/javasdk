@@ -31,6 +31,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -238,7 +239,7 @@ class RecoveryActorTest {
         actor.alive(PRE, now, now, false);
         assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         while (actor.counters().factsDropped() == 0) {
-            actor.alive(LIVE, now, now, true);
+            assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotNull();
         }
         long dropped = actor.counters().factsDropped();
 
@@ -379,29 +380,117 @@ class RecoveryActorTest {
     }
 
     @Test
+    void anAliveIsNeverDroppedForWantOfRoom() throws InterruptedException, ExecutionException, TimeoutException {
+        // not started: nothing takes from the queues, and the requests' queue holds two
+        var actor = new RecoveryActor(
+                producers, Harness.settings(), api, events(), workers, InstantSource.system(), new Random(1), 2, 2);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
+        assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
+        assertThat(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the third, with no room")
+                .isNull();
+        // the only word of a gap
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, false);
+        assertThat(actor.counters().factsDropped()).isEqualTo(1);
+        actor.start();
+        ProducerStatusChange status = requireNonNull(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(status.cause()).isEqualTo(StatusCause.UNSUBSCRIBED);
+    }
+
+    @Test
+    void aResetTheWorkersTurnAwayIsReportedAndTheRecoveriesAskedForAgain() throws InterruptedException {
+        var gate = new Gate();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), gate);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+
+        // the net's requests wait in the API until the reset is set to be turned away
+        var held = new CountDownLatch(1);
+        api.hold.set(held);
+        long later = System.currentTimeMillis();
+        session.processed(PRE, later - 300_000, later + 1, false);
+        session.processed(PRE, later - 300_000, later + 2, false);
+        api.next();
+        api.next();
+        gate.rejectNext = true;
+        held.countDown();
+        List<Request> again = List.of(api.next(), api.next());
+        assertThat(again).as("asked for again, with no reset made").hasSize(2);
+        assertThat(transport.resets.getCount()).as("no channel replaced").isEqualTo(1);
+    }
+
+    @Test
+    void aSamplePostedAfterAnEssentialFactIsNotHandledBeforeIt() throws InterruptedException {
+        var gate = new Gate();
+        var actor = new RecoveryActor(producers, settings(), api, events(), gate);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+
+        // the actor held inside a request, partway through a turn
+        gate.armed = true;
+        assertThat(actor.recoverEvent(LIVE, MATCH, false)).isNotDone();
+        assertThat(gate.entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        // the channel is lost, and the new one delivers at once
+        long newer = System.currentTimeMillis() + 60_000;
+        session.channelLost();
+        session.processed(PRE, newer, newer, false);
+        gate.release.countDown();
+
+        Request recovery = api.next();
+        while (!(recovery.path().equals("recovery") && recovery.producer().equals("pre"))) {
+            recovery = api.next();
+        }
+        assertThat(requireNonNull(recovery.after()).toEpochMilli())
+                .as("from before the new channel's message, which came after the loss")
+                .isLessThan(newer);
+    }
+
+    @Test
     void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException, ExecutionException, TimeoutException {
         // not started: nothing takes from the queues
         var actor = new RecoveryActor(
                 producers, Harness.settings(), api, events(), workers, InstantSource.system(), new Random(1), 2, 2);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
-        actor.alive(PRE, 1, 1, true);
-        actor.alive(PRE, 2, 2, true);
-        actor.alive(PRE, 3, 3, true);
         session.processed(PRE, 1, 1, false);
         session.processed(PRE, 2, 2, false);
         session.processed(PRE, 3, 3, false);
-        assertThat(actor.counters().factsDropped()).isEqualTo(2);
+        assertThat(actor.counters().factsDropped()).as("a sample with no room").isEqualTo(1);
+        assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
+        assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
         assertThat(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("an event recovery with no room")
                 .isNull();
+        assertThat(actor.counters().factsDropped()).isEqualTo(2);
 
         // what would leave the state wrong for good is never dropped, and keeps its order
         actor.down("lost");
         session.snapshotComplete(PRE, 1);
         session.channelLost();
         actor.openSession(new SessionInfo(2, MessageInterest.ALL, true), transport);
-        assertThat(actor.counters().factsDropped()).isEqualTo(3);
+        assertThat(actor.counters().factsDropped()).isEqualTo(2);
         actor.start();
         ProducerStatusChange first = requireNonNull(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
         assertThat(first.cause()).as("the lost connection, first").isEqualTo(StatusCause.CONNECTION_LOST);
@@ -554,6 +643,34 @@ class RecoveryActorTest {
 
     private static long producerOf(Request request) {
         return request.producer().equals("pre") ? PRE : LIVE;
+    }
+
+    /** Workers that run each task on a thread of its own, unless told to hold or to turn one away. */
+    private static final class Gate implements Executor {
+        final CountDownLatch entered = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        /** Whether the next task holds the one handing it over until released. */
+        volatile boolean armed;
+        /** Whether the next task is turned away. */
+        volatile boolean rejectNext;
+
+        @Override
+        public void execute(Runnable task) {
+            if (rejectNext) {
+                rejectNext = false;
+                throw new RejectedExecutionException("turned away");
+            }
+            if (armed) {
+                armed = false;
+                entered.countDown();
+                try {
+                    assertThat(release.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            Thread.ofVirtual().start(task);
+        }
     }
 
     /** Workers that hold every task until the test runs it. */
