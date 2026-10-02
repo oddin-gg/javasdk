@@ -102,7 +102,8 @@ public final class ProfileCaches {
 
     /** The competitor as its profile in {@code locale} describes it, loaded when missing or out of date. */
     public Entry competitor(URN id, Locale locale, @Nullable Deadline within) {
-        if (!competitors.isFresh(id, COMPETITOR_PROFILE, locale)) {
+        // twice at most: a read just after a clear can join a load from before it, which writes nothing
+        for (int tries = 0; tries < 2 && !competitors.isFresh(id, COMPETITOR_PROFILE, locale); tries++) {
             competitorLoads.load(new Key(id, locale), within);
         }
         return entryOf(competitors, id);
@@ -110,7 +111,8 @@ public final class ProfileCaches {
 
     /** The player as its profile in {@code locale} describes it, loaded when missing or out of date. */
     public Entry player(URN id, Locale locale, @Nullable Deadline within) {
-        if (!players.isFresh(id, PLAYER_PROFILE, locale)) {
+        // twice at most: a read just after a clear can join a load from before it, which writes nothing
+        for (int tries = 0; tries < 2 && !players.isFresh(id, PLAYER_PROFILE, locale); tries++) {
             playerLoads.load(new Key(id, locale), within);
         }
         return entryOf(players, id);
@@ -118,7 +120,8 @@ public final class ProfileCaches {
 
     /** The tournament as its info in {@code locale} describes it, loaded when missing or out of date. */
     public Entry tournament(URN id, Locale locale, @Nullable Deadline within) {
-        if (!tournaments.isFresh(id, TOURNAMENT_INFO, locale)) {
+        // twice at most: a read just after a clear can join a load from before it, which writes nothing
+        for (int tries = 0; tries < 2 && !tournaments.isFresh(id, TOURNAMENT_INFO, locale); tries++) {
             tournamentLoads.load(new Key(id, locale), within);
         }
         return entryOf(tournaments, id);
@@ -139,7 +142,7 @@ public final class ProfileCaches {
 
     /** The sport with its tournament list in {@code locale}, loaded when missing or out of date. */
     public Entry sportTournaments(URN sportId, Locale locale, @Nullable Deadline within) {
-        if (!sports.isFresh(sportId, SPORT_TOURNAMENT_LIST, locale)) {
+        for (int tries = 0; tries < 2 && !sports.isFresh(sportId, SPORT_TOURNAMENT_LIST, locale); tries++) {
             sportTournamentLoads.load(new Key(sportId, locale), within);
         }
         return entryOf(sports, sportId);
@@ -195,6 +198,12 @@ public final class ProfileCaches {
         return players.get(id);
     }
 
+    /** What is cached of the tournament, loading nothing; for a test. */
+    @Nullable
+    Entry cachedTournament(URN id) {
+        return tournaments.get(id);
+    }
+
     /** What is cached of the sport, loading nothing; for a test. */
     @Nullable
     Entry cachedSport(URN id) {
@@ -202,10 +211,14 @@ public final class ProfileCaches {
     }
 
     private void loadSportList(Locale locale, @Nullable Deadline within) {
-        SportList list = sportLists.get(locale);
-        if (list == null || list.loadedAt().plus(PROFILE_AGE).isBefore(clock.instant())) {
+        for (int tries = 0; tries < 2 && !sportListFresh(locale); tries++) {
             sportListLoads.load(locale, within);
         }
+    }
+
+    private boolean sportListFresh(Locale locale) {
+        SportList list = sportLists.get(locale);
+        return list != null && !list.loadedAt().plus(PROFILE_AGE).isBefore(clock.instant());
     }
 
     private Boolean fetchCompetitor(Key key, Deadline deadline, BooleanSupplier abandoned) {
@@ -248,7 +261,10 @@ public final class ProfileCaches {
             return false;
         }
         RACompetitors own = tournament.getCompetitors();
-        RACompetitors competitorList = own != null ? own : info.getCompetitors();
+        // the element's own list, unless it lists none: then the info's, as 0.0.x read it
+        RACompetitors competitorList = (own != null && !own.getCompetitor().isEmpty()) || info.getCompetitors() == null
+                ? own
+                : info.getCompetitors();
         if (own != null) {
             fillCompetitors(own.getCompetitor(), key.locale(), listed);
         }
@@ -291,7 +307,14 @@ public final class ProfileCaches {
         }
         // a list a clear overtook, or one a newer list overtook, is not the one to read from
         if (allWritten && !abandoned.getAsBoolean()) {
-            sportLists.put(locale, new SportList(List.copyOf(ids), at));
+            var list = new SportList(List.copyOf(ids), at);
+            sportLists.put(locale, list);
+            // a clear clears the sports before the lists: one since the fetch started, done before
+            // the put or not, either dropped the list after it or shows here
+            if (sports.clearedSince(started)) {
+                sportLists.remove(locale, list);
+                return false;
+            }
         }
         return allWritten;
     }
