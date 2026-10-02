@@ -25,23 +25,42 @@ public final class Entry {
     private final Set<Slot> authoritative;
     private final Map<Loaded, Instant> loaded;
     private final long changedAt;
+    /**
+     * Per authoritative endpoint, the fetch - by the order fetches started in - that last wrote its
+     * shared fields; none for an endpoint not written yet.
+     */
+    private final Map<Endpoint, Long> sharedFrom;
 
     private Entry(
             long generation,
             Map<Slot, Object> values,
             Set<Slot> authoritative,
             Map<Loaded, Instant> loaded,
-            long changedAt) {
+            long changedAt,
+            Map<Endpoint, Long> sharedFrom) {
         this.generation = generation;
         this.values = Map.copyOf(values);
         this.authoritative = Set.copyOf(authoritative);
         this.loaded = Map.copyOf(loaded);
         this.changedAt = changedAt;
+        this.sharedFrom = Map.copyOf(sharedFrom);
     }
 
     /** An entry with nothing in it yet, of a generation no other entry of its cache has had. */
     static Entry empty(long generation) {
-        return new Entry(generation, Map.of(), Set.of(), Map.of(), 0);
+        return new Entry(generation, Map.of(), Set.of(), Map.of(), 0, Map.of());
+    }
+
+    /** The fetch that last wrote the endpoint's shared fields, by the order fetches started in; 0 for none. */
+    long sharedFrom(Endpoint endpoint) {
+        return sharedFrom.getOrDefault(endpoint, 0L);
+    }
+
+    private static final Entry NONE = empty(0);
+
+    /** What a reader gets for a key its cache holds nothing of: no values, nothing loaded. */
+    public static Entry none() {
+        return NONE;
     }
 
     /** When it last changed, on the cache's ticker: what its age counts from. */
@@ -86,8 +105,14 @@ public final class Entry {
      * a shared one in any - since only then does its absence say it is gone; one the endpoint may
      * leave out is kept as it is. What it carries of fields another endpoint owns it writes by the
      * fill rule: only where absent and unmarked.
+     *
+     * <p>Two locales of one entity can be fetched at once: a response from a fetch that started
+     * before the one that last wrote the same endpoint's shared fields writes its locale's fields,
+     * but leaves the newer shared ones alone. Another endpoint's response is not in that race.
+     *
+     * @param fetch the fetch's place in the order fetches of this cache started in
      */
-    Entry authoritative(Write write, Instant now, long ticks) {
+    Entry authoritative(Write write, Instant now, long ticks, long fetch) {
         Locale locale = write.locale();
         if (locale == null) {
             throw new IllegalArgumentException("an authoritative response from " + write.endpoint() + " has a locale");
@@ -95,14 +120,20 @@ public final class Entry {
         var nextValues = new HashMap<>(values);
         var nextAuthoritative = new HashSet<>(authoritative);
         var owned = new HashSet<Slot>();
+        // each field has one authoritative endpoint: only its own other responses race over it
+        boolean newest = fetch >= sharedFrom(write.endpoint());
         for (Field<?> field : write.endpoint().authoritativeFor()) {
             Slot slot = field.slot(locale);
             owned.add(slot);
+            if (!field.isLocalized() && !newest) {
+                continue;
+            }
             Object value = write.values().get(slot);
             if (value != null) {
                 nextValues.put(slot, value);
                 nextAuthoritative.add(slot);
-            } else if (write.endpoint().alwaysSent().contains(field)) {
+            } else if (write.endpoint().alwaysSent().contains(field)
+                    && !write.unsaid().contains(field)) {
                 nextValues.remove(slot);
                 nextAuthoritative.add(slot);
             }
@@ -115,7 +146,9 @@ public final class Entry {
         }
         var nextLoaded = new HashMap<>(loaded);
         nextLoaded.put(new Loaded(write.endpoint(), locale), now);
-        return new Entry(generation, nextValues, nextAuthoritative, nextLoaded, ticks);
+        var nextShared = new HashMap<>(sharedFrom);
+        nextShared.merge(write.endpoint(), fetch, Math::max);
+        return new Entry(generation, nextValues, nextAuthoritative, nextLoaded, ticks, nextShared);
     }
 
     /**
@@ -131,12 +164,12 @@ public final class Entry {
                 changed = true;
             }
         }
-        return changed ? new Entry(generation, nextValues, authoritative, loaded, ticks) : this;
+        return changed ? new Entry(generation, nextValues, authoritative, loaded, ticks, sharedFrom) : this;
     }
 
     /** The tombstone of this entry: nothing kept but a new generation. */
     Entry invalidated(long newGeneration, long ticks) {
-        return new Entry(newGeneration, Map.of(), Set.of(), Map.of(), ticks);
+        return new Entry(newGeneration, Map.of(), Set.of(), Map.of(), ticks, Map.of());
     }
 
     /** An endpoint fetched in a locale. */

@@ -38,6 +38,9 @@ public final class EntityCache<K> {
     private final InstantSource clock;
     private final Ticker ticker;
     private final Cache<K, Entry> entries;
+    /** The order fetches start in, to tell an older response of one entity from a newer one. */
+    private final AtomicLong fetches = new AtomicLong();
+
     /** Where generations come from: no two entries of this cache, past or present, share one. */
     private final AtomicLong generations = new AtomicLong();
     /**
@@ -72,7 +75,7 @@ public final class EntityCache<K> {
     }
 
     /** With the clocks a test drives: one for fetch times, one for Caffeine's ages. */
-    EntityCache(
+    public EntityCache(
             String name, long maximumSize, Duration age, Duration longestFetch, InstantSource clock, Ticker ticker) {
         this.name = name;
         this.age = age;
@@ -136,12 +139,42 @@ public final class EntityCache<K> {
      * not written, since a newer fetch of the key may have written already.
      */
     public Stamp stamp(K key, BooleanSupplier abandoned) {
+        long fetch = fetches.incrementAndGet();
         long startedAt = generations.get();
         long lastInvalidation = lastInvalidation(key);
         Entry entry = entries.getIfPresent(key);
         return entry == null
-                ? new Stamp(false, 0, lastInvalidation, startedAt, abandoned)
-                : new Stamp(true, entry.generation(), lastInvalidation, startedAt, abandoned);
+                ? new Stamp(false, 0, lastInvalidation, startedAt, fetch, abandoned)
+                : new Stamp(true, entry.generation(), lastInvalidation, startedAt, fetch, abandoned);
+    }
+
+    /**
+     * What a fetch of many entities - a schedule, a list - remembers when it starts, before it knows
+     * their keys: whatever it writes gives way to any invalidation of a key since, as for a fetch
+     * that started on no entry. Generations only grow, so one given out by then was before it.
+     */
+    public Stamp stampForMany(BooleanSupplier abandoned) {
+        long startedAt = generations.get();
+        return new Stamp(false, 0, startedAt, startedAt, fetches.incrementAndGet(), abandoned);
+    }
+
+    /**
+     * Whether what a fetch from {@code started} got of {@code endpoint} is still the newest word on
+     * the key: the entry was not invalidated or dropped since, the loader did not abandon the fetch,
+     * and no fetch of the endpoint that started later has written the entry's shared fields. For
+     * what the same response writes elsewhere, such as a match's live state.
+     */
+    public boolean isNewest(K key, Endpoint endpoint, Stamp started) {
+        Entry current = entries.getIfPresent(key);
+        return !stale(key, current, started) && (current == null || current.sharedFrom(endpoint) <= started.fetch());
+    }
+
+    /**
+     * Whether a clear - or a forgotten invalidation, which could be any key's - came since {@code
+     * started}: for what a fetch of many records next to the cache, to drop it when one did.
+     */
+    public boolean clearedSince(Stamp started) {
+        return forgotten.get() > started.startedAt();
     }
 
     /**
@@ -163,7 +196,7 @@ public final class EntityCache<K> {
                 written[0] = true;
                 insideWrite.run();
                 Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
-                return base.authoritative(write, clock.instant(), ticker.read());
+                return base.authoritative(write, clock.instant(), ticker.read(), started.fetch());
             });
         } finally {
             clearing.readLock().unlock();
@@ -281,8 +314,14 @@ public final class EntityCache<K> {
      * @param generation its generation then
      * @param lastInvalidation the generation of the key's last invalidation then, 0 for none
      * @param startedAt the newest generation given out then: any invalidation after it is news
+     * @param fetch its place in the order the cache's fetches started in
      * @param abandoned whether the fetch's loader has given up on it
      */
     public record Stamp(
-            boolean present, long generation, long lastInvalidation, long startedAt, BooleanSupplier abandoned) {}
+            boolean present,
+            long generation,
+            long lastInvalidation,
+            long startedAt,
+            long fetch,
+            BooleanSupplier abandoned) {}
 }

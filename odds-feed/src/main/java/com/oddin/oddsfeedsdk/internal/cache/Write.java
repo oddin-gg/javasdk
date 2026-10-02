@@ -1,9 +1,11 @@
 package com.oddin.oddsfeedsdk.internal.cache;
 
 import com.oddin.oddsfeedsdk.internal.cache.Field.Slot;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -15,6 +17,7 @@ public final class Write {
     private final Endpoint endpoint;
     private final @Nullable Locale locale;
     private final Map<Slot, Object> values = new LinkedHashMap<>();
+    private final Set<Field<?>> unsaid = new HashSet<>();
 
     private Write(Endpoint endpoint, @Nullable Locale locale) {
         this.endpoint = endpoint;
@@ -32,6 +35,19 @@ public final class Write {
             values.put(field.slot(locale), value);
         }
         return this;
+    }
+
+    /**
+     * The response says nothing of the field, though its endpoint always sends it: a part of the
+     * response that was missing, so the field is kept rather than cleared.
+     */
+    public Write unsaid(Field<?> field) {
+        unsaid.add(field);
+        return this;
+    }
+
+    Set<Field<?>> unsaid() {
+        return unsaid;
     }
 
     Endpoint endpoint() {

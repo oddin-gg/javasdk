@@ -91,6 +91,62 @@ class EntityCacheTest {
     }
 
     @Test
+    void anOlderFetchOfAnotherLocaleWritesItsLocaleButLeavesTheNewerSharedFields() {
+        Stamp english = cache.stamp("c1");
+        Stamp german = cache.stamp("c1");
+        cache.writeAuthoritative(
+                "c1",
+                Write.from(PROFILE, DE)
+                        .put(NAME, "Mannschaft")
+                        .put(ABBREVIATION, "NEW")
+                        .put(PLAYERS, List.of("p9")),
+                german);
+        assertThat(cache.isNewest("c1", PROFILE, english))
+                .as("a later fetch wrote since")
+                .isFalse();
+        assertThat(cache.isNewest("c1", PROFILE, german)).isTrue();
+        cache.writeAuthoritative("c1", Write.from(PROFILE, EN).put(NAME, "Team").put(ABBREVIATION, "OLD"), english);
+        Entry entry = entry("c1");
+        assertThat(entry.get(NAME, EN)).as("its own locale").isEqualTo("Team");
+        assertThat(entry.get(ABBREVIATION, null)).as("the later fetch's").isEqualTo("NEW");
+        assertThat(entry.get(PLAYERS, null))
+                .as("always sent, and left out by the older fetch, but not its to clear")
+                .containsExactly("p9");
+        assertThat(cache.isFresh("c1", PROFILE, EN)).isTrue();
+    }
+
+    @Test
+    void responsesOfTwoEndpointsOfOneEntityDoNotHoldEachOtherBack() {
+        Stamp icons = cache.stamp("c1");
+        Stamp profile = cache.stamp("c1");
+        profile("c1", EN, "Team One", "CZ", "T1", List.of("p1"));
+        assertThat(cache.writeAuthoritative("c1", Write.from(ICONS, EN).put(ICON, "icon.png"), icons))
+                .isTrue();
+        assertThat(entry("c1").get(ICON, null))
+                .as("the icons' own shared field, though a later profile fetch wrote first")
+                .isEqualTo("icon.png");
+        assertThat(cache.isNewest("c1", ICONS, icons)).isTrue();
+        assertThat(cache.isNewest("c1", PROFILE, icons))
+                .as("the profile's was written by a later fetch")
+                .isFalse();
+        assertThat(profile.fetch()).isGreaterThan(icons.fetch());
+    }
+
+    @Test
+    void aFieldTheResponseSaysNothingOfIsKeptThoughItsEndpointAlwaysSendsIt() {
+        profile("c1", EN, "Team One", "CZ", "T1", List.of("p1"));
+        cache.writeAuthoritative(
+                "c1",
+                Write.from(PROFILE, EN)
+                        .put(NAME, "Team One")
+                        .put(COUNTRY, "CZ")
+                        .put(PLAYERS, List.of("p1"))
+                        .unsaid(ABBREVIATION),
+                stamp("c1"));
+        assertThat(entry("c1").get(ABBREVIATION, null)).isEqualTo("T1");
+    }
+
+    @Test
     void aSharedFieldIsClearedByOmissionOnlyWhenTheEndpointAlwaysSendsIt() {
         var alwaysSendsNothing = new Endpoint("profile, loosely", Set.of(NAME, ABBREVIATION), Set.of());
         cache.writeAuthoritative(
