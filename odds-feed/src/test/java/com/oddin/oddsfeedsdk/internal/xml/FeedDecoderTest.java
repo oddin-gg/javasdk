@@ -289,15 +289,22 @@ class FeedDecoderTest {
                     .containsOnly(com.ctc.wstx.util.SymbolTable.calcHash(names.getFirst(), seed));
         }
         assertThat(seeds).as("a seed for each table").hasSizeGreaterThan(1);
-        // names that differ in String hash but share its low bits do not share Woodstox's
+        // its finalizer is not linear: names of one length and first character whose String hashes
+        // differ but share their low bits - as many as a document may use, built for a table of
+        // 4096 - spread over its buckets instead of sharing one
+        var sharingLowBits = new ArrayList<String>();
+        for (int i = 0; sharingLowBits.size() < XmlReader.MAX_NAMES; i++) {
+            String name = "q" + (10_000_000 + i);
+            if ((name.hashCode() & 4095) == 0) {
+                sharingLowBits.add(name);
+            }
+        }
         int seed = new com.ctc.wstx.util.SymbolTable(true, 128).getHashSeed();
-        assertThat(java.util.stream.IntStream.range(0, 1_000)
-                        .mapToObj(i -> "n" + (i * 128))
-                        .filter(name -> (name.hashCode() & 127) == ("n0".hashCode() & 127))
-                        .map(name -> com.ctc.wstx.util.SymbolTable.calcHash(name, seed) & 127)
+        assertThat(sharingLowBits.stream()
+                        .map(name -> com.ctc.wstx.util.SymbolTable.calcHash(name, seed) & 4095)
                         .distinct()
                         .count())
-                .isGreaterThan(1);
+                .isGreaterThan(XmlReader.MAX_NAMES / 2);
     }
 
     @Test
