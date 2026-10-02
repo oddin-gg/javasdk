@@ -265,10 +265,11 @@ class RecoveryMachineTest {
         feed.sessionAlive(1, PRE);
         assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t);
 
-        feed.refuse(first);
-        feed.advance(Duration.ofSeconds(5));
+        // the rest never comes: it times out, and is asked for again
+        feed.runWithAlives(Duration.ofHours(6).plusSeconds(6));
         Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
         assertThat(again.requestId()).isNotEqualTo(first.requestId());
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
         assertThat(again.after()).isEqualTo(first.after()).isEqualTo(Instant.ofEpochMilli(from));
     }
 
@@ -1009,6 +1010,84 @@ class RecoveryMachineTest {
                 .filteredOn(change -> !change.down())
                 .extracting(ProducerStatusChange::cause)
                 .containsExactly(StatusCause.FIRST_RECOVERY_COMPLETED);
+    }
+
+    @Test
+    void theFirstSessionsSnapshotCompleteSaysTheApiTookARecoveryWhateverItAnswersLater() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.machine.start();
+        feed.alive(PRE);
+        feed.alive(LIVE);
+        Outbox.Call.Snapshot refusedLate = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot acceptedLate = feed.lastSnapshot(LIVE);
+        feed.machine.snapshotComplete(1, PRE, refusedLate.requestId());
+        feed.machine.snapshotComplete(1, LIVE, acceptedLate.requestId());
+        feed.refuse(refusedLate);
+        feed.accept(acceptedLate);
+        assertThat(feed.counters.failed())
+                .as("a refusal after the snapshot complete")
+                .isZero();
+        assertThat(feed.snapshots(PRE)).as("nothing asked for again").hasSize(1);
+        assertThat(requireNonNull(
+                                requireNonNull(feed.producers.getProducer(PRE)).getRecoveryInfo())
+                        .getSuccessful())
+                .isTrue();
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("waiting for session 2")
+                .isTrue();
+        feed.machine.snapshotComplete(2, PRE, refusedLate.requestId());
+        feed.machine.snapshotComplete(2, LIVE, acceptedLate.requestId());
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
+    void theFirstSessionsSnapshotCompleteOfAnEventRecoveryAnswersItsCallerAtOnce()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.machine.start();
+        CompletableFuture<@Nullable Long> refusedLate = feed.recoverEvent(LIVE);
+        Outbox.Call refusedCall = feed.calls.getLast();
+        CompletableFuture<@Nullable Long> acceptedLate = feed.recoverEvent(LIVE);
+        Outbox.Call acceptedCall = feed.calls.getLast();
+        feed.machine.snapshotComplete(1, LIVE, refusedCall.requestId());
+        feed.machine.snapshotComplete(1, LIVE, acceptedCall.requestId());
+        assertThat(done(refusedLate)).as("before the API's answer").isEqualTo(refusedCall.requestId());
+        assertThat(done(acceptedLate)).isEqualTo(acceptedCall.requestId());
+        assertThat(feed.events).as("session 2 has yet to see them").isEmpty();
+
+        feed.refuse(refusedCall);
+        feed.accept(acceptedCall);
+        assertThat(feed.counters.eventRefused()).isZero();
+        feed.machine.snapshotComplete(2, LIVE, refusedCall.requestId());
+        feed.machine.snapshotComplete(2, LIVE, acceptedCall.requestId());
+        assertThat(feed.events)
+                .containsExactly(
+                        "event recovery " + refusedCall.requestId() + " of " + MATCH + " completed",
+                        "event recovery " + acceptedCall.requestId() + " of " + MATCH + " completed");
+    }
+
+    @Test
+    void aProducerBroughtUpWithNothingMissingHasItsCapReArmed() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1);
+        feed.open(2, MessageInterest.PREMATCH_ONLY);
+        feed.alive(PRE);
+        for (int attempt = 0; attempt < 4; attempt++) {
+            feed.refuse(feed.lastSnapshot(PRE));
+            feed.runWithAlives(Duration.ofSeconds(20));
+        }
+        assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.RECOVERY_FAILED);
+        feed.close(2);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        int asked = feed.snapshots(PRE).size();
+        feed.unsubscribed(PRE);
+        assertThat(feed.snapshots(PRE))
+                .as("asked for at once, not after the cool-down")
+                .hasSize(asked + 1);
     }
 
     @Test

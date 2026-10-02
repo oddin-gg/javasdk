@@ -409,7 +409,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         public void request(Call call) {
             try {
                 workers.execute(() -> send(call));
-            } catch (RejectedExecutionException e) {
+            } catch (RuntimeException e) {
+                // turned away, or the workers broke: the request failed, and is asked for again
                 post(essential, new Fact.Answered(call.requestId(), e));
             }
         }
