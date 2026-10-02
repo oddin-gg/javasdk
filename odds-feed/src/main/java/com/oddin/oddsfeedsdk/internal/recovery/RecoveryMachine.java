@@ -282,12 +282,23 @@ final class RecoveryMachine {
             return;
         }
         session.underway = 0;
+        long now = now();
         if (replaced) {
-            queueLost(session, StatusCause.SAFETY_NET_RESET, now());
+            // only a reset made counts against the cap and the backoff
+            session.resets.addLast(now);
+            session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size());
+            counters.resets.incrementAndGet();
+            events.safetyNetReset(id, session.underwayProducer, session.underwayAge);
+            if (session.lagging) {
+                session.lagging = false;
+                events.lagging(id, false);
+            }
+            queueLost(session, StatusCause.SAFETY_NET_RESET, now);
         } else {
             // nothing was dropped, but the snapshot completes ignored meanwhile are gone
             LOG.warn("The safety net's reset of session {} was not made", id);
-            notSeen(session, now());
+            session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size() + 1);
+            notSeen(session, now);
         }
     }
 
@@ -420,6 +431,11 @@ final class RecoveryMachine {
         if (active != null && active.requestId == requestId) {
             if (active.awaited.contains(id)) {
                 active.seen.add(id);
+                PendingReset pending = session == null ? null : session.pending;
+                if (session != null && pending != null && pending.producers.contains(producerId)) {
+                    // the session has what the recovery sent: a reset now would drop it
+                    cancelReset(session, now());
+                }
                 if (active.seen.containsAll(active.awaited)) {
                     complete(track, active, now());
                 }
@@ -545,6 +561,10 @@ final class RecoveryMachine {
             if (now - recovery.issuedAt > settings.maxRecoveryTime().toMillis()) {
                 eventRecoveries.remove(recovery.requestId);
                 counters.eventExpired.incrementAndGet();
+                CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
+                if (reply != null) {
+                    outbox.reply(reply, null);
+                }
                 LOG.warn(
                         "Event recovery {} of {} got no snapshot complete within {}",
                         recovery.requestId,
@@ -687,7 +707,7 @@ final class RecoveryMachine {
             maybeRequest(track, now);
             return;
         }
-        markUp(track, first ? StatusCause.FIRST_RECOVERY_COMPLETED : StatusCause.RECOVERY_COMPLETED, now);
+        bringUp(track, first ? StatusCause.FIRST_RECOVERY_COMPLETED : StatusCause.RECOVERY_COMPLETED, now);
     }
 
     /**
@@ -717,6 +737,7 @@ final class RecoveryMachine {
         if (!hasGaps(track)) {
             // nothing is missing, so nothing is asked for again, and nothing failed in a row
             track.failures = 0;
+            upIfNothingMissing(track, now);
             return;
         }
         track.failures++;
@@ -962,27 +983,24 @@ final class RecoveryMachine {
     private void reset(SessionState session, PendingReset pending, long now) {
         session.pending = null;
         session.underway = pending.number;
-        session.resets.addLast(now);
-        session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size());
+        session.underwayProducer = pending.producerId;
+        session.underwayAge = pending.age;
         for (Lane lane : session.lanes.values()) {
             Gap gap = lane.gap;
             if (gap != null) {
                 gap.pendingReset = false;
+            } else {
+                // what the reset drops starts here, before any sample of the new channel moves it
+                lane.gap = openGap(null, lane.checkpoint, false);
             }
             lane.above = false;
         }
-        counters.resets.incrementAndGet();
         LOG.warn(
                 "The safety net resets session {}, {} ms behind producer {}",
                 session.info.id(),
                 pending.age,
                 pending.producerId);
         outbox.reset(session.info.id(), pending.number);
-        events.safetyNetReset(session.info.id(), pending.producerId, pending.age);
-        if (session.lagging) {
-            session.lagging = false;
-            events.lagging(session.info.id(), false);
-        }
         for (Long producerId : session.lanes.keySet()) {
             markDown(track(producerId), StatusCause.SAFETY_NET_RESET, now);
         }
@@ -1038,7 +1056,19 @@ final class RecoveryMachine {
                 && track.active == null
                 && track.cause != StatusCause.PROCESSING_DELAY
                 && !hasDownGaps(track)) {
-            markUp(track, StatusCause.RECOVERY_COMPLETED, now);
+            bringUp(track, StatusCause.RECOVERY_COMPLETED, now);
+        }
+    }
+
+    /**
+     * Nothing is missing any more: the producer is up, unless a session processes it late, which
+     * keeps it down for that until the session catches up.
+     */
+    private void bringUp(Track track, StatusCause cause, long now) {
+        if (track.delayed) {
+            markDown(track, StatusCause.PROCESSING_DELAY, now);
+        } else {
+            markUp(track, cause, now);
         }
     }
 
@@ -1259,6 +1289,10 @@ final class RecoveryMachine {
         PendingReset pending;
         /** The number of the reset the transport is making, 0 for none. */
         long underway;
+        /** The producer whose messages were too old, and how old, for the reset underway. */
+        long underwayProducer;
+
+        long underwayAge;
 
         SessionState(SessionInfo info) {
             this.info = info;
@@ -1349,6 +1383,8 @@ final class RecoveryMachine {
     private static final class PendingReset {
         /** The producers whose recoveries the API has not accepted yet. */
         final Set<Long> unaccepted;
+        /** The producers it asked for recoveries of. */
+        final Set<Long> producers;
         /** The producer whose messages were too old. */
         final long producerId;
 
@@ -1357,6 +1393,7 @@ final class RecoveryMachine {
 
         PendingReset(Set<Long> unaccepted, long producerId, long age, long number) {
             this.unaccepted = unaccepted;
+            this.producers = Set.copyOf(unaccepted);
             this.producerId = producerId;
             this.age = age;
             this.number = number;
