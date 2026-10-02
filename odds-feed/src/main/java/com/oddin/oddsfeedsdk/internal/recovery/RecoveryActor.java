@@ -29,15 +29,17 @@ import org.slf4j.LoggerFactory;
  * consumer thread never posts here at all: the dispatchers do.
  *
  * <p>Three queues. The essential facts - sessions opening and closing, the start, the connection,
- * snapshot completes, lost channels, the API's answers and finished resets - are never dropped,
- * since losing one would leave the state wrong for good, and they keep their order. That queue has
- * no capacity of its own: what fills it is bounded by what the feed does, its sessions, its
- * connections, its own requests and resets. The control facts - alives and event recovery requests
- * - are bounded, and one with no room is dropped and counted: the next alive says the same, and a
- * dropped request is answered as not accepted. The samples - the messages and alives a session
- * finished, many and each worth little - are bounded the same way. The actor takes the essential
- * facts first, then the control facts, then the samples, so a flood of samples holds up nothing
- * else. It looks at the time at least every {@link RecoverySettings#tick()}.
+ * the alives, snapshot completes, lost channels, the API's answers and finished resets - are never
+ * dropped, since losing one would leave the state wrong for good: an unsubscribed alive is the only
+ * word of a gap. They keep their order. That queue has no capacity of its own: what fills it is
+ * bounded by what the feed does and what the producers send of their own pace, its sessions, its
+ * connections, its own requests and resets, an alive per producer every few seconds. The event
+ * recovery requests are bounded, and one with no room is dropped, counted, and answered as not
+ * accepted. The samples - the messages and alives a session finished, many and each worth little -
+ * are bounded the same way. The actor takes the essential facts first, then the requests, then the
+ * samples, and the lesser queues yield as soon as an essential fact waits, so nothing posted after
+ * an essential fact is handled before it, and a flood of samples holds up nothing else. It looks at
+ * the time at least every {@link RecoverySettings#tick()}.
  *
  * <p>The requests go to REST workers, never run here, and their answers come back as facts. A
  * safety-net reset runs on a worker too, since replacing a channel talks to the broker, and always
@@ -163,7 +165,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
     @Override
     public void alive(long producerId, long generatedAt, long receivedAt, boolean subscribed) {
-        post(control, new Fact.Alive(producerId, generatedAt, receivedAt, subscribed));
+        post(essential, new Fact.Alive(producerId, generatedAt, receivedAt, subscribed));
     }
 
     @Override
@@ -260,9 +262,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             long nextTick = clock.millis();
             while (!closed) {
                 turnedAt = clock.millis();
-                boolean worked = drain(essential, Integer.MAX_VALUE);
-                worked |= drain(control, Integer.MAX_VALUE);
-                worked |= drain(samples, SAMPLES_PER_TURN);
+                boolean worked = drain(essential, Integer.MAX_VALUE, false);
+                worked |= drain(control, Integer.MAX_VALUE, true);
+                worked |= drain(samples, SAMPLES_PER_TURN, true);
                 long now = clock.millis();
                 if (now >= nextTick) {
                     handle(new Fact.Tick());
@@ -298,10 +300,16 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         machine.close();
     }
 
-    private boolean drain(Queue<Fact> queue, int most) {
+    /**
+     * Takes up to {@code most} facts of the queue. A lesser queue, one that {@code yields}, stops as
+     * soon as an essential fact waits, so nothing posted after an essential fact is handled before
+     * it: a sample from a new channel must not move a checkpoint before the loss of the old one is
+     * known.
+     */
+    private boolean drain(Queue<Fact> queue, int most, boolean yields) {
         int taken = 0;
         Fact fact;
-        while (taken < most && !closed && (fact = queue.poll()) != null) {
+        while (taken < most && !closed && !(yields && !essential.isEmpty()) && (fact = queue.poll()) != null) {
             handle(fact);
             taken++;
         }
@@ -341,7 +349,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     }
                 }
                 case Fact.Answered(var requestId, var failure) -> machine.answered(requestId, failure);
-                case Fact.ResetDone(var session, var number) -> machine.resetDone(session, number);
+                case Fact.ResetDone(var session, var number, var replaced) ->
+                    machine.resetDone(session, number, replaced);
                 case Fact.RecoverEvent(var producer, var event, var stateful, var reply) ->
                     machine.recoverEvent(producer, event, stateful, reply);
                 case Fact.Tick() -> machine.tick();
@@ -379,11 +388,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     } catch (RuntimeException e) {
                         LOG.warn("The safety net could not reset session {}", session, e);
                     } finally {
-                        post(essential, new Fact.ResetDone(session, number));
+                        post(essential, new Fact.ResetDone(session, number, true));
                     }
                 });
             } catch (RejectedExecutionException e) {
-                LOG.warn("The safety net could not reset session {}: the workers are closed", session);
+                LOG.warn("The safety net could not reset session {}: the workers turned it away", session);
+                post(essential, new Fact.ResetDone(session, number, false));
             }
         }
 
@@ -502,7 +512,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
         record Answered(long requestId, @Nullable Exception failure) implements Fact {}
 
-        record ResetDone(int session, long number) implements Fact {}
+        /** A reset done; {@code replaced} false when the workers would not take it. */
+        record ResetDone(int session, long number, boolean replaced) implements Fact {}
 
         record RecoverEvent(long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply)
                 implements Fact {}
