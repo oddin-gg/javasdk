@@ -95,7 +95,12 @@ class EntityCacheTest {
         Stamp english = cache.stamp("c1");
         Stamp german = cache.stamp("c1");
         cache.writeAuthoritative(
-                "c1", Write.from(PROFILE, DE).put(NAME, "Mannschaft").put(ABBREVIATION, "NEW"), german);
+                "c1",
+                Write.from(PROFILE, DE)
+                        .put(NAME, "Mannschaft")
+                        .put(ABBREVIATION, "NEW")
+                        .put(PLAYERS, List.of("p9")),
+                german);
         assertThat(cache.isNewest("c1", english))
                 .as("a later fetch wrote since")
                 .isFalse();
@@ -105,8 +110,8 @@ class EntityCacheTest {
         assertThat(entry.get(NAME, EN)).as("its own locale").isEqualTo("Team");
         assertThat(entry.get(ABBREVIATION, null)).as("the later fetch's").isEqualTo("NEW");
         assertThat(entry.get(PLAYERS, null))
-                .as("always sent, but not this older fetch's to clear")
-                .isNull();
+                .as("always sent, and left out by the older fetch, but not its to clear")
+                .containsExactly("p9");
         assertThat(cache.isFresh("c1", PROFILE, EN)).isTrue();
     }
 
