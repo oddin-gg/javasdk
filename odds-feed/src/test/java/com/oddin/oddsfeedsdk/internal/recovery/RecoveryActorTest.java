@@ -348,12 +348,22 @@ class RecoveryActorTest {
     }
 
     @Test
-    void aResetThatFailsWithAnErrorIsStillReportedDone() throws InterruptedException {
+    void aResetThatFailsWithAnErrorBeforeReplacingTheChannelIsReportedNotMade() throws InterruptedException {
+        resetThatFails(new AssertionError("a broken channel"));
+    }
+
+    @Test
+    void aResetThatFailsWithAnExceptionBeforeReplacingTheChannelIsReportedNotMade() throws InterruptedException {
+        resetThatFails(new IllegalStateException("a broken channel"));
+    }
+
+    /** The transport's reset fails before it replaced the channel: nothing was dropped. */
+    private void resetThatFails(Throwable failure) throws InterruptedException {
         var held = new Held();
         var actor = new RecoveryActor(
                 producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
         this.actor = actor;
-        transport.failReset = true;
+        transport.failWith = failure;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
         long now = System.currentTimeMillis();
@@ -366,20 +376,64 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         awaitUp(LIVE);
-        long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, false);
-        session.processed(PRE, later - 300_000, later + 2, false);
+        stale(session);
         held.runNext();
         held.runNext();
         api.next();
         api.next();
         Runnable reset = held.next();
-        assertThatThrownBy(reset::run).isInstanceOf(AssertionError.class);
+        if (failure instanceof Error) {
+            assertThatThrownBy(reset::run).isSameAs(failure);
+        } else {
+            reset.run();
+        }
         held.runNext();
         held.runNext();
         assertThat(List.of(api.next(), api.next()))
-                .as("asked for again: the reset was reported done all the same")
+                .as("what the reset's wait ignored, asked for again")
                 .hasSize(2);
+        assertThat(actor.counters().resets()).as("resets made").isZero();
+        assertThat(actor.counters().resetDropped()).isZero();
+        assertThat(events).as("events").doesNotContain("reset");
+    }
+
+    @Test
+    void aResetWaitingForItsChannelEndsWhenTheActorCloses() throws InterruptedException {
+        var held = new Held();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        held.runNext();
+        held.runNext();
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+        transport.reopenLater = true;
+        stale(session);
+        held.runNext();
+        held.runNext();
+        api.next();
+        api.next();
+        Thread worker = Thread.ofVirtual().start(held.next());
+        assertThat(transport.resets.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(worker.join(Duration.ofMillis(300)))
+                .as("waiting for the channel")
+                .isFalse();
+
+        actor.close();
+        assertThat(worker.join(Duration.ofSeconds(WAIT_SECONDS)))
+                .as("the reset's worker, once the actor is closed")
+                .isTrue();
+        assertThat(held.tasks.poll(300, TimeUnit.MILLISECONDS))
+                .as("work after the close")
+                .isNull();
     }
 
     @Test
@@ -1007,6 +1061,11 @@ class RecoveryActorTest {
             public void eventRecoveryCompleted(long producerId, URN eventId, long requestId) {
                 events.add("event recovery " + requestId + " completed");
             }
+
+            @Override
+            public void safetyNetReset(int session, long producerId, long ageMillis) {
+                events.add("reset");
+            }
         };
     }
 
@@ -1155,7 +1214,9 @@ class RecoveryActorTest {
         final CountDownLatch resets = new CountDownLatch(1);
         final AtomicInteger epoch = new AtomicInteger();
         volatile @Nullable String resetThread;
-        volatile boolean failReset;
+        /** What the next reset fails with, before it replaces anything; null for nothing. */
+        volatile @Nullable Throwable failWith;
+
         volatile boolean open = true;
         /** Whether a reset leaves the channel closed, for the transport to open later. */
         volatile boolean reopenLater;
@@ -1165,8 +1226,12 @@ class RecoveryActorTest {
 
         @Override
         public void reset() {
-            if (failReset) {
-                throw new AssertionError("a broken channel");
+            Throwable failure = failWith;
+            if (failure instanceof Error error) {
+                throw error;
+            }
+            if (failure instanceof RuntimeException exception) {
+                throw exception;
             }
             resetThread = Thread.currentThread().getName();
             if (reopenLater) {
