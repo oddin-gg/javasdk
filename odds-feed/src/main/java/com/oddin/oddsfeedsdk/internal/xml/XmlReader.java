@@ -44,12 +44,15 @@ final class XmlReader {
      * The most distinct names in one document - every name the parser keeps: element and attribute
      * names, their prefixes and namespaces, and the namespaces declared; the schemas have about a
      * hundred. Woodstox keeps names in a table that searches colliding ones one by one, so a document
-     * of many names built to share a hash would cost it time in the square of their number, where
-     * the JDK's parser randomises its hash.
+     * of many names built to collide would cost it time in the square of their number.
      */
     static final int MAX_NAMES = 512;
 
-    /** The most attributes and namespace declarations on one element; the schemas' widest has 35. */
+    /**
+     * The most attributes and namespace declarations on one element, together; the schemas' widest
+     * has 35. Woodstox holds the two in separate arrays and checks their sum only as one grows, so
+     * it bounds a start tag's memory but not this sum: the name limit counts it.
+     */
     static final int MAX_ATTRIBUTES = 64;
 
     /**
@@ -62,12 +65,13 @@ final class XmlReader {
     static final int MAX_NAME_LENGTH = 128;
 
     /**
-     * The most distinct names one of Woodstox's chains may hold. Its table starts at 128 slots and
-     * chains what overflows by {@code (hash & 127) >> 1}; a larger table only splits those chains,
-     * so this bounds every chain at every size. Names built to collide crowd one; a document's own
-     * spread over all 64.
+     * The most distinct names one {@link String#hashCode} may have: past a few, they are built to
+     * collide. Woodstox seeds its hash for each factory and mixes it, so names cannot be aimed at
+     * one of its chains unless their hashes are equal whatever the seed - and names of one length
+     * and first character with equal {@code String} hashes are: the seed changes only the first
+     * character's share. Any other names spread over the chains as the seed falls.
      */
-    static final int MAX_NAMES_PER_CHAIN = 32;
+    static final int MAX_NAMES_PER_HASH = 8;
 
     private final JAXBContext context;
     private final String noun;
@@ -99,7 +103,7 @@ final class XmlReader {
         inputs.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
         // a million bytes of opening tags must not become a million levels to track
         inputs.setProperty(WstxInputProperties.P_MAX_ELEMENT_DEPTH, MAX_DEPTH);
-        // Woodstox reads all of a start tag before the name limit sees it: this bounds one tag's names
+        // Woodstox reads all of a start tag before the name limit sees it: this bounds what one tag holds
         inputs.setProperty(WstxInputProperties.P_MAX_ATTRIBUTES_PER_ELEMENT, MAX_ATTRIBUTES);
         inputs.setProperty(WstxInputProperties.P_MAX_ATTRIBUTE_SIZE, MAX_ATTRIBUTE_LENGTH);
         // text read in full as the parser reaches it: lazily, an error in it would surface later, from
@@ -174,12 +178,13 @@ final class XmlReader {
     /**
      * Refuses a document once it has used more than {@link #MAX_NAMES} distinct names - every name
      * the parser keeps: element and attribute names, their prefixes and namespaces, and the
-     * namespaces declared - and refuses any processing instruction, which neither the feed nor the
+     * namespaces declared - or an element with more than {@link #MAX_ATTRIBUTES} attributes and
+     * namespace declarations, and refuses any processing instruction, which neither the feed nor the
      * API sends.
      */
     static final class NameLimit extends StreamReaderDelegate {
         private final Set<String> names = new HashSet<>();
-        private final Map<Integer, Integer> namesPerChain = new HashMap<>();
+        private final Map<Integer, Integer> namesPerHash = new HashMap<>();
 
         NameLimit(XMLStreamReader reader) {
             super(reader);
@@ -189,6 +194,11 @@ final class XmlReader {
         public int next() throws XMLStreamException {
             int event = super.next();
             if (event == XMLStreamConstants.START_ELEMENT) {
+                if (getAttributeCount() + getNamespaceCount() > MAX_ATTRIBUTES) {
+                    throw new XMLStreamException(
+                            "more than " + MAX_ATTRIBUTES + " attributes and namespace declarations on one element",
+                            getLocation());
+                }
                 name(getLocalName());
                 name(getPrefix());
                 namespace(getNamespaceURI());
@@ -264,9 +274,9 @@ final class XmlReader {
             if (names.size() > MAX_NAMES) {
                 throw new XMLStreamException("more than " + MAX_NAMES + " distinct names", getLocation());
             }
-            if (namesPerChain.merge((name.hashCode() & 127) >> 1, 1, Integer::sum) > MAX_NAMES_PER_CHAIN) {
+            if (namesPerHash.merge(name.hashCode(), 1, Integer::sum) > MAX_NAMES_PER_HASH) {
                 throw new XMLStreamException(
-                        "more than " + MAX_NAMES_PER_CHAIN + " distinct names in one hash chain", getLocation());
+                        "more than " + MAX_NAMES_PER_HASH + " distinct names with one hash", getLocation());
             }
         }
     }

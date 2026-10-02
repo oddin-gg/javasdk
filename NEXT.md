@@ -525,11 +525,11 @@ and REST workers post facts to it; it decides and posts work out.
   relocated and without its service registration, so it never becomes the application's
   StAX parser, which would ignore the JDK's XML hardening the application may rely on.
   DTDs off, external entities off, text parsed as it is reached, not lazily. Woodstox
-  searches colliding names one by one where the JDK's parser randomises its hash, so a
-  document may use at most 512 distinct names - elements, attributes, prefixes and
-  namespaces - at most 32 of them in one of Woodstox's hash chains; no element,
+  searches colliding names one by one, and its hash seed does not part names built to
+  share a `String` hash, so a document may use at most 512 distinct names - elements,
+  attributes, prefixes and namespaces - at most 8 of them with one hash; no element,
   attribute or prefix name longer than 128 characters; an element at most 64
-  attributes and namespace declarations; an attribute value, a declared namespace
+  attributes and namespace declarations together; an attribute value, a declared namespace
   included, at most 16 384 characters; and each document's names stay its own. Processing instructions
   are refused. Body
   size is bounded before decoding by the maximum message size from the delivery
