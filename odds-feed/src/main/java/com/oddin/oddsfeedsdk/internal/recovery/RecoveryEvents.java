@@ -19,7 +19,8 @@ public interface RecoveryEvents {
 
     /**
      * The safety net replaced a session's channel: what the session had not processed is dropped,
-     * and the recovery asked for before covers it.
+     * and the recoveries of the producers it receives are asked for again, since part of what the
+     * ones asked for before the reset sent may have gone with the old queue.
      *
      * @param ageMillis how old the session's live messages from the producer were
      */

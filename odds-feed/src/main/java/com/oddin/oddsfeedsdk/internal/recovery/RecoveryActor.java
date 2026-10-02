@@ -75,6 +75,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private volatile boolean closed;
     /** When the actor last began a turn, epoch millis; for the watchdog. */
     private volatile long turnedAt;
+    /** A test's hook, run before each take from the samples, after the look at the essential facts. */
+    volatile Runnable beforeSamplePoll = () -> {};
 
     /**
      * @param workers where the requests and the resets run: REST workers, virtual threads
@@ -262,9 +264,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             long nextTick = clock.millis();
             while (!closed) {
                 turnedAt = clock.millis();
-                boolean worked = drain(essential, Integer.MAX_VALUE, false);
-                worked |= drain(control, Integer.MAX_VALUE, true);
-                worked |= drain(samples, SAMPLES_PER_TURN, true);
+                boolean worked = drainEssential();
+                worked |= drainLesser(control, Integer.MAX_VALUE, () -> {});
+                worked |= drainLesser(samples, SAMPLES_PER_TURN, beforeSamplePoll);
                 long now = clock.millis();
                 if (now >= nextTick) {
                     handle(new Fact.Tick());
@@ -301,16 +303,42 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     }
 
     /**
-     * Takes up to {@code most} facts of the queue. A lesser queue, one that {@code yields}, stops as
-     * soon as an essential fact waits, so nothing posted after an essential fact is handled before
-     * it: a sample from a new channel must not move a checkpoint before the loss of the old one is
-     * known.
+     * Takes the essential facts there are.
      */
-    private boolean drain(Queue<Fact> queue, int most, boolean yields) {
-        int taken = 0;
+    private boolean drainEssential() {
+        boolean taken = false;
         Fact fact;
-        while (taken < most && !closed && !(yields && !essential.isEmpty()) && (fact = queue.poll()) != null) {
+        while (!closed && (fact = essential.poll()) != null) {
             handle(fact);
+            taken = true;
+        }
+        return taken;
+    }
+
+    /**
+     * Takes up to {@code most} facts of a lesser queue, yielding to the essential facts: nothing
+     * posted after an essential fact is handled before it, so a sample from a new channel cannot move
+     * a checkpoint before the loss of the old one is known. The essential queue is looked at after a
+     * fact is taken, not only before: whoever posted the essential fact and then this one put the
+     * essential fact in first, so once this one is taken, that one is there to see.
+     *
+     * @param beforePoll a test's hook, run between the look at the essential queue and the take
+     */
+    private boolean drainLesser(Queue<Fact> queue, int most, Runnable beforePoll) {
+        int taken = 0;
+        while (taken < most && !closed && essential.isEmpty()) {
+            beforePoll.run();
+            Fact fact = queue.poll();
+            if (fact == null) {
+                break;
+            }
+            drainEssential();
+            if (!closed) {
+                handle(fact);
+            } else if (fact instanceof Fact.RecoverEvent recover) {
+                // taken from the queue the close drains: answered here instead
+                Replies.complete(recover.reply(), null);
+            }
             taken++;
         }
         return taken > 0;

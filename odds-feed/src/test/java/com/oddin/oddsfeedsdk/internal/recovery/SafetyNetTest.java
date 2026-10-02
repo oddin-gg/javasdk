@@ -53,8 +53,8 @@ class SafetyNetTest {
         assertThat(feed.resets).as("with one of two accepted").isEmpty();
         feed.accept(live);
         assertThat(feed.resets).containsExactly(1);
-        assertThat(feed.events).containsExactly("session 1 reset for producer 1");
-        assertThat(feed.counters.resets()).isEqualTo(1);
+        assertThat(feed.events).as("before the transport has made it").isEmpty();
+        assertThat(feed.counters.resets()).isZero();
         assertThat(feed.lastStatus(PRE))
                 .extracting(ProducerStatusChange::cause)
                 .isEqualTo(StatusCause.SAFETY_NET_RESET);
@@ -65,6 +65,8 @@ class SafetyNetTest {
 
         // what the first two sent before the reset may have gone with the old queue
         feed.resetDone();
+        assertThat(feed.events).containsExactly("session 1 reset for producer 1");
+        assertThat(feed.counters.resets()).isEqualTo(1);
         Outbox.Call.Snapshot preAgain = feed.lastSnapshot(PRE);
         Outbox.Call.Snapshot liveAgain = feed.lastSnapshot(LIVE);
         assertThat(feed.calls).as("asked for again once the reset is done").hasSize(before + 4);
@@ -72,7 +74,10 @@ class SafetyNetTest {
         assertThat(liveAgain.after()).isEqualTo(live.after());
         feed.complete(preAgain, 1);
         feed.complete(liveAgain, 1);
-        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.lastStatus(PRE))
+                .as("recovered, but its session still processes it late")
+                .extracting(ProducerStatusChange::cause)
+                .isEqualTo(StatusCause.PROCESSING_DELAY);
         assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
     }
 
@@ -234,8 +239,84 @@ class SafetyNetTest {
                 .isEqualTo(pre.after());
         feed.complete(feed.lastSnapshot(PRE), 1);
         feed.complete(feed.lastSnapshot(LIVE), 1);
-        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.lastStatus(PRE))
+                .as("recovered, but its session still processes it late")
+                .extracting(ProducerStatusChange::cause)
+                .isEqualTo(StatusCause.PROCESSING_DELAY);
         assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
+    void aSessionThatSeesTheSnapshotCompleteOfARecoveryItsResetAskedForIsNotReset() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1, 2);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        feed.accept(pre);
+        // the lagging session has what the recovery sent; the other session has yet to see it
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).as("a reset now would drop what it just got").isEmpty();
+    }
+
+    @Test
+    void aResetTheTransportCouldNotTakeCountsAgainstNeitherTheCapNorTheBackoff() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        long start = feed.now();
+        for (int round = 1; round <= 4; round++) {
+            int before = feed.calls.size();
+            assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before))
+                    .as("seconds to the net's request in round " + round)
+                    .isEqualTo(61);
+            feed.accept(feed.lastSnapshot(PRE));
+            feed.accept(feed.lastSnapshot(LIVE));
+            feed.resetRefused();
+            feed.complete(feed.lastSnapshot(PRE), 1);
+            feed.complete(feed.lastSnapshot(LIVE), 1);
+        }
+        assertThat(feed.machine.lagging(1))
+                .as("four resets not made spend nothing")
+                .isFalse();
+        assertThat(feed.counters.resets()).isZero();
+        assertThat(feed.now() - start).isEqualTo(Duration.ofSeconds(4 * 61).toMillis());
+    }
+
+    @Test
+    void whatTheResetDropsOfAProducerItCouldNotAskForStartsWhereItWasWhenTheResetWasMade() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.LIVE_ONLY);
+        feed.machine.start();
+        feed.bothUp(1, 2);
+        // the live producer's cap spent, for a gap of session 2 that starts far ahead
+        feed.machine.processed(2, LIVE, feed.now() + Duration.ofHours(1).toMillis(), feed.now(), false);
+        feed.machine.channelLost(2);
+        for (int attempt = 0; attempt < 4; attempt++) {
+            feed.refuse(feed.lastSnapshot(LIVE));
+            feed.runWithAlives(Duration.ofSeconds(20));
+        }
+        assertThat(feed.lastStatus(LIVE))
+                .extracting(ProducerStatusChange::cause)
+                .isEqualTo(StatusCause.RECOVERY_FAILED);
+
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        assertThat(feed.calls).as("the prematch producer only").hasSize(before + 1);
+        long atReset = feed.machine.checkpoint(1, LIVE);
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.resets).containsExactly(1);
+        // the new channel delivers before the transport reports the reset done
+        feed.machine.sessionAlive(1, LIVE, feed.now() + Duration.ofHours(2).toMillis(), feed.now(), true);
+        feed.resetDone();
+
+        feed.runWithAlives(Duration.ofMinutes(10));
+        assertThat(feed.lastSnapshot(LIVE).after())
+                .as("re-armed after the cool-down, from where session 1 was when the reset was made")
+                .isEqualTo(Instant.ofEpochMilli(atReset));
     }
 
     @Test
@@ -279,7 +360,10 @@ class SafetyNetTest {
         assertThat(feed.calls).as("asked for once it is done").hasSize(before + 4);
         feed.complete(feed.lastSnapshot(PRE), 1);
         feed.complete(feed.lastSnapshot(LIVE), 1);
-        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.lastStatus(PRE))
+                .as("recovered, but its session still processes it late")
+                .extracting(ProducerStatusChange::cause)
+                .isEqualTo(StatusCause.PROCESSING_DELAY);
         assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
     }
 

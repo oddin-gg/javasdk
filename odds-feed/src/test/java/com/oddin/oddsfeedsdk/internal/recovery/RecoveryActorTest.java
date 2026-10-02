@@ -141,8 +141,11 @@ class RecoveryActorTest {
                 .as("reset")
                 .isTrue();
         assertThat(transport.resetThread).isNotEqualTo("oddsfeed-recovery");
-        assertThat(actor.counters().resets()).isEqualTo(1);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.counters().resets() != 1 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.counters().resets()).as("counted once reported done").isEqualTo(1);
         while (actor.counters().resetDropped() != 3 && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
@@ -468,6 +471,78 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aSampleTakenAfterAnEssentialFactWasPostedIsHandledAfterIt() throws InterruptedException {
+        var gate = new Gate();
+        var actor = new RecoveryActor(producers, settings(), api, events(), gate);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+
+        // between the actor's look at the essential queue and its take from the samples: the
+        // channel is lost, and the new one delivers at once
+        long newer = System.currentTimeMillis() + 60_000;
+        var once = new AtomicBoolean();
+        actor.beforeSamplePoll = () -> {
+            if (once.compareAndSet(false, true)) {
+                session.channelLost();
+                session.processed(PRE, newer, newer, false);
+            }
+        };
+        long later = System.currentTimeMillis();
+        actor.alive(PRE, later, later, true);
+
+        Request recovery = api.next();
+        while (!(recovery.path().equals("recovery") && recovery.producer().equals("pre"))) {
+            recovery = api.next();
+        }
+        assertThat(once).as("the hook ran").isTrue();
+        assertThat(requireNonNull(recovery.after()).toEpochMilli())
+                .as("from before the new channel's message")
+                .isLessThan(newer);
+    }
+
+    @Test
+    void aRequestTheWorkersTurnAwayCountsAsFailedAndIsAskedForAgain() throws InterruptedException {
+        var gate = new Gate();
+        gate.rejectNext = true;
+        var actor = new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), gate);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        assertThat(api.next().producer())
+                .as("asked for again after the backoff")
+                .isEqualTo("pre");
+        assertThat(actor.counters().failed()).isEqualTo(1);
+        assertThat(actor.counters().reissued()).isEqualTo(1);
+    }
+
+    @Test
+    void aRequestThatFailsWithAnErrorCountsAsFailedAndIsAskedForAgain() throws InterruptedException {
+        api.errorNext.set(true);
+        var actor =
+                new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        Request first = api.next();
+        Request again = api.next();
+        assertThat(again.requestId()).as("asked for again after the backoff").isNotEqualTo(first.requestId());
+        assertThat(actor.counters().failed()).isEqualTo(1);
+    }
+
+    @Test
     void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException, ExecutionException, TimeoutException {
         // not started: nothing takes from the queues
         var actor = new RecoveryActor(
@@ -704,6 +779,8 @@ class RecoveryActorTest {
     private static final class Api implements RecoveryRequests {
         final BlockingQueue<Request> requests = new LinkedBlockingQueue<>();
         final AtomicBoolean refuse = new AtomicBoolean();
+        /** Whether the next request fails with an error rather than the API's refusal. */
+        final AtomicBoolean errorNext = new AtomicBoolean();
         /** What a request waits for before it answers; null for nothing. */
         final AtomicReference<@Nullable CountDownLatch> hold = new AtomicReference<>();
 
@@ -743,6 +820,9 @@ class RecoveryActorTest {
 
         private void record(Request request) {
             requests.add(request);
+            if (errorNext.compareAndSet(true, false)) {
+                throw new AssertionError("a broken client");
+            }
             CountDownLatch held = hold.get();
             if (held != null) {
                 try {
