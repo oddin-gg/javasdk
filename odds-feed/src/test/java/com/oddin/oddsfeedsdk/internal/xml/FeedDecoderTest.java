@@ -465,9 +465,29 @@ class FeedDecoderTest {
                 .as("the reader's table takes its factory's seed")
                 .isEqualTo(seed);
         assertThat(spread.calcAvgSeek()).isLessThan(2.0);
+        // the reader places each name by its seeded hash: under the reader's seed most sit in the
+        // slot that hash points at, under another seed hardly any would
+        assertThat(inTheirSlot(spread, sharingLowBits, seed))
+                .as("placed by the seeded hash")
+                .isGreaterThan(sharingLowBits.size() / 2);
+        assertThat(inTheirSlot(spread, sharingLowBits, seed + 1))
+                .as("another seed would place them elsewhere")
+                .isLessThan(sharingLowBits.size() / 10);
         assertThat(readersTable(inputs, oneHash).calcAvgSeek())
                 .as("names with one hash do queue up, so the measure would show a shared chain")
                 .isGreaterThan(10.0);
+    }
+
+    /** How many of the names sit in the slot their hash under this seed points at. */
+    private static long inTheirSlot(com.ctc.wstx.util.SymbolTable table, List<String> names, int seed)
+            throws Exception {
+        var field = com.ctc.wstx.util.SymbolTable.class.getDeclaredField("mSymbols");
+        field.setAccessible(true);
+        var slots = (String[]) field.get(table);
+        return names.stream()
+                .filter(name ->
+                        name.equals(slots[com.ctc.wstx.util.SymbolTable.calcHash(name, seed) & (slots.length - 1)]))
+                .count();
     }
 
     /** The seed differs from one JVM to the next: the decoder's factory, read in two fresh ones. */
@@ -482,9 +502,17 @@ class FeedDecoderTest {
                         launcher, "-cp", System.getProperty("java.class.path"), SeedOfThisJvm.class.getName())
                 .redirectErrorStream(true)
                 .start();
-        String out =
-                new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip();
-        assertThat(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        String out;
+        try {
+            // the one line it prints fits the pipe: wait first, so a child that hangs fails the test
+            assertThat(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("the child JVM ended")
+                    .isTrue();
+            out = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip();
+        } finally {
+            // gone already, or left behind by a failure above
+            process.destroyForcibly();
+        }
         assertThat(process.exitValue()).as(out).isZero();
         assertThat(out).as("a seed").matches("-?\\d+");
         return out;
