@@ -69,7 +69,10 @@ final class XmlReader {
      * collide. Woodstox seeds its hash for each factory and mixes it, so names cannot be aimed at
      * one of its chains unless their hashes are equal whatever the seed - and names of one length
      * and first character with equal {@code String} hashes are: the seed changes only the first
-     * character's share. Any other names spread over the chains as the seed falls.
+     * character's share. Woodstox then mixes the hash with murmur's finalizer, which is not
+     * linear, so names whose hashes merely share their low bits spread over the chains too. And
+     * whatever the names, {@link #MAX_NAMES} bounds a chain: 512 names with one hash make a 1 MiB
+     * body take the parser about 40 ms, against 3 ms, where thousands took it seconds.
      */
     static final int MAX_NAMES_PER_HASH = 8;
 
