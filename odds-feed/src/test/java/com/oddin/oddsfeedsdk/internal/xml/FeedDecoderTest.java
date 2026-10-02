@@ -27,6 +27,8 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.BeforeAll;
@@ -121,6 +123,493 @@ class FeedDecoderTest {
         // the same content, shallow, is only skipped
         assertThat(lenient.decode(bytes("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\"><x/></alive>")))
                 .isInstanceOf(OFAlive.class);
+    }
+
+    private static final String ROOT = "<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">";
+
+    @Test
+    void manyNamesBuiltToShareAHashAreRefusedQuickly() {
+        // every concatenation of "Aa" and "BB" has the same String hash: 2^13 such names, as siblings
+        var names = new ArrayList<String>();
+        colliding("", 13, names);
+        var body = new StringBuilder("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">");
+        names.forEach(name -> body.append('<').append(name).append("/>"));
+        body.append("</alive>");
+        long started = System.nanoTime();
+        assertThatThrownBy(() -> lenient.decode(bytes(body.toString())))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("distinct names");
+        assertThat(Duration.ofNanos(System.nanoTime() - started))
+                .as("refused before the colliding names add up")
+                .isLessThan(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void collidingAttributeNamesPrefixesNamespacesAndInstructionsAreRefusedToo() {
+        var names = new ArrayList<String>();
+        colliding("", 13, names);
+        var attributes = new StringBuilder(ROOT);
+        for (int element = 0; element < 10; element++) {
+            attributes.append("<x");
+            for (int i = 0; i < 60; i++) {
+                attributes.append(' ').append(names.get(element * 60 + i)).append("=\"1\"");
+            }
+            attributes.append("/>");
+        }
+        var prefixes = new StringBuilder(ROOT);
+        var uris = new StringBuilder(ROOT);
+        var declaredUris = new StringBuilder(ROOT);
+        for (String name : names) {
+            prefixes.append("<x xmlns:").append(name).append("=\"u\"/>");
+            uris.append("<x xmlns=\"").append(name).append("\"/>");
+            // declared, but not the element's own: only the declaration names it
+            declaredUris.append("<x xmlns:p=\"").append(name).append("\"/>");
+        }
+        for (String hostile : List.of(
+                attributes.append("</alive>").toString(),
+                prefixes.append("</alive>").toString(),
+                uris.append("</alive>").toString(),
+                declaredUris.append("</alive>").toString())) {
+            long started = System.nanoTime();
+            assertThatThrownBy(() -> lenient.decode(bytes(hostile))).isInstanceOf(DecodeException.class);
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .as("refused before the colliding names add up")
+                    .isLessThan(Duration.ofSeconds(1));
+        }
+        // a single start tag is read whole before any limit on names sees it: 2^15 colliding declarations
+        var many = new ArrayList<String>();
+        colliding("", 15, many);
+        var oneTag = new StringBuilder("<producers response_code=\"OK\"");
+        many.forEach(name -> oneTag.append(" xmlns:").append(name).append("=\"u\""));
+        String tag = oneTag.append("/>").toString();
+        var rest = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES);
+        long started = System.nanoTime();
+        assertThatThrownBy(() -> rest.decode(bytes(tag))).isInstanceOf(DecodeException.class);
+        assertThat(Duration.ofNanos(System.nanoTime() - started))
+                .as("stopped by the attribute limit as the tag is read")
+                .isLessThan(Duration.ofSeconds(1));
+
+        assertThatThrownBy(() -> lenient.decode(bytes(ALIVE + "<?" + names.getFirst() + " x?>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("processing instruction");
+    }
+
+    @Test
+    void anElementMayCarrySixtyFourAttributesAndNoMore() throws DecodeException {
+        assertThat(lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES + 1) + "</alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTES));
+    }
+
+    @Test
+    void movingByTagOrReadingTextGoesThroughTheLimitToo() throws Exception {
+        var names = new ArrayList<String>();
+        colliding("", 10, names);
+        var body = new StringBuilder("<r>");
+        names.forEach(name -> body.append('<').append(name).append("/>"));
+        String hostile = body.append("</r>").toString();
+        var inputs = javax.xml.stream.XMLInputFactory.newDefaultFactory();
+        var byTag = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader(hostile)));
+        assertThatThrownBy(() -> {
+                    while (byTag.hasNext()) {
+                        byTag.nextTag();
+                    }
+                })
+                .isInstanceOf(javax.xml.stream.XMLStreamException.class)
+                .hasMessageContaining("distinct names");
+        var byText =
+                new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>a<?x y?>b</r>")));
+        byText.nextTag();
+        assertThatThrownBy(byText::getElementText).hasMessageContaining("processing instruction");
+    }
+
+    @Test
+    void longNamesLongValuesAndNamesSharingAHashAreRefused() throws DecodeException {
+        String longName = "n".repeat(XmlReader.MAX_NAME_LENGTH + 1);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + "<" + longName + "/></alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("longer than");
+        String longUri = "u".repeat(XmlReader.MAX_ATTRIBUTE_LENGTH + 1);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + "<x xmlns:p=\"" + longUri + "\"/></alive>")))
+                .isInstanceOf(DecodeException.class);
+        // a long namespace within the limit is fine: only names are held to their length
+        String uri = "urn:" + "u".repeat(200);
+        assertThat(lenient.decode(bytes(ROOT + "<x xmlns:p=\"" + uri + "\"/></alive>")))
+                .isInstanceOf(OFAlive.class);
+
+        // repeated, a few colliding names never pass the count of distinct names, but share one hash
+        var names = new ArrayList<String>();
+        colliding("", 6, names);
+        var repeated = new StringBuilder(ROOT);
+        for (int i = 0; i < 100; i++) {
+            for (String name : names) {
+                repeated.append('<').append(name).append("/>");
+            }
+        }
+        assertThatThrownBy(
+                        () -> lenient.decode(bytes(repeated.append("</alive>").toString())))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("with one hash");
+    }
+
+    @Test
+    void aDocumentMayUseExactlyTheMostNamesWithOneHash() throws DecodeException {
+        var names = new ArrayList<String>();
+        colliding("", 4, names);
+        var fits = new StringBuilder(ROOT);
+        names.subList(0, XmlReader.MAX_NAMES_PER_HASH)
+                .forEach(name -> fits.append('<').append(name).append("/>"));
+        assertThat(lenient.decode(bytes(fits.append("</alive>").toString()))).isInstanceOf(OFAlive.class);
+        var over = new StringBuilder(ROOT);
+        names.subList(0, XmlReader.MAX_NAMES_PER_HASH + 1)
+                .forEach(name -> over.append('<').append(name).append("/>"));
+        assertThatThrownBy(() -> lenient.decode(bytes(over.append("</alive>").toString())))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("more than " + XmlReader.MAX_NAMES_PER_HASH + " distinct names with one hash");
+    }
+
+    /**
+     * What the cap per hash rests on, pinned against Woodstox itself: it seeds its hash, so only
+     * names whose hashes are equal whatever the seed can be made to share a chain, and names of one
+     * length and first character with equal {@code String} hashes are. An upgrade that drops the
+     * seed, or hashes otherwise, fails here.
+     */
+    @Test
+    void woodstoxSeedsItsHashButNamesSharingAStringHashCollideInItWhateverTheSeed() {
+        var names = new ArrayList<String>();
+        colliding("", 4, names);
+        var seeds = new java.util.HashSet<Integer>();
+        for (int table = 0; table < 8; table++) {
+            int seed = new com.ctc.wstx.util.SymbolTable(true, 128).getHashSeed();
+            seeds.add(seed);
+            assertThat(names.stream().map(name -> com.ctc.wstx.util.SymbolTable.calcHash(name, seed)))
+                    .as("seed %d", seed)
+                    .containsOnly(com.ctc.wstx.util.SymbolTable.calcHash(names.getFirst(), seed));
+        }
+        assertThat(seeds).as("a seed for each table").hasSizeGreaterThan(1);
+        // its finalizer is not linear: names of one length and first character whose String hashes
+        // differ but share their low bits - as many as a document may use, built for a table of
+        // 4096 - spread over its buckets instead of sharing one
+        var sharingLowBits = new ArrayList<String>();
+        for (int i = 0; sharingLowBits.size() < XmlReader.MAX_NAMES; i++) {
+            String name = "q" + (10_000_000 + i);
+            if ((name.hashCode() & 4095) == 0) {
+                sharingLowBits.add(name);
+            }
+        }
+        int seed = new com.ctc.wstx.util.SymbolTable(true, 128).getHashSeed();
+        assertThat(sharingLowBits.stream()
+                        .map(name -> com.ctc.wstx.util.SymbolTable.calcHash(name, seed) & 4095)
+                        .distinct()
+                        .count())
+                .isGreaterThan(XmlReader.MAX_NAMES / 2);
+    }
+
+    @Test
+    void attributesAndDeclarationsTogetherAreHeldToTheMostAnElementMayCarry() throws DecodeException {
+        int most = XmlReader.MAX_ATTRIBUTES;
+        assertThat(lenient.decode(bytes(ROOT + mixed(most - 1, 1) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThat(lenient.decode(bytes(ROOT + mixed(1, most - 1) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        // Woodstox checks the two kinds' sum only as one of its arrays grows: these pass it
+        for (String hostile : List.of(mixed(most - 1, 2), mixed(1, most))) {
+            assertThatThrownBy(() -> lenient.decode(bytes(ROOT + hostile + "</alive>")))
+                    .isInstanceOf(DecodeException.class)
+                    .hasMessageContaining("more than " + most + " attributes and namespace declarations");
+        }
+    }
+
+    @Test
+    void aDocumentMayUseExactlyTheMostDistinctNames() throws DecodeException {
+        // the root's name and its three attributes count too
+        int room = XmlReader.MAX_NAMES - 4;
+        assertThat(lenient.decode(bytes(ROOT + spread(room) + "</alive>"))).isInstanceOf(OFAlive.class);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + spread(room + 1) + "</alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("more than " + XmlReader.MAX_NAMES + " distinct names");
+    }
+
+    @Test
+    void attributeNamesAndPrefixesAreHeldToTheLengthToo() throws DecodeException {
+        String fits = "a".repeat(XmlReader.MAX_NAME_LENGTH);
+        String over = "a".repeat(XmlReader.MAX_NAME_LENGTH + 1);
+        assertThat(lenient.decode(bytes(ROOT + "<x " + fits + "=\"1\"/></alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThat(lenient.decode(bytes(ROOT + "<x xmlns:" + fits + "=\"u\"/></alive>")))
+                .isInstanceOf(OFAlive.class);
+        for (String hostile :
+                List.of(ROOT + "<x " + over + "=\"1\"/></alive>", ROOT + "<x xmlns:" + over + "=\"u\"/></alive>")) {
+            assertThatThrownBy(() -> lenient.decode(bytes(hostile)))
+                    .isInstanceOf(DecodeException.class)
+                    .hasMessageContaining("longer than");
+        }
+    }
+
+    @Test
+    void namespaceDeclarationsCountTowardsAnElementsAttributes() throws DecodeException {
+        assertThat(lenient.decode(bytes(ROOT + declarations(XmlReader.MAX_ATTRIBUTES) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + declarations(XmlReader.MAX_ATTRIBUTES + 1) + "</alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTES));
+    }
+
+    /** Distinct names that collide in no chain more than they must. */
+    private static String spread(int count) {
+        var body = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            body.append("<s").append(i).append("/>");
+        }
+        return body.toString();
+    }
+
+    private static String mixed(int attributes, int declarations) {
+        var tag = new StringBuilder("<x");
+        for (int i = 0; i < attributes; i++) {
+            tag.append(" a").append(i).append("=\"1\"");
+        }
+        for (int i = 0; i < declarations; i++) {
+            tag.append(" xmlns:p").append(i).append("=\"u").append(i).append('"');
+        }
+        return tag.append("/>").toString();
+    }
+
+    private static String declarations(int count) {
+        var tag = new StringBuilder("<x");
+        for (int i = 0; i < count; i++) {
+            tag.append(" xmlns:p").append(i).append("=\"u").append(i).append('"');
+        }
+        return tag.append("/>").toString();
+    }
+
+    private static String attributes(int count) {
+        var tag = new StringBuilder("<x");
+        for (int i = 0; i < count; i++) {
+            tag.append(" a").append(i).append("=\"1\"");
+        }
+        return tag.append("/>").toString();
+    }
+
+    /**
+     * Woodstox's own limits, on its reader as the decoder configures it but without the name limit
+     * in front: they bound what one start tag holds before anything after the parser sees it.
+     */
+    @Test
+    void theParserItselfHoldsAStartTagToItsLimits() throws Exception {
+        var inputs = new XmlReader(
+                        XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
+                        "message",
+                        "feed message",
+                        FeedDecoder.DEFAULT_MAX_BYTES,
+                        null)
+                .inputs();
+        String value = "v".repeat(XmlReader.MAX_ATTRIBUTE_LENGTH);
+        for (String fits : List.of(
+                attributes(XmlReader.MAX_ATTRIBUTES),
+                declarations(XmlReader.MAX_ATTRIBUTES),
+                "<x a=\"" + value + "\"/>",
+                "<x xmlns:p=\"" + value + "\"/>")) {
+            readThrough(inputs, fits);
+        }
+        for (String over :
+                List.of(attributes(XmlReader.MAX_ATTRIBUTES + 1), declarations(XmlReader.MAX_ATTRIBUTES + 1))) {
+            assertThatThrownBy(() -> readThrough(inputs, over))
+                    .isInstanceOf(javax.xml.stream.XMLStreamException.class)
+                    .hasMessageContaining("Attribute limit (" + XmlReader.MAX_ATTRIBUTES + ")");
+        }
+        for (String over : List.of("<x a=\"" + value + "v\"/>", "<x xmlns:p=\"" + value + "v\"/>")) {
+            assertThatThrownBy(() -> readThrough(inputs, over))
+                    .isInstanceOf(javax.xml.stream.XMLStreamException.class)
+                    .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTE_LENGTH));
+        }
+    }
+
+    private static void readThrough(javax.xml.stream.XMLInputFactory inputs, String document)
+            throws javax.xml.stream.XMLStreamException {
+        var reader = inputs.createXMLStreamReader(new java.io.StringReader(document));
+        while (reader.hasNext()) {
+            reader.next();
+        }
+    }
+
+    /**
+     * The seed and the spread, in the table the decoder's own reader keeps its names in: Woodstox
+     * draws one seed for the JVM, at random, every factory and reader takes it, and names whose
+     * hashes share only their low bits sit about one probe deep there, where names with one hash
+     * queue up.
+     */
+    @Test
+    void theDecodersParserSeedsItsTableAndSpreadsNamesSharingOnlyLowBits() throws Exception {
+        var inputs = decoderInputs();
+        var factoryTable = com.ctc.wstx.stax.WstxInputFactory.class.getDeclaredField("mSymbols");
+        factoryTable.setAccessible(true);
+        int seed = ((com.ctc.wstx.util.SymbolTable) factoryTable.get(inputs)).getHashSeed();
+        assertThat(((com.ctc.wstx.util.SymbolTable) factoryTable.get(decoderInputs())).getHashSeed())
+                .as("one seed for the JVM, drawn as any table's is")
+                .isEqualTo(seed);
+
+        var sharingLowBits = new ArrayList<String>();
+        for (int i = 0; sharingLowBits.size() < XmlReader.MAX_NAMES - 1; i++) {
+            String name = "q" + (10_000_000 + i);
+            if ((name.hashCode() & 4095) == 0) {
+                sharingLowBits.add(name);
+            }
+        }
+        var oneHash = new ArrayList<String>();
+        colliding("", 6, oneHash);
+        var spread = readersTable(inputs, sharingLowBits);
+        assertThat(spread.getHashSeed())
+                .as("the reader's table takes its factory's seed")
+                .isEqualTo(seed);
+        assertThat(spread.calcAvgSeek()).isLessThan(2.0);
+        // the reader places each name by its seeded hash: under the reader's seed most sit in the
+        // slot that hash points at, under another seed hardly any would
+        assertThat(inTheirSlot(spread, sharingLowBits, seed))
+                .as("placed by the seeded hash")
+                .isGreaterThan(sharingLowBits.size() / 2);
+        assertThat(inTheirSlot(spread, sharingLowBits, seed + 1))
+                .as("another seed would place them elsewhere")
+                .isLessThan(sharingLowBits.size() / 10);
+        assertThat(readersTable(inputs, oneHash).calcAvgSeek())
+                .as("names with one hash do queue up, so the measure would show a shared chain")
+                .isGreaterThan(10.0);
+    }
+
+    /** How many of the names sit in the slot their hash under this seed points at. */
+    private static long inTheirSlot(com.ctc.wstx.util.SymbolTable table, List<String> names, int seed)
+            throws Exception {
+        var field = com.ctc.wstx.util.SymbolTable.class.getDeclaredField("mSymbols");
+        field.setAccessible(true);
+        var slots = (String[]) field.get(table);
+        return names.stream()
+                .filter(name ->
+                        name.equals(slots[com.ctc.wstx.util.SymbolTable.calcHash(name, seed) & (slots.length - 1)]))
+                .count();
+    }
+
+    /** The seed differs from one JVM to the next: the decoder's factory, read in two fresh ones. */
+    @Test
+    void eachJvmDrawsItsOwnSeedForTheDecodersParser() throws Exception {
+        assertThat(seedOfAFreshJvm()).isNotEqualTo(seedOfAFreshJvm());
+    }
+
+    private static String seedOfAFreshJvm() throws Exception {
+        var launcher = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        var process = new ProcessBuilder(
+                        launcher, "-cp", System.getProperty("java.class.path"), SeedOfThisJvm.class.getName())
+                .redirectErrorStream(true)
+                .start();
+        String out;
+        try {
+            // the one line it prints fits the pipe: wait first, so a child that hangs fails the test
+            assertThat(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS))
+                    .as("the child JVM ended")
+                    .isTrue();
+            out = new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip();
+        } finally {
+            // gone already, or left behind by a failure above
+            process.destroyForcibly();
+        }
+        assertThat(process.exitValue()).as(out).isZero();
+        assertThat(out).as("a seed").matches("-?\\d+");
+        return out;
+    }
+
+    /** Prints the seed of the decoder's factory; run in a JVM of its own. */
+    static final class SeedOfThisJvm {
+        public static void main(String[] args) throws Exception {
+            var table = com.ctc.wstx.stax.WstxInputFactory.class.getDeclaredField("mSymbols");
+            table.setAccessible(true);
+            System.out.println(((com.ctc.wstx.util.SymbolTable) table.get(decoderInputs())).getHashSeed());
+        }
+    }
+
+    private static javax.xml.stream.XMLInputFactory decoderInputs() {
+        return new XmlReader(
+                        XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
+                        "message",
+                        "feed message",
+                        FeedDecoder.DEFAULT_MAX_BYTES,
+                        null)
+                .inputs();
+    }
+
+    /** The symbol table a reader of the decoder's factory filled reading these names, without the name limit. */
+    private static com.ctc.wstx.util.SymbolTable readersTable(
+            javax.xml.stream.XMLInputFactory inputs, List<String> names) throws Exception {
+        var body = new StringBuilder("<r>");
+        names.forEach(name -> body.append('<').append(name).append("/>"));
+        var reader = inputs.createXMLStreamReader(
+                new java.io.StringReader(body.append("</r>").toString()));
+        while (reader.hasNext()) {
+            reader.next();
+        }
+        var table = com.ctc.wstx.sr.StreamScanner.class.getDeclaredField("mSymbols");
+        table.setAccessible(true);
+        return (com.ctc.wstx.util.SymbolTable) table.get(reader);
+    }
+
+    @Test
+    void movingByTagAndReadingTextThroughTheLimitWorkAsTheInterfaceSays() throws Exception {
+        var inputs = javax.xml.stream.XMLInputFactory.newDefaultFactory();
+        var reader = new XmlReader.NameLimit(inputs.createXMLStreamReader(
+                new java.io.StringReader("<r> <!--c--> <a>x<![CDATA[y]]><!--c-->z&amp;</a> <!--c--> </r>")));
+        assertThat(reader.nextTag()).isEqualTo(javax.xml.stream.XMLStreamConstants.START_ELEMENT);
+        assertThat(reader.getLocalName()).isEqualTo("r");
+        assertThat(reader.nextTag())
+                .as("whitespace and comments skipped")
+                .isEqualTo(javax.xml.stream.XMLStreamConstants.START_ELEMENT);
+        assertThat(reader.getLocalName()).isEqualTo("a");
+        assertThat(reader.getElementText())
+                .as("text, CDATA and an entity joined, comments skipped")
+                .isEqualTo("xyz&");
+        assertThat(reader.getEventType()).isEqualTo(javax.xml.stream.XMLStreamConstants.END_ELEMENT);
+        assertThat(reader.nextTag()).isEqualTo(javax.xml.stream.XMLStreamConstants.END_ELEMENT);
+        assertThat(reader.getLocalName()).isEqualTo("r");
+
+        var text = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>t<a/></r>")));
+        text.nextTag();
+        assertThatThrownBy(text::nextTag).hasMessageContaining("expected a start or an end tag");
+        var offTag = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>t</r>")));
+        assertThatThrownBy(offTag::getElementText).hasMessageContaining("not at a start tag");
+        var child = new XmlReader.NameLimit(inputs.createXMLStreamReader(new java.io.StringReader("<r>t<a/></r>")));
+        child.nextTag();
+        assertThatThrownBy(child::getElementText).hasMessageContaining("more than text");
+    }
+
+    @Test
+    void namesStayWithTheirDocument() throws Exception {
+        var reader = new XmlReader(
+                XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
+                "message",
+                "feed message",
+                FeedDecoder.DEFAULT_MAX_BYTES,
+                null);
+        var shared = com.ctc.wstx.stax.WstxInputFactory.class.getDeclaredField("mSymbols");
+        shared.setAccessible(true);
+        int before = ((com.ctc.wstx.util.SymbolTable) shared.get(reader.inputs())).size();
+        for (int document = 0; document < 4; document++) {
+            var body = new StringBuilder(ROOT);
+            for (int i = 0; i < 400; i++) {
+                body.append("<d").append(document).append('n').append(i).append("/>");
+            }
+            reader.read(bytes(body.append("</alive>").toString()));
+        }
+        assertThat(((com.ctc.wstx.util.SymbolTable) shared.get(reader.inputs())).size())
+                .as("no document's names left behind for the next")
+                .isEqualTo(before);
+    }
+
+    private static void colliding(String prefix, int blocks, List<String> into) {
+        if (blocks == 0) {
+            into.add("q" + prefix);
+            return;
+        }
+        colliding(prefix + "Aa", blocks - 1, into);
+        colliding(prefix + "BB", blocks - 1, into);
     }
 
     @Test
