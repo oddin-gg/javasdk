@@ -569,6 +569,54 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aFactThatFailsIsCountedAndTheActorGoesOn() throws InterruptedException {
+        var broken = new AtomicBoolean(true);
+        Executor workers = task -> {
+            if (broken.compareAndSet(true, false)) {
+                throw new AssertionError("broken workers");
+            }
+            Thread.ofVirtual().start(task);
+        };
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.counters().factsFailed() == 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.counters().factsFailed()).isEqualTo(1);
+        assertThat(actor.running()).isTrue();
+        actor.alive(LIVE, now, now, true);
+        assertThat(api.next().producer()).as("the next fact's request").isEqualTo("live");
+    }
+
+    @Test
+    void aRequestTheWorkersFailOnCountsAsFailedAndIsAskedForAgain() throws InterruptedException {
+        var broken = new AtomicBoolean(true);
+        Executor workers = task -> {
+            if (broken.compareAndSet(true, false)) {
+                throw new IllegalStateException("broken workers");
+            }
+            Thread.ofVirtual().start(task);
+        };
+        var actor =
+                new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        assertThat(api.next().producer())
+                .as("asked for again after the backoff")
+                .isEqualTo("pre");
+        assertThat(actor.counters().failed()).isEqualTo(1);
+        assertThat(actor.counters().factsFailed()).isZero();
+    }
+
+    @Test
     void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException, ExecutionException, TimeoutException {
         // not started: nothing takes from the queues
         var actor = new RecoveryActor(
