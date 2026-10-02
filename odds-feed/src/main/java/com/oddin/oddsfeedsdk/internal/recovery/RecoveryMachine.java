@@ -166,7 +166,7 @@ final class RecoveryMachine {
                 // a snapshot complete stands for the API's acceptance; with none seen, and none left
                 // to wait for, the API's answer decides
                 if (active.seen.containsAll(active.awaited) && (active.accepted || seenAny)) {
-                    complete(track, active, now);
+                    complete(track, active, now, seenAny);
                 }
             } else if (active == null) {
                 upIfNothingMissing(track, now);
@@ -437,7 +437,7 @@ final class RecoveryMachine {
                     cancelReset(session, now());
                 }
                 if (active.seen.containsAll(active.awaited)) {
-                    complete(track, active, now());
+                    complete(track, active, now(), true);
                 }
             }
             return;
@@ -654,15 +654,19 @@ final class RecoveryMachine {
         }
         if (track.active == active && active.awaited.isEmpty()) {
             // no session takes snapshot completes: nothing would ever complete it
-            complete(track, active, now);
+            complete(track, active, now, false);
         }
     }
 
     /**
      * Every session has seen the snapshot complete: the gaps it covers are closed. With gaps left
      * that opened since, one more recovery; with none, the producer is up.
+     *
+     * @param seen whether a session has seen the snapshot complete; one that completes only because
+     *     the API accepted it and no session takes completions has delivered nothing yet, so a reset
+     *     waiting for it stays
      */
-    private void complete(Track track, Active active, long now) {
+    private void complete(Track track, Active active, long now, boolean seen) {
         track.active = null;
         track.pausedUntil = now;
         if (!active.accepted) {
@@ -672,7 +676,7 @@ final class RecoveryMachine {
         }
         // a reset still waiting for the API would drop what this recovery sent; it is not made
         for (SessionState session : sessions.values()) {
-            if (session.pending != null && session.lanes.containsKey(track.id)) {
+            if (seen && session.pending != null && session.lanes.containsKey(track.id)) {
                 cancelReset(session, now);
             }
         }
@@ -695,7 +699,6 @@ final class RecoveryMachine {
         track.retryAt = 0;
         track.capSpentAt = 0;
         counters.completed.incrementAndGet();
-        boolean first = !track.everRecovered;
         track.everRecovered = true;
         LOG.info(
                 "Recovery {} of producer {} completed in {} ms, for {}",
@@ -707,7 +710,7 @@ final class RecoveryMachine {
             maybeRequest(track, now);
             return;
         }
-        bringUp(track, first ? StatusCause.FIRST_RECOVERY_COMPLETED : StatusCause.RECOVERY_COMPLETED, now);
+        bringUp(track, StatusCause.RECOVERY_COMPLETED, now);
     }
 
     /**
@@ -789,6 +792,11 @@ final class RecoveryMachine {
 
     private void eventCompleted(EventRecovery recovery) {
         eventRecoveries.remove(recovery.requestId);
+        CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
+        if (reply != null) {
+            // its snapshot complete came before the API's answer, and says the API took it
+            outbox.reply(reply, recovery.requestId);
+        }
         LOG.info("Event recovery {} of {} completed", recovery.requestId, recovery.eventId);
         events.eventRecoveryCompleted(recovery.producerId, recovery.eventId, recovery.requestId);
     }
@@ -1088,10 +1096,16 @@ final class RecoveryMachine {
         events.producerStatus(new ProducerStatusChange(track.id, true, track.delayed, cause, now));
     }
 
-    private void markUp(Track track, StatusCause cause, long now) {
+    /**
+     * Up for {@code cause}; the first time since the feed opened, whatever brought it up, it is up
+     * for its first recovery, which the client hears of once per producer, as in 0.0.x.
+     */
+    private void markUp(Track track, StatusCause given, long now) {
         if (!enabled(track) || !track.down) {
             return;
         }
+        StatusCause cause = track.reportedUp ? given : StatusCause.FIRST_RECOVERY_COMPLETED;
+        track.reportedUp = true;
         track.down = false;
         track.cause = cause;
         producers.setDown(track.id, false);
@@ -1240,6 +1254,8 @@ final class RecoveryMachine {
         StatusCause cause = StatusCause.STARTING;
         boolean delayed;
         boolean everRecovered;
+        /** Whether it has been reported up since the feed opened. */
+        boolean reportedUp;
         /** When the last alive arrived, by the SDK's clock; 0 before the first. */
         long lastAliveAt;
 
