@@ -470,6 +470,35 @@ class FeedDecoderTest {
                 .isGreaterThan(10.0);
     }
 
+    /** The seed differs from one JVM to the next: the decoder's factory, read in two fresh ones. */
+    @Test
+    void eachJvmDrawsItsOwnSeedForTheDecodersParser() throws Exception {
+        assertThat(seedOfAFreshJvm()).isNotEqualTo(seedOfAFreshJvm());
+    }
+
+    private static String seedOfAFreshJvm() throws Exception {
+        var launcher = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        var process = new ProcessBuilder(
+                        launcher, "-cp", System.getProperty("java.class.path"), SeedOfThisJvm.class.getName())
+                .redirectErrorStream(true)
+                .start();
+        String out =
+                new String(process.getInputStream().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8).strip();
+        assertThat(process.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+        assertThat(process.exitValue()).as(out).isZero();
+        assertThat(out).as("a seed").matches("-?\\d+");
+        return out;
+    }
+
+    /** Prints the seed of the decoder's factory; run in a JVM of its own. */
+    static final class SeedOfThisJvm {
+        public static void main(String[] args) throws Exception {
+            var table = com.ctc.wstx.stax.WstxInputFactory.class.getDeclaredField("mSymbols");
+            table.setAccessible(true);
+            System.out.println(((com.ctc.wstx.util.SymbolTable) table.get(decoderInputs())).getHashSeed());
+        }
+    }
+
     private static javax.xml.stream.XMLInputFactory decoderInputs() {
         return new XmlReader(
                         XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
