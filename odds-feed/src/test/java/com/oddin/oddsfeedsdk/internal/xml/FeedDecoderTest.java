@@ -393,6 +393,48 @@ class FeedDecoderTest {
         return tag.append("/>").toString();
     }
 
+    /**
+     * Woodstox's own limits, on its reader as the decoder configures it but without the name limit
+     * in front: they bound what one start tag holds before anything after the parser sees it.
+     */
+    @Test
+    void theParserItselfHoldsAStartTagToItsLimits() throws Exception {
+        var inputs = new XmlReader(
+                        XmlReader.context(com.oddin.oddsfeedsdk.schema.feed.v1.ObjectFactory.class),
+                        "message",
+                        "feed message",
+                        FeedDecoder.DEFAULT_MAX_BYTES,
+                        null)
+                .inputs();
+        String value = "v".repeat(XmlReader.MAX_ATTRIBUTE_LENGTH);
+        for (String fits : List.of(
+                attributes(XmlReader.MAX_ATTRIBUTES),
+                declarations(XmlReader.MAX_ATTRIBUTES),
+                "<x a=\"" + value + "\"/>",
+                "<x xmlns:p=\"" + value + "\"/>")) {
+            readThrough(inputs, fits);
+        }
+        for (String over :
+                List.of(attributes(XmlReader.MAX_ATTRIBUTES + 1), declarations(XmlReader.MAX_ATTRIBUTES + 1))) {
+            assertThatThrownBy(() -> readThrough(inputs, over))
+                    .isInstanceOf(javax.xml.stream.XMLStreamException.class)
+                    .hasMessageContaining("Attribute limit (" + XmlReader.MAX_ATTRIBUTES + ")");
+        }
+        for (String over : List.of("<x a=\"" + value + "v\"/>", "<x xmlns:p=\"" + value + "v\"/>")) {
+            assertThatThrownBy(() -> readThrough(inputs, over))
+                    .isInstanceOf(javax.xml.stream.XMLStreamException.class)
+                    .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTE_LENGTH));
+        }
+    }
+
+    private static void readThrough(javax.xml.stream.XMLInputFactory inputs, String document)
+            throws javax.xml.stream.XMLStreamException {
+        var reader = inputs.createXMLStreamReader(new java.io.StringReader(document));
+        while (reader.hasNext()) {
+            reader.next();
+        }
+    }
+
     @Test
     void namesStayWithTheirDocument() throws Exception {
         var reader = new XmlReader(
