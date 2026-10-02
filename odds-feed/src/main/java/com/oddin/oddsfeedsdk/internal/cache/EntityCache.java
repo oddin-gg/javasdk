@@ -159,14 +159,22 @@ public final class EntityCache<K> {
     }
 
     /**
-     * Whether what a fetch from {@code started} got is still the newest word on the key: the entry
-     * was not invalidated or dropped since, the loader did not abandon the fetch, and no fetch that
-     * started later has written the entry's shared fields. For what the same response writes
-     * elsewhere, such as a match's live state.
+     * Whether what a fetch from {@code started} got of {@code endpoint} is still the newest word on
+     * the key: the entry was not invalidated or dropped since, the loader did not abandon the fetch,
+     * and no fetch of the endpoint that started later has written the entry's shared fields. For
+     * what the same response writes elsewhere, such as a match's live state.
      */
-    public boolean isNewest(K key, Stamp started) {
+    public boolean isNewest(K key, Endpoint endpoint, Stamp started) {
         Entry current = entries.getIfPresent(key);
-        return !stale(key, current, started) && (current == null || current.sharedFrom() <= started.fetch());
+        return !stale(key, current, started) && (current == null || current.sharedFrom(endpoint) <= started.fetch());
+    }
+
+    /**
+     * Whether a clear - or a forgotten invalidation, which could be any key's - came since {@code
+     * started}: for what a fetch of many records next to the cache, to drop it when one did.
+     */
+    public boolean clearedSince(Stamp started) {
+        return forgotten.get() > started.startedAt();
     }
 
     /**
