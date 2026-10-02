@@ -23,9 +23,11 @@ public interface SessionFacts {
     void snapshotComplete(long producerId, long requestId);
 
     /**
-     * The session's channel was lost and opened again on a live connection, so its queue lost what
-     * it held. A reconnect is reported by the connection, and the safety net's own resets need no
-     * telling.
+     * The session's channel was lost on a live connection, so its queue lost what it held. Post it
+     * when the loss is seen - where the transport learns the broker took the channel - and before the
+     * new channel consumes: a message of the new channel handled first would move the session's
+     * checkpoint past what the old queue dropped. A reconnect is reported by the connection, and the
+     * safety net's own resets need no telling.
      */
     void channelLost();
 

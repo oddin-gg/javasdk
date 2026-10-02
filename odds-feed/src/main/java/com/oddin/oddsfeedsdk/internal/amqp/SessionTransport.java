@@ -17,6 +17,12 @@ public interface SessionTransport {
      */
     void reset();
 
+    /**
+     * Whether the session has an open channel to read from. After a {@link #reset} that could not
+     * open the new channel, it is false until the transport has opened it again.
+     */
+    boolean isOpen();
+
     /** The channel the session reads now; each replacement adds one. */
     long epoch();
 

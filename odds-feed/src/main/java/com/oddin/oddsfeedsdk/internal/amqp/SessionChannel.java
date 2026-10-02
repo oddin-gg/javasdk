@@ -201,7 +201,8 @@ final class SessionChannel implements SessionTransport {
     }
 
     /** Whether it has an open channel whose consumer the broker has not taken. */
-    boolean isOpen() {
+    @Override
+    public boolean isOpen() {
         Deliveries consumer = current;
         return consumer != null && !consumer.taken && consumer.getChannel().isOpen();
     }
