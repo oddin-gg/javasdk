@@ -6,7 +6,6 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.PeriodScore;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Scoreboard;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.TvChannel;
-import com.oddin.oddsfeedsdk.exceptions.UnsupportedUrnFormatException;
 import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.LiveWrite;
 import com.oddin.oddsfeedsdk.internal.cache.Write;
@@ -31,7 +30,6 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RATeamCompetitor;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATvChannel;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATvChannels;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -39,8 +37,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import javax.xml.datatype.DatatypeConstants;
-import javax.xml.datatype.XMLGregorianCalendar;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -65,7 +61,7 @@ final class MatchWrites {
             return write.unsaid(WINNER_ID);
         }
         String sent = status.getWinnerId();
-        URN winner = urn(sent);
+        URN winner = ApiValues.urn(sent);
         return sent != null && winner == null ? write.unsaid(WINNER_ID) : write.put(WINNER_ID, winner);
     }
 
@@ -77,7 +73,7 @@ final class MatchWrites {
     /** The fixture's own fields. */
     static Write fixture(RAFixture fixture, Locale locale) {
         return Write.from(FIXTURE, locale)
-                .put(START_TIME, instant(fixture.getStartTime()))
+                .put(START_TIME, ApiValues.instant(fixture.getStartTime()))
                 .put(FIXTURE_EXTRA_INFO, extraInfo(fixture.getExtraInfo()))
                 .put(TV_CHANNELS, tvChannels(fixture.getTvChannels()));
     }
@@ -112,41 +108,16 @@ final class MatchWrites {
                 .put(SCOREBOARD_AVAILABLE, status.getScoreboardAvailable());
     }
 
-    /** The id of a sport event, or null when it is not a URN. */
-    static @Nullable URN urn(@Nullable String id) {
-        if (id == null) {
-            return null;
-        }
-        try {
-            return URN.parse(id);
-        } catch (UnsupportedUrnFormatException notOne) {
-            return null;
-        }
-    }
-
-    /** A time the API sends without a zone is UTC, as 0.0.x read it. */
-    static @Nullable Instant instant(@Nullable XMLGregorianCalendar time) {
-        if (time == null) {
-            return null;
-        }
-        if (time.getTimezone() == DatatypeConstants.FIELD_UNDEFINED) {
-            var utc = (XMLGregorianCalendar) time.clone();
-            utc.setTimezone(0);
-            return utc.toGregorianCalendar().toInstant();
-        }
-        return time.toGregorianCalendar().toInstant();
-    }
-
     private static Write match(Write write, RASportEvent event) {
         var tournament = event.getTournament();
         var sport = tournament == null ? null : tournament.getSport();
         return write.put(NAME, event.getName())
-                .put(SPORT_ID, sport == null ? null : urn(sport.getId()))
-                .put(SCHEDULED, instant(event.getScheduled()))
-                .put(SCHEDULED_END, instant(event.getScheduledEnd()))
+                .put(SPORT_ID, sport == null ? null : ApiValues.urn(sport.getId()))
+                .put(SCHEDULED, ApiValues.instant(event.getScheduled()))
+                .put(SCHEDULED_END, ApiValues.instant(event.getScheduledEnd()))
                 .put(LIVE_ODDS, event.getLiveodds())
                 .put(COMPETITORS, competitors(event.getCompetitors()))
-                .put(TOURNAMENT_ID, tournament == null ? null : urn(tournament.getId()))
+                .put(TOURNAMENT_ID, tournament == null ? null : ApiValues.urn(tournament.getId()))
                 .put(EXTRA_INFO, extraInfo(event.getExtraInfo()));
     }
 
@@ -156,7 +127,7 @@ final class MatchWrites {
         }
         var refs = new ArrayList<CompetitorRef>();
         for (RATeamCompetitor competitor : competitors.getCompetitor()) {
-            URN id = urn(competitor.getId());
+            URN id = ApiValues.urn(competitor.getId());
             if (id != null) {
                 refs.add(new CompetitorRef(id, competitor.getQualifier()));
             }
@@ -189,7 +160,7 @@ final class MatchWrites {
             // 0.0.x failed the whole fixture on a channel without its optional stream URL
             String streamUrl = channel.getStreamUrl() == null ? "" : channel.getStreamUrl();
             list.add(new TvChannelData(
-                    channel.getName(), streamUrl, channel.getLanguage(), instant(channel.getStartTime())));
+                    channel.getName(), streamUrl, channel.getLanguage(), ApiValues.instant(channel.getStartTime())));
         }
         return List.copyOf(list);
     }

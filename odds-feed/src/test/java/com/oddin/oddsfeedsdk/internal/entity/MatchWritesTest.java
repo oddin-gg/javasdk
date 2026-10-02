@@ -259,7 +259,7 @@ class MatchWritesTest {
         var schedule = decode("rest/schedule/schedule.xml", RAScheduleEndpoint.class);
         var second = schedule.getSportEvent().get(1);
         Write fill = MatchWrites.fill(SCHEDULE, second, EN);
-        URN id = requireNonNull(MatchWrites.urn(second.getId()));
+        URN id = requireNonNull(ApiValues.urn(second.getId()));
         matches.fill(id, fill, matches.stamp(id));
         Entry match = requireNonNull(matches.get(id));
         assertThat(match.get(NAME, EN)).isEqualTo("Team Gamma vs Team Delta");
@@ -268,10 +268,10 @@ class MatchWritesTest {
 
     @Test
     void anIdThatIsNotAUrnIsLeftOutAndATimeWithAZoneKeepsIt() throws Exception {
-        assertThat(MatchWrites.urn("not an urn")).isNull();
-        assertThat(MatchWrites.urn(null)).isNull();
+        assertThat(ApiValues.urn("not an urn")).isNull();
+        assertThat(ApiValues.urn(null)).isNull();
         var withZone = DatatypeFactory.newInstance().newXMLGregorianCalendar("2026-08-26T18:00:00+02:00");
-        assertThat(MatchWrites.instant(withZone)).isEqualTo(Instant.parse("2026-08-26T16:00:00Z"));
+        assertThat(ApiValues.instant(withZone)).isEqualTo(Instant.parse("2026-08-26T16:00:00Z"));
     }
 
     private <T> T decode(String fixture, Class<T> type) throws DecodeException {
