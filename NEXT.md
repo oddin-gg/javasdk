@@ -570,12 +570,13 @@ and REST workers post facts to it; it decides and posts work out.
     misses what the queue held like the others, to be asked for when it can be. Only
     when every request has been accepted does it ask
     the AMQP layer to replace the session's channel. A rejected or failed request means
-    no reset: the actor backs off, counts, and raises an event. A `snapshot_complete`
-    that arrives before the reset cancels it, since the reset would now drop what the
-    recovery sent; so does the session's own `snapshot_complete` of one of those
-    recoveries, while other sessions are still awaited. A recovery no session takes
-    completions for completes on its acceptance without cancelling the reset, since it
-    has delivered nothing yet. Data is never dropped before its
+    no reset: the actor backs off, counts, and raises an event. The session's own
+    `snapshot_complete` of one of those recoveries, seen before the reset, cancels it,
+    since the reset would now drop what the recovery sent - and only that does. Another
+    session's completion is no evidence that this session's backlog was replaced: a
+    low-priority session next to a high-priority one sees no completions, so its reset
+    goes ahead once its requests are accepted, and the gaps it reopens ask for what the
+    recoveries had sent into the old queue. Data is never dropped before its
     replacement is on the way. When the reset is handed to the AMQP layer, every lane of
     the session misses what came after its checkpoint then, before any message of the
     new channel can move it. The reset stays pending until the AMQP layer reports it
