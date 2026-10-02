@@ -60,6 +60,16 @@ final class Harness {
                 resets.add(session);
                 resetNumbers.add(number);
             }
+
+            @Override
+            public void reply(CompletableFuture<@Nullable Long> reply, @Nullable Long requestId) {
+                reply.complete(requestId);
+            }
+
+            @Override
+            public void fail(CompletableFuture<@Nullable Long> reply, RuntimeException failure) {
+                reply.completeExceptionally(failure);
+            }
         };
         RecoveryEvents recorded = new RecoveryEvents() {
             @Override

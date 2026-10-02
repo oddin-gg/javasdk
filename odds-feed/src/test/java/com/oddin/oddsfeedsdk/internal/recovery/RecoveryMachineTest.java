@@ -786,6 +786,42 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void anEventRecoveryWhileTheConnectionIsDownIsRefused() throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.machine.connectionDown();
+        assertThat(done(feed.recoverEvent(LIVE)))
+                .as("its snapshot would have no queue to go to")
+                .isNull();
+        assertThat(feed.calls).isEmpty();
+        assertThat(feed.counters.eventRefused()).isEqualTo(1);
+        feed.machine.connectionUp();
+        assertThat(feed.recoverEvent(LIVE)).as("once it is back").isNotDone();
+        assertThat(feed.calls).hasSize(1);
+    }
+
+    @Test
+    void aRecoveryNoSessionTakesSnapshotCompletesForCompletesWhenTheApiAcceptsIt()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        feed.close(1);
+        feed.alive(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("nothing would ever complete it")
+                .isFalse();
+
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        Outbox.Call event = feed.calls.getLast();
+        feed.accept(event);
+        assertThat(done(reply)).isEqualTo(event.requestId());
+        assertThat(feed.events).containsExactly("event recovery " + event.requestId() + " of " + MATCH + " completed");
+    }
+
+    @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();
