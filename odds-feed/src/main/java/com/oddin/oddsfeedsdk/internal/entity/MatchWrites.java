@@ -34,6 +34,7 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -56,11 +57,16 @@ final class MatchWrites {
 
     /**
      * A summary's match fields, its winner included: a status without a winner retracts it, a
-     * summary without a status says nothing of it.
+     * summary without a status, or with a winner that is not a URN, says nothing of it.
      */
     static Write summary(RASportEvent event, @Nullable RASportEventStatus status, Locale locale) {
         Write write = match(Write.from(SUMMARY, locale), event);
-        return status == null ? write.unsaid(WINNER_ID) : write.put(WINNER_ID, urn(status.getWinnerId()));
+        if (status == null) {
+            return write.unsaid(WINNER_ID);
+        }
+        String sent = status.getWinnerId();
+        URN winner = urn(sent);
+        return sent != null && winner == null ? write.unsaid(WINNER_ID) : write.put(WINNER_ID, winner);
     }
 
     /** What a fixture or a schedule says of the match: it only fills. */
@@ -188,6 +194,12 @@ final class MatchWrites {
         return List.copyOf(list);
     }
 
+    /** In period order, as 0.0.x kept them, whatever order the response sent them in. */
+    private static List<PeriodScore> byNumber(List<PeriodScore> periods) {
+        periods.sort(Comparator.comparingInt(PeriodScore::getPeriodNumber));
+        return List.copyOf(periods);
+    }
+
     private static List<PeriodScore> restPeriods(RAPeriodScores periods) {
         var list = new ArrayList<PeriodScore>();
         for (RAPeriodScore p : periods.getPeriodScore()) {
@@ -220,7 +232,7 @@ final class MatchWrites {
                     p.getAwayBallsPlayed(),
                     p.getHomeWonCoinToss()));
         }
-        return List.copyOf(list);
+        return byNumber(list);
     }
 
     private static List<PeriodScore> feedPeriods(OFPeriodscoresType periods) {
@@ -255,7 +267,7 @@ final class MatchWrites {
                     p.getAwayBallsPlayed(),
                     p.getHomeWonCoinToss()));
         }
-        return List.copyOf(list);
+        return byNumber(list);
     }
 
     private static Scoreboard scoreboard(RAScoreboard s) {
