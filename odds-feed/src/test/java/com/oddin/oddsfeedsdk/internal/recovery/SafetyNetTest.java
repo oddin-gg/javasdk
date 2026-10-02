@@ -320,6 +320,51 @@ class SafetyNetTest {
     }
 
     @Test
+    void aSessionNoOneTakesSnapshotCompletesForIsResetOnceTheApiAcceptedEveryRecovery() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        feed.bothUp(1);
+        feed.close(1);
+        int before = feed.calls.size();
+        stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        // each completes on its acceptance, with nothing to wait for; that delivered nothing yet
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.resets).isEmpty();
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).as("once both are accepted").containsExactly(2);
+    }
+
+    @Test
+    void aLaggingSessionStopsLaggingOnceTheTransportHasMadeTheNextReset() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        while (!feed.machine.lagging(1)) {
+            int before = feed.calls.size();
+            stale(feed, 1, OLD, Duration.ofMinutes(10), () -> feed.calls.size() > before || feed.machine.lagging(1));
+            if (feed.calls.size() > before) {
+                feed.accept(feed.lastSnapshot(PRE));
+                feed.accept(feed.lastSnapshot(LIVE));
+                feed.resetDone();
+                feed.complete(feed.lastSnapshot(PRE), 1);
+                feed.complete(feed.lastSnapshot(LIVE), 1);
+            }
+        }
+        // still behind, until the first reset ages out of the cool-down and the net acts again
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(10), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.machine.lagging(1))
+                .as("until the transport has made the reset")
+                .isTrue();
+        feed.resetDone();
+        assertThat(feed.machine.lagging(1)).isFalse();
+        assertThat(feed.events.subList(feed.events.size() - 2, feed.events.size()))
+                .containsExactly("session 1 reset for producer 1", "session 1 caught up");
+    }
+
+    @Test
     void aReportOfNoResetUnderWayChangesNothing() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();

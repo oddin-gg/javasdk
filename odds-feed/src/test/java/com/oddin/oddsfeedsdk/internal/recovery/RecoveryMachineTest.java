@@ -939,6 +939,79 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void anEventRecoverysSnapshotCompleteBeforeTheApisAnswerSettlesItsCallerWithTheId()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        Outbox.Call call = feed.calls.getLast();
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        assertThat(feed.events).hasSize(1);
+        assertThat(done(reply)).as("the snapshot complete says the API took it").isEqualTo(call.requestId());
+        // the API's answer, late, and a failure: what the caller heard stands
+        feed.refuse(call);
+        assertThat(done(reply)).isEqualTo(call.requestId());
+        assertThat(feed.counters.eventRefused()).isZero();
+        feed.advance(Duration.ofHours(7));
+        assertThat(feed.counters.eventExpired()).isZero();
+    }
+
+    @Test
+    void aProducerIsUpForItsFirstRecoveryTheFirstTimeItComesUpAfterAFollowUp() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
+        feed.accept(first);
+        // the producer stops sending while the first recovery is in flight
+        feed.unsubscribed(PRE);
+        feed.machine.snapshotComplete(1, PRE, first.requestId());
+        Outbox.Call.Snapshot followUp = feed.lastSnapshot(PRE);
+        assertThat(followUp.requestId()).isNotEqualTo(first.requestId());
+        feed.complete(followUp, 1);
+        assertThat(feed.statuses(PRE))
+                .filteredOn(change -> !change.down())
+                .extracting(ProducerStatusChange::cause)
+                .containsExactly(StatusCause.FIRST_RECOVERY_COMPLETED);
+    }
+
+    @Test
+    void aProducerIsUpForItsFirstRecoveryWhenAClosedSessionBringsItUp() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
+        feed.accept(first);
+        feed.open(2, MessageInterest.PREMATCH_ONLY);
+        feed.machine.snapshotComplete(1, PRE, first.requestId());
+        // what session 2 misses is asked for, refused, and session 2 closes
+        feed.refuse(feed.lastSnapshot(PRE));
+        feed.close(2);
+        ProducerStatusChange up = requireNonNull(feed.lastStatus(PRE));
+        assertThat(up.down()).isFalse();
+        assertThat(up.cause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
+        assertThat(up.reason()).isEqualTo(ProducerStatusReason.FIRST_RECOVERY_COMPLETED);
+    }
+
+    @Test
+    void aProducerLateAtItsFirstRecoveryIsUpForItsFirstRecoveryOnceOnTime() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
+        feed.live(1, PRE, Duration.ofSeconds(25));
+        feed.advance(Duration.ofMillis(10));
+        feed.complete(first, 1);
+        assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.PROCESSING_DELAY);
+        feed.live(1, PRE, Duration.ofSeconds(1));
+        feed.advance(Duration.ofMillis(10));
+        assertThat(feed.statuses(PRE))
+                .filteredOn(change -> !change.down())
+                .extracting(ProducerStatusChange::cause)
+                .containsExactly(StatusCause.FIRST_RECOVERY_COMPLETED);
+    }
+
+    @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();
