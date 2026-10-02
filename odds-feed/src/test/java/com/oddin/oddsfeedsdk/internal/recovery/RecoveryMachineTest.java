@@ -887,6 +887,58 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aRecoveryThatFailsWithNothingLeftToRecoverBringsTheProducerUp() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1);
+        feed.open(2, MessageInterest.PREMATCH_ONLY);
+        feed.alive(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        // the session it was for closes while it is in flight, then it is refused
+        feed.close(2);
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+        feed.refuse(recovery);
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("nothing left missing")
+                .isFalse();
+    }
+
+    @Test
+    void aRecoveryThatCompletesWhileASessionProcessesTheProducerLateKeepsItDownForThat() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1);
+        feed.unsubscribed(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        feed.live(1, PRE, Duration.ofSeconds(25));
+        feed.advance(Duration.ofMillis(10));
+        feed.complete(recovery, 1);
+        ProducerStatusChange late = requireNonNull(feed.lastStatus(PRE));
+        assertThat(late.down()).as("recovered, but processed late").isTrue();
+        assertThat(late.cause()).isEqualTo(StatusCause.PROCESSING_DELAY);
+        assertThat(feed.statuses(PRE)).noneMatch(change -> change.cause() == StatusCause.RECOVERY_COMPLETED);
+
+        feed.live(1, PRE, Duration.ofSeconds(1));
+        feed.advance(Duration.ofMillis(10));
+        assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.DELAY_STABILIZED);
+    }
+
+    @Test
+    void anEventRecoveryThatExpiresBeforeTheApiAnswersAnswersItsCallerNull()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        Outbox.Call call = feed.calls.getLast();
+        feed.advance(Duration.ofHours(6).plusSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+        assertThat(done(reply)).isNull();
+        // a late answer finds nothing to answer
+        feed.accept(call);
+        assertThat(done(reply)).isNull();
+    }
+
+    @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();
