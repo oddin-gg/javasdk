@@ -13,6 +13,7 @@ import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -83,6 +84,8 @@ final class RecoveryMachine {
     private final Map<Long, EventRecovery> eventRecoveries = new HashMap<>();
     /** The callers waiting for whether the API took an event recovery, by request id. */
     private final Map<Long, CompletableFuture<@Nullable Long>> replies = new HashMap<>();
+    /** Event recoveries asked for while a session that would receive them was being reset. */
+    private final List<DeferredEvent> deferred = new ArrayList<>();
 
     private boolean started;
     private long startedAt;
@@ -172,6 +175,7 @@ final class RecoveryMachine {
                 upIfNothingMissing(track, now);
             }
         }
+        releaseDeferred();
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
             if (recovery.awaited.remove(id)) {
                 boolean seenAny = !recovery.seen.isEmpty();
@@ -210,6 +214,10 @@ final class RecoveryMachine {
             outbox.reply(reply, null);
         }
         replies.clear();
+        for (DeferredEvent event : deferred) {
+            outbox.reply(event.reply(), null);
+        }
+        deferred.clear();
     }
 
     // ---- the transport
@@ -300,6 +308,18 @@ final class RecoveryMachine {
             session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size() + 1);
             notSeen(session, now);
         }
+        releaseDeferred();
+    }
+
+    /** The event recoveries that waited for a reset no longer underway are asked for now. */
+    private void releaseDeferred() {
+        for (DeferredEvent event : new ArrayList<>(deferred)) {
+            Track track = track(event.producerId());
+            if (!underway(track)) {
+                deferred.remove(event);
+                recoverEvent(event.producerId(), event.eventId(), event.stateful(), event.reply());
+            }
+        }
     }
 
     /**
@@ -351,10 +371,11 @@ final class RecoveryMachine {
         }
         long now = now();
         if (track.lastAliveAt != 0) {
+            // a second at least, and the maximum inactivity at most, unless that is less
             long measured = Math.clamp(
                     receivedAt - track.lastAliveAt,
                     1_000,
-                    settings.maxInactivity().toMillis());
+                    Math.max(1_000, settings.maxInactivity().toMillis()));
             track.aliveInterval += (measured - track.aliveInterval) / 4;
         }
         track.lastAliveAt = receivedAt;
@@ -524,12 +545,21 @@ final class RecoveryMachine {
             return;
         }
         long inFlight = eventRecoveries.values().stream()
-                .filter(recovery -> recovery.producerId == producerId)
-                .count();
+                        .filter(recovery -> recovery.producerId == producerId)
+                        .count()
+                + deferred.stream()
+                        .filter(event -> event.producerId() == producerId)
+                        .count();
         if (inFlight >= settings.eventRecoveries()) {
             counters.eventRefused.incrementAndGet();
             LOG.warn("Event recovery of {} refused: {} in flight for producer {}", eventId, inFlight, producerId);
             outbox.reply(reply, null);
+            return;
+        }
+        if (underway(track)) {
+            // a session that receives it is being reset: its snapshot could go to either channel
+            LOG.info("Event recovery of {} waits for a session's reset to be done", eventId);
+            deferred.add(new DeferredEvent(producerId, eventId, stateful, reply));
             return;
         }
         long requestId = ids.next(this::inFlight);
@@ -1214,8 +1244,14 @@ final class RecoveryMachine {
     private @Nullable Track known(long producerId) {
         Track track = tracks.get(producerId);
         if (track == null) {
-            counters.unknownProducers.incrementAndGet();
-            LOG.warn("A fact about producer {}, which the producer list does not have, is ignored", producerId);
+            long unknown = counters.unknownProducers.incrementAndGet();
+            // the first, then one in a thousand: a feed of such a producer would flood the log
+            if (unknown == 1 || unknown % 1_000 == 0) {
+                LOG.warn(
+                        "A fact about producer {}, which the producer list does not have, is ignored; {} so far",
+                        producerId,
+                        unknown);
+            }
         }
         return track;
     }
@@ -1408,6 +1444,10 @@ final class RecoveryMachine {
             this.awaited = awaited;
         }
     }
+
+    /** An event recovery waiting for a session's reset to be done. */
+    private record DeferredEvent(
+            long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply) {}
 
     /** A reset the safety net waits for the API to make; once made, the session's {@code underway}. */
     private static final class PendingReset {

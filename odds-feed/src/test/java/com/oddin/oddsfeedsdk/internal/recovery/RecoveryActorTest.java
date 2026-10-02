@@ -570,17 +570,16 @@ class RecoveryActorTest {
 
     @Test
     void aFactThatFailsIsCountedAndTheActorGoesOn() throws InterruptedException {
-        var broken = new AtomicBoolean(true);
-        Executor workers = task -> {
-            if (broken.compareAndSet(true, false)) {
-                throw new AssertionError("broken workers");
-            }
-            Thread.ofVirtual().start(task);
-        };
         var actor = new RecoveryActor(producers, settings(), api, events(), workers);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        var once = new AtomicBoolean(true);
+        actor.beforeHandle = () -> {
+            if (once.compareAndSet(true, false)) {
+                throw new IllegalStateException("a bad fact");
+            }
+        };
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
@@ -591,6 +590,141 @@ class RecoveryActorTest {
         assertThat(actor.running()).isTrue();
         actor.alive(LIVE, now, now, true);
         assertThat(api.next().producer()).as("the next fact's request").isEqualTo("live");
+    }
+
+    @Test
+    void aRequestTheWorkersFailOnWithAnErrorCountsAsFailedAndIsAskedForAgain() throws InterruptedException {
+        var broken = new AtomicBoolean(true);
+        Executor workers = task -> {
+            if (broken.compareAndSet(true, false)) {
+                throw new AssertionError("broken workers");
+            }
+            Thread.ofVirtual().start(task);
+        };
+        var actor =
+                new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        assertThat(api.next().producer())
+                .as("asked for again after the backoff")
+                .isEqualTo("pre");
+        assertThat(actor.counters().failed()).isEqualTo(1);
+        assertThat(actor.counters().factsFailed()).isZero();
+    }
+
+    @Test
+    void aResetTheWorkersFailOnWithAnErrorIsReportedAsNotMade() throws InterruptedException {
+        var gate = new Gate();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), gate);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        bothUp(actor, session);
+        var held = new CountDownLatch(1);
+        api.hold.set(held);
+        stale(session);
+        api.next();
+        api.next();
+        gate.errorNext = true;
+        held.countDown();
+        assertThat(List.of(api.next(), api.next()))
+                .as("asked for again, with no reset made")
+                .hasSize(2);
+        assertThat(transport.resets.getCount()).as("no channel replaced").isEqualTo(1);
+        assertThat(actor.counters().factsFailed()).isZero();
+    }
+
+    @Test
+    void aResetIsReportedDoneOnlyOnceTheSessionHasAChannelAgain() throws InterruptedException {
+        var gate = new Gate();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), gate);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        bothUp(actor, session);
+        // the new channel cannot be opened at once: the transport opens it later
+        transport.reopenLater = true;
+        stale(session);
+        api.next();
+        api.next();
+        assertThat(transport.resets.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(api.requests.poll(500, TimeUnit.MILLISECONDS))
+                .as("asked for while no one reads the session")
+                .isNull();
+        transport.open = true;
+        assertThat(List.of(api.next(), api.next()))
+                .as("asked for once it reads again")
+                .hasSize(2);
+    }
+
+    @Test
+    void aFloodOfAlivesTakesOneSlotPerProducerAndAnUnsubscribedOneInItStillOpensTheGap() throws InterruptedException {
+        var wedge = new CountDownLatch(1);
+        var wedging = new AtomicBoolean();
+        var wedged = new CountDownLatch(1);
+        var slow = new RecoveryEvents() {
+            @Override
+            public void producerStatus(ProducerStatusChange change) {
+                statuses.add(change);
+                if (wedging.compareAndSet(true, false)) {
+                    wedged.countDown();
+                    try {
+                        assertThat(wedge.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
+        };
+        var actor = new RecoveryActor(producers, settings(), api, slow, workers);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        bothUp(actor, session);
+
+        // the actor held in a status change of the live producer, and a flood of prematch alives
+        wedging.set(true);
+        long now = System.currentTimeMillis();
+        actor.alive(LIVE, now, now, false);
+        assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        long base = now + 1_000;
+        for (int i = 0; i < 100_000; i++) {
+            actor.alive(PRE, base + i, now, i != 50_000);
+        }
+        assertThat(actor.queued()).as("essential facts queued for the flood").isLessThanOrEqualTo(1);
+        wedge.countDown();
+
+        Request recovery = api.next();
+        while (!(recovery.path().equals("recovery") && recovery.producer().equals("pre"))) {
+            recovery = api.next();
+        }
+        assertThat(requireNonNull(recovery.after()).toEpochMilli())
+                .as("from the last subscribed alive before the unsubscribed one")
+                .isEqualTo(base + 49_999);
+    }
+
+    /** Both producers brought up, each by its first recovery. */
+    private void bothUp(RecoveryActor actor, SessionFacts session) throws InterruptedException {
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+    }
+
+    /** Two samples past the limit, which the window, nothing, lets the safety net act on at once. */
+    private static void stale(SessionFacts session) {
+        long later = System.currentTimeMillis();
+        session.processed(PRE, later - 300_000, later + 1, false);
+        session.processed(PRE, later - 300_000, later + 2, false);
     }
 
     @Test
@@ -802,12 +936,18 @@ class RecoveryActorTest {
         volatile boolean armed;
         /** Whether the next task is turned away. */
         volatile boolean rejectNext;
+        /** Whether handing the next task over fails with an error. */
+        volatile boolean errorNext;
 
         @Override
         public void execute(Runnable task) {
             if (rejectNext) {
                 rejectNext = false;
                 throw new RejectedExecutionException("turned away");
+            }
+            if (errorNext) {
+                errorNext = false;
+                throw new AssertionError("broken workers");
             }
             if (armed) {
                 armed = false;
@@ -920,6 +1060,9 @@ class RecoveryActorTest {
         final AtomicInteger epoch = new AtomicInteger();
         volatile @Nullable String resetThread;
         volatile boolean failReset;
+        volatile boolean open = true;
+        /** Whether a reset leaves the channel closed, for the transport to open later. */
+        volatile boolean reopenLater;
 
         @Override
         public void ack(RawDelivery delivery) {}
@@ -930,8 +1073,16 @@ class RecoveryActorTest {
                 throw new AssertionError("a broken channel");
             }
             resetThread = Thread.currentThread().getName();
+            if (reopenLater) {
+                open = false;
+            }
             epoch.incrementAndGet();
             resets.countDown();
+        }
+
+        @Override
+        public boolean isOpen() {
+            return open;
         }
 
         @Override
