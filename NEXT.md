@@ -513,15 +513,19 @@ and REST workers post facts to it; it decides and posts work out.
   feed itself does and by the producers' own pace, an alive each every few seconds.
   The rest - event recovery requests, and the messages and alives a session finished -
   are bounded and dropped with a count when full; a dropped request is answered as not
-  accepted. The lesser queues yield as soon as an essential fact waits, so a sample
-  from a new channel is never handled before the loss of the old one.
+  accepted. The lesser queues yield to the essential one: after taking a fact, the actor
+  handles every essential fact waiting before it, and whoever posts an essential fact
+  and then a sample puts the essential fact in first, so a sample from a new channel is
+  never handled before the loss of the old one.
 - Producer status keeps 0.0.x's public reasons. Each change also names its cause:
   unsubscribed, no alive, processed late, connection lost, channel lost, session
   opened, safety-net reset, recovery failed, and the recoveries and the catching up that
   bring it back. A status event goes out when the down flag or the cause changes. A
   session that processes a producer later than the maximum inactivity takes the
   producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, without a recovery, and on
-  time again brings it back with `RETURNED_FROM_INACTIVITY`, as in 0.0.x.
+  time again brings it back with `RETURNED_FROM_INACTIVITY`, as in 0.0.x. A recovery
+  that completes while a session processes its producer late leaves the producer down
+  for that, rather than up for the moment until the next look at the delay.
 - The safety net. Message rates depend on what a client has booked, and the SDK does
   not promise to keep up with every queue. Backpressure protects the JVM and the
   broker connection. The safety net bounds how far behind a client can fall: past a
@@ -549,10 +553,14 @@ and REST workers post facts to it; it decides and posts work out.
     the AMQP layer to replace the session's channel. A rejected or failed request means
     no reset: the actor backs off, counts, and raises an event. A `snapshot_complete`
     that arrives before the reset cancels it, since the reset would now drop what the
-    recovery sent. Data is never dropped before its replacement is on the way. The
-    reset stays pending until the AMQP layer reports it done; meanwhile the session's
-    `snapshot_complete`s, from the queue being replaced, are ignored, and nothing more is
-    asked for its producers, whose recoveries are in flight. Once done, the session counts as having lost its queue: the
+    recovery sent; so does the session's own `snapshot_complete` of one of those
+    recoveries, while other sessions are still awaited. Data is never dropped before its
+    replacement is on the way. When the reset is handed to the AMQP layer, every lane of
+    the session misses what came after its checkpoint then, before any message of the
+    new channel can move it. The reset stays pending until the AMQP layer reports it
+    done; meanwhile the session's `snapshot_complete`s, from the queue being replaced,
+    are ignored, and nothing more is asked for its producers, whose recoveries are in
+    flight. Once done, the session counts as having lost its queue: the
     recoveries asked for before the reset may have sent part of what they brought into
     the old queue, so they are given up and asked for again. A reset therefore costs a
     second recovery of the session's producers, which the first, accepted, has shown the
@@ -566,7 +574,9 @@ and REST workers post facts to it; it decides and posts work out.
   - Each reset raises an event and increments counters (resets, messages dropped by
     the reset, epoch discards), so an operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
-    cool-down, and has its own cap of three per session per cool-down. When spent, the net stops resetting: messages keep flowing under
+    cool-down, and has its own cap of three per session per cool-down; only a reset the
+    AMQP layer has made counts, and raises the event. When spent, the net stops
+    resetting: messages keep flowing under
     backpressure, the session is marked "lagging" in `getHealth()` with a health event,
     and the producer is **not** marked down, because a slow consumer on one session is
     not a producer fault and other sessions may be healthy. Backpressure wins in the
