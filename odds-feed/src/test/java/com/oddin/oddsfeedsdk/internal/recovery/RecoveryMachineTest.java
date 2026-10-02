@@ -143,6 +143,40 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aSessionOpenedAfterStartThatProcessedNothingKeepsItsInitialBoundaryForALaterLoss() {
+        var settings = Harness.settings();
+        var feed = new Harness(new RecoverySettings(
+                settings.maxInactivity(),
+                settings.maxRecoveryTime(),
+                Duration.ofMinutes(30),
+                settings.nodeId(),
+                settings.reissues(),
+                settings.firstReissueBackoff(),
+                settings.cooldown(),
+                settings.aliveInterval(),
+                settings.staleLimit(),
+                settings.staleWindow(),
+                settings.resets(),
+                settings.firstResetBackoff(),
+                settings.eventRecoveries(),
+                settings.tick()));
+        feed.machine.start();
+        feed.clock.advance(Duration.ofMinutes(5));
+        // opened after start, before any alive, and taking no snapshot completes
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        long boundary = feed.now() - Duration.ofMinutes(30).toMillis();
+        feed.alive(PRE);
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        feed.clock.advance(Duration.ofHours(1));
+        feed.machine.channelLost(2);
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("from where it started when it opened, not 30 minutes before the loss")
+                .isEqualTo(Instant.ofEpochMilli(boundary));
+    }
+
+    @Test
     void aColdStartWithAnInitialSnapshotIntervalAsksThatFarBack() {
         var settings = Harness.settings();
         var withInterval = new RecoverySettings(

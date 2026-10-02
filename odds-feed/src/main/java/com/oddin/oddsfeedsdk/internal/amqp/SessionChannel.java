@@ -161,6 +161,10 @@ final class SessionChannel implements SessionTransport {
     boolean tryReset() {
         lock.lock();
         try {
+            if (closed) {
+                // closed for good: neither the epoch nor the queue is the reset's any more
+                return true;
+            }
             Connection now = connection.get();
             if (now == null || !now.isOpen()) {
                 // no connection to open one on: move the epoch on, and the reconnect opens the channel
