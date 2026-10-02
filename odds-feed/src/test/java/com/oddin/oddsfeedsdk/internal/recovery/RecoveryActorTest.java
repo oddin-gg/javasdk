@@ -282,7 +282,8 @@ class RecoveryActorTest {
         assertThat(sawUp.get(WAIT_SECONDS * 2, TimeUnit.SECONDS))
                 .as("the actor went on while the caller waited")
                 .isTrue();
-        assertThat(chained).isDone();
+        // what thenRun returned completes just after the chained step itself returns
+        chained.get(WAIT_SECONDS, TimeUnit.SECONDS);
     }
 
     @Test
