@@ -469,9 +469,12 @@ and REST workers post facts to it; it decides and posts work out.
   checkpoint among the sessions that receive the producer. A gap keeps its start until
   a recovery that covers it completes. A client-supplied recovery-from timestamp
   (existing setter) seeds every session's checkpoint at `open()`. The point is clamped
-  to the producer's stateful recovery window, as today, and a cold start with no seed
-  requests a full snapshot, or the configured initial snapshot interval, counted back
-  from when the gap opened, so asking again does not move it.
+  to the producer's stateful recovery window, as today - counted back by the producer's
+  clock, as the gaps' starts are, with the offset measured on its alives - and a cold
+  start with no seed requests a full snapshot, or the configured initial snapshot
+  interval, counted back from when the gap opened, so asking again does not move it.
+  That start is also the session's checkpoint until it processes something, so a later
+  loss starts from it too, rather than from an interval counted back from the loss.
 - A recovery is asked for only while an alive says the producer is there, as 0.0.x
   asks at the first alive: after `open()`, after a reconnect, after a gap in the
   alives. Nothing goes out while the connection is down.
@@ -594,10 +597,12 @@ and REST workers post facts to it; it decides and posts work out.
     one it could not open at once it opens on its own, and a recovery asked for before
     then would send to no one. An event recovery asked for while a session that receives
     its producer is being reset waits until the reset is done, since its snapshot could
-    go to either channel. A reset
-    that could not be handed to the AMQP layer at all is reported too: nothing was
-    dropped, and the recoveries whose `snapshot_complete` was ignored meanwhile are asked
-    for again. Until the options exist, the limit is two minutes and the window one.
+    go to either channel; one that waits longer than the maximum recovery time expires
+    like one asked for. A reset that could not be handed to the AMQP layer at all, or that
+    failed before the old channel's deliveries were taken out - the channel's epoch tells,
+    since it moves exactly then - is reported as not made: nothing was dropped, nothing
+    counts against the cap, and the recoveries whose `snapshot_complete` was ignored
+    meanwhile are asked for again. Until the options exist, the limit is two minutes and the window one.
   - Each reset raises an event and increments counters (resets, messages dropped by
     the reset, epoch discards), so an operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
