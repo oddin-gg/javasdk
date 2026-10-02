@@ -283,29 +283,38 @@ class CatalogTest {
     }
 
     @Test
-    void anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld() {
+    void anItemMissingFromAValueRefreshesItOnceInTheBackgroundWhenTheValueIsAMinuteOld() {
         answer = () -> "a,b";
-        assertThat(find("c")).as("the value is too young to fetch again").isNull();
-        assertThat(fetches).hasValue(1);
+        assertThat(find("c")).isNull();
+        assertThat(queuedRefreshes).as("the value is too young to fetch again").isEmpty();
 
         answer = () -> "a,b,c";
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        assertThat(find("c")).as("the read does not wait").isNull();
+        assertThat(fetches).hasValue(1);
+        assertThat(queuedRefreshes).hasSize(1);
+        assertThat(find("c")).isNull();
+        assertThat(queuedRefreshes).as("one refresh, however many reads").hasSize(1);
+        runRefreshes();
         assertThat(find("c")).as("new upstream").isEqualTo("c");
         assertThat(fetches).hasValue(2);
 
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
         assertThat(find("d")).isNull();
-        assertThat(fetches).as("refetched for d").hasValue(3);
+        runRefreshes();
+        assertThat(fetches).as("refreshed for d").hasValue(3);
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
         assertThat(find("d")).isNull();
-        assertThat(fetches)
+        assertThat(queuedRefreshes)
                 .as("d is missing from a value fetched after it was first missed")
-                .hasValue(3);
+                .isEmpty();
 
         assertThat(find("e")).isNull();
+        runRefreshes();
         assertThat(fetches).hasValue(4);
         assertThat(find("e")).isNull();
-        assertThat(fetches).hasValue(4);
+        assertThat(queuedRefreshes).isEmpty();
+        assertThat(catalog.health().servedStale()).as("none of it was stale").isZero();
     }
 
     @Test
@@ -316,10 +325,54 @@ class CatalogTest {
             throw new ApiException("down");
         };
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
-        assertThat(find("c")).as("the failed refetch leaves it unknown").isNull();
-        assertThat(fetches).hasValue(2);
+        assertThat(find("c")).isNull();
+        runRefreshes();
+        assertThat(fetches).as("the refresh failed").hasValue(2);
+        assertThat(find("c")).as("served what is held").isNull();
         assertThat(find("d")).isNull();
-        assertThat(fetches).as("backing off").hasValue(2);
+        assertThat(queuedRefreshes).as("backing off").isEmpty();
+        time.advance(Catalog.FIRST_BACKOFF.plus(TICK));
+        assertThat(find("d")).isNull();
+        assertThat(queuedRefreshes).hasSize(1);
+    }
+
+    @Test
+    void aColdReadThatComesLateToAFailedFetchStartsNoOtherWhileTheKeyBacksOff() {
+        var down = new ApiException("down");
+        answer = () -> {
+            throw down;
+        };
+        // before it asks the loader, another read's fetch fails and leaves it
+        catalog.insideColdRead = () -> {
+            catalog.insideColdRead = () -> {};
+            assertThatThrownBy(() -> catalog.get("k")).isSameAs(down);
+        };
+        assertThatThrownBy(() -> catalog.get("k"))
+                .hasMessageContaining("not fetched again before")
+                .hasCause(down);
+        assertThat(fetches).hasValue(1);
+    }
+
+    @Test
+    void aReadAfterAClearDoesNotJoinAFetchFromBeforeIt() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            started.countDown();
+            await(release);
+            return "before the clear";
+        };
+        Future<String> before = threads.submit(() -> catalog.get("k"));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        catalog.clear();
+        answer = () -> "after the clear";
+        assertThat(threads.submit(() -> catalog.get("k")).get(5, TimeUnit.SECONDS))
+                .as("its own fetch, while the old one still runs")
+                .isEqualTo("after the clear");
+        release.countDown();
+        assertThat(before.get(5, TimeUnit.SECONDS)).isEqualTo("before the clear");
+        assertThat(catalog.peek("k")).isEqualTo("after the clear");
     }
 
     @Test

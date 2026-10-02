@@ -109,6 +109,42 @@ class MarketDescriptionsTest {
     }
 
     @Test
+    void ofTheRowsOfTheVariantsMarketTheOneWithTheVariantAskedForIsTaken() {
+        String other = "<market id=\"768\" name=\"Player to Score\" variant=\"od:dynamic_outcomes:1\">"
+                + "<outcomes><outcome id=\"od:player:1\" name=\"Other Player\"/></outcomes></market>";
+        String plain = "<market id=\"768\" name=\"Player to Score\">"
+                + "<outcomes><outcome id=\"od:player:3\" name=\"No Variant\"/></outcomes></market>";
+        String asked = "<market id=\"768\" name=\"Player to Score\" variant=\"" + DYNAMIC + "\">"
+                + "<outcomes><outcome id=\"od:player:2\" name=\"Player Two\"/></outcomes></market>";
+        api.respond(VARIANT_EN, 200, list(other, asked, plain));
+        assertThat(requireNonNull(markets.market(768, DYNAMIC, EN)).outcomes())
+                .extracting(Outcome::name)
+                .containsExactly("Player Two");
+        api.respond(VARIANT_DE, 200, list(asked, other));
+        assertThat(requireNonNull(markets.market(768, DYNAMIC, DE)).outcomes())
+                .extracting(Outcome::name)
+                .containsExactly("Player Two");
+        api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:9", 200, list(plain, other));
+        assertThat(requireNonNull(markets.market(768, "od:dynamic_outcomes:9", EN))
+                        .outcomes())
+                .extracting(Outcome::name)
+                .as("none has it: the first row of the market")
+                .containsExactly("No Variant");
+    }
+
+    @Test
+    void aVariantAnswerWithoutItsMarketFailsTheReadAlsoWhileItBacksOff() {
+        api.respond(VARIANT_EN, 200, list("<market id=\"7\" name=\"Other\"><outcomes/></market>"));
+        assertThatThrownBy(() -> markets.market(768, DYNAMIC, EN))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("does not describe market 768");
+        assertThatThrownBy(() -> markets.market(768, DYNAMIC, EN))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("not fetched again before");
+        assertThat(api.requests("GET", VARIANT_EN)).as("backing off").hasSize(1);
+    }
+
+    @Test
     void aVariantIsKeptUnderTheVariantItWasAskedForWhateverTheAnswerSays() {
         api.respond(
                 VARIANT_EN,
@@ -196,8 +232,11 @@ class MarketDescriptionsTest {
         markets.market(1, null, EN);
         api.respond(LIST_EN, 200, list(market(1, "Winner"), market(3, "Handicap")));
         time.advance(Duration.ofMinutes(2));
+        assertThat(markets.market(3, null, EN)).as("the read does not wait").isNull();
+        runRefreshes();
         assertThat(requireNonNull(markets.market(3, null, EN)).name()).isEqualTo("Handicap");
         assertThat(markets.market(99, null, EN)).isNull();
+        assertThat(queuedRefreshes).isEmpty();
         assertThat(api.requests("GET", LIST_EN)).as("the list just came").hasSize(2);
     }
 

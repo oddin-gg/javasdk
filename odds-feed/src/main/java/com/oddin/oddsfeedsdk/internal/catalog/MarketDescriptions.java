@@ -22,7 +22,8 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>Listed: each locale's list, fetched whole from the list endpoint. A refresh replaces the
  *       locale's list, so a market removed upstream is gone after it; a market missing from a list
- *       fetches the list again once, so one added upstream shows up before the next refresh.
+ *       refreshes the list once in the background, so one added upstream shows up on a later read
+ *       before the next refresh.
  *   <li>Fetched on their own: the dynamic-outcome variants, one per market, variant and locale, from
  *       the variant's endpoint. A list refresh leaves them alone; each refreshes on its own age.
  * </ul>
