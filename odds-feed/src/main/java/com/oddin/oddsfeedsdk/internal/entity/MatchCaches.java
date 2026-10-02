@@ -126,15 +126,22 @@ public final class MatchCaches {
     /**
      * The match's live state, its summary loaded again when neither the feed nor REST wrote it within
      * the match status age. A summary without a status leaves a live state without values, fresh as
-     * any; null only when the summary could not be loaded or written.
+     * any. Loaded once more when a change since refused the reload's write; null when even then it
+     * has none.
+     *
+     * @throws com.oddin.oddsfeedsdk.exceptions.ApiException when the load fails or does not finish
      */
     public @Nullable LiveValues live(URN id) {
         LiveValues values = live.get(id);
         if (values != null && values.isFresh(clock.instant())) {
             return values;
         }
-        summaries.load(new MatchKey(id, defaultLocale));
-        return live.get(id);
+        var key = new MatchKey(id, defaultLocale);
+        for (int tries = 0; tries < 2 && (values == null || !values.isFresh(clock.instant())); tries++) {
+            summaries.load(key);
+            values = live.get(id);
+        }
+        return values;
     }
 
     /**
