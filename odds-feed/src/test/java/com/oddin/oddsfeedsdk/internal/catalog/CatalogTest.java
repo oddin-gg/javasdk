@@ -283,38 +283,29 @@ class CatalogTest {
     }
 
     @Test
-    void anItemMissingFromAValueRefreshesItOnceInTheBackgroundWhenTheValueIsAMinuteOld() {
+    void anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld() {
         answer = () -> "a,b";
-        assertThat(find("c")).isNull();
-        assertThat(queuedRefreshes).as("the value is too young to fetch again").isEmpty();
+        assertThat(find("c")).as("the value is too young to fetch again").isNull();
+        assertThat(fetches).hasValue(1);
 
         answer = () -> "a,b,c";
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
-        assertThat(find("c")).as("the read does not wait").isNull();
-        assertThat(fetches).hasValue(1);
-        assertThat(queuedRefreshes).hasSize(1);
-        assertThat(find("c")).isNull();
-        assertThat(queuedRefreshes).as("one refresh, however many reads").hasSize(1);
-        runRefreshes();
         assertThat(find("c")).as("new upstream").isEqualTo("c");
         assertThat(fetches).hasValue(2);
 
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
         assertThat(find("d")).isNull();
-        runRefreshes();
-        assertThat(fetches).as("refreshed for d").hasValue(3);
+        assertThat(fetches).as("refetched for d").hasValue(3);
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
         assertThat(find("d")).isNull();
-        assertThat(queuedRefreshes)
+        assertThat(fetches)
                 .as("d is missing from a value fetched after it was first missed")
-                .isEmpty();
+                .hasValue(3);
 
         assertThat(find("e")).isNull();
-        runRefreshes();
         assertThat(fetches).hasValue(4);
         assertThat(find("e")).isNull();
-        assertThat(queuedRefreshes).isEmpty();
-        assertThat(catalog.health().servedStale()).as("none of it was stale").isZero();
+        assertThat(fetches).hasValue(4);
     }
 
     @Test
@@ -325,15 +316,45 @@ class CatalogTest {
             throw new ApiException("down");
         };
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
-        assertThat(find("c")).isNull();
-        runRefreshes();
-        assertThat(fetches).as("the refresh failed").hasValue(2);
-        assertThat(find("c")).as("served what is held").isNull();
+        assertThat(find("c")).as("the failed refetch leaves it unknown").isNull();
+        assertThat(fetches).hasValue(2);
         assertThat(find("d")).isNull();
-        assertThat(queuedRefreshes).as("backing off").isEmpty();
-        time.advance(Catalog.FIRST_BACKOFF.plus(TICK));
-        assertThat(find("d")).isNull();
-        assertThat(queuedRefreshes).hasSize(1);
+        assertThat(fetches).as("backing off").hasValue(2);
+    }
+
+    @Test
+    void concurrentReadsOfAMissingItemShareOneFetchOfTheValue() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        answer = () -> "a,b";
+        catalog.get("k");
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            await(release);
+            return "a,b,c";
+        };
+        time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        List<Future<@Nullable String>> reads = new ArrayList<>();
+        var readers = new ConcurrentLinkedQueue<Thread>();
+        for (int i = 0; i < 20; i++) {
+            reads.add(threads.submit(() -> {
+                readers.add(Thread.currentThread());
+                return find("c");
+            }));
+        }
+        // every reader waits for the one fetch before it is let go
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (readers.size() < 20
+                || !readers.stream().allMatch(reader -> reader.getState() == Thread.State.TIMED_WAITING)) {
+            assertThat(System.nanoTime() - until).as("readers waiting").isNegative();
+            Thread.onSpinWait();
+        }
+        release.countDown();
+        for (Future<@Nullable String> read : reads) {
+            assertThat(read.get(5, TimeUnit.SECONDS))
+                    .as("found by the read that missed it")
+                    .isEqualTo("c");
+        }
+        assertThat(fetches).hasValue(2);
     }
 
     @Test
