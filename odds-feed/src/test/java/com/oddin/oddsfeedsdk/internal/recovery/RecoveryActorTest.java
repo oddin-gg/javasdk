@@ -357,6 +357,56 @@ class RecoveryActorTest {
         resetThatFails(new IllegalStateException("a broken channel"));
     }
 
+    @Test
+    void aResetThatFailsWithAnErrorAfterTakingTheOldDeliveriesOutIsMade() throws InterruptedException {
+        resetThatFailsAfterMoving(new AssertionError("a channel broken after the epoch moved"));
+    }
+
+    @Test
+    void aResetThatFailsWithAnExceptionAfterTakingTheOldDeliveriesOutIsMade() throws InterruptedException {
+        resetThatFailsAfterMoving(new IllegalStateException("a channel broken after the epoch moved"));
+    }
+
+    /** The transport moved the epoch, so the old queue is gone, and then failed. */
+    private void resetThatFailsAfterMoving(Throwable failure) throws InterruptedException {
+        var held = new Held();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+        this.actor = actor;
+        transport.failAfterMoving = failure;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        held.runNext();
+        held.runNext();
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+        stale(session);
+        held.runNext();
+        held.runNext();
+        api.next();
+        api.next();
+        Runnable reset = held.next();
+        if (failure instanceof Error) {
+            assertThatThrownBy(reset::run).isSameAs(failure);
+        } else {
+            reset.run();
+        }
+        held.runNext();
+        held.runNext();
+        assertThat(List.of(api.next(), api.next()))
+                .as("asked for again, the queue being lost")
+                .hasSize(2);
+        assertThat(actor.counters().resets()).as("resets made").isEqualTo(1);
+        assertThat(actor.counters().resetDropped()).isEqualTo(3);
+        assertThat(events).as("events").contains("reset");
+    }
+
     /** The transport's reset fails before it replaced the channel: nothing was dropped. */
     private void resetThatFails(Throwable failure) throws InterruptedException {
         var held = new Held();
@@ -1216,6 +1266,8 @@ class RecoveryActorTest {
         volatile @Nullable String resetThread;
         /** What the next reset fails with, before it replaces anything; null for nothing. */
         volatile @Nullable Throwable failWith;
+        /** What a reset fails with once it has moved the epoch; null for nothing. */
+        volatile @Nullable Throwable failAfterMoving;
 
         volatile boolean open = true;
         /** Whether a reset leaves the channel closed, for the transport to open later. */
@@ -1239,6 +1291,13 @@ class RecoveryActorTest {
             }
             epoch.incrementAndGet();
             resets.countDown();
+            Throwable late = failAfterMoving;
+            if (late instanceof Error error) {
+                throw error;
+            }
+            if (late instanceof RuntimeException exception) {
+                throw exception;
+            }
         }
 
         @Override

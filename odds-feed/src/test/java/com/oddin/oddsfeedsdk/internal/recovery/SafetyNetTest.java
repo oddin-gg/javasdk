@@ -531,6 +531,26 @@ class SafetyNetTest {
         assertThat(reply).isDone();
         assertThat(reply.get()).isNull();
         assertThat(feed.counters.eventExpired()).isEqualTo(1);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).as("counted once").isEqualTo(1);
+        feed.resetDone();
+        assertThat(feed.calls).as("nothing sent for it").noneMatch(call -> call instanceof Outbox.Call.Event);
+    }
+
+    @Test
+    void expiredDeferredEventRecoveriesFreeTheirPlaces() {
+        Harness feed = resetUnderWay();
+        for (int i = 0; i < 128; i++) {
+            assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        }
+        feed.advance(Duration.ofHours(6).plusSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(128);
+        assertThat(feed.recoverEvent(LIVE)).as("a place again").isNotDone();
+        assertThat(feed.counters.eventRefused()).isZero();
+        feed.resetDone();
+        assertThat(feed.calls)
+                .filteredOn(call -> call instanceof Outbox.Call.Event)
+                .hasSize(1);
     }
 
     @Test
