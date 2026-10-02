@@ -18,6 +18,7 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -166,6 +167,9 @@ class ProfileCachesTest {
         assertThat(filled.isAuthoritative(COMPETITOR_NAME, EN)).isFalse();
         assertThat(requireNonNull(caches.cachedSport(URN.parse("od:sport:23"))).get(SPORT_NAME, EN))
                 .isEqualTo("PenaltyArena");
+        Entry tournament = requireNonNull(caches.cachedTournament(URN.parse("od:tournament:1042")));
+        assertThat(tournament.get(TOURNAMENT_NAME, EN)).isEqualTo("Test Tournament");
+        assertThat(tournament.isAuthoritative(TOURNAMENT_NAME, EN)).isFalse();
         assertThat(api.requests()).as("a fill loads nothing").isEmpty();
 
         api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
@@ -205,6 +209,11 @@ class ProfileCachesTest {
         assertThat(caches.tournament(TOURNAMENT, EN, null).get(TOURNAMENT_COMPETITORS, null))
                 .as("the tournament element's, in its order")
                 .containsExactly(URN.parse("od:competitor:2"), URN.parse("od:competitor:1"));
+        for (String id : List.of("od:competitor:2", "od:competitor:1")) {
+            Entry fromElement = requireNonNull(caches.cachedCompetitor(URN.parse(id)));
+            assertThat(fromElement.get(COMPETITOR_NAME, EN)).isNotNull();
+            assertThat(fromElement.isAuthoritative(COMPETITOR_NAME, EN)).isFalse();
+        }
         Entry listed = requireNonNull(caches.cachedCompetitor(URN.parse("od:competitor:9")));
         assertThat(listed.get(COMPETITOR_NAME, EN)).as("both lists fill").isEqualTo("Nine");
         assertThat(listed.isAuthoritative(COMPETITOR_NAME, EN)).isFalse();
@@ -239,6 +248,64 @@ class ProfileCachesTest {
         assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN))
                 .as("the list from before the clear wrote nothing, so it is loaded again")
                 .isEqualTo("CS2 again");
+    }
+
+    @Test
+    void anAlwaysSentFieldLeftOutIsClearedAndAnOptionalOneKept() {
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        caches.competitor(COMPETITOR, EN, null);
+        // the newer profile, in another locale, without its player list or country code
+        String bare = Fixtures.read("rest/competitor/competitor_profile.xml")
+                .replaceAll("(?s)<players>.*</players>", "")
+                .replace(" country_code=\"CZE\"", "");
+        api.respond("/v1/sports/de/competitors/od:competitor:47214/profile", 200, bare);
+        Entry competitor = caches.competitor(COMPETITOR, Locale.GERMAN, null);
+        assertThat(competitor.get(PLAYERS, null)).as("always sent: gone").isNull();
+        assertThat(competitor.isAuthoritative(PLAYERS, null)).isTrue();
+        assertThat(competitor.get(COUNTRY_CODE, null)).as("optional: kept").isEqualTo("CZE");
+
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        api.respond(
+                "/v1/sports/de/sports",
+                200,
+                Fixtures.read("rest/sports/sports.xml").replace(" icon_path=\"/icons/cs2.svg\"", ""));
+        caches.sports(EN, null);
+        assertThat(caches.sport(CS2, Locale.GERMAN, null).get(SPORT_ICON_PATH, null))
+                .as("the sport list always sends it: the newer list's leaving it out clears it")
+                .isNull();
+    }
+
+    @Test
+    void anEmptyListInTheTournamentElementGivesWayToTheInfosOwn() {
+        api.respond(
+                TOURNAMENT_INFO_EN,
+                200,
+                Fixtures.read("rest/tournament_info/tournament_info.xml")
+                        .replace(
+                                "</tournament>",
+                                "<competitors/></tournament>\n    <competitors><competitor id=\"od:competitor:9\""
+                                        + " name=\"Nine\" abbreviation=\"T9\" underage=\"0\"/></competitors>"));
+        assertThat(caches.tournament(TOURNAMENT, EN, null).get(TOURNAMENT_COMPETITORS, null))
+                .containsExactly(URN.parse("od:competitor:9"));
+    }
+
+    @Test
+    void aReadAfterAClearLoadsThoughALoadFromBeforeWasUnderWay() throws Exception {
+        api.respond(
+                COMPETITOR_PROFILE_EN,
+                FakeRestServer.Reply.of(200, Fixtures.read("rest/competitor/competitor_profile.xml"))
+                        .after(Duration.ofMillis(500)),
+                FakeRestServer.Reply.of(
+                        200,
+                        Fixtures.read("rest/competitor/competitor_profile.xml")
+                                .replace("Team Alpha", "Team Alpha Again")));
+        var before = threads.submit(() -> caches.competitor(COMPETITOR, EN, null));
+        api.awaitRequest("GET", COMPETITOR_PROFILE_EN);
+        caches.clear();
+        assertThat(caches.competitor(COMPETITOR, EN, null).get(COMPETITOR_NAME, EN))
+                .isEqualTo("Team Alpha Again");
+        assertThat(before.get(10, java.util.concurrent.TimeUnit.SECONDS).get(COMPETITOR_NAME, EN))
+                .isEqualTo("Team Alpha Again");
     }
 
     @Test
