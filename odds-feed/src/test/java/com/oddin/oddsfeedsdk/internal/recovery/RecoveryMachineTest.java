@@ -88,6 +88,61 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void theWindowIsCountedBackByTheProducersClockWhicheverWayItIsOff() {
+        for (long offset : new long[] {
+            Duration.ofMinutes(10).toMillis(), -Duration.ofMinutes(10).toMillis()
+        }) {
+            var feed = new Harness();
+            long from = feed.now()
+                    - Duration.ofDays(3).toMillis()
+                    + Duration.ofMinutes(1).toMillis();
+            feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+            feed.open(1, MessageInterest.ALL);
+            feed.machine.start();
+            feed.clock.advance(Duration.ofHours(1));
+            // the producer's clock behind the SDK's by the offset, or ahead of it
+            feed.machine.alive(PRE, feed.now() - offset, feed.now(), true);
+            assertThat(feed.lastSnapshot(PRE).after())
+                    .as("with an offset of " + offset + " ms")
+                    .isEqualTo(Instant.ofEpochMilli(
+                            feed.now() - offset - Duration.ofDays(3).toMillis()));
+        }
+    }
+
+    @Test
+    void aSessionThatProcessedNothingKeepsItsInitialBoundaryForALaterLoss() {
+        var settings = Harness.settings();
+        var feed = new Harness(new RecoverySettings(
+                settings.maxInactivity(),
+                settings.maxRecoveryTime(),
+                Duration.ofMinutes(30),
+                settings.nodeId(),
+                settings.reissues(),
+                settings.firstReissueBackoff(),
+                settings.cooldown(),
+                settings.aliveInterval(),
+                settings.staleLimit(),
+                settings.staleWindow(),
+                settings.resets(),
+                settings.firstResetBackoff(),
+                settings.eventRecoveries(),
+                settings.tick()));
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        // the low-priority session takes no snapshot completes, so nothing moves its checkpoint
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        long boundary = feed.now() - Duration.ofMinutes(30).toMillis();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.clock.advance(Duration.ofHours(1));
+        feed.machine.channelLost(2);
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("from where its first recovery started, not 30 minutes before the loss")
+                .isEqualTo(Instant.ofEpochMilli(boundary));
+    }
+
+    @Test
     void aColdStartWithAnInitialSnapshotIntervalAsksThatFarBack() {
         var settings = Harness.settings();
         var withInterval = new RecoverySettings(

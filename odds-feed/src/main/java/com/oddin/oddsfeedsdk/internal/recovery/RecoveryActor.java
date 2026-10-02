@@ -483,19 +483,24 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             SessionTransport transport = transports.get(session);
             try {
                 workers.execute(() -> {
+                    // the transport moves the epoch as it takes the old channel's deliveries out:
+                    // the old queue is gone exactly when it moved, whatever came of the new one
+                    long before = transport == null ? 0 : transport.epoch();
+                    int dropped = transport == null ? 0 : transport.queue().size();
                     try {
                         if (transport != null) {
-                            int dropped = transport.queue().size();
                             transport.reset();
-                            counters.resetDropped.addAndGet(dropped);
                         }
                     } catch (RuntimeException e) {
                         LOG.warn("The safety net could not reset session {}", session, e);
                     } finally {
-                        if (transport != null) {
+                        boolean replaced = false;
+                        if (transport != null && transport.epoch() != before) {
+                            replaced = true;
+                            counters.resetDropped.addAndGet(dropped);
                             awaitOpen(session, transport);
                         }
-                        post(essential, new Fact.ResetDone(session, number, true));
+                        post(essential, new Fact.ResetDone(session, number, replaced));
                     }
                 });
             } catch (RuntimeException | Error e) {
