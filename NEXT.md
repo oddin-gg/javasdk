@@ -501,7 +501,9 @@ and REST workers post facts to it; it decides and posts work out.
 - Event recoveries take their ids from the same sequence. At most 128 are in flight per
   producer, and one without a `snapshot_complete` within the maximum recovery time is
   dropped and counted, as is one whose `snapshot_complete` went with a lost queue; a
-  caller still waiting for the API's answer then hears it was not accepted. One asked
+  caller still waiting for the API's answer then hears it was not accepted. A
+  `snapshot_complete` that comes before the API's answer says the API took the request:
+  the caller hears the request id then, and a late answer changes nothing. One asked
   for while the connection is down is refused at once, since its snapshot would have no
   queue to go to. The caller's future is completed on a thread of its own, never the
   actor's, so nothing the caller chains to it can hold the actor up.
@@ -516,7 +518,9 @@ and REST workers post facts to it; it decides and posts work out.
   accepted. The lesser queues yield to the essential one: after taking a fact, the actor
   handles every essential fact waiting before it, and whoever posts an essential fact
   and then a sample puts the essential fact in first, so a sample from a new channel is
-  never handled before the loss of the old one.
+  never handled before the loss of the old one. Each turn takes at most a thousand of
+  the bounded facts of each kind, so a stream of them holds up neither the clock nor the
+  others.
 - Producer status keeps 0.0.x's public reasons. Each change also names its cause:
   unsubscribed, no alive, processed late, connection lost, channel lost, session
   opened, safety-net reset, recovery failed, and the recoveries and the catching up that
@@ -525,7 +529,10 @@ and REST workers post facts to it; it decides and posts work out.
   producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, without a recovery, and on
   time again brings it back with `RETURNED_FROM_INACTIVITY`, as in 0.0.x. A recovery
   that completes while a session processes its producer late leaves the producer down
-  for that, rather than up for the moment until the next look at the delay.
+  for that, rather than up for the moment until the next look at the delay. The first
+  time a producer comes up after `open()`, whatever brings it up - its first recovery,
+  a follow-up one, a session closing, the session catching up - the reason is
+  `FIRST_RECOVERY_COMPLETED`, so the client hears it once per producer, as in 0.0.x.
 - The safety net. Message rates depend on what a client has booked, and the SDK does
   not promise to keep up with every queue. Backpressure protects the JVM and the
   broker connection. The safety net bounds how far behind a client can fall: past a
@@ -554,7 +561,9 @@ and REST workers post facts to it; it decides and posts work out.
     no reset: the actor backs off, counts, and raises an event. A `snapshot_complete`
     that arrives before the reset cancels it, since the reset would now drop what the
     recovery sent; so does the session's own `snapshot_complete` of one of those
-    recoveries, while other sessions are still awaited. Data is never dropped before its
+    recoveries, while other sessions are still awaited. A recovery no session takes
+    completions for completes on its acceptance without cancelling the reset, since it
+    has delivered nothing yet. Data is never dropped before its
     replacement is on the way. When the reset is handed to the AMQP layer, every lane of
     the session misses what came after its checkpoint then, before any message of the
     new channel can move it. The reset stays pending until the AMQP layer reports it
