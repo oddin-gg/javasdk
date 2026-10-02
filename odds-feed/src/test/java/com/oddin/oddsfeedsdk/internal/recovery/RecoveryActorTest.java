@@ -751,6 +751,102 @@ class RecoveryActorTest {
     }
 
     @Test
+    void alivesOfAProducerTheListDoesNotHaveQueueNothing() throws InterruptedException {
+        var wedge = new CountDownLatch(1);
+        var wedged = new CountDownLatch(1);
+        var slow = new RecoveryEvents() {
+            @Override
+            public void producerStatus(ProducerStatusChange change) {
+                wedged.countDown();
+                try {
+                    assertThat(wedge.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        var actor = new RecoveryActor(producers, settings(), api, slow, workers);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, false);
+        assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        for (int i = 0; i < 100_000; i++) {
+            actor.alive(9 + i % 1_000, now, now, i % 2 == 0);
+        }
+        assertThat(actor.queued()).as("essential facts queued for them").isZero();
+        assertThat(actor.counters().unknownProducers()).isEqualTo(100_000);
+        wedge.countDown();
+    }
+
+    @Test
+    void aResetWaitingForItsChannelEndsWhenTheSessionCloses() throws InterruptedException {
+        var held = new Held();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        held.runNext();
+        held.runNext();
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+        transport.reopenLater = true;
+        stale(session);
+        held.runNext();
+        held.runNext();
+        api.next();
+        api.next();
+        Thread worker = Thread.ofVirtual().start(held.next());
+        assertThat(transport.resets.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(worker.join(Duration.ofMillis(300)))
+                .as("waiting for the channel")
+                .isFalse();
+
+        session.closed();
+        assertThat(worker.join(Duration.ofSeconds(WAIT_SECONDS)))
+                .as("the reset's worker, once the session is gone")
+                .isTrue();
+        assertThat(held.tasks.poll(300, TimeUnit.MILLISECONDS))
+                .as("work for the closed session")
+                .isNull();
+    }
+
+    @Test
+    void aStreamOfSamplesHoldsUpNoTurn() throws InterruptedException {
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        // each sample taken posts the next, so the samples' queue is never empty
+        var turnsSeen = new java.util.concurrent.ConcurrentSkipListSet<Long>();
+        var left = new AtomicInteger(2_500);
+        var done = new CountDownLatch(1);
+        actor.beforeSamplePoll = () -> {
+            if (left.get() > 0) {
+                turnsSeen.add(actor.turns());
+            }
+            if (left.getAndDecrement() > 0) {
+                long now = System.currentTimeMillis();
+                session.processed(PRE, now, now, false);
+            } else {
+                done.countDown();
+            }
+        };
+        long now = System.currentTimeMillis();
+        session.processed(PRE, now, now, false);
+        assertThat(done.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(turnsSeen).as("turns the stream ran through").hasSizeGreaterThanOrEqualTo(3);
+    }
+
+    @Test
     void aFullQueueDropsAndCountsInsteadOfWaiting() throws InterruptedException, ExecutionException, TimeoutException {
         // not started: nothing takes from the queues
         var actor = new RecoveryActor(

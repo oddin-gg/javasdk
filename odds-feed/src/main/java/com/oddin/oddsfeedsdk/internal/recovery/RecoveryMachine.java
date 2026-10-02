@@ -169,7 +169,7 @@ final class RecoveryMachine {
                 // a snapshot complete stands for the API's acceptance; with none seen, and none left
                 // to wait for, the API's answer decides
                 if (active.seen.containsAll(active.awaited) && (active.accepted || seenAny)) {
-                    complete(track, active, now, seenAny);
+                    complete(track, active, now);
                 }
             } else if (active == null) {
                 upIfNothingMissing(track, now);
@@ -462,7 +462,7 @@ final class RecoveryMachine {
                     accepted(track, active, now());
                 }
                 if (track.active == active && active.seen.containsAll(active.awaited)) {
-                    complete(track, active, now(), true);
+                    complete(track, active, now());
                 }
             }
             return;
@@ -696,7 +696,7 @@ final class RecoveryMachine {
         }
         if (track.active == active && active.awaited.isEmpty()) {
             // no session takes snapshot completes: nothing would ever complete it
-            complete(track, active, now, false);
+            complete(track, active, now);
         }
     }
 
@@ -704,23 +704,18 @@ final class RecoveryMachine {
      * Every session has seen the snapshot complete: the gaps it covers are closed. With gaps left
      * that opened since, one more recovery; with none, the producer is up.
      *
-     * @param seen whether a session has seen the snapshot complete; one that completes only because
-     *     the API accepted it and no session takes completions has delivered nothing yet, so a reset
-     *     waiting for it stays
+     * <p>A pending reset of another session is left as it is: a session's reset is cancelled only by
+     * its own snapshot complete, the one evidence that its backlog was replaced. A low-priority
+     * session next to a high-priority one sees none, so its reset goes ahead, and once it is done
+     * what the recovery had sent into the old queue is asked for again.
      */
-    private void complete(Track track, Active active, long now, boolean seen) {
+    private void complete(Track track, Active active, long now) {
         track.active = null;
         track.pausedUntil = now;
         if (!active.accepted) {
             // the snapshot complete was quicker than the API's answer
             producers.setRecoveryInfo(
                     track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), true));
-        }
-        // a reset still waiting for the API would drop what this recovery sent; it is not made
-        for (SessionState session : sessions.values()) {
-            if (seen && session.pending != null && session.lanes.containsKey(track.id)) {
-                cancelReset(session, now);
-            }
         }
         if (track.gap != null && track.gap.seq <= active.covers) {
             track.gap = null;
