@@ -522,6 +522,36 @@ class SafetyNetTest {
     }
 
     @Test
+    void aDeferredEventRecoveryExpiresAsOneAskedForWould() throws ExecutionException, InterruptedException {
+        Harness feed = resetUnderWay();
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        feed.advance(Duration.ofHours(6));
+        assertThat(reply).as("at the maximum recovery time").isNotDone();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(reply).isDone();
+        assertThat(reply.get()).isNull();
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void aSnapshotCompleteOfARecoveryTheResetDidNotAskForLeavesItWaiting() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        liveAlives = false;
+        stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
+        assertThat(feed.calls).as("the prematch producer only").hasSize(before + 1);
+        // the silent producer speaks while the reset waits for the API, and is recovered on its own
+        liveAlives = true;
+        feed.alive(LIVE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.complete(live, 1);
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.resets)
+                .as("a completion of a recovery it did not ask for")
+                .containsExactly(1);
+    }
+
+    @Test
     void aReportOfNoResetUnderWayChangesNothing() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();

@@ -134,8 +134,9 @@ final class RecoveryMachine {
             if (info.interest().isProducerInScope(track.producer)) {
                 var lane = new Lane();
                 if (started) {
-                    lane.checkpoint = recoveryPoint(track);
-                    lane.gap = openGap(null, lane.checkpoint, false);
+                    Gap gap = openGap(null, recoveryPoint(track), false);
+                    lane.gap = gap;
+                    lane.checkpoint = gap.from;
                 }
                 session.lanes.put(track.id, lane);
             }
@@ -202,8 +203,11 @@ final class RecoveryMachine {
         for (SessionState session : sessions.values()) {
             for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
                 Lane lane = entry.getValue();
-                lane.checkpoint = seed(track(entry.getKey()));
-                lane.gap = openGap(lane.gap, lane.checkpoint, false);
+                Gap gap = openGap(lane.gap, seed(track(entry.getKey())), false);
+                lane.gap = gap;
+                // the start it got - an initial interval counted back from now, say - is where a
+                // later loss starts too, while the session has processed nothing to move it
+                lane.checkpoint = gap.from;
             }
         }
     }
@@ -559,7 +563,7 @@ final class RecoveryMachine {
         if (underway(track)) {
             // a session that receives it is being reset: its snapshot could go to either channel
             LOG.info("Event recovery of {} waits for a session's reset to be done", eventId);
-            deferred.add(new DeferredEvent(producerId, eventId, stateful, reply));
+            deferred.add(new DeferredEvent(producerId, eventId, stateful, reply, now()));
             return;
         }
         long requestId = ids.next(this::inFlight);
@@ -611,6 +615,18 @@ final class RecoveryMachine {
                         "Event recovery {} of {} got no snapshot complete within {}",
                         recovery.requestId,
                         recovery.eventId,
+                        settings.maxRecoveryTime());
+            }
+        }
+        for (DeferredEvent event : new ArrayList<>(deferred)) {
+            if (now - event.deferredAt() > settings.maxRecoveryTime().toMillis()) {
+                // the reset it waited for never ended: it expires as one asked for would
+                deferred.remove(event);
+                counters.eventExpired.incrementAndGet();
+                outbox.reply(event.reply(), null);
+                LOG.warn(
+                        "Event recovery of {} waited for a reset longer than {}",
+                        event.eventId(),
                         settings.maxRecoveryTime());
             }
         }
@@ -679,7 +695,9 @@ final class RecoveryMachine {
         }
         int window = track.producer.getStatefulRecoveryWindowInMinutes();
         if (after != 0 && window > 0) {
-            after = Math.max(after, now - Duration.ofMinutes(window).toMillis());
+            // the window counts back from now by the producer's clock, as the gaps' starts are
+            after = Math.max(
+                    after, now - track.offset - Duration.ofMinutes(window).toMillis());
         }
         return after;
     }
@@ -1442,7 +1460,7 @@ final class RecoveryMachine {
 
     /** An event recovery waiting for a session's reset to be done. */
     private record DeferredEvent(
-            long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply) {}
+            long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply, long deferredAt) {}
 
     /** A reset the safety net waits for the API to make; once made, the session's {@code underway}. */
     private static final class PendingReset {
