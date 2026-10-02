@@ -224,7 +224,7 @@ public final class MatchCaches {
                 key.id(),
                 clock.instant(),
                 status == null ? LiveWrite.of() : MatchWrites.live(status),
-                () -> abandoned.getAsBoolean() || !matches.isNewest(key.id(), started));
+                () -> abandoned.getAsBoolean() || !matches.isNewest(key.id(), SUMMARY, started));
         return written;
     }
 
