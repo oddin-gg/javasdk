@@ -424,10 +424,11 @@ Locales and catalogs:
   refresh of a list endpoint replaces the bulk-listed entries for that locale and
   leaves individually fetched ones (dynamic market variants) alone; those expire on
   their own age. A market or tournament removed upstream disappears on the next
-  refresh. A market or match status missing from a list refreshes the list in the
-  background, once per missing id and only when the list is at least a minute old, so
-  one added upstream shows up on a later read before the next refresh. The read that
-  missed does not wait for it.
+  refresh. A market or match status missing from a list fetches the list again, once
+  per missing id and only when the list is at least a minute old, so one added
+  upstream shows up before the next refresh. The read that missed waits for that
+  fetch, within its deadline, and finds what is new: like a getter on a cold entity
+  (section 3), it pays the latency on its own session, as in 0.0.x.
 - Every cache has a public clear method.
 
 ### Recovery and producers
@@ -937,6 +938,6 @@ old names (section 3, difference 4).
 - 2026-10-01, ticket 19 checked against 0.0.x and the Go SDK: catalogs refresh an hour
   after their fetch, so most of the 24 hours of maximum staleness is left for an outage.
   A dynamic market variant is always fetched from its own endpoint, also when the list
-  carries a row for it. A miss refreshes the list once, in the background, instead of
-  on every miss and on the reader's thread as 0.0.x did. A read with nothing to serve fails at once while its key backs off, which
+  carries a row for it. A miss refetches the list once instead of on every miss as
+  0.0.x did. A read with nothing to serve fails at once while its key backs off, which
   keeps a cold outage from costing one HTTP timeout per message.

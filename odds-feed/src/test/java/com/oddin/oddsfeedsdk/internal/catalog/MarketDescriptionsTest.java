@@ -232,11 +232,8 @@ class MarketDescriptionsTest {
         markets.market(1, null, EN);
         api.respond(LIST_EN, 200, list(market(1, "Winner"), market(3, "Handicap")));
         time.advance(Duration.ofMinutes(2));
-        assertThat(markets.market(3, null, EN)).as("the read does not wait").isNull();
-        runRefreshes();
         assertThat(requireNonNull(markets.market(3, null, EN)).name()).isEqualTo("Handicap");
         assertThat(markets.market(99, null, EN)).isNull();
-        assertThat(queuedRefreshes).isEmpty();
         assertThat(api.requests("GET", LIST_EN)).as("the list just came").hasSize(2);
     }
 

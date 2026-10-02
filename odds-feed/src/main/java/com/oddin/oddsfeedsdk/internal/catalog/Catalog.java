@@ -207,11 +207,12 @@ final class Catalog<K, V> {
     }
 
     /**
-     * An item of the key's value, such as one market of a locale's list, or null when the value lacks
-     * it. Then the value is refreshed in the background - once per item, and only when it was
-     * fetched before the item was first missed and at least {@link #MISS_INTERVAL} ago - so that what
-     * is new upstream shows up on a later read, before the next refresh. The read does not wait for
-     * that, so a missing item never holds up its reader, not even while the API is down.
+     * An item of the key's value, such as one market of a locale's list. When the value lacks it,
+     * the value is fetched again and the read waits for it, as a read with nothing to serve does -
+     * once per item, and only when the value was fetched before the item was first missed and at
+     * least {@link #MISS_INTERVAL} ago - so that what is new upstream is found by the read that first
+     * asks for it, as in 0.0.x. Null when it is not there even then, when the key backs off, or when
+     * that fetch fails.
      *
      * @throws ApiException when there is no value to look in and the fetch fails
      */
@@ -223,12 +224,19 @@ final class Catalog<K, V> {
         Instant now = clock.instant();
         long firstMissed = misses.asMap().computeIfAbsent(new Miss<>(key, item), _ -> order.incrementAndGet());
         Held<V> current = held.getIfPresent(key);
-        if (current != null
-                && current.startedAs() < firstMissed
-                && !current.fetchedAt().plus(MISS_INTERVAL).isAfter(now)) {
-            refreshInBackground(key, now);
+        if (current == null
+                || current.startedAs() > firstMissed
+                || current.fetchedAt().plus(MISS_INTERVAL).isAfter(now)
+                // the fetch would refuse to start too; this spares the exception
+                || backingOff(key, now) != null) {
+            return null;
         }
-        return null;
+        try {
+            return finder.find(fetchNow(key), item);
+        } catch (ApiException failed) {
+            // counted where it failed; the item is as unknown as it was
+            return null;
+        }
     }
 
     /**

@@ -147,8 +147,6 @@ class ListedCatalogsTest {
                 statuses("<match_status id=\"0\" description=\"Not started\"/>"
                         + "<match_status id=\"9\" description=\"Paused\"/>"));
         time.advance(Duration.ofMinutes(2));
-        assertThat(statuses.description(9, EN)).as("the read does not wait").isNull();
-        runRefreshes();
         assertThat(statuses.description(9, EN)).isEqualTo("Paused");
     }
 
