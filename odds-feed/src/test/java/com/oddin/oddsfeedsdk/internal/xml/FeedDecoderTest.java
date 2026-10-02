@@ -241,7 +241,7 @@ class FeedDecoderTest {
 
         // repeated, a few colliding names never pass the count of distinct names, but share one hash
         var names = new ArrayList<String>();
-        colliding("", 4, names);
+        colliding("", 6, names);
         var repeated = new StringBuilder(ROOT);
         for (int i = 0; i < 100; i++) {
             for (String name : names) {
@@ -251,7 +251,79 @@ class FeedDecoderTest {
         assertThatThrownBy(
                         () -> lenient.decode(bytes(repeated.append("</alive>").toString())))
                 .isInstanceOf(DecodeException.class)
-                .hasMessageContaining("with one hash");
+                .hasMessageContaining("in one hash chain");
+    }
+
+    @Test
+    void namesThatDifferInHashButShareAChainAreHeldToItToo() throws DecodeException {
+        var chain = new ArrayList<String>();
+        for (int i = 0; chain.size() <= XmlReader.MAX_NAMES_PER_CHAIN; i++) {
+            String name = "n" + i;
+            if (((name.hashCode() & 127) >> 1) == 0) {
+                chain.add(name);
+            }
+        }
+        var fits = new StringBuilder(ROOT);
+        chain.subList(0, XmlReader.MAX_NAMES_PER_CHAIN)
+                .forEach(name -> fits.append('<').append(name).append("/>"));
+        assertThat(lenient.decode(bytes(fits.append("</alive>").toString()))).isInstanceOf(OFAlive.class);
+        var over = new StringBuilder(ROOT);
+        chain.forEach(name -> over.append('<').append(name).append("/>"));
+        assertThatThrownBy(() -> lenient.decode(bytes(over.append("</alive>").toString())))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("in one hash chain");
+    }
+
+    @Test
+    void aDocumentMayUseExactlyTheMostDistinctNames() throws DecodeException {
+        // the root's name and its three attributes count too
+        int room = XmlReader.MAX_NAMES - 4;
+        assertThat(lenient.decode(bytes(ROOT + spread(room) + "</alive>"))).isInstanceOf(OFAlive.class);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + spread(room + 1) + "</alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("more than " + XmlReader.MAX_NAMES + " distinct names");
+    }
+
+    @Test
+    void attributeNamesAndPrefixesAreHeldToTheLengthToo() throws DecodeException {
+        String fits = "a".repeat(XmlReader.MAX_NAME_LENGTH);
+        String over = "a".repeat(XmlReader.MAX_NAME_LENGTH + 1);
+        assertThat(lenient.decode(bytes(ROOT + "<x " + fits + "=\"1\"/></alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThat(lenient.decode(bytes(ROOT + "<x xmlns:" + fits + "=\"u\"/></alive>")))
+                .isInstanceOf(OFAlive.class);
+        for (String hostile :
+                List.of(ROOT + "<x " + over + "=\"1\"/></alive>", ROOT + "<x xmlns:" + over + "=\"u\"/></alive>")) {
+            assertThatThrownBy(() -> lenient.decode(bytes(hostile)))
+                    .isInstanceOf(DecodeException.class)
+                    .hasMessageContaining("longer than");
+        }
+    }
+
+    @Test
+    void namespaceDeclarationsCountTowardsAnElementsAttributes() throws DecodeException {
+        assertThat(lenient.decode(bytes(ROOT + declarations(XmlReader.MAX_ATTRIBUTES) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + declarations(XmlReader.MAX_ATTRIBUTES + 1) + "</alive>")))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTES));
+    }
+
+    /** Distinct names that collide in no chain more than they must. */
+    private static String spread(int count) {
+        var body = new StringBuilder();
+        for (int i = 0; i < count; i++) {
+            body.append("<s").append(i).append("/>");
+        }
+        return body.toString();
+    }
+
+    private static String declarations(int count) {
+        var tag = new StringBuilder("<x");
+        for (int i = 0; i < count; i++) {
+            tag.append(" xmlns:p").append(i).append("=\"u").append(i).append('"');
+        }
+        return tag.append("/>").toString();
     }
 
     private static String attributes(int count) {

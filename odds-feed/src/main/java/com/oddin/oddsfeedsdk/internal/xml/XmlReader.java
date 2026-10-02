@@ -61,8 +61,13 @@ final class XmlReader {
     /** The longest name: the schemas' are a few dozen characters; a name is compared whole, each time. */
     static final int MAX_NAME_LENGTH = 128;
 
-    /** The most distinct names one hash may have: past a few, they are built to collide. */
-    static final int MAX_NAMES_PER_HASH = 8;
+    /**
+     * The most distinct names one of Woodstox's chains may hold. Its table starts at 128 slots and
+     * chains what overflows by {@code (hash & 127) >> 1}; a larger table only splits those chains,
+     * so this bounds every chain at every size. Names built to collide crowd one; a document's own
+     * spread over all 64.
+     */
+    static final int MAX_NAMES_PER_CHAIN = 32;
 
     private final JAXBContext context;
     private final String noun;
@@ -174,7 +179,7 @@ final class XmlReader {
      */
     static final class NameLimit extends StreamReaderDelegate {
         private final Set<String> names = new HashSet<>();
-        private final Map<Integer, Integer> namesPerHash = new HashMap<>();
+        private final Map<Integer, Integer> namesPerChain = new HashMap<>();
 
         NameLimit(XMLStreamReader reader) {
             super(reader);
@@ -259,9 +264,9 @@ final class XmlReader {
             if (names.size() > MAX_NAMES) {
                 throw new XMLStreamException("more than " + MAX_NAMES + " distinct names", getLocation());
             }
-            if (namesPerHash.merge(name.hashCode(), 1, Integer::sum) > MAX_NAMES_PER_HASH) {
+            if (namesPerChain.merge((name.hashCode() & 127) >> 1, 1, Integer::sum) > MAX_NAMES_PER_CHAIN) {
                 throw new XMLStreamException(
-                        "more than " + MAX_NAMES_PER_HASH + " distinct names with one hash", getLocation());
+                        "more than " + MAX_NAMES_PER_CHAIN + " distinct names in one hash chain", getLocation());
             }
         }
     }
