@@ -7,14 +7,15 @@ import com.oddin.oddsfeedsdk.internal.rest.RecoveryRequests;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.InstantSource;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
@@ -59,6 +60,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private static final int SAMPLES_PER_TURN = 1_000;
     /** How many event recovery requests it takes in a turn, so a stream of them holds up no tick. */
     private static final int REQUESTS_PER_TURN = 1_000;
+    /** How often a reset's worker looks whether the session's channel is open again. */
+    private static final long REOPEN_POLL_MILLIS = 100;
     /** How long close() waits for the actor's thread to end. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
 
@@ -71,8 +74,15 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final Executor workers;
     private final InstantSource clock;
     private final long tickMillis;
-    /** The sessions' channels, for the safety net's resets; the actor's thread's only. */
-    private final Map<Integer, SessionTransport> transports = new HashMap<>();
+    /** The sessions' channels, for the safety net's resets; written by the actor's thread only. */
+    private final Map<Integer, SessionTransport> transports = new ConcurrentHashMap<>();
+    /**
+     * The alives of each producer not handled yet, by producer: one slot each, and one fact in the
+     * essential queue for it, however many alives arrive meanwhile.
+     */
+    private final Map<Long, AliveSlot> alives = new ConcurrentHashMap<>();
+
+    private final Producers producers;
 
     private final Thread thread;
     private volatile boolean closed;
@@ -80,6 +90,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private volatile long turnedAt;
     /** A test's hook, run before each take from the samples, after the look at the essential facts. */
     volatile Runnable beforeSamplePoll = () -> {};
+    /** A test's hook, run inside the handling of each fact. */
+    volatile Runnable beforeHandle = () -> {};
     /** A test's hook, run before each take from the event recovery requests. */
     volatile Runnable beforeRequestPoll = () -> {};
     /** The turns the actor has taken; for the watchdog and a test. */
@@ -118,6 +130,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             int controlCapacity,
             int sampleCapacity) {
         this.counters = new RecoveryCounters();
+        this.producers = producers;
         this.control = new ArrayBlockingQueue<>(controlCapacity);
         this.samples = new ArrayBlockingQueue<>(sampleCapacity);
         this.api = api;
@@ -172,9 +185,37 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         thread.start();
     }
 
+    /**
+     * An alive, never dropped but never queued one by one either: it joins its producer's slot, and
+     * the slot is queued once until the actor takes it. A flood of alives costs one slot per
+     * producer of the list; one of a producer the list does not have is counted and dropped.
+     */
     @Override
     public void alive(long producerId, long generatedAt, long receivedAt, boolean subscribed) {
-        post(essential, new Fact.Alive(producerId, generatedAt, receivedAt, subscribed));
+        if (closed) {
+            return;
+        }
+        if (!producers.isKnown(producerId)) {
+            long unknown = counters.unknownProducers.incrementAndGet();
+            if (unknown == 1 || unknown % 1_000 == 0) {
+                LOG.warn("An alive of producer {}, which the producer list does not have, is dropped", producerId);
+            }
+            return;
+        }
+        var alive = new AliveSlot.Seen(generatedAt, receivedAt, subscribed);
+        var fresh = new boolean[1];
+        alives.compute(producerId, (id, slot) -> {
+            AliveSlot joined = slot;
+            if (joined == null) {
+                fresh[0] = true;
+                joined = new AliveSlot(alive);
+            }
+            joined.add(alive);
+            return joined;
+        });
+        if (fresh[0]) {
+            post(essential, new Fact.Alives(producerId));
+        }
     }
 
     @Override
@@ -209,6 +250,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     /** Whether the actor's thread runs, for a test. */
     boolean running() {
         return thread.isAlive();
+    }
+
+    /** The essential facts waiting, for a test. */
+    int queued() {
+        return essential.size();
     }
 
     /** How many turns the actor has taken. */
@@ -312,6 +358,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
         essential.clear();
         samples.clear();
+        alives.clear();
         machine.close();
     }
 
@@ -363,6 +410,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      */
     private void handle(Fact fact) {
         try {
+            beforeHandle.run();
             switch (fact) {
                 case Fact.Opened(var info, var transport) -> {
                     transports.put(info.id(), transport);
@@ -373,8 +421,14 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     machine.sessionClosed(session);
                 }
                 case Fact.Start() -> machine.start();
-                case Fact.Alive(var producer, var generated, var received, var subscribed) ->
-                    machine.alive(producer, generated, received, subscribed);
+                case Fact.Alives(var producer) -> {
+                    AliveSlot slot = alives.remove(producer);
+                    if (slot != null) {
+                        for (AliveSlot.Seen alive : slot.inOrder()) {
+                            machine.alive(producer, alive.generatedAt(), alive.receivedAt(), alive.subscribed());
+                        }
+                    }
+                }
                 case Fact.Processed(var session, var producer, var generated, var taken, var snapshot) ->
                     machine.processed(session, producer, generated, taken, snapshot);
                 case Fact.SessionAlive(var session, var producer, var generated, var taken, var subscribed) ->
@@ -412,10 +466,18 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             } catch (RuntimeException e) {
                 // turned away, or the workers broke: the request failed, and is asked for again
                 post(essential, new Fact.Answered(call.requestId(), e));
+            } catch (Error e) {
+                post(
+                        essential,
+                        new Fact.Answered(call.requestId(), new IllegalStateException("the workers failed", e)));
             }
         }
 
-        /** Replaces the channel on a worker, then reports it done, whatever came of it. */
+        /**
+         * Replaces the channel on a worker, then reports it done, whatever came of it - but only once
+         * the session has an open channel again: one the transport could not open at once it opens
+         * on its own later, and a recovery asked for before then would send to no one.
+         */
         @Override
         public void reset(int session, long number) {
             SessionTransport transport = transports.get(session);
@@ -430,12 +492,29 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     } catch (RuntimeException e) {
                         LOG.warn("The safety net could not reset session {}", session, e);
                     } finally {
+                        if (transport != null) {
+                            awaitOpen(session, transport);
+                        }
                         post(essential, new Fact.ResetDone(session, number, true));
                     }
                 });
-            } catch (RejectedExecutionException e) {
-                LOG.warn("The safety net could not reset session {}: the workers turned it away", session);
+            } catch (RuntimeException | Error e) {
+                LOG.warn("The safety net could not reset session {}: the workers turned it away", session, e);
                 post(essential, new Fact.ResetDone(session, number, false));
+            }
+        }
+
+        /**
+         * On a worker: waits until the session's channel is open, the session is gone or the actor
+         * closes. A channel that could not be opened again is opened by the transport, with backoff.
+         */
+        private void awaitOpen(int session, SessionTransport transport) {
+            try {
+                while (!closed && transport.equals(transports.get(session)) && !transport.isOpen()) {
+                    TimeUnit.MILLISECONDS.sleep(REOPEN_POLL_MILLIS);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
 
@@ -469,6 +548,55 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             } finally {
                 post(essential, new Fact.Answered(call.requestId(), failure));
             }
+        }
+    }
+
+    /**
+     * The alives of one producer the actor has not taken yet, as much of them as the machine needs:
+     * the last subscribed one before the first unsubscribed one, where a gap starts; that first
+     * unsubscribed one, which opens the gap; and the latest. Guarded by its map's compute.
+     */
+    private static final class AliveSlot {
+        record Seen(long generatedAt, long receivedAt, boolean subscribed) {}
+
+        private Seen latest;
+        private @Nullable Seen lastSubscribedBeforeUnsubscribed;
+        private @Nullable Seen firstUnsubscribed;
+        /** Whether an alive came after the first unsubscribed one. */
+        private boolean afterUnsubscribed;
+
+        AliveSlot(Seen first) {
+            this.latest = first;
+        }
+
+        void add(Seen alive) {
+            if (firstUnsubscribed != null) {
+                afterUnsubscribed = true;
+            } else if (alive.subscribed()) {
+                lastSubscribedBeforeUnsubscribed = alive;
+            } else {
+                firstUnsubscribed = alive;
+            }
+            latest = alive;
+        }
+
+        /** What to hand the machine, in the order the alives came. */
+        List<Seen> inOrder() {
+            var seen = new ArrayList<Seen>(3);
+            Seen before = lastSubscribedBeforeUnsubscribed;
+            Seen unsubscribed = firstUnsubscribed;
+            if (unsubscribed == null) {
+                seen.add(latest);
+                return seen;
+            }
+            if (before != null) {
+                seen.add(before);
+            }
+            seen.add(unsubscribed);
+            if (afterUnsubscribed) {
+                seen.add(latest);
+            }
+            return seen;
         }
     }
 
@@ -538,7 +666,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
         record Start() implements Fact {}
 
-        record Alive(long producerId, long generatedAt, long receivedAt, boolean subscribed) implements Fact {}
+        /** A producer's alive slot has something in it. */
+        record Alives(long producerId) implements Fact {}
 
         record Processed(int session, long producerId, long generatedAt, long takenAt, boolean snapshot)
                 implements Fact {}

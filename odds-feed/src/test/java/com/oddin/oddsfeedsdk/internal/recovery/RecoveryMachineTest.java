@@ -1091,6 +1091,18 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aMaximumInactivityUnderASecondBreaksNoAlive() {
+        var feed = new Harness(Harness.settings(Duration.ZERO));
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.alive(PRE);
+        feed.clock.advance(Duration.ofSeconds(2));
+        feed.alive(PRE);
+        assertThat(feed.snapshots(PRE)).as("asked for at the first alive").hasSize(1);
+        assertThat(feed.counters.factsFailed()).isZero();
+    }
+
+    @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();
