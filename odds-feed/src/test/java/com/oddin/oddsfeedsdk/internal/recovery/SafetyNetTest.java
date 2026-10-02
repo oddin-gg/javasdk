@@ -413,6 +413,115 @@ class SafetyNetTest {
     }
 
     @Test
+    void anotherSessionsSnapshotCompleteDoesNotCancelALowPrioritySessionsReset() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        // the high-priority session completes one before the API has answered the other
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.accept(live);
+        assertThat(feed.resets)
+                .as("no evidence session 2's backlog was replaced")
+                .containsExactly(2);
+        feed.resetDone();
+        assertThat(feed.calls)
+                .as("the one complete already, asked for again at once")
+                .hasSize(before + 3);
+        assertThat(feed.lastSnapshot(PRE).requestId()).isNotEqualTo(pre.requestId());
+        // the other was in flight, waiting for no snapshot complete of session 2: one more after it
+        feed.machine.snapshotComplete(1, LIVE, live.requestId());
+        assertThat(feed.calls).hasSize(before + 4);
+        assertThat(feed.lastSnapshot(LIVE).requestId()).isNotEqualTo(live.requestId());
+    }
+
+    @Test
+    void anotherSessionsSnapshotCompleteOfTheLastRequestLetsALowPrioritySessionsResetGoAhead() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+        // the last one's snapshot complete, seen by the high-priority session before the API answers
+        feed.machine.snapshotComplete(1, LIVE, live.requestId());
+        assertThat(feed.resets)
+                .as("the acceptance it proves lets the reset go ahead")
+                .containsExactly(2);
+        assertThat(feed.producers.isProducerDown(LIVE))
+                .as("while session 2 is reset")
+                .isTrue();
+        feed.resetDone();
+        assertThat(feed.calls).as("asked for again once it is done").hasSize(before + 3);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        assertThat(feed.lastStatus(LIVE)).extracting(ProducerStatusChange::down).isEqualTo(false);
+        // the other, still in flight, asks for one more once it completes
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        assertThat(feed.calls).hasSize(before + 4);
+    }
+
+    @Test
+    void deferredEventRecoveriesCountAgainstTheCap() throws ExecutionException, InterruptedException {
+        Harness feed = resetUnderWay();
+        int calls = feed.calls.size();
+        for (int i = 0; i < 128; i++) {
+            assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        }
+        CompletableFuture<@Nullable Long> over = feed.recoverEvent(LIVE);
+        assertThat(over).as("the 129th, refused").isDone();
+        assertThat(over.get()).isNull();
+        assertThat(feed.counters.eventRefused()).isEqualTo(1);
+        assertThat(feed.calls).as("all of them wait for the reset").hasSize(calls);
+    }
+
+    @Test
+    void closingAnswersADeferredEventRecoveryNull() throws ExecutionException, InterruptedException {
+        Harness feed = resetUnderWay();
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        feed.machine.close();
+        assertThat(reply).isDone();
+        assertThat(reply.get()).isNull();
+    }
+
+    @Test
+    void aDeferredEventRecoveryGoesOutWhenTheResettingSessionCloses() {
+        Harness feed = resetUnderWay();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        feed.close(1);
+        assertThat(feed.calls).last().isInstanceOf(Outbox.Call.Event.class);
+    }
+
+    @Test
+    void aDeferredEventRecoveryGoesOutWhenTheResetIsTurnedAway() {
+        Harness feed = resetUnderWay();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        feed.resetRefused();
+        assertThat(feed.calls)
+                .filteredOn(call -> call instanceof Outbox.Call.Event)
+                .hasSize(1);
+    }
+
+    /** Session 1 behind, the API's acceptance of both recoveries, and the reset with the transport. */
+    private Harness resetUnderWay() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
+        return feed;
+    }
+
+    @Test
     void aReportOfNoResetUnderWayChangesNothing() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();

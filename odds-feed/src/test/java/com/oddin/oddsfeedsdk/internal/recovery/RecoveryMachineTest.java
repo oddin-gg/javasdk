@@ -1099,7 +1099,9 @@ class RecoveryMachineTest {
         feed.clock.advance(Duration.ofSeconds(2));
         feed.alive(PRE);
         assertThat(feed.snapshots(PRE)).as("asked for at the first alive").hasSize(1);
-        assertThat(feed.counters.factsFailed()).isZero();
+        assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastMessageTimestamp())
+                .as("the second alive handled")
+                .isEqualTo(feed.now());
     }
 
     @Test
