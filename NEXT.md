@@ -513,8 +513,15 @@ and REST workers post facts to it; it decides and posts work out.
   state wrong for good - sessions opening and closing, the connection going and coming,
   the alives from the SDK's alive channel (an unsubscribed one is the only word of a
   gap), `snapshot_complete`s, lost channels, the API's answers, finished resets - are
-  never dropped and keep their order; what fills their queue is bounded by what the
-  feed itself does and by the producers' own pace, an alive each every few seconds.
+  never dropped and keep their order. The alives are kept per producer of the list: the
+  latest, and of the first unsubscribed one and the last subscribed one before it, so a
+  flood of them costs one slot and one queued fact per producer, and an alive of a
+  producer the list does not have is dropped and counted. Of the rest of that queue,
+  sessions, connection changes, the API's answers and finished resets are bounded by
+  what the feed itself does; lost channels by the transport's own reopening; and the
+  `snapshot_complete`s, one per request per session, by the recoveries asked for on the
+  node id - which include another instance's sharing it, the one input there not
+  bounded by this feed alone.
   The rest - event recovery requests, and the messages and alives a session finished -
   are bounded and dropped with a count when full; a dropped request is answered as not
   accepted. The lesser queues yield to the essential one: after taking a fact, the actor
@@ -581,7 +588,12 @@ and REST workers post facts to it; it decides and posts work out.
     API will take. The reset takes the session's producers down until those recoveries
     complete. A reset already with the AMQP layer stays one through a lost connection or
     channel, since replacing the channel late could still drop what the new one holds:
-    the session's producers are asked for nothing until it is reported done. A reset
+    the session's producers are asked for nothing until it is reported done. The AMQP
+    layer reports a reset done only once the session reads from an open channel again:
+    one it could not open at once it opens on its own, and a recovery asked for before
+    then would send to no one. An event recovery asked for while a session that receives
+    its producer is being reset waits until the reset is done, since its snapshot could
+    go to either channel. A reset
     that could not be handed to the AMQP layer at all is reported too: nothing was
     dropped, and the recoveries whose `snapshot_complete` was ignored meanwhile are asked
     for again. Until the options exist, the limit is two minutes and the window one.
