@@ -117,6 +117,8 @@ final class Catalog<K, V> {
 
     /** A test's hook: runs in a read with nothing to serve, before it asks the loader for a fetch. */
     volatile Runnable insideColdRead = () -> {};
+    /** A test's hook: runs in a read that did not find its item, before it notes the miss. */
+    volatile Runnable insideMiss = () -> {};
     /** A test's hook: runs in a read that found its value stale, before it marks it so. */
     volatile Runnable insideStaleRead = () -> {};
 
@@ -211,8 +213,9 @@ final class Catalog<K, V> {
      * the value is fetched again and the read waits for it, as a read with nothing to serve does -
      * once per item, and only when the value was fetched before the item was first missed and at
      * least {@link #MISS_INTERVAL} ago - so that what is new upstream is found by the read that first
-     * asks for it, as in 0.0.x. Null when it is not there even then, when the key backs off, or when
-     * that fetch fails.
+     * asks for it, as in 0.0.x. While the key's last fetch failed, the read does not wait: it starts a
+     * refresh in the background, unless the key backs off, and the item is found by a later read.
+     * Null when it is not there even then, or that fetch fails.
      *
      * @throws ApiException when there is no value to look in and the fetch fails
      */
@@ -221,14 +224,26 @@ final class Catalog<K, V> {
         if (found != null) {
             return found;
         }
+        insideMiss.run();
         Instant now = clock.instant();
         long firstMissed = misses.asMap().computeIfAbsent(new Miss<>(key, item), _ -> order.incrementAndGet());
         Held<V> current = held.getIfPresent(key);
-        if (current == null
-                || current.startedAs() > firstMissed
-                || current.fetchedAt().plus(MISS_INTERVAL).isAfter(now)
-                // the fetch would refuse to start too; this spares the exception
-                || backingOff(key, now) != null) {
+        if (current == null) {
+            return null;
+        }
+        // a fetch since may have brought it; looking again costs less than telling the values apart
+        found = finder.find(current.value(), item);
+        if (found != null) {
+            return found;
+        }
+        if (current.startedAs() > firstMissed
+                || current.fetchedAt().plus(MISS_INTERVAL).isAfter(now)) {
+            return null;
+        }
+        if (failures.getIfPresent(key) != null) {
+            // the API failed the last time: a reader waiting on it would wait a timeout each time the
+            // backoff ends, for as long as an outage lasts
+            refreshInBackground(key, now);
             return null;
         }
         try {
@@ -387,11 +402,14 @@ final class Catalog<K, V> {
                 // a fetch from before a clear backs nothing off: the clear asked for a fetch
                 if (!abandoned.getAsBoolean() && generation.get() == startedIn) {
                     Instant failedAt = clock.instant();
-                    failures.asMap()
-                            .merge(
-                                    key,
-                                    new Failure(failedAt, 1, e),
-                                    (last, _) -> new Failure(failedAt, last.attempts() + 1, e));
+                    // an older fetch that fails after a newer one succeeded records nothing
+                    failures.asMap().compute(key, (k, last) -> {
+                        Held<V> newer = held.getIfPresent(k);
+                        if (newer != null && newer.startedAs() > startedAs) {
+                            return last;
+                        }
+                        return new Failure(failedAt, last == null ? 1 : last.attempts() + 1, e, startedAs);
+                    });
                 }
             } finally {
                 clearing.readLock().unlock();
@@ -407,7 +425,8 @@ final class Catalog<K, V> {
                                 (k, current) -> current != null && current.startedAs() > startedAs
                                         ? current
                                         : new Held<>(value, startedAt, startedAs, new AtomicReference<>()));
-                failures.invalidate(key);
+                // a newer fetch's failure stands
+                failures.asMap().computeIfPresent(key, (k, last) -> last.startedAs() > startedAs ? last : null);
             }
         } finally {
             clearing.readLock().unlock();
@@ -422,8 +441,11 @@ final class Catalog<K, V> {
      */
     private record Held<V>(V value, Instant fetchedAt, long startedAs, AtomicReference<@Nullable Instant> staleSince) {}
 
-    /** A key's last failed fetch, how many failed in a row, and when the next may start. */
-    private record Failure(Instant at, int attempts, RuntimeException cause) {
+    /**
+     * A key's last failed fetch, how many failed in a row, when the next may start, and when the
+     * fetch started, in {@link #order}.
+     */
+    private record Failure(Instant at, int attempts, RuntimeException cause, long startedAs) {
         Instant retryAt() {
             long nanos = FIRST_BACKOFF.toNanos() << Math.min(attempts - 1, 30);
             return at.plus(nanos > LONGEST_BACKOFF.toNanos() ? LONGEST_BACKOFF : Duration.ofNanos(nanos));

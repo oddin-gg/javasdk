@@ -428,7 +428,9 @@ Locales and catalogs:
   per missing id and only when the list is at least a minute old, so one added
   upstream shows up before the next refresh. The read that missed waits for that
   fetch, within its deadline, and finds what is new: like a getter on a cold entity
-  (section 3), it pays the latency on its own session, as in 0.0.x.
+  (section 3), it pays the latency on its own session, as in 0.0.x. While the list's
+  last fetch failed, the read does not wait but starts a background refresh, so an
+  outage does not cost a timeout each time the backoff ends.
 - Every cache has a public clear method.
 
 ### Recovery and producers
