@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.recovery;
 
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Instant;
+import java.util.concurrent.CompletableFuture;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -18,6 +19,15 @@ interface Outbox {
      * side reports it as {@link RecoveryMachine#resetDone} with the same number.
      */
     void reset(int session, long number);
+
+    /**
+     * Completes a caller's future, elsewhere: what the caller chains to it must not run on the
+     * actor's thread.
+     */
+    void reply(CompletableFuture<@Nullable Long> reply, @Nullable Long requestId);
+
+    /** Fails a caller's future, elsewhere, as {@link #reply} completes it. */
+    void fail(CompletableFuture<@Nullable Long> reply, RuntimeException failure);
 
     /** One recovery request. */
     sealed interface Call {

@@ -9,9 +9,10 @@ import java.time.Duration;
 import java.time.InstantSource;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -24,18 +25,24 @@ import org.slf4j.LoggerFactory;
 /**
  * The recovery actor: one thread that owns all producer and recovery state, and runs the {@link
  * RecoveryMachine} over the facts the rest of the feed posts. Nobody else touches that state, so it
- * needs no lock; whoever posts only puts a fact in a bounded queue and returns, and a fact with no
- * room is dropped and counted. The AMQP consumer thread never posts here at all: the dispatchers do.
+ * needs no lock; whoever posts only puts a fact in a queue and returns, never waiting. The AMQP
+ * consumer thread never posts here at all: the dispatchers do.
  *
- * <p>Two queues: the samples - the messages and alives a session finished, many and each worth
- * little - and the control facts, few and each needed. The actor takes every control fact before
- * the next samples, so a flood of samples cannot hold up a snapshot complete or an answer from the
- * API. It looks at the time at least every {@link RecoverySettings#tick()}.
+ * <p>Three queues. The essential facts - sessions opening and closing, the start, the connection,
+ * snapshot completes, lost channels, the API's answers and finished resets - are never dropped,
+ * since losing one would leave the state wrong for good, and they keep their order. That queue has
+ * no capacity of its own: what fills it is bounded by what the feed does, its sessions, its
+ * connections, its own requests and resets. The control facts - alives and event recovery requests
+ * - are bounded, and one with no room is dropped and counted: the next alive says the same, and a
+ * dropped request is answered as not accepted. The samples - the messages and alives a session
+ * finished, many and each worth little - are bounded the same way. The actor takes the essential
+ * facts first, then the control facts, then the samples, so a flood of samples holds up nothing
+ * else. It looks at the time at least every {@link RecoverySettings#tick()}.
  *
- * <p>The requests go to REST workers, never run here; their answers come back as facts, the only
- * ones that wait for room, on the worker, since a lost answer would leave its request in flight. A
- * safety-net reset runs on a worker too, since replacing a channel talks to the broker, and reports
- * back when it is done.
+ * <p>The requests go to REST workers, never run here, and their answers come back as facts. A
+ * safety-net reset runs on a worker too, since replacing a channel talks to the broker, and always
+ * reports back when it is done. A caller's future for an event recovery is completed on a thread of
+ * its own, so nothing the caller chains to it runs on the actor.
  *
  * <p>Safe for concurrent use.
  */
@@ -45,17 +52,16 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
     static final int CONTROL_CAPACITY = 10_000;
     static final int SAMPLE_CAPACITY = 10_000;
-    /** How many samples the actor takes before it looks at the control facts again. */
+    /** How many samples the actor takes before it looks at the other facts again. */
     private static final int SAMPLES_PER_TURN = 1_000;
-    /** How long a REST worker waits for room for an answer before it says so and waits again. */
-    private static final Duration ANSWER_WAIT = Duration.ofSeconds(1);
     /** How long close() waits for the actor's thread to end. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
 
     private final RecoveryMachine machine;
     private final RecoveryCounters counters;
-    private final BlockingQueue<Fact> control;
-    private final BlockingQueue<Fact> samples;
+    private final Queue<Fact> essential = new ConcurrentLinkedQueue<>();
+    private final Queue<Fact> control;
+    private final Queue<Fact> samples;
     private final RecoveryRequests api;
     private final Executor workers;
     private final InstantSource clock;
@@ -119,7 +125,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * @return where the session's dispatcher posts its facts
      */
     public SessionFacts openSession(SessionInfo info, SessionTransport transport) {
-        post(control, new Fact.Opened(info, transport));
+        post(essential, new Fact.Opened(info, transport));
         int id = info.id();
         return new SessionFacts() {
             @Override
@@ -134,24 +140,24 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
             @Override
             public void snapshotComplete(long producerId, long requestId) {
-                post(control, new Fact.SnapshotComplete(id, producerId, requestId));
+                post(essential, new Fact.SnapshotComplete(id, producerId, requestId));
             }
 
             @Override
             public void channelLost() {
-                post(control, new Fact.ChannelLost(id));
+                post(essential, new Fact.ChannelLost(id));
             }
 
             @Override
             public void closed() {
-                post(control, new Fact.Closed(id));
+                post(essential, new Fact.Closed(id));
             }
         };
     }
 
     /** The feed is open: the actor starts, the sessions opened so far miss everything before now. */
     public void start() {
-        post(control, new Fact.Start());
+        post(essential, new Fact.Start());
         thread.start();
     }
 
@@ -162,20 +168,20 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
     @Override
     public void up() {
-        post(control, new Fact.Connection(true));
+        post(essential, new Fact.Connection(true));
     }
 
     @Override
     public void down(String reason) {
-        post(control, new Fact.Connection(false));
+        post(essential, new Fact.Connection(false));
     }
 
     /**
      * Asks for one event's odds, or with {@code stateful} its stateful messages, again. The result
-     * is the request id once the API has accepted the request, or null when it did not, too many
-     * are in flight or the actor is closed; it fails for a producer the list does not have. It
-     * completes on the actor's thread or a worker, so whoever waits for it waits on its own thread,
-     * with a deadline.
+     * is the request id once the API has accepted the request, or null when it did not, the
+     * connection is down, too many are in flight or the actor is closed; it fails for a producer
+     * the list does not have. It completes on a thread of its own, so whoever waits for it waits on
+     * theirs, with a deadline, and what they chain to it never runs on the actor.
      */
     public CompletableFuture<@Nullable Long> recoverEvent(long producerId, URN eventId, boolean stateful) {
         var reply = new CompletableFuture<@Nullable Long>();
@@ -187,6 +193,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
     public RecoveryCounters counters() {
         return counters;
+    }
+
+    /** Whether the actor's thread runs, for a test. */
+    boolean running() {
+        return thread.isAlive();
     }
 
     /** When the actor last began a turn, epoch millis by its clock, 0 before the first. */
@@ -216,7 +227,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
     }
 
-    private boolean post(BlockingQueue<Fact> queue, Fact fact) {
+    /** Puts a fact in its queue, never waiting; false when it was dropped or the actor is closed. */
+    private boolean post(Queue<Fact> queue, Fact fact) {
         if (closed) {
             return false;
         }
@@ -244,22 +256,28 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     }
 
     private void run() {
-        long nextTick = clock.millis();
         try {
+            long nextTick = clock.millis();
             while (!closed) {
                 turnedAt = clock.millis();
-                boolean worked = drain(control, Integer.MAX_VALUE);
+                boolean worked = drain(essential, Integer.MAX_VALUE);
+                worked |= drain(control, Integer.MAX_VALUE);
                 worked |= drain(samples, SAMPLES_PER_TURN);
                 long now = clock.millis();
                 if (now >= nextTick) {
                     handle(new Fact.Tick());
                     nextTick = now + tickMillis;
                 }
-                if (!worked && control.isEmpty() && samples.isEmpty() && !closed) {
+                if (!worked && essential.isEmpty() && control.isEmpty() && samples.isEmpty() && !closed) {
                     LockSupport.parkNanos(this, TimeUnit.MILLISECONDS.toNanos(Math.max(1, nextTick - now)));
                 }
             }
+        } catch (Throwable e) {
+            LOG.error("The recovery actor stopped", e);
+            throw e;
         } finally {
+            // however the loop ended: nothing posts to a queue nobody takes from
+            closed = true;
             closeMachine();
         }
     }
@@ -272,14 +290,15 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         Fact fact;
         while ((fact = control.poll()) != null) {
             if (fact instanceof Fact.RecoverEvent recover) {
-                recover.reply().complete(null);
+                Replies.complete(recover.reply(), null);
             }
         }
+        essential.clear();
         samples.clear();
         machine.close();
     }
 
-    private boolean drain(BlockingQueue<Fact> queue, int most) {
+    private boolean drain(Queue<Fact> queue, int most) {
         int taken = 0;
         Fact fact;
         while (taken < most && !closed && (fact = queue.poll()) != null) {
@@ -289,7 +308,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         return taken > 0;
     }
 
-    /** One fact, to the end; a fact the machine fails on is counted, and the actor goes on. */
+    /**
+     * One fact, to the end. A fact the machine fails on, even with an error, is counted, and the
+     * actor goes on: one bad fact must not end the recovery of every producer.
+     */
     private void handle(Fact fact) {
         try {
             switch (fact) {
@@ -324,7 +346,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     machine.recoverEvent(producer, event, stateful, reply);
                 case Fact.Tick() -> machine.tick();
             }
-        } catch (RuntimeException e) {
+        } catch (Throwable e) {
             counters.factsFailed.incrementAndGet();
             LOG.error("The recovery actor failed on {}; it goes on with the next", fact, e);
         }
@@ -338,10 +360,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             try {
                 workers.execute(() -> send(call));
             } catch (RejectedExecutionException e) {
-                // the workers are closed, so the feed is: never wait on the actor's own queue here
-                if (!control.offer(new Fact.Answered(call.requestId(), e))) {
-                    dropped(new Fact.Answered(call.requestId(), e));
-                }
+                post(essential, new Fact.Answered(call.requestId(), e));
             }
         }
 
@@ -351,23 +370,34 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             SessionTransport transport = transports.get(session);
             try {
                 workers.execute(() -> {
-                    if (transport != null) {
-                        int dropped = transport.queue().size();
-                        try {
+                    try {
+                        if (transport != null) {
+                            int dropped = transport.queue().size();
                             transport.reset();
                             counters.resetDropped.addAndGet(dropped);
-                        } catch (RuntimeException e) {
-                            LOG.warn("The safety net could not reset session {}", session, e);
                         }
+                    } catch (RuntimeException e) {
+                        LOG.warn("The safety net could not reset session {}", session, e);
+                    } finally {
+                        post(essential, new Fact.ResetDone(session, number));
                     }
-                    answer(new Fact.ResetDone(session, number));
                 });
             } catch (RejectedExecutionException e) {
                 LOG.warn("The safety net could not reset session {}: the workers are closed", session);
             }
         }
 
-        /** On a worker: the call, then its answer back to the actor. */
+        @Override
+        public void reply(CompletableFuture<@Nullable Long> reply, @Nullable Long requestId) {
+            Replies.complete(reply, requestId);
+        }
+
+        @Override
+        public void fail(CompletableFuture<@Nullable Long> reply, RuntimeException failure) {
+            Replies.fail(reply, failure);
+        }
+
+        /** On a worker: the call, then its answer back to the actor, whatever came of it. */
         private void send(Call call) {
             Exception failure = null;
             try {
@@ -382,38 +412,30 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 }
             } catch (RuntimeException e) {
                 failure = e;
-            }
-            answer(new Fact.Answered(call.requestId(), failure));
-        }
-
-        /**
-         * On a worker: hands an outcome to the actor, waiting for room as long as the actor is open,
-         * since a lost outcome would leave its request in flight until it times out. Once the actor
-         * is closed it is not needed: closing answers whoever still waits.
-         */
-        private void answer(Fact answer) {
-            boolean waited = false;
-            try {
-                while (!closed) {
-                    if (control.offer(answer, ANSWER_WAIT.toNanos(), TimeUnit.NANOSECONDS)) {
-                        LockSupport.unpark(thread);
-                        return;
-                    }
-                    if (!waited) {
-                        waited = true;
-                        LOG.warn("The recovery actor's queue is full; an outcome waits for room");
-                    }
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                dropped(answer);
+            } catch (Error e) {
+                failure = new IllegalStateException("the request failed with an error", e);
+            } finally {
+                post(essential, new Fact.Answered(call.requestId(), failure));
             }
         }
     }
 
+    /** Completes callers' futures each on a thread of its own, never on the actor's. */
+    private static final class Replies {
+        private Replies() {}
+
+        static void complete(CompletableFuture<@Nullable Long> reply, @Nullable Long requestId) {
+            Thread.ofVirtual().name("oddsfeed-recovery-reply").start(() -> reply.complete(requestId));
+        }
+
+        static void fail(CompletableFuture<@Nullable Long> reply, RuntimeException failure) {
+            Thread.ofVirtual().name("oddsfeed-recovery-reply").start(() -> reply.completeExceptionally(failure));
+        }
+    }
+
     /**
-     * The events, kept from breaking the machine: one that throws is logged, and the transition it
-     * came from finishes.
+     * The events, kept from breaking the machine: one that throws, even an error, is logged, and the
+     * transition it came from finishes.
      */
     private static final class Guarded implements RecoveryEvents {
         private final RecoveryEvents events;
@@ -450,7 +472,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         private static void guard(String event, Runnable tell) {
             try {
                 tell.run();
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | Error e) {
                 LOG.error("The recovery events listener threw on {}; the actor goes on", event, e);
             }
         }

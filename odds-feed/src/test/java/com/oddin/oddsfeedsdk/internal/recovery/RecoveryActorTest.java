@@ -5,6 +5,7 @@ import static com.oddin.oddsfeedsdk.internal.recovery.Harness.MATCH;
 import static com.oddin.oddsfeedsdk.internal.recovery.Harness.PRE;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.amqp.Queues;
@@ -121,8 +122,10 @@ class RecoveryActorTest {
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
-        session.snapshotComplete(PRE, api.next().requestId());
-        session.snapshotComplete(LIVE, api.next().requestId());
+        // the two run on workers of their own, so either may come first
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
         assertThat(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS)).isNotNull();
         assertThat(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS)).isNotNull();
 
@@ -207,7 +210,7 @@ class RecoveryActorTest {
     }
 
     @Test
-    void anAnswerWaitsForRoomInTheActorsQueueInsteadOfBeingLost()
+    void anAnswerReachesTheActorEvenWithItsControlQueueFull()
             throws InterruptedException, ExecutionException, TimeoutException {
         var held = new Held();
         var wedge = new CountDownLatch(1);
@@ -231,20 +234,147 @@ class RecoveryActorTest {
         CompletableFuture<@Nullable Long> reply = actor.recoverEvent(LIVE, MATCH, false);
         Runnable request = held.next();
         long now = System.currentTimeMillis();
-        // a status change the listener holds the actor's thread in, then a full queue
+        // a status change the listener holds the actor's thread in, then a full control queue
         actor.alive(PRE, now, now, false);
         assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         while (actor.counters().factsDropped() == 0) {
             actor.alive(LIVE, now, now, true);
         }
+        long dropped = actor.counters().factsDropped();
 
         Thread answering = Thread.ofVirtual().start(request);
-        answering.join(Duration.ofMillis(1_500));
-        assertThat(answering.isAlive()).as("the answer waits for room").isTrue();
+        assertThat(answering.join(Duration.ofSeconds(WAIT_SECONDS)))
+                .as("the answer handed over")
+                .isTrue();
+        assertThat(actor.counters().factsDropped())
+                .as("the answer not among the dropped")
+                .isEqualTo(dropped);
         assertThat(reply).isNotDone();
         wedge.countDown();
         assertThat(reply.get(WAIT_SECONDS, TimeUnit.SECONDS))
                 .isEqualTo(api.next().requestId());
+    }
+
+    @Test
+    void whatACallerChainsToItsReplyNeverRunsOnTheActor()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        var held = new Held();
+        var actor = new RecoveryActor(producers, settings(), api, events(), held);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        // a caller that waits, in what it chains to its reply, for the actor to handle a later fact
+        var sawUp = new CompletableFuture<Boolean>();
+        CompletableFuture<Void> chained = actor.recoverEvent(LIVE, MATCH, false).thenRun(() -> {
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+            while (producers.isProducerDown(PRE) && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            sawUp.complete(!producers.isProducerDown(PRE));
+        });
+        held.runNext();
+        api.next();
+
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        held.runNext();
+        session.snapshotComplete(PRE, api.next().requestId());
+        assertThat(sawUp.get(WAIT_SECONDS * 2, TimeUnit.SECONDS))
+                .as("the actor went on while the caller waited")
+                .isTrue();
+        assertThat(chained).isDone();
+    }
+
+    @Test
+    void anErrorFromTheListenerDoesNotStopTheActor() throws InterruptedException {
+        var throwing = new RecoveryEvents() {
+            @Override
+            public void producerStatus(ProducerStatusChange change) {
+                throw new AssertionError("a listener bug");
+            }
+        };
+        // a tick an hour away: only the transition itself asks for the recovery
+        var hourly = settings(
+                Harness.settings().firstReissueBackoff(), Harness.settings().staleWindow(), Duration.ofHours(1));
+        RecoveryActor actor = new RecoveryActor(producers, hourly, api, throwing, workers);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        // its request shows the actor's first tick is past, and the next is an hour away
+        actor.alive(LIVE, now, now, true);
+        assertThat(api.next().producer()).isEqualTo("live");
+        // a wide margin for the turn that handled it to end, its tick included
+        Thread.sleep(200);
+        // the status change throws before the recovery is asked for: the transition still finishes
+        actor.alive(PRE, now, now, false);
+        assertThat(api.next().producer()).as("after the listener threw").isEqualTo("pre");
+        assertThat(actor.counters().factsFailed()).isZero();
+    }
+
+    @Test
+    void anActorWhoseLoopEndsWithAnErrorIsClosedAndTurnsEveryoneAway()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        var broken = new AtomicBoolean();
+        var ended = new CountDownLatch(1);
+        InstantSource clock = () -> {
+            if (broken.get()) {
+                ended.countDown();
+                throw new AssertionError("a broken clock");
+            }
+            return java.time.Instant.now();
+        };
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers, clock, new Random(1), 10, 10);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        broken.set(true);
+        assertThat(ended.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.running() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.running()).as("the actor's thread").isFalse();
+        CompletableFuture<@Nullable Long> reply = actor.recoverEvent(PRE, MATCH, false);
+        assertThat(reply.get(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("from an actor that is gone")
+                .isNull();
+        assertThat(api.requests).as("nothing reached the API").isEmpty();
+    }
+
+    @Test
+    void aResetThatFailsWithAnErrorIsStillReportedDone() throws InterruptedException {
+        var held = new Held();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+        this.actor = actor;
+        transport.failReset = true;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        held.runNext();
+        held.runNext();
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+        long later = System.currentTimeMillis();
+        session.processed(PRE, later - 300_000, later + 1, false);
+        session.processed(PRE, later - 300_000, later + 2, false);
+        held.runNext();
+        held.runNext();
+        api.next();
+        api.next();
+        Runnable reset = held.next();
+        assertThatThrownBy(reset::run).isInstanceOf(AssertionError.class);
+        held.runNext();
+        held.runNext();
+        assertThat(List.of(api.next(), api.next()))
+                .as("asked for again: the reset was reported done all the same")
+                .hasSize(2);
     }
 
     @Test
@@ -256,6 +386,7 @@ class RecoveryActorTest {
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.alive(PRE, 1, 1, true);
         actor.alive(PRE, 2, 2, true);
+        actor.alive(PRE, 3, 3, true);
         session.processed(PRE, 1, 1, false);
         session.processed(PRE, 2, 2, false);
         session.processed(PRE, 3, 3, false);
@@ -263,6 +394,16 @@ class RecoveryActorTest {
         assertThat(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("an event recovery with no room")
                 .isNull();
+
+        // what would leave the state wrong for good is never dropped, and keeps its order
+        actor.down("lost");
+        session.snapshotComplete(PRE, 1);
+        session.channelLost();
+        actor.openSession(new SessionInfo(2, MessageInterest.ALL, true), transport);
+        assertThat(actor.counters().factsDropped()).isEqualTo(3);
+        actor.start();
+        ProducerStatusChange first = requireNonNull(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(first.cause()).as("the lost connection, first").isEqualTo(StatusCause.CONNECTION_LOST);
     }
 
     @Test
@@ -358,6 +499,10 @@ class RecoveryActorTest {
 
     /** The design's numbers, with a tick of 10 ms, so the actor looks at the time often. */
     private static RecoverySettings settings(Duration firstReissueBackoff, Duration staleWindow) {
+        return settings(firstReissueBackoff, staleWindow, Duration.ofMillis(10));
+    }
+
+    private static RecoverySettings settings(Duration firstReissueBackoff, Duration staleWindow, Duration tick) {
         RecoverySettings settings = Harness.settings();
         return new RecoverySettings(
                 settings.maxInactivity(),
@@ -373,7 +518,7 @@ class RecoveryActorTest {
                 settings.resets(),
                 settings.firstResetBackoff(),
                 settings.eventRecoveries(),
-                Duration.ofMillis(10));
+                tick);
     }
 
     private RecoveryActor actor(RecoverySettings settings) {
@@ -502,12 +647,16 @@ class RecoveryActorTest {
         final CountDownLatch resets = new CountDownLatch(1);
         final AtomicInteger epoch = new AtomicInteger();
         volatile @Nullable String resetThread;
+        volatile boolean failReset;
 
         @Override
         public void ack(RawDelivery delivery) {}
 
         @Override
         public void reset() {
+            if (failReset) {
+                throw new AssertionError("a broken channel");
+            }
             resetThread = Thread.currentThread().getName();
             epoch.incrementAndGet();
             resets.countDown();
