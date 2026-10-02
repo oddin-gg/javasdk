@@ -495,11 +495,14 @@ and REST workers post facts to it; it decides and posts work out.
   actor's, so nothing the caller chains to it can hold the actor up.
 - The facts posted to the actor are of two kinds. Those whose loss would leave the
   state wrong for good - sessions opening and closing, the connection going and coming,
-  `snapshot_complete`s, lost channels, the API's answers, finished resets - are never
-  dropped and keep their order; what fills their queue is bounded by what the feed
-  itself does. The rest - alives, event recovery requests, and the messages and alives a
-  session finished - are bounded and dropped with a count when full: the next alive
-  says the same, and a dropped request is answered as not accepted.
+  the alives from the SDK's alive channel (an unsubscribed one is the only word of a
+  gap), `snapshot_complete`s, lost channels, the API's answers, finished resets - are
+  never dropped and keep their order; what fills their queue is bounded by what the
+  feed itself does and by the producers' own pace, an alive each every few seconds.
+  The rest - event recovery requests, and the messages and alives a session finished -
+  are bounded and dropped with a count when full; a dropped request is answered as not
+  accepted. The lesser queues yield as soon as an essential fact waits, so a sample
+  from a new channel is never handled before the loss of the old one.
 - Producer status keeps 0.0.x's public reasons. Each change also names its cause:
   unsubscribed, no alive, processed late, connection lost, channel lost, session
   opened, safety-net reset, recovery failed, and the recoveries and the catching up that
@@ -544,7 +547,10 @@ and REST workers post facts to it; it decides and posts work out.
     API will take. The reset takes the session's producers down until those recoveries
     complete. A reset already with the AMQP layer stays one through a lost connection or
     channel, since replacing the channel late could still drop what the new one holds:
-    the session's producers are asked for nothing until it is reported done. Until the options exist, the limit is two minutes and the window one.
+    the session's producers are asked for nothing until it is reported done. A reset
+    that could not be handed to the AMQP layer at all is reported too: nothing was
+    dropped, and the recoveries whose `snapshot_complete` was ignored meanwhile are asked
+    for again. Until the options exist, the limit is two minutes and the window one.
   - Each reset raises an event and increments counters (resets, messages dropped by
     the reset, epoch discards), so an operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
