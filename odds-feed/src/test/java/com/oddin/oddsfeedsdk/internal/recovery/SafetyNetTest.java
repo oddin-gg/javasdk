@@ -28,6 +28,9 @@ class SafetyNetTest {
     private long liveSkew;
 
     private boolean alives = true;
+    /** Whether the live producer sends its alives when the prematch one does. */
+    private boolean liveAlives = true;
+
     private boolean snapshot;
 
     @Test
@@ -127,21 +130,134 @@ class SafetyNetTest {
     }
 
     @Test
-    void theNetWaitsWhileAnotherProducerOfTheSessionWaitsToBeAskedForAgain() {
+    void aProducerWithItsCapSpentDoesNotHoldTheNetBack() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         feed.unsubscribed(LIVE);
         feed.refuse(feed.lastSnapshot(LIVE));
         int pre = feed.snapshots(PRE).size();
-        // the live producer's recovery is refused each time it is asked for again
-        for (int second = 0; second < 180; second++) {
+        // the live producer's recovery is refused each time it is asked for again, until its cap is spent
+        long seconds = 0;
+        while (feed.snapshots(PRE).size() == pre && seconds < 180) {
             stale(feed, 1, OLD, Duration.ofSeconds(1), () -> false);
+            seconds++;
             Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
-            if (feed.counters.failed() < 4 && feed.machine.inFlightRecovery(LIVE) == live.requestId()) {
+            if (feed.machine.inFlightRecovery(LIVE) == live.requestId()) {
                 feed.refuse(live);
             }
         }
-        assertThat(feed.snapshots(PRE)).as("the net asked for nothing").hasSize(pre);
-        assertThat(feed.resets).isEmpty();
+        assertThat(seconds).as("seconds to the net's request: the window").isEqualTo(61);
+        assertThat(feed.counters.failed())
+                .as("the live producer's cap spent by then")
+                .isEqualTo(4);
+        int live = feed.snapshots(LIVE).size();
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.resets).as("the one producer it could ask for accepted").containsExactly(1);
+        feed.resetDone();
+        assertThat(feed.snapshots(LIVE))
+                .as("the live producer, still capped, waits")
+                .hasSize(live);
+    }
+
+    @Test
+    void aSilentProducerDoesNotHoldTheNetBackAndIsAskedForOnceItSpeaksAgain() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        liveAlives = false;
+        long seconds = stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
+        assertThat(seconds)
+                .as("seconds to the net's request, the live producer silent since 20 s")
+                .isEqualTo(61);
+        assertThat(feed.lastStatus(LIVE))
+                .extracting(ProducerStatusChange::cause)
+                .isEqualTo(StatusCause.ALIVE_INTERVAL_VIOLATION);
+        assertThat(feed.calls).as("the prematch producer only").hasSize(before + 1);
+        long liveCheckpoint = feed.machine.checkpoint(1, LIVE);
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.resets).containsExactly(1);
+        feed.resetDone();
+        assertThat(feed.snapshots(PRE)).as("asked for again after the reset").hasSize(3);
+
+        liveAlives = true;
+        feed.alive(LIVE);
+        assertThat(feed.lastSnapshot(LIVE).after())
+                .as("the live producer misses what the reset dropped of it, and what it missed while silent")
+                .isEqualTo(Instant.ofEpochMilli(liveCheckpoint));
+    }
+
+    @Test
+    void aProducerIsNotUpWhileALowPrioritySessionIsBeingReset() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        // next to a high-priority session the low-priority one takes no snapshot completes
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.machine.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+        feed.accept(live);
+        assertThat(feed.resets).containsExactly(2);
+
+        // the high-priority session completes them while the low-priority one is still being reset
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.machine.snapshotComplete(1, LIVE, live.requestId());
+        feed.runWithAlives(Duration.ofSeconds(20));
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("while the reset is under way")
+                .isTrue();
+        assertThat(feed.calls).as("nothing asked for into a queue about to go").hasSize(before + 2);
+
+        feed.resetDone();
+        assertThat(feed.calls).as("asked for again once the reset is done").hasSize(before + 4);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+    }
+
+    @Test
+    void aReportOfNoResetUnderWayChangesNothing() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        // while it still waits for the API, a report with the number it will have
+        feed.accept(pre);
+        feed.machine.resetDone(1, 1);
+        feed.machine.resetDone(1, 0);
+        assertThat(feed.calls).as("before the reset is made").hasSize(before + 2);
+        feed.accept(live);
+        long number = feed.resetNumbers.getLast();
+        feed.machine.resetDone(1, number + 1);
+        feed.machine.resetDone(1, 0);
+        assertThat(feed.calls).as("reports of other resets").hasSize(before + 2);
+        feed.machine.resetDone(1, number);
+        assertThat(feed.calls).as("its own report").hasSize(before + 4);
+    }
+
+    @Test
+    void aResetWithTheTransportWhenTheConnectionGoesStillCountsWhenItIsDone() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
+
+        feed.machine.connectionDown();
+        feed.machine.connectionUp();
+        feed.alive(PRE);
+        feed.alive(LIVE);
+        assertThat(feed.calls)
+                .as("nothing asked for while the old reset may still drop the new queue")
+                .hasSize(before + 2);
+        feed.resetDone();
+        assertThat(feed.calls).as("asked for once it is done").hasSize(before + 4);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
     }
 
     @Test
@@ -406,6 +522,8 @@ class SafetyNetTest {
     private void aliveBoth(Harness feed) {
         long now = feed.now();
         feed.machine.alive(PRE, now - preSkew, now, true);
-        feed.machine.alive(LIVE, now - liveSkew, now, true);
+        if (liveAlives) {
+            feed.machine.alive(LIVE, now - liveSkew, now, true);
+        }
     }
 }
