@@ -251,27 +251,68 @@ class FeedDecoderTest {
         assertThatThrownBy(
                         () -> lenient.decode(bytes(repeated.append("</alive>").toString())))
                 .isInstanceOf(DecodeException.class)
-                .hasMessageContaining("in one hash chain");
+                .hasMessageContaining("with one hash");
     }
 
     @Test
-    void namesThatDifferInHashButShareAChainAreHeldToItToo() throws DecodeException {
-        var chain = new ArrayList<String>();
-        for (int i = 0; chain.size() <= XmlReader.MAX_NAMES_PER_CHAIN; i++) {
-            String name = "n" + i;
-            if (((name.hashCode() & 127) >> 1) == 0) {
-                chain.add(name);
-            }
-        }
+    void aDocumentMayUseExactlyTheMostNamesWithOneHash() throws DecodeException {
+        var names = new ArrayList<String>();
+        colliding("", 4, names);
         var fits = new StringBuilder(ROOT);
-        chain.subList(0, XmlReader.MAX_NAMES_PER_CHAIN)
+        names.subList(0, XmlReader.MAX_NAMES_PER_HASH)
                 .forEach(name -> fits.append('<').append(name).append("/>"));
         assertThat(lenient.decode(bytes(fits.append("</alive>").toString()))).isInstanceOf(OFAlive.class);
         var over = new StringBuilder(ROOT);
-        chain.forEach(name -> over.append('<').append(name).append("/>"));
+        names.subList(0, XmlReader.MAX_NAMES_PER_HASH + 1)
+                .forEach(name -> over.append('<').append(name).append("/>"));
         assertThatThrownBy(() -> lenient.decode(bytes(over.append("</alive>").toString())))
                 .isInstanceOf(DecodeException.class)
-                .hasMessageContaining("in one hash chain");
+                .hasMessageContaining("more than " + XmlReader.MAX_NAMES_PER_HASH + " distinct names with one hash");
+    }
+
+    /**
+     * What the cap per hash rests on, pinned against Woodstox itself: it seeds its hash, so only
+     * names whose hashes are equal whatever the seed can be made to share a chain, and names of one
+     * length and first character with equal {@code String} hashes are. An upgrade that drops the
+     * seed, or hashes otherwise, fails here.
+     */
+    @Test
+    void woodstoxSeedsItsHashButNamesSharingAStringHashCollideInItWhateverTheSeed() {
+        var names = new ArrayList<String>();
+        colliding("", 4, names);
+        var seeds = new java.util.HashSet<Integer>();
+        for (int table = 0; table < 8; table++) {
+            int seed = new com.ctc.wstx.util.SymbolTable(true, 128).getHashSeed();
+            seeds.add(seed);
+            assertThat(names.stream().map(name -> com.ctc.wstx.util.SymbolTable.calcHash(name, seed)))
+                    .as("seed %d", seed)
+                    .containsOnly(com.ctc.wstx.util.SymbolTable.calcHash(names.getFirst(), seed));
+        }
+        assertThat(seeds).as("a seed for each table").hasSizeGreaterThan(1);
+        // names that differ in String hash but share its low bits do not share Woodstox's
+        int seed = new com.ctc.wstx.util.SymbolTable(true, 128).getHashSeed();
+        assertThat(java.util.stream.IntStream.range(0, 1_000)
+                        .mapToObj(i -> "n" + (i * 128))
+                        .filter(name -> (name.hashCode() & 127) == ("n0".hashCode() & 127))
+                        .map(name -> com.ctc.wstx.util.SymbolTable.calcHash(name, seed) & 127)
+                        .distinct()
+                        .count())
+                .isGreaterThan(1);
+    }
+
+    @Test
+    void attributesAndDeclarationsTogetherAreHeldToTheMostAnElementMayCarry() throws DecodeException {
+        int most = XmlReader.MAX_ATTRIBUTES;
+        assertThat(lenient.decode(bytes(ROOT + mixed(most - 1, 1) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        assertThat(lenient.decode(bytes(ROOT + mixed(1, most - 1) + "</alive>")))
+                .isInstanceOf(OFAlive.class);
+        // Woodstox checks the two kinds' sum only as one of its arrays grows: these pass it
+        for (String hostile : List.of(mixed(most - 1, 2), mixed(1, most))) {
+            assertThatThrownBy(() -> lenient.decode(bytes(ROOT + hostile + "</alive>")))
+                    .isInstanceOf(DecodeException.class)
+                    .hasMessageContaining("more than " + most + " attributes and namespace declarations");
+        }
     }
 
     @Test
@@ -316,6 +357,17 @@ class FeedDecoderTest {
             body.append("<s").append(i).append("/>");
         }
         return body.toString();
+    }
+
+    private static String mixed(int attributes, int declarations) {
+        var tag = new StringBuilder("<x");
+        for (int i = 0; i < attributes; i++) {
+            tag.append(" a").append(i).append("=\"1\"");
+        }
+        for (int i = 0; i < declarations; i++) {
+            tag.append(" xmlns:p").append(i).append("=\"u").append(i).append('"');
+        }
+        return tag.append("/>").toString();
     }
 
     private static String declarations(int count) {
