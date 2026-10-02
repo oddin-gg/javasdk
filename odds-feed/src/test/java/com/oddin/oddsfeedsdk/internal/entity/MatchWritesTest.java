@@ -101,6 +101,49 @@ class MatchWritesTest {
     }
 
     @Test
+    void aWinnerThatIsNotAUrnKeepsTheWinnerHeld() throws DecodeException {
+        var summary = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class);
+        matches.writeAuthoritative(
+                MATCH,
+                MatchWrites.summary(summary.getSportEvent(), summary.getSportEventStatus(), EN),
+                matches.stamp(MATCH));
+        summary.getSportEventStatus().setWinnerId("not a urn");
+        matches.writeAuthoritative(
+                MATCH,
+                MatchWrites.summary(summary.getSportEvent(), summary.getSportEventStatus(), EN),
+                matches.stamp(MATCH));
+        assertThat(requireNonNull(matches.get(MATCH)).get(WINNER_ID, null))
+                .as("an id that is not a URN is left out, not a retraction")
+                .isEqualTo(URN.parse("od:competitor:47214"));
+    }
+
+    @Test
+    void periodScoresAreInPeriodOrderWhateverOrderTheyCameIn() throws DecodeException {
+        var summary = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class);
+        java.util.Collections.reverse(
+                summary.getSportEventStatus().getPeriodScores().getPeriodScore());
+        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(summary.getSportEventStatus()), () -> false);
+        assertThat(requireNonNull(requireNonNull(live.get(MATCH)).get(PERIOD_SCORES)))
+                .extracting(PeriodScore::getPeriodNumber)
+                .containsExactly(1, 2, 3, 4, 5);
+
+        var message = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
+        var periods = new com.oddin.oddsfeedsdk.schema.feed.v1.OFPeriodscoresType();
+        for (int number : List.of(3, 1, 2)) {
+            var period = new com.oddin.oddsfeedsdk.schema.feed.v1.OFPeriodScoreType();
+            period.setType("map");
+            period.setNumber(number);
+            periods.getPeriodScore().add(period);
+        }
+        message.setPeriodScores(periods);
+        var fromFeed = new LiveState<URN>(100);
+        fromFeed.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(message));
+        assertThat(requireNonNull(requireNonNull(fromFeed.get(MATCH)).get(PERIOD_SCORES)))
+                .extracting(PeriodScore::getPeriodNumber)
+                .containsExactly(1, 2, 3);
+    }
+
+    @Test
     void aCricketSummaryAndLiveMessageCarryTheSameScoreboard() throws DecodeException {
         var summary = decode("rest/match_summary/match_summary_cricket_scoreboard.xml", RAMatchSummaryEndpoint.class);
         live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(summary.getSportEventStatus()), () -> false);
