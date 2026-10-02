@@ -237,7 +237,12 @@ final class Harness {
 
     /** The transport reports the last reset done. */
     void resetDone() {
-        machine.resetDone(resets.getLast(), resetNumbers.getLast());
+        machine.resetDone(resets.getLast(), resetNumbers.getLast(), true);
+    }
+
+    /** The transport reports it could not take the last reset at all. */
+    void resetRefused() {
+        machine.resetDone(resets.getLast(), resetNumbers.getLast(), false);
     }
 
     void accept(Outbox.Call call) {

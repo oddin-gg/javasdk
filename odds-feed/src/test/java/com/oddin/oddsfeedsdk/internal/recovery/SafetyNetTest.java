@@ -216,6 +216,29 @@ class SafetyNetTest {
     }
 
     @Test
+    void aResetTheTransportCouldNotTakeAsksAgainForWhatItIgnoredAndDropsNothing() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        feed.accept(pre);
+        feed.accept(feed.lastSnapshot(LIVE));
+        // ignored while the reset was meant to be under way
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.resetRefused();
+        assertThat(feed.calls)
+                .as("asked for again, nothing else waiting for the session")
+                .hasSize(before + 4);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("from where the net started")
+                .isEqualTo(pre.after());
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
     void aReportOfNoResetUnderWayChangesNothing() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();
@@ -224,15 +247,15 @@ class SafetyNetTest {
         Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
         // while it still waits for the API, a report with the number it will have
         feed.accept(pre);
-        feed.machine.resetDone(1, 1);
-        feed.machine.resetDone(1, 0);
+        feed.machine.resetDone(1, 1, true);
+        feed.machine.resetDone(1, 0, true);
         assertThat(feed.calls).as("before the reset is made").hasSize(before + 2);
         feed.accept(live);
         long number = feed.resetNumbers.getLast();
-        feed.machine.resetDone(1, number + 1);
-        feed.machine.resetDone(1, 0);
+        feed.machine.resetDone(1, number + 1, true);
+        feed.machine.resetDone(1, 0, true);
         assertThat(feed.calls).as("reports of other resets").hasSize(before + 2);
-        feed.machine.resetDone(1, number);
+        feed.machine.resetDone(1, number, true);
         assertThat(feed.calls).as("its own report").hasSize(before + 4);
     }
 
