@@ -35,7 +35,11 @@ final class Harness {
     final List<Outbox.Call> calls = new ArrayList<>();
     final List<Integer> resets = new ArrayList<>();
     final List<Long> resetNumbers = new ArrayList<>();
+    /** Every status change, with its cause. */
     final List<ProducerStatusChange> statuses = new ArrayList<>();
+    /** The status changes 0.0.x's callback fires for: the down flag or the public reason changed. */
+    final List<ProducerStatusChange> publicStatuses = new ArrayList<>();
+
     final List<String> events = new ArrayList<>();
     /** The sessions opened, for the alives in their queues. */
     final List<Integer> sessions = new ArrayList<>();
@@ -74,6 +78,11 @@ final class Harness {
         RecoveryEvents recorded = new RecoveryEvents() {
             @Override
             public void producerStatus(ProducerStatusChange change) {
+                publicStatuses.add(change);
+            }
+
+            @Override
+            public void producerCause(ProducerStatusChange change) {
                 statuses.add(change);
             }
 

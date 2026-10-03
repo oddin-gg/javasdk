@@ -682,17 +682,61 @@ class RecoveryMachineTest {
     // ---- what the client hears
 
     @Test
-    void anAliveSayingAProducerStillDownIsUnsubscribedIsReportedWithItsCause() {
+    void anAliveSayingAProducerStillDownIsUnsubscribedRaisesOnlyTheCauseEvent() {
+        // KD-2, as in 0.0.x: down, and for the same public reason, so 0.0.x's callback hears nothing
         feed.open(1, MessageInterest.ALL);
         feed.machine.start();
         feed.alive(PRE);
         feed.alive(PRE);
         assertThat(feed.statuses).as("alives change no status").isEmpty();
         feed.unsubscribed(PRE);
+        assertThat(feed.publicStatuses).as("events for 0.0.x's callback").isEmpty();
         assertThat(feed.statuses).extracting(ProducerStatusChange::cause).containsExactly(StatusCause.UNSUBSCRIBED);
         feed.unsubscribed(PRE);
         assertThat(feed.statuses).as("the same cause again").hasSize(1);
-        assertThat(feed.snapshots(PRE)).as("joined the one in flight").hasSize(1);
+        assertThat(feed.snapshots(PRE))
+                .as("the recovery still asked for, and joined")
+                .hasSize(1);
+    }
+
+    @Test
+    void causesSharingAPublicReasonRaiseOnePublicEventAndACauseEventEach() {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.bothUp(1);
+        int publicBefore = feed.publicStatuses.size();
+        int causesBefore = feed.statuses.size();
+        feed.unsubscribed(PRE);
+        feed.machine.channelLost(1);
+        assertThat(feed.publicStatuses.subList(publicBefore, feed.publicStatuses.size()))
+                .as("down, for OTHER, once")
+                .filteredOn(change -> change.producerId() == PRE)
+                .extracting(ProducerStatusChange::cause)
+                .containsExactly(StatusCause.UNSUBSCRIBED);
+        assertThat(feed.statuses.subList(causesBefore, feed.statuses.size()))
+                .filteredOn(change -> change.producerId() == PRE)
+                .extracting(ProducerStatusChange::cause)
+                .containsExactly(StatusCause.UNSUBSCRIBED, StatusCause.CHANNEL_LOST);
+
+        // another public reason: both events
+        for (int second = 0; second < 21; second++) {
+            feed.advance(Duration.ofSeconds(1));
+        }
+        assertThat(feed.statuses)
+                .filteredOn(change -> change.producerId() == PRE)
+                .extracting(ProducerStatusChange::cause)
+                .containsExactly(
+                        StatusCause.FIRST_RECOVERY_COMPLETED,
+                        StatusCause.UNSUBSCRIBED,
+                        StatusCause.CHANNEL_LOST,
+                        StatusCause.ALIVE_INTERVAL_VIOLATION);
+        assertThat(feed.publicStatuses)
+                .filteredOn(change -> change.producerId() == PRE)
+                .extracting(ProducerStatusChange::reason)
+                .containsExactly(
+                        ProducerStatusReason.FIRST_RECOVERY_COMPLETED,
+                        ProducerStatusReason.OTHER,
+                        ProducerStatusReason.ALIVE_INTERVAL_VIOLATION);
     }
 
     @Test

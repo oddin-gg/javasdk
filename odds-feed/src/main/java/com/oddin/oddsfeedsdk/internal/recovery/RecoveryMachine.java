@@ -1137,7 +1137,10 @@ final class RecoveryMachine {
         }
     }
 
-    /** Down for {@code cause}: reported when the producer was up or down for another cause. */
+    /**
+     * Down for {@code cause}: reported at the cause's level when the producer was up or down for
+     * another cause, and to 0.0.x's callback only when it was up or down for another public reason.
+     */
     private void markDown(Track track, StatusCause cause, long now) {
         if (!enabled(track) || (track.down && track.cause == cause)) {
             return;
@@ -1146,11 +1149,13 @@ final class RecoveryMachine {
         if (active != null) {
             active.causes.add(cause);
         }
+        // 0.0.x's callback fires when the down flag or the public reason changes, not for a cause alone
+        boolean publicChange = !track.down || track.cause.reason() != cause.reason();
         track.down = true;
         track.cause = cause;
         producers.setDown(track.id, true);
         LOG.info("Producer {} down: {}", track.id, cause.description());
-        events.producerStatus(new ProducerStatusChange(track.id, true, track.delayed, cause, now));
+        tell(new ProducerStatusChange(track.id, true, track.delayed, cause, now), publicChange);
     }
 
     /**
@@ -1167,7 +1172,15 @@ final class RecoveryMachine {
         track.cause = cause;
         producers.setDown(track.id, false);
         LOG.info("Producer {} up: {}", track.id, cause.description());
-        events.producerStatus(new ProducerStatusChange(track.id, false, track.delayed, cause, now));
+        tell(new ProducerStatusChange(track.id, false, track.delayed, cause, now), true);
+    }
+
+    /** A status change: the cause-level event always, the public one when the flag or reason changed. */
+    private void tell(ProducerStatusChange change, boolean publicChange) {
+        if (publicChange) {
+            events.producerStatus(change);
+        }
+        events.producerCause(change);
     }
 
     // ---- small things

@@ -635,6 +635,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
 
         @Override
+        public void producerCause(ProducerStatusChange change) {
+            guard("producerCause", () -> events.producerCause(change));
+        }
+
+        @Override
         public void eventRecoveryCompleted(long producerId, URN eventId, long requestId) {
             guard("eventRecoveryCompleted", () -> events.eventRecoveryCompleted(producerId, eventId, requestId));
         }
