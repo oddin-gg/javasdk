@@ -46,10 +46,12 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **0.0.x:** Every producer starts down. An alive with `subscribed="0"` for a producer that is
   down changes neither the down flag nor the reason, so `onProducerStatusChange` is not called.
   The SDK does ask for a recovery.
-- **1.0:** To be decided. NEXT.md says neither whether producers start down nor whether this
-  raises a status event.
-- **Why:** A client waiting for a first status event after `open()` sees none; the choice should
-  be made on purpose.
+- **1.0:** As 0.0.x. Every producer starts down, and the status callback fires only when the
+  down flag or the public reason changes, so it is not called here; the recovery is asked for.
+  The cause changes, to unsubscribed, and the cause-level event reports that to the listener
+  method 1.0 adds (NEXT.md section 4, Recovery and producers).
+- **Why:** A client waiting for a first status event after `open()` sees none; the choice was
+  made on purpose, to keep 0.0.x's callback as clients know it.
 - **Pinned by:** `ProducerRecoveryScenarioIT.anUnsubscribedAliveForAProducerStillDownIsNotReported`
 - **Found:** by test against 0.0.56.
 
@@ -103,9 +105,12 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **0.0.x:** The recovery watchdog runs first 60 s after `open()`, then every 10 s. Its first run
   reports every producer without an alive in the last 20 s down with `ALIVE_INTERVAL_VIOLATION`,
   including producers that were never up.
-- **1.0:** To be decided.
+- **1.0:** The first check is the maximum inactivity, 20 s by default, after `open()`, then every
+  second: a producer without an alive for longer is reported down with `ALIVE_INTERVAL_VIOLATION`,
+  one never up included. There is no minute of grace (NEXT.md section 4, Recovery and producers).
 - **Why:** Any scenario longer than a minute sees these status changes on top of what it drives;
-  `ReconnectScenarioIT` stays under the minute because of it.
+  `ReconnectScenarioIT` stays under the minute because of it. A client hears of a silent producer
+  20 s after `open()` rather than 60 s.
 - **Pinned by:** none; a minute-long scenario in every run is not worth it.
 - **Found:** by reading the source (`RecoveryManagerImpl.open`, `timerTick`), and seen once in a
   scenario, not kept, that opened the feed and waited 75 s: both producers reported down with

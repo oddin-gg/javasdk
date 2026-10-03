@@ -221,7 +221,7 @@ class RecoveryActorTest {
         var wedged = new CountDownLatch(1);
         var slow = new RecoveryEvents() {
             @Override
-            public void producerStatus(ProducerStatusChange change) {
+            public void producerCause(ProducerStatusChange change) {
                 wedged.countDown();
                 try {
                     assertThat(wedge.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
@@ -294,7 +294,7 @@ class RecoveryActorTest {
     void anErrorFromTheListenerDoesNotStopTheActor() throws InterruptedException {
         var throwing = new RecoveryEvents() {
             @Override
-            public void producerStatus(ProducerStatusChange change) {
+            public void producerCause(ProducerStatusChange change) {
                 throw new AssertionError("a listener bug");
             }
         };
@@ -773,7 +773,7 @@ class RecoveryActorTest {
         var wedged = new CountDownLatch(1);
         var slow = new RecoveryEvents() {
             @Override
-            public void producerStatus(ProducerStatusChange change) {
+            public void producerCause(ProducerStatusChange change) {
                 statuses.add(change);
                 if (wedging.compareAndSet(true, false)) {
                     wedged.countDown();
@@ -860,7 +860,7 @@ class RecoveryActorTest {
         var wedged = new CountDownLatch(1);
         var slow = new RecoveryEvents() {
             @Override
-            public void producerStatus(ProducerStatusChange change) {
+            public void producerCause(ProducerStatusChange change) {
                 wedged.countDown();
                 try {
                     assertThat(wedge.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
@@ -1008,7 +1008,7 @@ class RecoveryActorTest {
     void aListenerThatThrowsDoesNotStopTheActor() throws InterruptedException {
         var throwing = new RecoveryEvents() {
             @Override
-            public void producerStatus(ProducerStatusChange change) {
+            public void producerCause(ProducerStatusChange change) {
                 throw new IllegalStateException("a listener bug");
             }
         };
@@ -1030,7 +1030,7 @@ class RecoveryActorTest {
         var seen = new CountDownLatch(1);
         var listener = new RecoveryEvents() {
             @Override
-            public void producerStatus(ProducerStatusChange change) {
+            public void producerCause(ProducerStatusChange change) {
                 thread.set(Thread.currentThread().getName().equals("oddsfeed-recovery"));
                 seen.countDown();
             }
@@ -1103,7 +1103,7 @@ class RecoveryActorTest {
     private RecoveryEvents events() {
         return new RecoveryEvents() {
             @Override
-            public void producerStatus(ProducerStatusChange change) {
+            public void producerCause(ProducerStatusChange change) {
                 statuses.add(change);
             }
 

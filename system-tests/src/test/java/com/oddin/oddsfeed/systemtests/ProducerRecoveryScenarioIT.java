@@ -86,7 +86,8 @@ class ProducerRecoveryScenarioIT {
     /**
      * Every producer starts down, and 0.0.x reports a status change only when the down flag or its
      * reason changes: an alive saying a producer that is still down is unsubscribed changes neither,
-     * so the client hears nothing, while the SDK does ask for a recovery.
+     * so the client hears nothing, while the SDK does ask for a recovery. 1.0 does the same; the
+     * changed cause reaches only its listener method that names causes.
      */
     @Test
     void anUnsubscribedAliveForAProducerStillDownIsNotReported() throws InterruptedException {
@@ -96,7 +97,7 @@ class ProducerRecoveryScenarioIT {
             sdk.open(MessageInterest.ALL);
             feed.publish(alive(1, false));
 
-            KnownDifference.ALREADY_DOWN_PRODUCER_REPORTS_NOTHING.expectLegacy(() -> {
+            KnownDifference.Check nothingReported = () -> {
                 assertThat(rest.awaitRequest("POST", PREMATCH_RECOVERY))
                         .as("a recovery of producer 1")
                         .isNotNull();
@@ -106,7 +107,8 @@ class ProducerRecoveryScenarioIT {
                 assertThat(sdk.oddsFeed().getProducerManager().isProducerDown(1))
                         .as("producer 1 down")
                         .isTrue();
-            });
+            };
+            KnownDifference.ALREADY_DOWN_PRODUCER_REPORTS_NOTHING.expect(nothingReported, nothingReported);
         }
     }
 
