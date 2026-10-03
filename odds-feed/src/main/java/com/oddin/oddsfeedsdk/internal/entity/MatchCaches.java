@@ -6,6 +6,7 @@ import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.SCHEDULE;
 import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.SUMMARY;
 
 import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache.Stamp;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
@@ -107,20 +108,12 @@ public final class MatchCaches {
     /** The same, from inside another load, waiting no longer than its deadline. */
     public Entry match(URN id, Locale locale, @Nullable Deadline within) {
         var key = new MatchKey(id, locale);
-        // twice at most: a read just after a fixture change can join a load from before it, which
-        // then writes nothing
-        for (int tries = 0; tries < 2 && !matches.isFresh(id, SUMMARY, locale); tries++) {
-            summaries.load(key, within);
-        }
-        return entryOf(matches, id);
+        return read(matches, id, SUMMARY, locale, () -> summaries.load(key, within));
     }
 
     /** The match's fixture, loaded in the default locale when it is missing or out of date. */
     public Entry fixture(URN id) {
-        for (int tries = 0; tries < 2 && !fixtures.isFresh(id, FIXTURE, defaultLocale); tries++) {
-            fixtureLoads.load(id);
-        }
-        return entryOf(fixtures, id);
+        return read(fixtures, id, FIXTURE, defaultLocale, () -> fixtureLoads.load(id));
     }
 
     /**
@@ -237,6 +230,21 @@ public final class MatchCaches {
         }
         matches.fill(id, MatchWrites.fill(FIXTURE_OF_MATCH, fixture, defaultLocale), matchStarted);
         return fixtures.writeAuthoritative(id, MatchWrites.fixture(fixture, defaultLocale), fixtureStarted);
+    }
+
+    /**
+     * The entry once {@code endpoint} is fresh for it in {@code locale}, loaded twice at most: a read
+     * just after a fixture change can join a load from before it, which then writes nothing.
+     * Freshness is told from the entry returned, so an invalidation after the check cannot leave the
+     * read with a tombstone.
+     */
+    private Entry read(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Runnable load) {
+        Entry entry = entryOf(cache, id);
+        for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.instant(), cache.age()); tries++) {
+            load.run();
+            entry = entryOf(cache, id);
+        }
+        return entry;
     }
 
     private static Entry entryOf(EntityCache<URN> cache, URN id) {

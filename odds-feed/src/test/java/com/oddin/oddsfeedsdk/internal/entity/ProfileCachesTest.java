@@ -5,7 +5,6 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.github.benmanes.caffeine.cache.Ticker;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
@@ -17,7 +16,6 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.InstantSource;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -340,22 +338,59 @@ class ProfileCachesTest {
         assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
     }
 
-    /** One clock for a test to move: the SDK's and Caffeine's. */
-    private static final class FakeTime implements InstantSource, Ticker {
-        private volatile Instant now = Instant.parse("2026-08-26T17:00:00Z");
+    @Test
+    void aSportWhoseEntryWentWhileItsListIsFreshIsLoadedAgain() {
+        // the wall clock stands while the entries age: a step back of the wall clock, or a sport the
+        // size bound dropped, leaves a list that is fresh over a sport that is gone
+        var ages = new FakeTime();
+        var caches = new ProfileCaches(client, Duration.ofSeconds(10), threads, time, ages);
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        caches.sports(EN, null);
+        ages.advance(ProfileCaches.PROFILE_AGE.plusMinutes(1));
+        assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN))
+                .as("the list names it, so it is loaded again")
+                .isEqualTo("Counter-Strike 2");
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+        assertThat(caches.sport(URN.parse("od:sport:99"), EN, null).get(SPORT_NAME, EN))
+                .as("one the list does not name loads nothing")
+                .isNull();
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+    }
 
-        @Override
-        public Instant instant() {
-            return now;
-        }
+    @Test
+    void aClearBetweenAReadsCheckAndItsReadDoesNotLeaveItEmpty() {
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        api.respond(PLAYER_PROFILE_EN, 200, Fixtures.read("rest/player/player_profile.xml"));
+        api.respond(TOURNAMENT_INFO_EN, 200, Fixtures.read("rest/tournament_info/tournament_info.xml"));
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        api.respond(LOL_TOURNAMENTS_EN, 200, Fixtures.read("rest/sport_tournaments/sport_tournaments.xml"));
 
-        @Override
-        public long read() {
-            return now.getEpochSecond() * 1_000_000_000L + now.getNano();
-        }
+        caches.competitor(COMPETITOR, EN, null);
+        time.onNextInstant(caches::clear);
+        assertThat(caches.competitor(COMPETITOR, EN, null).get(COMPETITOR_NAME, EN))
+                .as("the competitor as it was when the read looked")
+                .isEqualTo("Team Alpha");
 
-        void advance(Duration by) {
-            now = now.plus(by);
-        }
+        caches.player(PLAYER, EN, null);
+        time.onNextInstant(caches::clear);
+        assertThat(caches.player(PLAYER, EN, null).get(PLAYER_NAME, EN)).isEqualTo("Player One");
+
+        caches.tournament(TOURNAMENT, EN, null);
+        time.onNextInstant(caches::clear);
+        assertThat(caches.tournament(TOURNAMENT, EN, null).get(TOURNAMENT_NAME, EN))
+                .isEqualTo("Test Tournament");
+
+        caches.sportTournaments(LOL, EN, null);
+        time.onNextInstant(caches::clear);
+        assertThat(caches.sportTournaments(LOL, EN, null).get(SPORT_TOURNAMENTS, null))
+                .hasSize(2);
+
+        caches.sports(EN, null);
+        time.onNextInstant(caches::clear);
+        assertThat(caches.sports(EN, null)).containsExactly(LOL, CS2);
+
+        caches.sports(EN, null);
+        time.onNextInstant(caches::clear);
+        assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
     }
 }

@@ -6,7 +6,6 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import com.github.benmanes.caffeine.cache.Ticker;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
@@ -23,7 +22,6 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAScheduleEndpoint;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -323,26 +321,22 @@ class MatchCachesTest {
         assertThat(statusOf(caches.live(MATCH))).isEqualTo(EventStatus.Live);
     }
 
-    private static EventStatus statusOf(@Nullable LiveValues values) {
-        return requireNonNull(requireNonNull(values).get(STATUS));
+    @Test
+    void anInvalidationBetweenAReadsCheckAndItsReadDoesNotLeaveItEmpty() {
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        caches.match(MATCH, Locale.ENGLISH);
+        time.onNextInstant(() -> caches.fixtureChange(MATCH));
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
+                .as("the match as it was when the read looked")
+                .isEqualTo("Team Alpha vs Team Beta");
+
+        caches.fixture(MATCH);
+        time.onNextInstant(caches::clear);
+        assertThat(caches.fixture(MATCH).get(TV_CHANNELS, null)).hasSize(1);
     }
 
-    /** One clock for a test to move: the SDK's and Caffeine's. */
-    private static final class FakeTime implements InstantSource, Ticker {
-        private volatile Instant now = Instant.parse("2026-08-26T17:00:00Z");
-
-        @Override
-        public Instant instant() {
-            return now;
-        }
-
-        @Override
-        public long read() {
-            return now.getEpochSecond() * 1_000_000_000L + now.getNano();
-        }
-
-        void advance(Duration by) {
-            now = now.plus(by);
-        }
+    private static EventStatus statusOf(@Nullable LiveValues values) {
+        return requireNonNull(requireNonNull(values).get(STATUS));
     }
 }
