@@ -13,6 +13,7 @@ import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
+import com.oddin.oddsfeedsdk.internal.loader.SideLoads;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
 import com.oddin.oddsfeedsdk.internal.xml.RestDecoder;
@@ -47,6 +48,8 @@ class MatchCachesTest {
     private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
     private FakeRestServer api;
     private ApiClient client;
+    private ProfileCaches profiles;
+    private SideLoads sideLoads;
     private MatchCaches caches;
 
     @BeforeEach
@@ -58,11 +61,15 @@ class MatchCachesTest {
                 .setHttpClientTimeout(Duration.ofSeconds(10))
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        caches = new MatchCaches(client, Duration.ofSeconds(10), Locale.ENGLISH, threads, time, time);
+        profiles = new ProfileCaches(client, Duration.ofSeconds(10), threads, time, time);
+        sideLoads = new SideLoads(100, 2, Duration.ofSeconds(10));
+        caches = new MatchCaches(
+                client, profiles, sideLoads, Duration.ofSeconds(10), Locale.ENGLISH, threads, time, time);
     }
 
     @AfterEach
     void stop() {
+        sideLoads.close();
         threads.shutdownNow();
         client.close();
         api.close();
@@ -334,6 +341,63 @@ class MatchCachesTest {
         caches.fixture(MATCH);
         time.onNextInstant(caches::clear);
         assertThat(caches.fixture(MATCH).get(TV_CHANNELS, null)).hasSize(1);
+    }
+
+    @Test
+    void aSummaryFillsTheProfilesAndSideLoadsItsCompetitorsInItsLocale() throws Exception {
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        String home = "/v1/sports/en/competitors/od:competitor:47214/profile";
+        String away = "/v1/sports/en/competitors/od:competitor:47215/profile";
+        api.respond(home, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        api.respond(
+                away,
+                200,
+                Fixtures.read("rest/competitor/competitor_profile.xml")
+                        .replace("od:competitor:47214", "od:competitor:47215")
+                        .replace("Team Alpha", "Team Beta"));
+        caches.match(MATCH, Locale.ENGLISH);
+
+        Entry tournament = requireNonNull(profiles.cachedTournament(URN.parse("od:tournament:1042")));
+        assertThat(tournament.get(ProfileFields.TOURNAMENT_NAME, Locale.ENGLISH))
+                .isEqualTo("Test Tournament");
+        assertThat(tournament.isAuthoritative(ProfileFields.TOURNAMENT_NAME, Locale.ENGLISH))
+                .as("the summary only fills")
+                .isFalse();
+        assertThat(requireNonNull(profiles.cachedSport(URN.parse("od:sport:23")))
+                        .get(ProfileFields.SPORT_NAME, Locale.ENGLISH))
+                .isEqualTo("PenaltyArena");
+
+        api.awaitRequest("GET", home);
+        api.awaitRequest("GET", away);
+        api.awaitQuiet();
+        assertThat(profiles.competitor(URN.parse("od:competitor:47215"), Locale.ENGLISH, null)
+                        .get(ProfileFields.COMPETITOR_NAME, Locale.ENGLISH))
+                .isEqualTo("Team Beta");
+        assertThat(api.requests("GET", away)).as("warm: not loaded again").hasSize(1);
+    }
+
+    @Test
+    void aFixtureFillsTheProfilesAndSideLoadsNothing() {
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        caches.fixture(MATCH);
+        Entry competitor = requireNonNull(profiles.cachedCompetitor(URN.parse("od:competitor:47214")));
+        assertThat(competitor.get(ProfileFields.COMPETITOR_NAME, Locale.ENGLISH))
+                .isEqualTo("Team Alpha");
+        api.awaitQuiet();
+        assertThat(api.requests()).extracting(r -> r.path()).containsExactly(FIXTURE_EN);
+    }
+
+    @Test
+    void clearingOneMatchDropsItAndItsFixture() {
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        caches.match(MATCH, Locale.ENGLISH);
+        caches.fixture(MATCH);
+        caches.clear(MATCH);
+        caches.match(MATCH, Locale.ENGLISH);
+        caches.fixture(MATCH);
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(2);
+        assertThat(api.requests("GET", FIXTURE_EN)).hasSize(2);
     }
 
     private static EventStatus statusOf(@Nullable LiveValues values) {

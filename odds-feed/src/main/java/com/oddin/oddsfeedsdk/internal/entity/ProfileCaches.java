@@ -182,6 +182,16 @@ public final class ProfileCaches {
         fillSport(tournament.getSport(), locale, started.sports());
     }
 
+    /** Drops what is cached of the competitor, as the public clear of one competitor does. */
+    public void clearCompetitor(URN id) {
+        competitors.invalidate(id);
+    }
+
+    /** Drops what is cached of the tournament, as the public clear of one tournament does. */
+    public void clearTournament(URN id) {
+        tournaments.invalidate(id);
+    }
+
     /** Drops every cached competitor, player, tournament and sport, as the public clear does. */
     public void clear() {
         competitors.clear();
