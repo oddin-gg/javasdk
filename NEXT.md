@@ -505,9 +505,12 @@ and REST workers post facts to it; it decides and posts work out.
 - Reconnect with backoff on network failures. Exclusive queues are always re-declared;
   whatever the broker buffered for the old queue is gone, and recovery covers it.
 - Authentication and authorisation failures and a wrong virtual host are treated as
-  permanent after three consecutive occurrences within one minute, because a single
-  refusal can be an auth backend blip. Permanent means the reconnect loop stops and a
-  fatal error event carries the broker's reason. The client's exit is `close()` and a
+  permanent once at least three refusals have gone on for a whole minute with no
+  connection in between. They are counted by the clock, not by attempts, which the
+  backoff spaces a few seconds apart at first, because a refusal can be an auth backend
+  being deployed or a virtual host being written. Permanent means the reconnect loop
+  stops and a fatal error event carries the broker's reason, with how many refusals
+  over how long. The client's exit is `close()` and a
   new `OddsFeed`; `open()` is one-shot, as today.
 - Broker resource limits (connections, queues) are transient. They are retried with a
   long backoff and surface as an error event each time, never as a silent hang.
@@ -524,9 +527,14 @@ and REST workers post facts to it; it decides and posts work out.
   size is bounded before decoding by the maximum message size from the delivery
   section; the decoder's own limits bound parser work. One malformed document costs
   one unparsable callback, nothing more.
-- Unknown enum values decode to an `UNKNOWN` constant, and the message keeps the raw
-  value in a separate getter next to the enum getter (`getStatus()` and `getStatusRaw()`;
-  the feed's enums are numbers, so the raw value is the number as decoded). Unknown attributes and elements
+- In the generated XML classes (`OF*`, `RA*`), unknown enum values decode to an
+  `UNKNOWN` constant, and the class keeps the raw value in a separate getter next to the
+  enum getter (`getStatus()` and `getStatusRaw()`; the feed's enums are numbers, so the
+  raw value is the number as decoded). The public message enums in `mq.entities`, such
+  as `MarketStatus` and `FixtureChangeType`, stay source compatible: no new constants,
+  no new getters, and an unknown wire value behaves as in 0.0.x. An unknown fixture
+  change type reads `OTHER_CHANGE`; an unknown market status makes the message
+  unparsable. Unknown attributes and elements
   are ignored in production and fail the golden tests, so producer drift shows up in
   CI, not at a client.
 
@@ -570,13 +578,16 @@ exists in the Go SDK already.
 - Configuration: default locale, preload locales, eager entity preload for messages,
   HTTP timeout, startup deadline, prefetch, maximum message size, REST concurrency
   limit, max inactivity, max recovery time, stale-message limit and window, exchange
-  names, shutdown timeout, API call logging.
+  names, shutdown timeout, API call logging, the broker connection's own TLS context
+  (`setMessagingSslContext`, for a truststore of the client's own or a proxy that
+  inspects TLS).
 - Events on the global listener, all as `default` methods: connection state changes,
   health events, listener and pipeline exceptions, fatal errors, safety-net resets,
   API call events with method, URL, status and latency, producer-status reasons that
   name the cause.
 - Raw data: `default` methods on the extended listener delivering raw XML bytes for
-  feed messages and REST responses, and raw-string getters next to enum getters.
+  feed messages and REST responses, and raw-string getters next to enum getters in the
+  generated XML classes.
 - Telemetry: the SDK reports its version the way the Go SDK does - an HTTP `User-Agent`
   of `oddin-javasdk/<version> (java <version>)` and an `X-Oddin-SDK-Version` header on
   every API call, and `SDK_version` next to today's `SDK=java` in the AMQP client
@@ -626,11 +637,11 @@ Three layers. No ticket is done without its tests.
    fire, entity values, locale handling, invalidation on fixture change, producer down
    and recovery, reconnect, REST outage, REST down at startup, authentication failure,
    stale feed, a callback that throws, replay, exception strategy. They run against
-   0.0.56 first, so we know each test actually tests something. Then they run against
+   0.0.57 first, so we know each test actually tests something. Then they run against
    1.0.0. Same tests, one version property. CI runs the suite twice, once per version,
    and the 1.0.0 run asserts the loaded jar's version through the telemetry getter, so
    a misconfigured build can never pass by silently testing the downloaded old jar.
-   Resolving 0.0.56 needs a GitHub Packages token; CI has one.
+   Resolving 0.0.57 needs a GitHub Packages token; CI has one.
 2. **Unit and concurrency tests with every ticket.** Golden decode tests for every
    message and endpoint from the schema fixtures. Cache tests: expiry per locale,
    eviction, locale marks, clear, tombstones and generations, authoritative versus
@@ -655,8 +666,8 @@ the broken code before it counts, and a test that cannot fail is a bug.
 
 Performance is a requirement, not a follow-up.
 
-- A benchmark harness in the repo: recorded production-shaped odds changes replayed
-  through decode, cache and entity build, with JMH. Budgets per message for time and
+- A benchmark harness in the repo: generated odds changes shaped like a live match's,
+  run through decode, cache and entity build, with JMH. Budgets per message for time and
   allocation. Runs in CI as a regression check. It has a **cold scenario** as well: a
   restart-shaped run where every entity is a miss and eager preload is on, against the
   fake REST server with realistic latency, with a budget on time-to-caught-up. The
@@ -704,7 +715,8 @@ Performance is a requirement, not a follow-up.
 ## 10. Work breakdown
 
 Small tickets, one PR each, half a day to three days. Each has a visible result. Order
-matters where it says so, the rest can run in parallel.
+matters where it says so, the rest can run in parallel. Tickets added after the plan
+review of 2026-10-03 take the next free number and sit under the ticket they follow.
 
 ### Phase 0 – Foundation
 
@@ -724,6 +736,10 @@ matters where it says so, the rest can run in parallel.
    fixtures there with a golden decode test, add the dual-line checkbox to the PR
    template and the schema drift job.
 
+   37. Remove the old Kotlin release workflow from `next`, which would publish
+       `library/` on a `v*` tag, and add the PR template to `main`, where GitHub reads
+       it. Before any tag.
+
 ### Phase 1 – Contract and wire
 
 8. System tests, batch two: every feed message type and the callbacks it triggers.
@@ -740,6 +756,9 @@ matters where it says so, the rest can run in parallel.
 12. Generated feed models with name-preserving bindings, decoder hardening, raw-string
     getters, plus golden decode tests. One PR per message family. Lists the types
     whose shape changed.
+
+    38. JAXB on Woodstox for the feed and REST decoders, with the decoder's limits.
+        Done.
 13. Generated REST models with name-preserving bindings plus golden tests. One PR per
     endpoint family. Same list.
 14. HTTP client: all endpoints, three permit pools, one deadline per call covering
@@ -750,7 +769,7 @@ matters where it says so, the rest can run in parallel.
     internal events interface; ticket 22 connects it to the dispatcher and adds the
     public listener methods.
 15. Benchmark harness: corpus, JMH skeleton, warm scenario, CI budget check. The cold
-    scenario joins when the caches and the HTTP client exist.
+    scenario is ticket 40.
 
 ### Phase 2 – Core
 
@@ -769,9 +788,14 @@ group by group.
 19. Catalog caches: market descriptions, void reasons, match status descriptions,
     provenance-aware refresh with stale serving and maximum staleness.
 20. Entity façades and factories with parallel multi-locale loading and the
-    partial-failure rule.
+    partial-failure rule. Also the catalog façades and `SportsInfoManager`, the
+    side-loads, the eager entity preload for messages, and the cross-cache deadlock
+    tests.
+
+    39. Player underage on the 1.0 line, as merged on `release/0.x`, and the API
+        compatibility baseline moved to each new 0.x release.
 21. AMQP layer: connection, reconnect with permanent versus transient classification
-    and the three-strikes rule, connection events, one channel per session, prefetch
+    and the refusal rule, connection events, one channel per session, prefetch
     validation, maximum message size, raw hand-off into bounded session queues, the
     channel replacement sequence with epochs and `SessionTransport.reset()`, the
     SDK-owned alive consumer, unparsable disposition, `open()` rollback. Also `SDK_version`
@@ -780,6 +804,13 @@ group by group.
 22. Session dispatchers: decode, build, cache write, callback, ack, the one failure
     policy for every step; message factory, markets and outcomes; fixture-change
     deduplication with today's key; the events dispatcher with its two bounded queues.
+    Also the alive dispatcher and the facts the dispatchers post to the recovery actor,
+    the remaining public listener methods, KD-5 and KD-6, the public enums' `Companion`
+    members back, field-level golden tests for the feed messages, and the warm-path
+    benchmark steps for cache write and entity build.
+
+    40. Cold-start benchmark: the cold scenario ticket 15 left for later, with a CI
+        budget.
 23. Producer manager and whoami.
 24. Recovery actor: single owner thread, random-seeded ids with reseed, per-producer-
     per-session checkpoints with alive-based advance and snapshot exemption, window
@@ -788,33 +819,53 @@ group by group.
     disable, pause during recovery, request-before-reset, its own cap and the lagging
     state, producer-status reasons.
 25. Replay manager.
+    Also `getReplayList`, built through ticket 20's factory.
+
+    41. Transport and recovery hardening: the findings left open on the approved PRs
+        of tickets 21 and 24.
 26. `OddsFeed` façade, sessions, builder, one-shot lifecycle with all-or-nothing
     `open()`, watchdog over every thread group, `getHealth()` with the full counter
-    list.
+    list. Also the recovery actor's wiring and its listener methods, `RecoveryManager`,
+    resuming from the oldest checkpoint, and the system tests against 1.0 in CI.
+
+    42. Concurrency stress suite on the assembled SDK, in CI.
 
 ### Phase 3 – Parity and polish
 
 27. Field parity with the Go SDK, in small groups.
-28. Option and method parity.
+28. Option and method parity. Includes the safety-net, inactivity, recovery-time and
+    shutdown-timeout options, the locale preload, and the 1.0-only test that pins
+    KD-17.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
-31. README, examples, integration guide with the onboarding checklist (distinct node
-    ids, prefetch versus queue limit), FAQ update.
-32. Sweep the Go and .NET SDK history since this document for fixes to port.
+31. README, examples, release notes and upgrade guide, integration guide with the
+    onboarding checklist (distinct node ids, the operator's queue limit above prefetch,
+    the per-session memory budget) and resuming after a restart, FAQ update.
+32. Sweep the Go and .NET SDK history for fixes to port, from Go SDK 1.4.0 (commit
+    `f0e8728`) and the .NET SDK of the same date. Again before every release.
 
 ### Phase 4 – Release
 
 33. Maven Central pipeline: claim the `gg.oddin` namespace, signing, registry check
     step, tag-driven publish with manual approval for finals. Also publish a last
     0.0.x version whose POM only relocates to the new coordinates, so a client who
-    forgets to change the dependency is told by their own build.
+    forgets to change the dependency is told by their own build. Also the GitHub
+    Release, a coverage threshold, and the pre-release registry check on both lines.
+
+    43. Performance validation before the release candidate: the warm and cold
+        benchmarks and a sustained-load run on the test environment, against the
+        budgets.
+    44. Make `next` the main line: remove `library/` and Gradle; CI, the schema drift
+        job, the rulesets and the README for the new `main`. Before the first release
+        candidate.
 34. First release candidate, soak on the test environment, candidates to clients.
 35. Fix round.
 36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released.
 
-Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 34. The
-benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
+Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 43 and
+44, then 34; 37 before any tag. The benchmark, the Central pipeline and the
+`release/0.x` cut fit into gaps.
 
 ---
 
@@ -823,7 +874,7 @@ benchmark, the Central pipeline and the `release/0.x` cut fit into gaps.
 - **Timeline.** Two weeks went to the hotfix already. If the schedule slips, the
   release candidate goes out later, not with fewer tests.
 - **Silent behaviour differences.** Clients depend on things we do not know about.
-  The system tests against 0.0.56 are our best defence. Release candidates to clients
+  The system tests against 0.0.57 are our best defence. Release candidates to clients
   are the second.
 - **Generated names.** Keeping the old class names through bindings works where the
   schema type maps one to one. Where the aligned schema changed a shape, the class

@@ -81,8 +81,9 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **0.0.x:** `MarketCancel.getVoidReason()` always returns null. It is deprecated in favour of
   `getVoidReasonId()` and `getVoidReasonParams()`, which work, although the market carries
   `void_reason` too - it is in the schema and in the bet cancel fixture.
-- **1.0:** To be decided. Difference 3 in NEXT.md section 3 covers attributes the feed never
-  sends; `void_reason` is one it sends.
+- **1.0:** Returns the `void_reason` the market carries, null when it carries none (ticket 22).
+  Difference 3 in NEXT.md section 3 covers attributes the feed never sends; `void_reason` is one
+  it sends.
 - **Why:** A client still on the deprecated getter gets nothing.
 - **Pinned by:** `FeedMessageScenarioIT.aBetCancelReachesOnBetCancelWithItsWindowAndVoidReasons`
 - **Found:** by test against 0.0.56, and in the source (`MarketCancelImpl`).
@@ -92,8 +93,9 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **0.0.x:** Kotlin's `split("\\|")` takes its argument literally, so it splits on the two
   characters `\|`, not on `|`. A bet stop with `groups="winner|handicap"` has one group,
   `winner|handicap`. The same split leaves a producer in both scopes with none (KD-18).
-- **1.0:** To be decided. NEXT.md is silent; the schema documents the groups as a list separated
-  by a pipe. The bet stop groups come with the message factory (ticket 22).
+- **1.0:** The groups are split on the pipe, as the schema documents them: `winner|handicap` is
+  two groups, `winner` and `handicap`. The bet stop groups come with the message factory
+  (ticket 22).
 - **Why:** A client matching bet stop groups one by one never matches.
 - **Pinned by:** `FeedMessageScenarioIT.aBetStopForSeveralGroupsNamesEach`
 - **Found:** by test against 0.0.56.
@@ -110,6 +112,9 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 - **Found:** by reading the source (`RecoveryManagerImpl.open`, `timerTick`), and seen once in a
   scenario, not kept, that opened the feed and waited 75 s: both producers reported down with
   `ALIVE_INTERVAL_VIOLATION` 60 s after `open()`, neither of them ever up.
+
+KD-8, a replay session next to a live one, was withdrawn: 0.0.x refuses that setup and 1.0 keeps
+refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
 
 ## KD-9 A callback that throws is reported as an unparsable message
 
@@ -216,8 +221,9 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   from the oldest checkpoint, then the session's channel is replaced; capped at three resets per
   session per cool-down, then the session is marked lagging.
 - **Why:** Past a point one snapshot is cheaper than working through the backlog.
-- **Pinned by:** none yet; the limit and window are 1.0 settings a test compiled against 0.0.56
-  cannot set. To be pinned with ticket 24.
+- **Pinned by:** none yet; the limit and window are 1.0 settings a test compiled against 0.0.x
+  cannot set. To be pinned by a test on 1.0 only, with ticket 28's options; until then the
+  recovery actor's `SafetyNetTest` covers the rule.
 - **Found:** by reading the source (`RecoveryManagerImpl.timerTick`, `systemSessionAliveReceived`).
 
 ## KD-18 A producer listed in both scopes has none
