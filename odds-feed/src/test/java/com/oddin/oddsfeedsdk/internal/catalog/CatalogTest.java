@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.catalog;
 
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -13,6 +14,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -20,6 +22,8 @@ import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 /**
  * Refresh after write, stale serving with no age limit, the backoff of failed fetches, early
@@ -386,8 +390,9 @@ class CatalogTest {
         assertThat(fetches).hasValue(1);
     }
 
-    @Test
-    void aReadAfterAClearDoesNotJoinAFetchFromBeforeIt() throws Exception {
+    @ParameterizedTest
+    @EnumSource(Clear.class)
+    void aReadAfterAClearDoesNotJoinAFetchFromBeforeIt(Clear clear) throws Exception {
         catalog = catalog(10, threads, queuedRefreshes::add);
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
@@ -398,7 +403,7 @@ class CatalogTest {
         };
         Future<String> before = threads.submit(() -> catalog.get("k"));
         assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
-        catalog.clear();
+        clear.of(catalog);
         answer = () -> "after the clear";
         assertThat(threads.submit(() -> catalog.get("k")).get(5, TimeUnit.SECONDS))
                 .as("its own fetch, while the old one still runs")
@@ -679,8 +684,9 @@ class CatalogTest {
         assertThat(fetches).hasValue(3);
     }
 
-    @Test
-    void aFetchFromBeforeAClearThatFailsAfterItBacksNothingOff() throws Exception {
+    @ParameterizedTest
+    @EnumSource(Clear.class)
+    void aFetchFromBeforeAClearThatFailsAfterItBacksNothingOff(Clear clear) throws Exception {
         catalog = catalog(10, threads, queuedRefreshes::add);
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
@@ -691,12 +697,32 @@ class CatalogTest {
         };
         Future<String> read = threads.submit(() -> catalog.get("k"));
         assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
-        catalog.clear();
+        clear.of(catalog);
         release.countDown();
         assertThatThrownBy(() -> read.get(5, TimeUnit.SECONDS)).hasRootCauseMessage("down");
         assertThat(catalog.health().failing()).isZero();
         answer = () -> "v1";
         assertThat(catalog.get("k")).as("fetched at once").isEqualTo("v1");
+    }
+
+    @ParameterizedTest
+    @EnumSource(Clear.class)
+    void aClearOfAKeyWhoseFetchWaitsToRunStopsItFromWritingAndFromBeingJoined(Clear clear) throws Exception {
+        var waitingToRun = new LinkedBlockingDeque<Runnable>();
+        catalog = catalog(10, waitingToRun::add, queuedRefreshes::add);
+        answer = () -> "fetch " + fetches.get();
+        Future<String> before = threads.submit(() -> catalog.get("k"));
+        Runnable first = requireNonNull(waitingToRun.poll(5, TimeUnit.SECONDS), "the first fetch");
+
+        clear.of(catalog);
+        Future<String> after = threads.submit(() -> catalog.get("k"));
+        Runnable second = requireNonNull(waitingToRun.poll(5, TimeUnit.SECONDS), "a fetch of its own");
+        second.run();
+        assertThat(after.get(5, TimeUnit.SECONDS)).isEqualTo("fetch 1");
+        // it runs after the newer one, so it would win were it allowed to write
+        first.run();
+        assertThat(before.get(5, TimeUnit.SECONDS)).as("its reader has it").isEqualTo("fetch 2");
+        assertThat(catalog.peek("k")).isEqualTo("fetch 1");
     }
 
     @Test
@@ -729,6 +755,24 @@ class CatalogTest {
                 refreshesRunOn,
                 time,
                 time);
+    }
+
+    /** The two clears, of everything and of the one key {@code k}. */
+    enum Clear {
+        EVERYTHING {
+            @Override
+            void of(Catalog<String, String> catalog) {
+                catalog.clear();
+            }
+        },
+        THE_KEY {
+            @Override
+            void of(Catalog<String, String> catalog) {
+                catalog.clear(key -> key.equals("k"));
+            }
+        };
+
+        abstract void of(Catalog<String, String> catalog);
     }
 
     private void runRefreshes() {
