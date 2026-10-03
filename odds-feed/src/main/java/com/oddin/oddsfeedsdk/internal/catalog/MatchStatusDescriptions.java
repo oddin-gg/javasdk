@@ -15,7 +15,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * What each match status id means, per locale: each locale's list fetched whole, refreshed after
- * {@link #REFRESH_AGE} and served while a refresh runs or fails, up to {@link #MAX_STALENESS}; see
+ * {@link #REFRESH_AGE} and served while a refresh runs and for as long as refreshes fail; see
  * {@link Catalog}. A refresh replaces the locale's list; an id missing from it fetches the list
  * again once.
  *
@@ -25,9 +25,6 @@ public final class MatchStatusDescriptions {
 
     /** How old a locale's list gets before a read refreshes it. */
     static final Duration REFRESH_AGE = Duration.ofHours(1);
-
-    /** How old a locale's list gets before it is no longer served. */
-    static final Duration MAX_STALENESS = Duration.ofHours(24);
 
     /** How many locales' lists are kept. */
     static final long LOCALES = 100;
@@ -56,7 +53,6 @@ public final class MatchStatusDescriptions {
                 "match status descriptions",
                 LOCALES,
                 REFRESH_AGE,
-                MAX_STALENESS,
                 this::fetchList,
                 timeout,
                 fetches,

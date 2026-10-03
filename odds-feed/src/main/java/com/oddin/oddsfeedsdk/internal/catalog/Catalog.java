@@ -32,8 +32,9 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>A value younger than the refresh age is served as it is.
  *   <li>An older one is served still, and a refresh starts in the background; it is served while the
- *       refresh runs and while it fails, until it is as old as the maximum staleness. Past that it
- *       counts as missing.
+ *       refresh runs and for as long as refreshes fail, however old it gets, as 0.0.x served what it
+ *       had. Its health says how long it has been served stale. A value goes only when a fetch
+ *       replaces it, a clear drops it, or the size bound evicts it.
  *   <li>A read with nothing to serve fetches and waits, and fails when the fetch does.
  *   <li>A failed fetch backs off its key, from a second doubling to a minute: until then no refresh
  *       of it starts, and a read with nothing to serve fails at once with the failure it had.
@@ -90,7 +91,6 @@ final class Catalog<K, V> {
 
     private final String name;
     private final Duration refreshAge;
-    private final Duration maxStaleness;
     private final Fetch<K, V> fetch;
     private final InstantSource clock;
     private final Executor refreshes;
@@ -135,30 +135,20 @@ final class Catalog<K, V> {
             String name,
             long maximumSize,
             Duration refreshAge,
-            Duration maxStaleness,
             Fetch<K, V> fetch,
             Duration timeout,
             Executor fetches,
             Executor refreshes,
             InstantSource clock,
             Ticker ticker) {
-        if (refreshAge.compareTo(maxStaleness) >= 0) {
-            throw new IllegalArgumentException(name + ": the refresh age " + refreshAge
-                    + " leaves nothing to serve stale before the maximum staleness " + maxStaleness);
-        }
         this.name = name;
         this.refreshAge = refreshAge;
-        this.maxStaleness = maxStaleness;
         this.fetch = fetch;
         this.clock = clock;
         this.refreshes = refreshes;
         this.loader = new Loader<>(name, this::fetch, timeout, MARGIN, fetches);
         this.held = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
-                // a bound on memory only, a little after a value can no longer be served: a read
-                // judges its age by when its fetch started
-                .expireAfterWrite(maxStaleness.plus(MARGIN))
-                .ticker(ticker)
                 // eviction on the writing thread: nothing to hand over, nothing left pending
                 .executor(Runnable::run)
                 .<K, Held<V>>evictionListener((key, value, cause) -> {
@@ -169,7 +159,9 @@ final class Catalog<K, V> {
                 .build();
         this.failures = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
-                .expireAfterWrite(maxStaleness)
+                // a failure nobody tried again for this long is forgotten: a key read now and then is
+                // tried at least once a minute while it fails
+                .expireAfterWrite(refreshAge)
                 .ticker(ticker)
                 .executor(Runnable::run)
                 .build();
@@ -186,15 +178,15 @@ final class Catalog<K, V> {
     }
 
     /**
-     * The key's value: what is held when it is not older than the maximum staleness - a refresh
-     * started when it is older than the refresh age - else fetched now.
+     * The key's value: what is held, however old - a refresh started when it is older than the
+     * refresh age - else fetched now.
      *
      * @throws ApiException when there is nothing to serve and the fetch fails, or the key is
      *     backing off
      */
     V get(K key) {
         Instant now = clock.instant();
-        Held<V> current = usable(key, now);
+        Held<V> current = held.getIfPresent(key);
         if (current == null) {
             return fetchNow(key);
         }
@@ -264,22 +256,17 @@ final class Catalog<K, V> {
         return loader.load(new Flight<>(key, generation.get(), true));
     }
 
-    /** What is held for the key and not older than the maximum staleness, fetching nothing. */
+    /** What is held for the key, fetching nothing. */
     @Nullable
     V peek(K key) {
-        Held<V> current = usable(key, clock.instant());
+        Held<V> current = held.getIfPresent(key);
         return current == null ? null : current.value();
     }
 
-    /** Every value held that is not older than the maximum staleness, fetching nothing. */
+    /** Every value held, fetching nothing. */
     Map<K, V> peekAll() {
-        Instant now = clock.instant();
         var all = new HashMap<K, V>();
-        held.asMap().forEach((key, value) -> {
-            if (!tooOld(value, now)) {
-                all.put(key, value.value());
-            }
-        });
+        held.asMap().forEach((key, value) -> all.put(key, value.value()));
         return all;
     }
 
@@ -324,15 +311,6 @@ final class Catalog<K, V> {
         failures.cleanUp();
         return new CatalogHealth(
                 name, servedStale.get(), staleFor, failedFetches.get(), failures.estimatedSize(), evictedForRoom.get());
-    }
-
-    private @Nullable Held<V> usable(K key, Instant now) {
-        Held<V> current = held.getIfPresent(key);
-        return current == null || tooOld(current, now) ? null : current;
-    }
-
-    private boolean tooOld(Held<V> value, Instant now) {
-        return value.fetchedAt().plus(maxStaleness).isBefore(now);
     }
 
     /** A fetch the reader waits for; one that would start while the key backs off fails at once. */
