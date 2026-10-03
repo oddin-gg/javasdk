@@ -21,7 +21,7 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The void reasons: one list, in no locale, fetched whole, refreshed after {@link #REFRESH_AGE}
- * and served while a refresh runs or fails, up to {@link #MAX_STALENESS}; see {@link Catalog}. A
+ * and served while a refresh runs and for as long as refreshes fail; see {@link Catalog}. A
  * refresh replaces the list; an id missing from it fetches the list again once.
  *
  * <p>Safe for concurrent use.
@@ -30,9 +30,6 @@ public final class VoidReasons {
 
     /** How old the list gets before a read refreshes it. */
     static final Duration REFRESH_AGE = Duration.ofHours(1);
-
-    /** How old the list gets before it is no longer served. */
-    static final Duration MAX_STALENESS = Duration.ofHours(24);
 
     private final ApiClient client;
     private final Catalog<Whole, Listed> list;
@@ -55,16 +52,7 @@ public final class VoidReasons {
             Ticker ticker) {
         this.client = client;
         this.list = new Catalog<>(
-                "void reasons",
-                1,
-                REFRESH_AGE,
-                MAX_STALENESS,
-                this::fetchList,
-                timeout,
-                fetches,
-                refreshes,
-                clock,
-                ticker);
+                "void reasons", 1, REFRESH_AGE, this::fetchList, timeout, fetches, refreshes, clock, ticker);
     }
 
     /**
