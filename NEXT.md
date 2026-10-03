@@ -524,7 +524,13 @@ and REST workers post facts to it; it decides and posts work out.
 - Producer status keeps 0.0.x's public reasons. Each change also names its cause:
   unsubscribed, no alive, processed late, connection lost, channel lost, session
   opened, safety-net reset, recovery failed, and the recoveries and the catching up that
-  bring it back. A status event goes out when the down flag or the cause changes. A
+  bring it back. The 0.0.x status callback fires when the down flag or the public reason
+  changes, as in 0.0.x, so an alive saying a producer still down is unsubscribed raises
+  none (KD-2); every change of the cause, those included, is reported apart, for the
+  listener method that names causes (ticket 26). Alives are checked from `open()`: a
+  producer without one for longer than the maximum inactivity, 20 s by default, is
+  reported down with `ALIVE_INTERVAL_VIOLATION`, one never up included, without 0.0.x's
+  minute of grace (KD-7). A
   session that processes a producer later than the maximum inactivity takes the
   producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, without a recovery, and on
   time again brings it back with `RETURNED_FROM_INACTIVITY`, as in 0.0.x. A recovery
@@ -590,7 +596,9 @@ and REST workers post facts to it; it decides and posts work out.
     failed before the old channel's deliveries were taken out - the channel's epoch tells,
     since it moves exactly then - is reported as not made: nothing was dropped, nothing
     counts against the cap, and the recoveries whose `snapshot_complete` was ignored
-    meanwhile are asked for again. Until the options exist, the limit is two minutes and the window one.
+    meanwhile are asked for again. The net's numbers - the limit of two minutes, the window
+    of one, three resets per session per ten minutes, a minute's backoff doubling - are
+    decided defaults, fixed until ticket 28's options make them settable.
   - Each reset raises an event and increments counters (resets, messages dropped by
     the reset, epoch discards), so an operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
