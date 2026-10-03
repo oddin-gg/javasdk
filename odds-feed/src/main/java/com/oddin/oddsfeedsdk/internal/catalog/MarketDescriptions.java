@@ -120,6 +120,33 @@ public final class MarketDescriptions {
     }
 
     /**
+     * The market's description in {@code locale} as {@link #markets} lists it: a dynamic-outcome
+     * variant fetched on its own when one is held, else the locale's list row, so that reading what
+     * the listing gave asks no variant's endpoint. Null when neither has it.
+     *
+     * @throws ApiException when the list is not held and cannot be fetched
+     */
+    public @Nullable LocalizedMarket listed(int id, @Nullable String variant, Locale locale) {
+        var key = MarketKey.of(id, variant);
+        if (key.isDynamic()) {
+            LocalizedMarket own = variants.peek(new VariantKey(key, locale));
+            if (own != null) {
+                return own;
+            }
+        }
+        return lists.find(locale, key, MarketList::get);
+    }
+
+    /**
+     * Whether what {@link #listed} reads the market's description in {@code locale} from is held,
+     * however old: a read of it then waits for no fetch, unless the market is missing from the list.
+     */
+    public boolean holdsListed(int id, @Nullable String variant, Locale locale) {
+        var key = MarketKey.of(id, variant);
+        return lists.peek(locale) != null || (key.isDynamic() && variants.peek(new VariantKey(key, locale)) != null);
+    }
+
+    /**
      * Every market description in {@code locale}: the locale's list, in its order, and the variants
      * fetched on their own in that locale, as 0.0.x listed what it held.
      *

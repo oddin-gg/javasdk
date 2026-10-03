@@ -17,7 +17,9 @@ import org.jspecify.annotations.Nullable;
  * A market description as the client holds it, in the locales it was got in. As in 0.0.x, its id,
  * variant and outcome types read as they were when the client got it, and the rest is read from
  * the catalog on each call, so it reads what is held now. Nothing is copied: a name is looked up
- * when it is asked for, in the locale it is asked in.
+ * when it is asked for, in the locale it is asked in. One the listing gave reads as the listing
+ * does, in every locale: a dynamic-outcome variant fetched on its own when one is held, else the
+ * list row, so that reading the listing asks no variant's endpoint.
  *
  * <p>The description gone from the catalog - removed upstream, say - is an {@link
  * com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException} under {@code THROW}, as in 0.0.x; under
@@ -32,13 +34,16 @@ final class MarketDescriptionView implements MarketDescription {
     private final @Nullable String includesOutcomesOfType;
     private final @Nullable OutcomeType outcomeType;
     private final List<Locale> locales;
+    private final boolean listed;
 
     /**
      * @param described the description as it was got, in the first of {@code locales} that has it
      * @param locales the locales it was got in, not empty
+     * @param listed whether the listing gave it, rather than a read by id
      */
-    MarketDescriptionView(MarketReads reads, LocalizedMarket described, List<Locale> locales) {
+    MarketDescriptionView(MarketReads reads, LocalizedMarket described, List<Locale> locales, boolean listed) {
         this.reads = reads;
+        this.listed = listed;
         this.key = described.key();
         this.includesOutcomesOfType = described.includesOutcomesOfType();
         this.outcomeType = described.type();
@@ -114,7 +119,7 @@ final class MarketDescriptionView implements MarketDescription {
         return reads.strategy()
                 .read(
                         () -> {
-                            LocalizedMarket described = reads.catalog().market(key.id(), key.variant(), locale);
+                            LocalizedMarket described = reads.in(key.id(), key.variant(), locale, listed);
                             return described == null ? null : described.outcome(id);
                         },
                         "an outcome of " + WHAT,
@@ -129,6 +134,9 @@ final class MarketDescriptionView implements MarketDescription {
     /** The description in the first of {@code in} that has it, failing as the strategy says. */
     private @Nullable LocalizedMarket described(List<Locale> in) {
         return reads.strategy()
-                .read(() -> reads.strategy().found(reads.first(key.id(), key.variant(), in), WHAT, key, in), WHAT, key);
+                .read(
+                        () -> reads.strategy().found(reads.first(key.id(), key.variant(), in, listed), WHAT, key, in),
+                        WHAT,
+                        key);
     }
 }
