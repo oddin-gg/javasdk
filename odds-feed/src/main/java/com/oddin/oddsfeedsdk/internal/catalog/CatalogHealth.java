@@ -7,7 +7,8 @@ import java.time.Duration;
  *
  * @param name such as {@code market descriptions}
  * @param servedStale reads served a value older than the refresh age
- * @param staleFor how long the stalest value has been served stale, zero when none is
+ * @param staleFor how long the stalest value still being read has been served stale, zero when none
+ *     is; one nobody read for the refresh age does not count
  * @param failedFetches fetches that failed, refreshes and first loads alike
  * @param failing keys whose last fetch failed
  * @param evictedForRoom values the size bound dropped
