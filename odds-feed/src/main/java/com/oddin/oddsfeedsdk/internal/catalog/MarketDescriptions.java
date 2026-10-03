@@ -29,8 +29,8 @@ import org.jspecify.annotations.Nullable;
  *       the variant's endpoint. A list refresh leaves them alone; each refreshes on its own age.
  * </ul>
  *
- * <p>Both refresh after {@link #REFRESH_AGE} and serve what they hold while a refresh runs or fails,
- * up to {@link #MAX_STALENESS}; see {@link Catalog}.
+ * <p>Both refresh after {@link #REFRESH_AGE} and serve what they hold while a refresh runs and for as
+ * long as refreshes fail; see {@link Catalog}.
  *
  * <p>Safe for concurrent use.
  */
@@ -38,9 +38,6 @@ public final class MarketDescriptions {
 
     /** How old a list or a variant gets before a read refreshes it. */
     static final Duration REFRESH_AGE = Duration.ofHours(1);
-
-    /** How old a list or a variant gets before it is no longer served. */
-    static final Duration MAX_STALENESS = Duration.ofHours(24);
 
     /** How many locales' lists are kept. */
     static final long LOCALES = 100;
@@ -73,7 +70,6 @@ public final class MarketDescriptions {
                 "market descriptions",
                 LOCALES,
                 REFRESH_AGE,
-                MAX_STALENESS,
                 this::fetchList,
                 timeout,
                 fetches,
@@ -84,7 +80,6 @@ public final class MarketDescriptions {
                 "market variants",
                 VARIANTS,
                 REFRESH_AGE,
-                MAX_STALENESS,
                 this::fetchVariant,
                 timeout,
                 fetches,

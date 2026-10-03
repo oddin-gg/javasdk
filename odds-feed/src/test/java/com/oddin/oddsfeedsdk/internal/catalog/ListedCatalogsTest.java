@@ -2,12 +2,10 @@ package com.oddin.oddsfeedsdk.internal.catalog;
 
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
-import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
 import java.time.Duration;
@@ -107,11 +105,14 @@ class ListedCatalogsTest {
     }
 
     @Test
-    void theVoidReasonsPastTheirMaximumStalenessFailWhenTheyCannotBeFetched() {
+    void theVoidReasonsAreServedForAsLongAsTheyCannotBeFetched() {
         voidReasons.all();
         api.respond(VOID_REASONS, 404, Fixtures.read("rest/error/not_found.xml"));
-        time.advance(VoidReasons.MAX_STALENESS.plusSeconds(1));
-        assertThatThrownBy(voidReasons::all).isInstanceOf(ApiException.class);
+        time.advance(Duration.ofDays(30));
+        assertThat(voidReasons.all()).as("stale, not gone").isNotEmpty();
+        runRefreshes();
+        assertThat(voidReasons.all()).isNotEmpty();
+        assertThat(voidReasons.health().failing()).isEqualTo(1);
     }
 
     @Test

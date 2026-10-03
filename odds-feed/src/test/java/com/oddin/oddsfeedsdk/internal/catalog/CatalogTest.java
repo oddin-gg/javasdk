@@ -22,7 +22,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
- * Refresh after write, stale serving, the maximum staleness, the backoff of failed fetches, early
+ * Refresh after write, stale serving with no age limit, the backoff of failed fetches, early
  * refreshes for missing items, clears and bounds, on a catalog of strings. Fetches run on the
  * reader's thread and background refreshes wait in a queue until the test runs them, unless a test
  * says otherwise.
@@ -30,7 +30,6 @@ import org.junit.jupiter.api.Test;
 class CatalogTest {
 
     private static final Duration REFRESH_AGE = Duration.ofHours(1);
-    private static final Duration MAX_STALENESS = Duration.ofHours(24);
     private static final Duration TICK = Duration.ofNanos(1);
 
     private final FakeTime time = new FakeTime();
@@ -170,31 +169,25 @@ class CatalogTest {
     }
 
     @Test
-    void pastTheMaximumStalenessTheValueCountsAsMissingAndAReadWaitsForItsFetch() {
-        catalog.get("k");
-        answer = () -> "v2";
-        time.advance(MAX_STALENESS);
-        assertThat(catalog.get("k")).as("as old as it may be").isEqualTo("v1");
-        assertThat(fetches).hasValue(1);
-        queuedRefreshes.clear();
-
-        time.advance(TICK);
-        assertThat(catalog.get("k")).isEqualTo("v2");
-        assertThat(fetches).hasValue(2);
-        assertThat(queuedRefreshes).isEmpty();
-    }
-
-    @Test
-    void pastTheMaximumStalenessAFailedFetchFailsTheRead() {
+    void aValueIsServedForAsLongAsRefreshesFailHoweverOldItGets() {
         catalog.get("k");
         answer = () -> {
             throw new ApiException("down");
         };
-        time.advance(MAX_STALENESS.plus(TICK));
-        assertThatThrownBy(() -> catalog.get("k"))
-                .isInstanceOf(ApiException.class)
-                .hasMessage("down");
-        assertThat(catalog.peek("k")).isNull();
+        time.advance(REFRESH_AGE.plus(TICK));
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        runRefreshes();
+        for (int day = 1; day <= 30; day++) {
+            time.advance(Duration.ofDays(1));
+            assertThat(catalog.get("k")).as("day %d of the outage", day).isEqualTo("v1");
+            runRefreshes();
+        }
+        assertThat(fetches).as("a refresh a day, each failed").hasValue(32);
+        CatalogHealth health = catalog.health();
+        assertThat(health.staleFor()).isEqualTo(Duration.ofDays(30));
+        assertThat(health.failing()).isEqualTo(1);
+        assertThat(health.servedStale()).isEqualTo(31);
+        assertThat(catalog.peekAll()).containsEntry("k", "v1");
     }
 
     @Test
@@ -223,6 +216,18 @@ class CatalogTest {
                 .as("another key does not back off")
                 .isSameAs(down);
         assertThat(fetches).hasValue(4);
+    }
+
+    @Test
+    void aFailureNobodyTriesAgainForTheRefreshAgeIsForgotten() {
+        answer = () -> {
+            throw new ApiException("down");
+        };
+        assertThatThrownBy(() -> catalog.get("k")).hasMessage("down");
+        time.advance(REFRESH_AGE.minus(TICK));
+        assertThat(catalog.health().failing()).isEqualTo(1);
+        time.advance(TICK);
+        assertThat(catalog.health().failing()).isZero();
     }
 
     @Test
@@ -602,22 +607,6 @@ class CatalogTest {
                 .isEqualTo(10 - catalog.peekAll().size());
     }
 
-    @Test
-    void aRefreshAgeNotBelowTheMaximumStalenessIsRefused() {
-        assertThatThrownBy(() -> new Catalog<String, String>(
-                        "c",
-                        1,
-                        MAX_STALENESS,
-                        MAX_STALENESS,
-                        (key, _, _) -> key,
-                        Duration.ofSeconds(1),
-                        Runnable::run,
-                        Runnable::run,
-                        time,
-                        time))
-                .isInstanceOf(IllegalArgumentException.class);
-    }
-
     private @Nullable String find(String item) {
         return catalog.find(
                 "k", item, (value, wanted) -> List.of(value.split(",")).contains(wanted) ? wanted : null);
@@ -628,7 +617,6 @@ class CatalogTest {
                 "test catalog",
                 size,
                 REFRESH_AGE,
-                MAX_STALENESS,
                 (_, _, _) -> {
                     fetches.incrementAndGet();
                     return answer.get();
