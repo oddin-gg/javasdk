@@ -60,6 +60,8 @@ final class SessionChannel implements SessionTransport {
     private final AtomicLong epoch = new AtomicLong();
     /** The current channel's consumer, which knows its channel; changed under the lock. */
     private volatile @Nullable Deliveries current;
+    /** Whether the channel is closed for good; set under the lock, and nothing opens it after. */
+    private boolean closed;
 
     /**
      * @param connection the transport's connection now, null while it has none
@@ -90,6 +92,10 @@ final class SessionChannel implements SessionTransport {
     void open(Connection on) throws IOException {
         lock.lock();
         try {
+            if (closed) {
+                // a reset handed to a worker before the close: nothing is to read a new channel
+                return;
+            }
             closeChannel();
             long next = epoch.incrementAndGet();
             removeEpochsBefore(next);
@@ -155,6 +161,10 @@ final class SessionChannel implements SessionTransport {
     boolean tryReset() {
         lock.lock();
         try {
+            if (closed) {
+                // closed for good: neither the epoch nor the queue is the reset's any more
+                return true;
+            }
             Connection now = connection.get();
             if (now == null || !now.isOpen()) {
                 // no connection to open one on: move the epoch on, and the reconnect opens the channel
@@ -195,7 +205,8 @@ final class SessionChannel implements SessionTransport {
     }
 
     /** Whether it has an open channel whose consumer the broker has not taken. */
-    boolean isOpen() {
+    @Override
+    public boolean isOpen() {
         Deliveries consumer = current;
         return consumer != null && !consumer.taken && consumer.getChannel().isOpen();
     }
@@ -244,9 +255,11 @@ final class SessionChannel implements SessionTransport {
         return skippedAcks.get();
     }
 
+    /** Closes the channel for good: a reset or a reopen after this opens nothing. */
     void close() {
         lock.lock();
         try {
+            closed = true;
             closeChannel();
         } finally {
             lock.unlock();

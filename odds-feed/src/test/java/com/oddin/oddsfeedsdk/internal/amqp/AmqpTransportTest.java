@@ -510,6 +510,35 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aResetAfterTheChannelClosedOpensNothing() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+        // a reset handed to a worker before the session closed, run after it
+        session.close();
+        session.reset();
+        assertThat(session.channel()).as("a channel nobody reads").isNull();
+        assertThat(session.isOpen()).isFalse();
+        assertThat(session.epoch()).isEqualTo(before);
+        assertThat(session.reopenIfLost()).isTrue();
+        assertThat(session.channel()).isNull();
+    }
+
+    @Test
+    void aResetAfterTheTransportClosedMovesNoEpoch() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+        // the close aborts the connection, then closes the channels
+        transport.close();
+        session.reset();
+        assertThat(session.epoch()).as("the epoch of a channel closed for good").isEqualTo(before);
+        assertThat(session.channel()).isNull();
+    }
+
+    @Test
     void aResetThatCannotOpenTheChannelLeavesItToTheReopenLoop() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());

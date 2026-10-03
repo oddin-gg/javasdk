@@ -206,7 +206,7 @@ to one of them:
 | AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues; the alive hand-off | decode, build, cache writes, client code, anything blocking |
 | Session dispatcher | one thread per session | decode, build, cache write, client callback, ack, age sampling | nothing else |
 | Alive dispatcher | one thread | alive decode, clock offsets, posting liveness facts to the recovery actor | REST, client code |
-| Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision | REST calls (it posts them to REST workers and receives the result as a message), client code |
+| Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
 | Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, fatal errors, listener exceptions, API call events, recovery completion | message callbacks |
 | REST workers | virtual threads | HTTP calls, posting results back to whoever asked | client code |
 | Timers | one scheduled executor | scheduling only, each tick posts a message to an actor or a worker | blocking work, client code |
@@ -438,28 +438,110 @@ and REST workers post facts to it; it decides and posts work out.
   one node id cannot be told apart by the SDK, so the documentation and the onboarding
   checklist require distinct node ids per instance.
 - Checkpoints are kept **per producer and per session**. A session's checkpoint for a
-  producer is the running maximum of the `timestamp` of live (non-snapshot) messages
-  it has finished for that producer. When the alive dispatcher observes an alive for a
-  producer and a session's queue holds nothing for that producer, the session's
-  checkpoint advances to the alive timestamp, because everything sent before that
-  alive has been processed. Snapshot messages never advance a checkpoint, so a retry
-  after a partial snapshot starts from the same point as the first attempt.
-- A recovery for a producer starts from the oldest checkpoint among the sessions that
-  receive it. A client-supplied recovery-from timestamp (existing setter) seeds all of
-  them before `open()`. The point is clamped to the producer's stateful recovery
-  window, as today, and a cold start with no seed requests a full snapshot.
+  producer is the running maximum of the `timestamp` of the live (non-snapshot)
+  messages and the subscribed alives it has finished for that producer. Every session's
+  queue is bound to the alives, as in 0.0.x, and one queue keeps the producer's order,
+  so an alive the session has finished means everything sent before it has been
+  processed: that is the alive-based advance, and it needs no look into the queue. A
+  session that has seen a recovery's `snapshot_complete` has everything up to the
+  request, so its checkpoint moves there. Snapshot messages never advance a checkpoint,
+  so a retry after a partial snapshot starts from the same point as the first attempt.
+- What a recovery must cover is kept as gaps. A queue that loses what it held - the
+  connection or its channel lost, a safety-net reset - and a session that opens miss
+  everything after the session's checkpoint. A producer that stops sending - an alive
+  that says the feed is unsubscribed, or no alive for longer than the maximum
+  inactivity - leaves every session missing what came after its last subscribed alive
+  on the SDK's alive channel, which says everything before it was sent; the queues
+  still hold what they had, so a slow session does not drag that recovery back. A
+  recovery starts from the oldest open gap: after a lost connection, the oldest
+  checkpoint among the sessions that receive the producer. A gap keeps its start until
+  a recovery that covers it completes. A client-supplied recovery-from timestamp
+  (existing setter) seeds every session's checkpoint at `open()`. The point is clamped
+  to the producer's stateful recovery window, as today - counted back by the producer's
+  clock, as the gaps' starts are, with the offset measured on its alives - and a cold
+  start with no seed requests a full snapshot, or the configured initial snapshot
+  interval, counted back from when the gap opened, so asking again does not move it.
+  That start is also the session's checkpoint until it processes something, so a later
+  loss starts from it too, rather than from an interval counted back from the loss.
+- A recovery is asked for only while an alive says the producer is there, as 0.0.x
+  asks at the first alive: after `open()`, after a reconnect, after a gap in the
+  alives. Nothing goes out while the connection is down.
 - Session lifecycle: a session that closes leaves the checkpoint and completion sets
   at once. A session that opens is seeded with the producer's current recovery-from
-  point and triggers a recovery for its interests, as today on `open()`.
+  point and triggers a recovery for its interests, as today on `open()`; the producers
+  it receives are down until that recovery completes.
 - Snapshot completion is tracked per message interest, as today: a producer is up
-  again when every session that receives it has seen its `snapshot_complete`.
+  again when every session that receives it and takes snapshot completions has seen
+  its `snapshot_complete` (a low-priority session next to a high-priority one takes
+  none). An event recovery completes the same way, and its completion reaches the
+  client. A recovery no session takes completions for, as when the high-priority
+  session of a pair closed, completes once the API has accepted it, since nothing else
+  would ever complete it.
 - Requests for one producer are coalesced: while a recovery is in flight, further
-  triggers join it instead of issuing a second one, and their reasons are recorded.
-- Recovery that times out is re-issued with backoff, at most three times in a row.
-  After that the producer stays down and the client gets a producer-status event with
-  the reason. The cap re-arms after a cool-down of ten minutes, and immediately when an
-  alive arrives after a gap. Nothing stays down for the process lifetime without a
-  further attempt.
+  triggers join it instead of issuing a second one, and their reasons are recorded. A
+  recovery covers the gaps open when it was asked for; a gap that opens while it is in
+  flight asks for one more once it completes. A loss that takes the recovery's own
+  snapshot with it - the connection, or the channel of a session that has not seen the
+  `snapshot_complete` yet - gives the recovery up, uncounted, and a new one is asked for.
+- Recovery that the API does not accept, or that times out (the maximum recovery time,
+  0.0.x's six hours unless set), is re-issued with backoff from five seconds, doubling,
+  at most three times in a row. After that the producer stays down and the client gets
+  a producer-status event with the reason. The cap re-arms after a cool-down of ten
+  minutes, and immediately when an alive arrives after a gap. Nothing stays down for
+  the process lifetime without a further attempt.
+- Event recoveries take their ids from the same sequence. At most 128 are in flight per
+  producer, and one without a `snapshot_complete` within the maximum recovery time is
+  dropped and counted, as is one whose `snapshot_complete` went with a lost queue; a
+  caller still waiting for the API's answer then hears it was not accepted. The first
+  `snapshot_complete` of a request, from any session, says the API took it: an event
+  recovery's caller hears the request id then, while the completion still waits for the
+  other sessions, and for a producer or an event recovery alike a late answer, even a
+  failure, changes nothing - no second request, no failure counted. One asked
+  for while the connection is down is refused at once, since its snapshot would have no
+  queue to go to. The caller's future is completed on a thread of its own, never the
+  actor's, so nothing the caller chains to it can hold the actor up.
+- The facts posted to the actor are of two kinds. Those whose loss would leave the
+  state wrong for good - sessions opening and closing, the connection going and coming,
+  the alives from the SDK's alive channel (an unsubscribed one is the only word of a
+  gap), `snapshot_complete`s, lost channels, the API's answers, finished resets - are
+  never dropped and keep their order. The alives are kept per producer of the list: the
+  latest, and of the first unsubscribed one and the last subscribed one before it, so a
+  flood of them costs one slot and one queued fact per producer, and an alive of a
+  producer the list does not have is dropped and counted. Of the rest of that queue,
+  sessions, connection changes, the API's answers and finished resets are bounded by
+  what the feed itself does; lost channels by the transport's own reopening; and the
+  `snapshot_complete`s, one per request per session, by the recoveries asked for on the
+  node id - which include another instance's sharing it, the one input there not
+  bounded by this feed alone.
+  The rest - event recovery requests, and the messages and alives a session finished -
+  are bounded and dropped with a count when full; a dropped request is answered as not
+  accepted. The lesser queues yield to the essential one: after taking a fact, the actor
+  handles every essential fact waiting before it, and whoever posts an essential fact
+  and then a sample puts the essential fact in first, so a sample from a new channel is
+  never handled before the loss of the old one. Each turn takes at most a thousand of
+  the bounded facts of each kind, so a stream of them holds up neither the clock nor the
+  others.
+- Producer status keeps 0.0.x's public reasons. Each change also names its cause:
+  unsubscribed, no alive, processed late, connection lost, channel lost, session
+  opened, safety-net reset, recovery failed, and the recoveries and the catching up that
+  bring it back. The 0.0.x status callback fires when the down flag or the public reason
+  changes, as in 0.0.x, so an alive saying a producer still down is unsubscribed raises
+  none (KD-2); every change of the cause, those included, is reported apart, for the
+  listener method that names causes (ticket 26). Alives are checked from `open()`: a
+  producer without one for longer than the maximum inactivity, 20 s by default, is
+  reported down with `ALIVE_INTERVAL_VIOLATION`, one never up included, without 0.0.x's
+  minute of grace (KD-7). A
+  session that processes a producer later than the maximum inactivity takes the
+  producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, without a recovery, and on
+  time again brings it back with `RETURNED_FROM_INACTIVITY`, as in 0.0.x. A recovery
+  that completes while a session processes its producer late leaves the producer down
+  for that, rather than up for the moment until the next look at the delay. A
+  producer that comes back with nothing missing, as when the session whose gap held it
+  down closes, starts its retries afresh: a cap spent on that gap does not hold up the
+  next one. The first time a producer comes up after `open()`, whatever brings it up -
+  its first recovery, a follow-up one, a session closing, the session catching up - the
+  reason is `FIRST_RECOVERY_COMPLETED`, so the client hears it once per producer, as in
+  0.0.x.
 - The safety net. Message rates depend on what a client has booked, and the SDK does
   not promise to keep up with every queue. Backpressure protects the JVM and the
   broker connection. The safety net bounds how far behind a client can fall: past a
@@ -471,18 +553,58 @@ and REST workers post facts to it; it decides and posts work out.
     that producer until alives resume. Age is sampled when the dispatcher takes the
     message, so it includes both broker backlog and the session's own queue.
   - Snapshot messages are excluded from the age sample on every session, and the net
-    is paused for a producer, on every session, while any recovery for that producer
-    is in flight. This stops one session's snapshot from tripping another session.
+    is paused for a producer, on every session, while a recovery for that producer is
+    in flight or a gap of it is open; a sample taken before the recovery completed does
+    not count after it. This stops one session's snapshot from tripping another
+    session. An event recovery does not pause the net: its messages are snapshot
+    messages, excluded already.
   - When the age of live messages from a producer stays above the configured limit for
-    the configured window, the actor first requests a recovery for that producer from
-    the oldest checkpoint. Only when the request has been accepted does it ask the
-    AMQP layer to replace the session's channel. A rejected or failed request means no
-    reset: the actor backs off, counts, and raises an event. Data is never dropped
-    before its replacement is on the way.
+    the configured window, the actor first requests a recovery for every producer the
+    session receives that it can ask for now, each from its checkpoint on that session,
+    since the reset drops the messages of all of them. It waits while one of them has a
+    recovery in flight, but not for one that is silent, has its cap spent or waits out a
+    backoff: that one sends the session nothing to drop, and once the reset is done it
+    misses what the queue held like the others, to be asked for when it can be. Only
+    when every request has been accepted does it ask
+    the AMQP layer to replace the session's channel. A rejected or failed request means
+    no reset: the actor backs off, counts, and raises an event. The session's own
+    `snapshot_complete` of one of those recoveries, seen before the reset, cancels it,
+    since the reset would now drop what the recovery sent - and only that does. Another
+    session's completion is no evidence that this session's backlog was replaced: a
+    low-priority session next to a high-priority one sees no completions, so its reset
+    goes ahead once its requests are accepted, and the gaps it reopens ask for what the
+    recoveries had sent into the old queue. Data is never dropped before its
+    replacement is on the way. When the reset is handed to the AMQP layer, every lane of
+    the session misses what came after its checkpoint then, before any message of the
+    new channel can move it. The reset stays pending until the AMQP layer reports it
+    done; meanwhile the session's `snapshot_complete`s, from the queue being replaced,
+    are ignored, and nothing more is asked for its producers, whose recoveries are in
+    flight. Once done, the session counts as having lost its queue: the
+    recoveries asked for before the reset may have sent part of what they brought into
+    the old queue, so they are given up and asked for again. A reset therefore costs a
+    second recovery of the session's producers, which the first, accepted, has shown the
+    API will take. The reset takes the session's producers down until those recoveries
+    complete. A reset already with the AMQP layer stays one through a lost connection or
+    channel, since replacing the channel late could still drop what the new one holds:
+    the session's producers are asked for nothing until it is reported done. The AMQP
+    layer reports a reset done only once the session reads from an open channel again:
+    one it could not open at once it opens on its own, and a recovery asked for before
+    then would send to no one. An event recovery asked for while a session that receives
+    its producer is being reset waits until the reset is done, since its snapshot could
+    go to either channel; one that waits longer than the maximum recovery time expires
+    like one asked for. A reset that could not be handed to the AMQP layer at all, or that
+    failed before the old channel's deliveries were taken out - the channel's epoch tells,
+    since it moves exactly then - is reported as not made: nothing was dropped, nothing
+    counts against the cap, and the recoveries whose `snapshot_complete` was ignored
+    meanwhile are asked for again. The net's numbers - the limit of two minutes, the window
+    of one, three resets per session per ten minutes, a minute's backoff doubling - are
+    decided defaults, fixed until ticket 28's options make them settable.
   - Each reset raises an event and increments counters (resets, messages dropped by
     the reset, epoch discards), so an operator can see exactly when and why.
-  - The net backs off between resets and has its own cap of three per session per
-    cool-down. When spent, the net stops resetting: messages keep flowing under
+  - The net backs off between resets, a minute after the first and doubling within the
+    cool-down, and has its own cap of three per session per cool-down; only a reset the
+    AMQP layer has made counts, and raises the event. When spent, the net stops
+    resetting: messages keep flowing under
     backpressure, the session is marked "lagging" in `getHealth()` with a health event,
     and the producer is **not** marked down, because a slow consumer on one session is
     not a producer fault and other sessions may be healthy. Backpressure wins in the
@@ -786,7 +908,10 @@ group by group.
     clamping, per-interest completion, session open and close, coalescing, re-issue
     with cap and re-arm, the safety net with per-producer offsets, stale-offset
     disable, pause during recovery, request-before-reset, its own cap and the lagging
-    state, producer-status reasons.
+    state, producer-status reasons. The state machine and the actor with the narrow
+    interfaces the dispatchers, the alive dispatcher, the transport and the façade call;
+    tickets 22 and 26 connect them, and the transport has yet to report a session channel
+    it reopened on its own.
 25. Replay manager.
 26. `OddsFeed` façade, sessions, builder, one-shot lifecycle with all-or-nothing
     `open()`, watchdog over every thread group, `getHealth()` with the full counter
@@ -928,3 +1053,11 @@ old names (section 3, difference 4).
   `-dev`, and `OddsFeed.getSdkVersion()`. The fake REST API moved into a module of its
   own, since the SDK's tests cannot depend on the system tests, and learned replies in
   turn, delays and headers.
+- 2026-10-01, ticket 24 checked against 0.0.x, the Go SDK and the system tests: the
+  checkpoint advances on the alives in the session's own queue instead of on a look into
+  it; what a recovery covers is kept as gaps, so a producer that stops sending recovers
+  from its last subscribed alive while a lost queue recovers from its session's
+  checkpoint; a recovery goes out at an alive, as in 0.0.x, and one whose snapshot went
+  with a lost queue is given up; the safety net recovers every producer of the session
+  it resets, and a `snapshot_complete` before the reset cancels it; producer status keeps
+  0.0.x's reasons, with 0.0.x's processing-delay down, and names a cause next to them.
