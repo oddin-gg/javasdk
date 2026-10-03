@@ -511,6 +511,109 @@ class CatalogTest {
     }
 
     @Test
+    void aClearOfOneKeyLeavesTheFetchOfAnotherToWriteItsValue() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            started.countDown();
+            await(release);
+            return "b1";
+        };
+        Future<String> read = threads.submit(() -> catalog.get("b"));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        catalog.clear(key -> key.equals("a"));
+        release.countDown();
+        assertThat(read.get(5, TimeUnit.SECONDS)).isEqualTo("b1");
+        assertThat(catalog.peek("b")).as("written").isEqualTo("b1");
+    }
+
+    @Test
+    void aClearOfOneKeyLeavesTheFetchOfAnotherToRecordItsFailure() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var down = new ApiException("down");
+        answer = () -> {
+            started.countDown();
+            await(release);
+            throw down;
+        };
+        Future<String> read = threads.submit(() -> catalog.get("b"));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        catalog.clear(key -> key.equals("a"));
+        release.countDown();
+        assertThatThrownBy(() -> read.get(5, TimeUnit.SECONDS)).hasRootCauseMessage("down");
+        assertThatThrownBy(() -> catalog.get("b"))
+                .as("backing off, no other fetch")
+                .hasMessageContaining("not fetched again before")
+                .hasCause(down);
+        assertThat(fetches).hasValue(1);
+    }
+
+    @Test
+    void aClearOfAKeyBeingFetchedForTheFirstTimeStopsThatFetchFromWriting() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            started.countDown();
+            await(release);
+            return "before the clear";
+        };
+        Future<String> read = threads.submit(() -> catalog.get("k"));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        catalog.clear(key -> key.equals("k"));
+        release.countDown();
+        assertThat(read.get(5, TimeUnit.SECONDS)).isEqualTo("before the clear");
+        assertThat(catalog.peek("k"))
+                .as("nothing was held, yet the clear found the fetch")
+                .isNull();
+    }
+
+    @Test
+    void aStaleValueNobodyReadsForTheRefreshAgeIsNotReportedStale() {
+        catalog.get("k");
+        answer = () -> {
+            throw new ApiException("down");
+        };
+        time.advance(REFRESH_AGE.plus(TICK));
+        catalog.get("k");
+        runRefreshes();
+        time.advance(REFRESH_AGE);
+        assertThat(catalog.health().staleFor()).as("read a refresh age ago").isEqualTo(REFRESH_AGE);
+        time.advance(TICK);
+        assertThat(catalog.health().staleFor()).as("no longer served").isZero();
+        catalog.get("k");
+        assertThat(catalog.health().staleFor()).as("served again").isEqualTo(REFRESH_AGE.plus(TICK));
+    }
+
+    @Test
+    void anOlderFetchThatFailsAfterANewerOneFailedLeavesTheNewerFailure() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var older = new ApiException("older down");
+        var newer = new ApiException("newer down");
+        answer = () -> {
+            started.countDown();
+            await(release);
+            throw older;
+        };
+        Future<String> read = threads.submit(() -> catalog.get("k"));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        answer = () -> {
+            throw newer;
+        };
+        assertThatThrownBy(() -> catalog.reload("k")).isSameAs(newer);
+        release.countDown();
+        assertThatThrownBy(() -> read.get(5, TimeUnit.SECONDS)).hasRootCauseMessage("older down");
+        assertThatThrownBy(() -> catalog.get("k"))
+                .hasMessageContaining("1 fetches in a row failed")
+                .hasCause(newer);
+    }
+
+    @Test
     void aClearDropsWhatIsHeldAndAFetchUnderWayWritesNothing() throws Exception {
         catalog = catalog(10, threads, queuedRefreshes::add);
         var started = new CountDownLatch(1);

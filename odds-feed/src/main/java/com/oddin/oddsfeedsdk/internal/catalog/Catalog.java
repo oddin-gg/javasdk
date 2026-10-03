@@ -11,7 +11,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.HashMap;
-import java.util.List;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -43,8 +43,9 @@ import org.jspecify.annotations.Nullable;
  * <p>Ages count from when the fetch started, so they are the ages of the data. Fetching is
  * single-flight through a {@link Loader}: the reads and the refreshes of one key share one fetch,
  * under one deadline; a reload has its own. A clear drops what is held and the backoff of the keys
- * it clears. A fetch that started before it writes nothing, neither a value nor a failure, and a
- * read after it does not join that fetch but starts its own.
+ * it clears. A fetch of such a key that started before it writes nothing, neither a value nor a
+ * failure, and a read after it does not join that fetch but starts its own; the fetches of the
+ * other keys go on as they were.
  *
  * <p>Safe for concurrent use.
  */
@@ -107,8 +108,19 @@ final class Catalog<K, V> {
     private final AtomicLong order = new AtomicLong();
     /** The keys a background refresh was started for and has not ended. */
     private final Set<K> refreshing = ConcurrentHashMap.newKeySet();
-    /** Bumped by every clear: a fetch that started under an older one writes nothing. */
-    private final AtomicLong generation = new AtomicLong();
+    /** Bumped by every clear: where the generations of the clears come from. */
+    private final AtomicLong generations = new AtomicLong();
+    /** The generation of the last clear of everything. */
+    private final AtomicLong clearedAll = new AtomicLong();
+    /**
+     * The generation of each key's last clear of its own, remembered as long as a fetch from before
+     * it can run: a fetch of the key that started under an older generation writes nothing, and a
+     * clear of one key leaves the fetches of the others alone. One dropped for room counts as a
+     * clear of everything, so no fetch from before it can write.
+     */
+    private final Cache<K, Long> clearedAt;
+    /** The keys being fetched now, with how many fetches: a clear finds them here. */
+    private final ConcurrentHashMap<K, Integer> fetching = new ConcurrentHashMap<>();
     /**
      * Shared by the writes, held alone by a clear: a write that has passed its check finishes before
      * the clear drops anything, and every write after it sees the clear.
@@ -165,6 +177,18 @@ final class Catalog<K, V> {
                 .ticker(ticker)
                 .executor(Runnable::run)
                 .build();
+        this.clearedAt = Caffeine.newBuilder()
+                .maximumSize(maximumSize)
+                // abandoned past its deadline and margin, no fetch from before a clear writes later
+                .expireAfterWrite(timeout.plus(MARGIN).plus(MARGIN))
+                .ticker(ticker)
+                .executor(Runnable::run)
+                .<K, Long>evictionListener((key, generation, cause) -> {
+                    if (cause == RemovalCause.SIZE && generation != null) {
+                        clearedAll.accumulateAndGet(generation, Math::max);
+                    }
+                })
+                .build();
         this.misses = Caffeine.newBuilder()
                 .maximumSize(MISSES)
                 .expireAfterWrite(refreshAge)
@@ -195,6 +219,7 @@ final class Catalog<K, V> {
             insideStaleRead.run();
             // on the value served, so a value replaced, cleared or evicted since takes its mark along
             current.staleSince().compareAndSet(null, now);
+            current.lastStaleRead().set(now);
             refreshInBackground(key, now);
         }
         return current.value();
@@ -253,7 +278,7 @@ final class Catalog<K, V> {
      * @throws ApiException when the fetch fails
      */
     V reload(K key) {
-        return loader.load(new Flight<>(key, generation.get(), true));
+        return loader.load(new Flight<>(key, generationOf(key), true));
     }
 
     /** What is held for the key, fetching nothing. */
@@ -272,19 +297,21 @@ final class Catalog<K, V> {
 
     /**
      * Drops the values of the keys {@code which} accepts, and their backoff, so the next read fetches
-     * them; a fetch under way then writes nothing, neither a value nor a failure.
+     * them; a fetch of one of them under way then writes nothing, neither a value nor a failure. The
+     * other keys and their fetches are left alone.
      */
     void clear(Predicate<? super K> which) {
         clearing.writeLock().lock();
         try {
-            generation.incrementAndGet();
-            for (K key : List.copyOf(held.asMap().keySet())) {
+            long generation = generations.incrementAndGet();
+            var keys = new HashSet<K>(held.asMap().keySet());
+            keys.addAll(failures.asMap().keySet());
+            // a fetch registers before it asks the API: one not here asked after this clear began
+            keys.addAll(fetching.keySet());
+            for (K key : keys) {
                 if (which.test(key)) {
+                    clearedAt.put(key, generation);
                     held.invalidate(key);
-                }
-            }
-            for (K key : List.copyOf(failures.asMap().keySet())) {
-                if (which.test(key)) {
                     failures.invalidate(key);
                 }
             }
@@ -293,18 +320,30 @@ final class Catalog<K, V> {
         }
     }
 
-    /** Drops every value; a fetch under way then writes nothing. */
+    /** Drops every value; every fetch under way then writes nothing. */
     void clear() {
-        clear(_ -> true);
+        clearing.writeLock().lock();
+        try {
+            clearedAll.set(generations.incrementAndGet());
+            held.invalidateAll();
+            failures.invalidateAll();
+        } finally {
+            clearing.writeLock().unlock();
+        }
     }
 
     CatalogHealth health() {
         Instant now = clock.instant();
         Duration staleFor = Duration.ZERO;
-        // only the values held now: one replaced, cleared or evicted is stale no longer
+        // only the values held now, and still read: one replaced, cleared or evicted is stale no
+        // longer, and one nobody read for the refresh age is not being served
         for (Held<V> value : held.asMap().values()) {
             Instant since = value.staleSince().get();
-            if (since != null && Duration.between(since, now).compareTo(staleFor) > 0) {
+            Instant lastRead = value.lastStaleRead().get();
+            if (since != null
+                    && lastRead != null
+                    && !lastRead.plus(refreshAge).isBefore(now)
+                    && Duration.between(since, now).compareTo(staleFor) > 0) {
                 staleFor = Duration.between(since, now);
             }
         }
@@ -316,7 +355,7 @@ final class Catalog<K, V> {
     /** A fetch the reader waits for; one that would start while the key backs off fails at once. */
     private V fetchNow(K key) {
         insideColdRead.run();
-        return loader.load(new Flight<>(key, generation.get(), false));
+        return loader.load(new Flight<>(key, generationOf(key), false));
     }
 
     private void refreshInBackground(K key, Instant now) {
@@ -326,7 +365,7 @@ final class Catalog<K, V> {
         try {
             refreshes.execute(() -> {
                 try {
-                    loader.load(new Flight<>(key, generation.get(), false));
+                    loader.load(new Flight<>(key, generationOf(key), false));
                 } catch (RuntimeException failed) {
                     // counted where it failed; the stale value is served until the next try
                 } finally {
@@ -346,6 +385,12 @@ final class Catalog<K, V> {
                 failure.cause());
     }
 
+    /** The generation of the key's last clear, its own or of everything; 0 for none. */
+    private long generationOf(K key) {
+        Long own = clearedAt.getIfPresent(key);
+        return Math.max(clearedAll.get(), own == null ? 0 : own);
+    }
+
     /** The key's last failure while it still backs the key off, else null. */
     private @Nullable Failure backingOff(K key, Instant now) {
         Failure failure = failures.getIfPresent(key);
@@ -360,13 +405,23 @@ final class Catalog<K, V> {
      */
     private V fetch(Flight<K> flight, Deadline deadline, BooleanSupplier abandoned) {
         K key = flight.key();
-        long startedIn = flight.generation();
         if (!flight.reload()) {
             Failure failure = backingOff(key, clock.instant());
             if (failure != null) {
                 throw backingOff(key, failure);
             }
         }
+        fetching.merge(key, 1, Integer::sum);
+        try {
+            return fetchRegistered(flight, deadline, abandoned);
+        } finally {
+            fetching.computeIfPresent(key, (k, count) -> count > 1 ? count - 1 : null);
+        }
+    }
+
+    private V fetchRegistered(Flight<K> flight, Deadline deadline, BooleanSupplier abandoned) {
+        K key = flight.key();
+        long startedIn = flight.generation();
         long startedAs = order.incrementAndGet();
         Instant startedAt = clock.instant();
         Held<V> previous = held.getIfPresent(key);
@@ -378,12 +433,13 @@ final class Catalog<K, V> {
             clearing.readLock().lock();
             try {
                 // a fetch from before a clear backs nothing off: the clear asked for a fetch
-                if (!abandoned.getAsBoolean() && generation.get() == startedIn) {
+                if (!abandoned.getAsBoolean() && generationOf(key) <= startedIn) {
                     Instant failedAt = clock.instant();
-                    // an older fetch that fails after a newer one succeeded records nothing
+                    // an older fetch that fails after a newer one succeeded, or failed, records nothing
                     failures.asMap().compute(key, (k, last) -> {
                         Held<V> newer = held.getIfPresent(k);
-                        if (newer != null && newer.startedAs() > startedAs) {
+                        if ((newer != null && newer.startedAs() > startedAs)
+                                || (last != null && last.startedAs() > startedAs)) {
                             return last;
                         }
                         return new Failure(failedAt, last == null ? 1 : last.attempts() + 1, e, startedAs);
@@ -396,13 +452,18 @@ final class Catalog<K, V> {
         }
         clearing.readLock().lock();
         try {
-            if (!abandoned.getAsBoolean() && generation.get() == startedIn) {
+            if (!abandoned.getAsBoolean() && generationOf(key) <= startedIn) {
                 held.asMap()
                         .compute(
                                 key,
                                 (k, current) -> current != null && current.startedAs() > startedAs
                                         ? current
-                                        : new Held<>(value, startedAt, startedAs, new AtomicReference<>()));
+                                        : new Held<>(
+                                                value,
+                                                startedAt,
+                                                startedAs,
+                                                new AtomicReference<>(),
+                                                new AtomicReference<>()));
                 // a newer fetch's failure stands
                 failures.asMap().computeIfPresent(key, (k, last) -> last.startedAs() > startedAs ? last : null);
             }
@@ -415,9 +476,14 @@ final class Catalog<K, V> {
 
     /**
      * A value, when the fetch that got it started - on the clock, and in {@link #order} - and when it
-     * was first served stale, null until it is.
+     * was first and last served stale, null until it is.
      */
-    private record Held<V>(V value, Instant fetchedAt, long startedAs, AtomicReference<@Nullable Instant> staleSince) {}
+    private record Held<V>(
+            V value,
+            Instant fetchedAt,
+            long startedAs,
+            AtomicReference<@Nullable Instant> staleSince,
+            AtomicReference<@Nullable Instant> lastStaleRead) {}
 
     /**
      * A key's last failed fetch, how many failed in a row, when the next may start, and when the
@@ -431,8 +497,8 @@ final class Catalog<K, V> {
     }
 
     /**
-     * What the loader fetches: a key, in the generation its reader saw, so that a read after a clear
-     * never joins a fetch from before it; and whether it is a reload, which does not wait out a backoff.
+     * What the loader fetches: a key, in its generation when its reader asked, so that a read after a
+     * clear of the key never joins a fetch from before it, and a clear of another key changes nothing; and whether it is a reload, which does not wait out a backoff.
      */
     private record Flight<K>(K key, long generation, boolean reload) {
         @Override
