@@ -146,10 +146,13 @@ class FeedMessageScenarioIT {
                             tuple(42, Map.of("setnr", "1"), null, null),
                             tuple(17, Map.of("mapnr", "2"), 4, "minutes=5"));
             // market 17 carries void_reason="1" as well; 0.0.x never reads it
-            KnownDifference.VOID_REASON_IS_ALWAYS_NULL.expectLegacy(
+            KnownDifference.VOID_REASON_IS_ALWAYS_NULL.expect(
                     () -> assertThat(cancel.getMarkets().get(2).getVoidReason())
                             .as("void reason of market 17")
-                            .isNull());
+                            .isNull(),
+                    () -> assertThat(cancel.getMarkets().get(2).getVoidReason())
+                            .as("void reason of market 17")
+                            .isEqualTo("1"));
         }
     }
 
@@ -218,8 +221,9 @@ class FeedMessageScenarioIT {
 
             BetStop<?> betStop = received.next(BetStop.class);
             assertThat(betStop.getEvent().getId()).as("event").isEqualTo(MATCH);
-            KnownDifference.BET_STOP_GROUPS_ARE_NOT_SPLIT.expectLegacy(
-                    () -> assertThat(betStop.getGroups()).as("groups").containsExactly("winner|handicap"));
+            KnownDifference.BET_STOP_GROUPS_ARE_NOT_SPLIT.expect(
+                    () -> assertThat(betStop.getGroups()).as("groups").containsExactly("winner|handicap"),
+                    () -> assertThat(betStop.getGroups()).as("groups").containsExactly("winner", "handicap"));
         }
     }
 
