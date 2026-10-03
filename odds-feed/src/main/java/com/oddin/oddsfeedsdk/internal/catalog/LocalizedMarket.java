@@ -7,33 +7,100 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RADescSpecifiers;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMarketDescription;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAOutcomeDescription;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /**
- * A market's description in one locale, as the API sent it. Immutable.
- *
- * @param variant the variant it was asked for or listed with, null for none
- * @param outcomes in the order the API sent them; empty when it sent none
- * @param specifiers null when the API sent none, as in 0.0.x
- * @param groups the groups it is in, split as 0.0.x split them; empty when it is in none
- * @param outcomeType as sent, such as {@code player}; see {@link #type()}
+ * A market's description in one locale, as the API sent it. Immutable. Its outcomes are found by id
+ * in constant time, so a message's outcomes cost one lookup each.
  */
-public record LocalizedMarket(
-        int id,
-        @Nullable String variant,
-        String name,
-        List<Outcome> outcomes,
-        @Nullable List<Specifier> specifiers,
-        List<String> groups,
-        @Nullable String includesOutcomesOfType,
-        @Nullable String outcomeType) {
+public final class LocalizedMarket {
 
-    public LocalizedMarket {
-        outcomes = List.copyOf(outcomes);
-        specifiers = specifiers == null ? null : List.copyOf(specifiers);
-        groups = List.copyOf(groups);
+    private final int id;
+    private final @Nullable String variant;
+    private final String name;
+    private final List<Outcome> outcomes;
+    private final Map<String, Outcome> outcomesById;
+    private final @Nullable List<Specifier> specifiers;
+    private final List<String> groups;
+    private final @Nullable String includesOutcomesOfType;
+    private final @Nullable String outcomeType;
+
+    /**
+     * @param variant the variant it was asked for or listed with, null for none
+     * @param outcomes in the order the API sent them; empty when it sent none
+     * @param specifiers null when the API sent none, as in 0.0.x
+     * @param groups the groups it is in, split as 0.0.x split them; empty when it is in none
+     * @param outcomeType as sent, such as {@code player}; see {@link #type()}
+     */
+    LocalizedMarket(
+            int id,
+            @Nullable String variant,
+            String name,
+            List<Outcome> outcomes,
+            @Nullable List<Specifier> specifiers,
+            List<String> groups,
+            @Nullable String includesOutcomesOfType,
+            @Nullable String outcomeType) {
+        this.id = id;
+        this.variant = variant;
+        this.name = name;
+        this.outcomes = List.copyOf(outcomes);
+        var byId = new HashMap<String, Outcome>();
+        for (Outcome outcome : this.outcomes) {
+            // of two with one id the first, as a scan of the list would find
+            byId.putIfAbsent(outcome.id(), outcome);
+        }
+        this.outcomesById = Map.copyOf(byId);
+        this.specifiers = specifiers == null ? null : List.copyOf(specifiers);
+        this.groups = List.copyOf(groups);
+        this.includesOutcomesOfType = includesOutcomesOfType;
+        this.outcomeType = outcomeType;
+    }
+
+    public int id() {
+        return id;
+    }
+
+    /** The variant it was asked for or listed with, null for none. */
+    public @Nullable String variant() {
+        return variant;
+    }
+
+    public String name() {
+        return name;
+    }
+
+    /** In the order the API sent them; empty when it sent none. */
+    public List<Outcome> outcomes() {
+        return outcomes;
+    }
+
+    /** The outcome {@code id}, or null when the market has none such. */
+    public @Nullable Outcome outcome(String id) {
+        return outcomesById.get(id);
+    }
+
+    /** Null when the API sent none, as in 0.0.x. */
+    public @Nullable List<Specifier> specifiers() {
+        return specifiers;
+    }
+
+    /** The groups it is in, split as 0.0.x split them; empty when it is in none. */
+    public List<String> groups() {
+        return groups;
+    }
+
+    public @Nullable String includesOutcomesOfType() {
+        return includesOutcomesOfType;
+    }
+
+    /** As sent, such as {@code player}; see {@link #type()}. */
+    public @Nullable String outcomeType() {
+        return outcomeType;
     }
 
     /** The outcome type as the public enum, or null when there is none or it is one the SDK does not know. */
@@ -94,6 +161,16 @@ public record LocalizedMarket(
     /** An outcome of a market, in the market's locale. */
     public record Outcome(String id, String name, @Nullable String description) {}
 
-    /** A specifier a market takes, such as its variant. */
-    public record Specifier(String name, String type) {}
+    /** A specifier a market takes, such as its variant; the client's {@code Specifier} as it is. */
+    public record Specifier(String name, String type) implements com.oddin.oddsfeedsdk.api.factories.Specifier {
+        @Override
+        public String getName() {
+            return name;
+        }
+
+        @Override
+        public String getType() {
+            return type;
+        }
+    }
 }
