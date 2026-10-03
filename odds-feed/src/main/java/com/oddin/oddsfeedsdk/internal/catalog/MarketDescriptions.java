@@ -111,6 +111,15 @@ public final class MarketDescriptions {
     }
 
     /**
+     * Whether what the market's description in {@code locale} is read from is held, however old: a
+     * read of it then waits for no fetch, unless the market is missing from the list.
+     */
+    public boolean holds(int id, @Nullable String variant, Locale locale) {
+        var key = MarketKey.of(id, variant);
+        return key.isDynamic() ? variants.peek(new VariantKey(key, locale)) != null : lists.peek(locale) != null;
+    }
+
+    /**
      * Every market description in {@code locale}: the locale's list, in its order, and the variants
      * fetched on their own in that locale, as 0.0.x listed what it held.
      *

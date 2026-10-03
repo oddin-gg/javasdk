@@ -70,6 +70,14 @@ public final class MatchStatusDescriptions {
         return lists.find(locale, id, Map::get);
     }
 
+    /**
+     * Whether the list of {@code locale} is held, however old: a read of it then waits for no fetch,
+     * unless the id is missing from it.
+     */
+    public boolean holds(Locale locale) {
+        return lists.peek(locale) != null;
+    }
+
     /** Drops every locale's list. */
     public void clear() {
         lists.clear();
