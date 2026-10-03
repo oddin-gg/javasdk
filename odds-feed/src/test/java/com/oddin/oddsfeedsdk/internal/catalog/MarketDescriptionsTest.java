@@ -145,12 +145,28 @@ class MarketDescriptionsTest {
         assertThat(requireNonNull(markets.market(768, DYNAMIC, DE)).outcomes())
                 .extracting(Outcome::name)
                 .containsExactly("Player Two");
-        api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:9", 200, list(plain, other));
+        api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:9", 200, list(other, plain));
         assertThat(requireNonNull(markets.market(768, "od:dynamic_outcomes:9", EN))
                         .outcomes())
                 .extracting(Outcome::name)
-                .as("none has it: the first row of the market")
+                .as("none has it: the row with no variant, not the row of another")
                 .containsExactly("No Variant");
+    }
+
+    @Test
+    void aVariantAnswerWithOnlyRowsOfOtherVariantsFailsTheReadAndBacksOff() {
+        api.respond(
+                VARIANT_EN,
+                200,
+                list("<market id=\"768\" name=\"Player to Score\" variant=\"od:dynamic_outcomes:1\">"
+                        + "<outcomes><outcome id=\"od:player:1\" name=\"Other Player\"/></outcomes></market>"));
+        assertThatThrownBy(() -> markets.market(768, DYNAMIC, EN))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("does not describe market 768");
+        assertThatThrownBy(() -> markets.market(768, DYNAMIC, EN))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("not fetched again before");
+        assertThat(api.requests("GET", VARIANT_EN)).as("backing off").hasSize(1);
     }
 
     @Test
