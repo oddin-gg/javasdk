@@ -43,9 +43,9 @@ import org.jspecify.annotations.Nullable;
  * <p>Ages count from when the fetch started, so they are the ages of the data. Fetching is
  * single-flight through a {@link Loader}: the reads and the refreshes of one key share one fetch,
  * under one deadline; a reload has its own. A clear drops what is held and the backoff of the keys
- * it clears. A fetch of such a key that started before it writes nothing, neither a value nor a
- * failure, and a read after it does not join that fetch but starts its own; the fetches of the
- * other keys go on as they were.
+ * it clears. A fetch of such a key asked for before it writes nothing, neither a value nor a
+ * failure, even one still waiting to run, and a read after it does not join that fetch but starts
+ * its own; the fetches of the other keys go on as they were.
  *
  * <p>Safe for concurrent use.
  */
@@ -119,8 +119,6 @@ final class Catalog<K, V> {
      * clear of everything, so no fetch from before it can write.
      */
     private final Cache<K, Long> clearedAt;
-    /** The keys being fetched now, with how many fetches: a clear finds them here. */
-    private final ConcurrentHashMap<K, Integer> fetching = new ConcurrentHashMap<>();
     /**
      * Shared by the writes, held alone by a clear: a write that has passed its check finishes before
      * the clear drops anything, and every write after it sees the clear.
@@ -297,8 +295,8 @@ final class Catalog<K, V> {
 
     /**
      * Drops the values of the keys {@code which} accepts, and their backoff, so the next read fetches
-     * them; a fetch of one of them under way then writes nothing, neither a value nor a failure. The
-     * other keys and their fetches are left alone.
+     * them; a fetch of one of them asked for before, running or still waiting to run, then writes
+     * nothing, neither a value nor a failure. The other keys and their fetches are left alone.
      */
     void clear(Predicate<? super K> which) {
         clearing.writeLock().lock();
@@ -306,8 +304,11 @@ final class Catalog<K, V> {
             long generation = generations.incrementAndGet();
             var keys = new HashSet<K>(held.asMap().keySet());
             keys.addAll(failures.asMap().keySet());
-            // a fetch registers before it asks the API: one not here asked after this clear began
-            keys.addAll(fetching.keySet());
+            // a fetch is the loader's from when its first reader asks, before it runs: one not there
+            // was asked for after this clear began, and asks the API after it
+            for (Flight<K> flight : loader.keys()) {
+                keys.add(flight.key());
+            }
             for (K key : keys) {
                 if (which.test(key)) {
                     clearedAt.put(key, generation);
@@ -411,16 +412,6 @@ final class Catalog<K, V> {
                 throw backingOff(key, failure);
             }
         }
-        fetching.merge(key, 1, Integer::sum);
-        try {
-            return fetchRegistered(flight, deadline, abandoned);
-        } finally {
-            fetching.computeIfPresent(key, (k, count) -> count > 1 ? count - 1 : null);
-        }
-    }
-
-    private V fetchRegistered(Flight<K> flight, Deadline deadline, BooleanSupplier abandoned) {
-        K key = flight.key();
         long startedIn = flight.generation();
         long startedAs = order.incrementAndGet();
         Instant startedAt = clock.instant();

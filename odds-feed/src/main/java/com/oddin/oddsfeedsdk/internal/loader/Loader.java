@@ -3,6 +3,8 @@ package com.oddin.oddsfeedsdk.internal.loader;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
+import java.util.Collections;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -131,6 +133,14 @@ public final class Loader<K, V> {
     /** How many keys are being fetched now, those abandoned but not yet replaced included. */
     public int inFlight() {
         return inFlight.size();
+    }
+
+    /**
+     * The keys being fetched now, those abandoned but not yet replaced included. A key is here from
+     * the moment its first caller asks, before its fetch runs, until that fetch has returned.
+     */
+    public Set<K> keys() {
+        return Collections.unmodifiableSet(inFlight.keySet());
     }
 
     private void fetch(K key, Flight<V> flight) {
