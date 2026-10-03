@@ -250,3 +250,19 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
   whose user name is the access token.
 - **Pinned by:** none; the fake broker's certificate is trusted by the JVM default in every test.
 - **Found:** by reading the source (`AMQPConnectionProvider`).
+
+## KD-20 Home and away are taken by position, and only for a classic match
+
+- **0.0.x:** `Match.getHomeCompetitor()` is the first competitor the API lists and
+  `getAwayCompetitor()` the second, whatever their `qualifier`. For a match whose `sport_format`
+  is not `classic` - `esports`, which the API's fixtures carry, reads as `UNKNOWN` - or that does
+  not have exactly two competitors, both throw an `IllegalArgumentException` under `THROW` and
+  return null under `CATCH`.
+- **1.0:** Home is the competitor qualified `home` and away the one qualified `away`, in whatever
+  order the API lists them, for any format but a race (ticket 20). `getSportFormat()` still reads
+  `esports` as `UNKNOWN`. A race, or a match without one competitor of each qualifier, has neither,
+  and both return null under either strategy: there is nothing that failed to load.
+- **Why:** A summary listing away first swaps the teams, and every esports match has no home or
+  away at all.
+- **Pinned by:** none; the fixtures the system tests use list home first, as a classic match.
+- **Found:** by reading the source (`MatchImpl.homeAwayCompetitor`).
