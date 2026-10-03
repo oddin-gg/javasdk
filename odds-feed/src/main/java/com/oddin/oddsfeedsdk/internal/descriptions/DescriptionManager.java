@@ -51,7 +51,8 @@ public final class DescriptionManager implements MarketDescriptionManager {
 
     /**
      * Every market description in {@code locale}: the locale's list, and the dynamic-outcome variants
-     * held in it. A new list each time, as 0.0.x gave.
+     * held in it. Each reads as the listing does, asking no variant's endpoint. A new list each time,
+     * as 0.0.x gave.
      */
     @Override
     public @Nullable List<MarketDescription> getMarketDescriptions(Locale locale) {
@@ -61,7 +62,7 @@ public final class DescriptionManager implements MarketDescriptionManager {
                     var in = List.of(locale);
                     var all = new ArrayList<MarketDescription>(described.size());
                     for (LocalizedMarket market : described) {
-                        all.add(new MarketDescriptionView(reads, market, in));
+                        all.add(new MarketDescriptionView(reads, market, in, true));
                     }
                     return all;
                 },
@@ -86,8 +87,8 @@ public final class DescriptionManager implements MarketDescriptionManager {
         List<Locale> in = locales.isEmpty() ? List.of(defaultLocale) : List.copyOf(locales);
         return strategy.read(
                 () -> {
-                    LocalizedMarket described = reads.first(marketId, variant, in);
-                    return described == null ? null : new MarketDescriptionView(reads, described, in);
+                    LocalizedMarket described = reads.first(marketId, variant, in, false);
+                    return described == null ? null : new MarketDescriptionView(reads, described, in, false);
                 },
                 "market description",
                 marketId + (variant == null ? "" : " " + variant));

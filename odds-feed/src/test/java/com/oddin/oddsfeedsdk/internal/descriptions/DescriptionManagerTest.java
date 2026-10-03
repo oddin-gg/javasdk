@@ -131,6 +131,56 @@ class DescriptionManagerTest {
     }
 
     @Test
+    void aListedDynamicRowReadsTheListAndAsksNoVariantEndpoint() {
+        api.respond(LIST_EN, 200, Fixtures.read("rest/markets/market_descriptions.xml"));
+        api.respond(
+                LIST_DE,
+                200,
+                list("<market id=\"768\" name=\"Torschütze\" variant=\"" + DYNAMIC + "\">"
+                        + "<outcomes><outcome id=\"od:player:9001\" name=\"Spieler Eins\"/></outcomes></market>"));
+        api.respond(VARIANT_EN, 404, Fixtures.read("rest/error/not_found.xml"));
+        api.respond(
+                "/v1/descriptions/de/markets/768/variants/" + DYNAMIC, 404, Fixtures.read("rest/error/not_found.xml"));
+        for (DescriptionManager manager : List.of(throwing, catching)) {
+            MarketDescription player =
+                    requireNonNull(manager.getMarketDescriptions(EN)).get(1);
+            assertThat(player.getVariant()).isEqualTo(DYNAMIC);
+            assertThat(player.getName(EN)).isEqualTo("Player to Score");
+            assertThat(player.getName(DE)).isEqualTo("Torschütze");
+            assertThat(player.getOutcomes())
+                    .extracting(o -> o.getName(EN), o -> o.getName(DE))
+                    .containsExactly(tuple("Player One", "Spieler Eins"));
+            assertThat(player.getSpecifiers()).extracting(Specifier::getName).containsExactly("variant");
+            assertThat(player.getOutcomeType()).isEqualTo(OutcomeType.PLAYER);
+        }
+        assertThat(api.requests().stream().filter(request -> request.path().contains("/variants/")))
+                .as("no variant's endpoint")
+                .isEmpty();
+        assertThat(throwing.getMarketDescription(768, DYNAMIC, EN))
+                .as("got by id, it is still the variant's own")
+                .isNull();
+    }
+
+    @Test
+    void aVariantFetchedOnItsOwnOverridesTheListRowItIsListedWith() {
+        api.respond(LIST_EN, 200, Fixtures.read("rest/markets/market_descriptions.xml"));
+        api.respond(VARIANT_EN, 200, list(player(DYNAMIC, "Player Two")));
+        MarketDescription listedBefore =
+                requireNonNull(throwing.getMarketDescriptions(EN)).get(1);
+        assertThat(listedBefore.getOutcomes()).extracting(o -> o.getName(EN)).containsExactly("Player One");
+
+        requireNonNull(throwing.getMarketDescription(768, DYNAMIC, EN));
+        MarketDescription listedAfter =
+                requireNonNull(throwing.getMarketDescriptions(EN)).get(1);
+        assertThat(listedAfter.getOutcomes()).extracting(o -> o.getName(EN)).containsExactly("Player Two");
+        assertThat(listedBefore.getOutcomes())
+                .extracting(o -> o.getName(EN))
+                .as("read now, so the variant held now")
+                .containsExactly("Player Two");
+        assertThat(api.requests("GET", VARIANT_EN)).hasSize(1);
+    }
+
+    @Test
     void aMarketTheCatalogDoesNotHaveIsNullUnderEitherStrategy() {
         api.respond(LIST_EN, 200, list(winner("Winner", "Team Alpha", "Team Beta")));
         api.respond(VARIANT_EN, 404, Fixtures.read("rest/error/not_found.xml"));

@@ -19,15 +19,29 @@ record MarketReads(MarketDescriptions catalog, Strategy strategy, Executor fetch
      * The market's description in the first of {@code locales} that has it, every locale loaded;
      * null when none has it.
      *
+     * @param listed whether to read it as the listing gave it, see {@link MarketDescriptions#listed},
+     *     rather than as a market got by id
      * @throws com.oddin.oddsfeedsdk.exceptions.ApiException when a locale is not held and cannot be
      *     fetched
      */
     @Nullable
-    LocalizedMarket first(int id, @Nullable String variant, List<Locale> locales) {
+    LocalizedMarket first(int id, @Nullable String variant, List<Locale> locales, boolean listed) {
         return InLocales.first(
                 locales,
-                locale -> catalog.holds(id, variant, locale),
-                locale -> catalog.market(id, variant, locale),
+                listed
+                        ? locale -> catalog.holdsListed(id, variant, locale)
+                        : locale -> catalog.holds(id, variant, locale),
+                locale -> in(id, variant, locale, listed),
                 fetches);
+    }
+
+    /**
+     * The market's description in {@code locale}, null when it is not there.
+     *
+     * @param listed whether to read it as the listing gave it, rather than as a market got by id
+     */
+    @Nullable
+    LocalizedMarket in(int id, @Nullable String variant, Locale locale, boolean listed) {
+        return listed ? catalog.listed(id, variant, locale) : catalog.market(id, variant, locale);
     }
 }
