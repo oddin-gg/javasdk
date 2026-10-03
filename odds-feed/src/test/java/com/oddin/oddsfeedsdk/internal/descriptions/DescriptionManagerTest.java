@@ -181,6 +181,27 @@ class DescriptionManagerTest {
     }
 
     @Test
+    void aDescriptionInSeveralLocalesThatAllHaveItFollowsTheFirst() {
+        api.respond(LIST_EN, 200, list(winner("Winner", "Team Alpha", "Team Beta")));
+        api.respond(
+                LIST_DE,
+                200,
+                list("<market id=\"1\" name=\"Sieger\" groups=\"alle\"><outcomes>"
+                        + "<outcome id=\"2\" name=\"Mannschaft Beta\"/><outcome id=\"1\" name=\"Team Alpha\"/>"
+                        + "</outcomes></market>"));
+        for (String read : List.of("cold", "warm")) {
+            MarketDescription winner = requireNonNull(throwing.getMarketDescription(1, null, List.of(EN, DE)));
+            assertThat(winner.getGroups()).as(read).containsExactly("all", "regular_play");
+            assertThat(winner.getOutcomes())
+                    .as(read)
+                    .extracting(OutcomeDescription::getId)
+                    .containsExactly("1", "2");
+            assertThat(winner.getSpecifiers()).as(read).hasSize(1);
+        }
+        assertThat(api.requests("GET", LIST_DE)).hasSize(1);
+    }
+
+    @Test
     void aMarketTheCatalogDoesNotHaveIsNullUnderEitherStrategy() {
         api.respond(LIST_EN, 200, list(winner("Winner", "Team Alpha", "Team Beta")));
         api.respond(VARIANT_EN, 404, Fixtures.read("rest/error/not_found.xml"));
