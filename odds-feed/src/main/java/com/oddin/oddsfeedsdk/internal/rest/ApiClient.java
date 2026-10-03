@@ -92,24 +92,50 @@ public final class ApiClient implements AutoCloseable {
     }
 
     public RAMatchStatusDescriptions fetchMatchStatusDescriptions(Locale locale) {
-        return get(
-                Pool.CATALOG, "/descriptions/" + language(locale) + "/match_status", RAMatchStatusDescriptions.class);
+        return fetchMatchStatusDescriptions(locale, deadline());
+    }
+
+    /** Within a loader's deadline. */
+    public RAMatchStatusDescriptions fetchMatchStatusDescriptions(Locale locale, Deadline deadline) {
+        return transport.get(
+                Pool.CATALOG,
+                "/descriptions/" + language(locale) + "/match_status",
+                RAMatchStatusDescriptions.class,
+                deadline);
     }
 
     public RAMarketDescriptions fetchMarketDescriptions(Locale locale) {
-        return get(Pool.CATALOG, "/descriptions/" + language(locale) + "/markets", RAMarketDescriptions.class);
+        return fetchMarketDescriptions(locale, deadline());
+    }
+
+    /** Within a loader's deadline. */
+    public RAMarketDescriptions fetchMarketDescriptions(Locale locale, Deadline deadline) {
+        return transport.get(
+                Pool.CATALOG, "/descriptions/" + language(locale) + "/markets", RAMarketDescriptions.class, deadline);
     }
 
     public RAMarketDescriptions fetchMarketDescriptionsWithDynamicOutcomes(
             int marketTypeId, String variant, Locale locale) {
-        return get(
+        return fetchMarketDescriptionsWithDynamicOutcomes(marketTypeId, variant, locale, deadline());
+    }
+
+    /** Within a loader's deadline. */
+    public RAMarketDescriptions fetchMarketDescriptionsWithDynamicOutcomes(
+            int marketTypeId, String variant, Locale locale, Deadline deadline) {
+        return transport.get(
                 Pool.CATALOG,
                 "/descriptions/" + language(locale) + "/markets/" + marketTypeId + "/variants/" + segment(variant),
-                RAMarketDescriptions.class);
+                RAMarketDescriptions.class,
+                deadline);
     }
 
     public RAMarketVoidReasons fetchMarketVoidReasons() {
-        return get(Pool.CATALOG, "/descriptions/void_reasons", RAMarketVoidReasons.class);
+        return fetchMarketVoidReasons(deadline());
+    }
+
+    /** Within a loader's deadline. */
+    public RAMarketVoidReasons fetchMarketVoidReasons(Deadline deadline) {
+        return transport.get(Pool.CATALOG, "/descriptions/void_reasons", RAMarketVoidReasons.class, deadline);
     }
 
     public RAFixtureChangesEndpoint fetchFixtureChanges(Locale locale) {
