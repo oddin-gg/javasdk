@@ -108,6 +108,21 @@ class StatusDescriptionsTest {
     }
 
     @Test
+    void aStatusInSeveralLocalesThatAllDescribeItIsTheFirstLocales() {
+        api.respond(STATUSES_DE, 200, statuses("<match_status id=\"1\" description=\"Beendet\"/>"));
+        for (String read : List.of("cold", "warm")) {
+            assertThat(requireNonNull(throwing.get(1, List.of(EN, DE))).getDescription())
+                    .as(read)
+                    .isEqualTo("Ended");
+            assertThat(requireNonNull(throwing.get(1, List.of(DE, EN))).getDescription())
+                    .as(read)
+                    .isEqualTo("Beendet");
+        }
+        assertThat(api.requests("GET", STATUSES_EN)).hasSize(1);
+        assertThat(api.requests("GET", STATUSES_DE)).hasSize(1);
+    }
+
+    @Test
     void aLocaleThatFailsFailsTheStatusUnderThrowAndMakesItNullUnderCatch() {
         api.respond(STATUSES_DE, 400, Fixtures.read("rest/error/not_found.xml"));
         assertThatThrownBy(() -> throwing.get(1, List.of(EN, DE))).isInstanceOf(ApiException.class);
