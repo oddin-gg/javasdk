@@ -12,7 +12,18 @@ public interface RecoveryEvents {
     /** Reports nothing. */
     RecoveryEvents NONE = new RecoveryEvents() {};
 
+    /**
+     * The producer went down or came back, or is down for another public reason than before: what
+     * 0.0.x's status callback fires for. A change of the cause alone, the public reason staying, is
+     * no such change; {@link #producerCause} reports it.
+     */
     default void producerStatus(ProducerStatusChange change) {}
+
+    /**
+     * Every change of the producer's status, down or up or its cause, the ones {@link
+     * #producerStatus} reports included: for the listener that names the cause.
+     */
+    default void producerCause(ProducerStatusChange change) {}
 
     /** Every session that receives the producer has seen the snapshot complete of an event recovery. */
     default void eventRecoveryCompleted(long producerId, URN eventId, long requestId) {}

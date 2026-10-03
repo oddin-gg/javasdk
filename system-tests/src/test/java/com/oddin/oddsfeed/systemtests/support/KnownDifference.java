@@ -28,7 +28,7 @@ import org.junit.jupiter.api.Assumptions;
  */
 public enum KnownDifference {
     EVENT_RECOVERY_NOT_REPORTED("KD-1", true),
-    ALREADY_DOWN_PRODUCER_REPORTS_NOTHING("KD-2", false),
+    ALREADY_DOWN_PRODUCER_REPORTS_NOTHING("KD-2", true),
     UNKNOWN_PRODUCER_IS_MADE_UP("KD-3", true),
     FIXTURE_CHANGE_START_TIME_IS_ZERO("KD-4", true),
     VOID_REASON_IS_ALWAYS_NULL("KD-5", true),
