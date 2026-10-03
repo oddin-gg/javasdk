@@ -393,4 +393,28 @@ class ProfileCachesTest {
         time.onNextInstant(caches::clear);
         assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
     }
+
+    @Test
+    void clearingOneCompetitorOrTournamentDropsOnlyIt() {
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        api.respond(TOURNAMENT_INFO_EN, 200, Fixtures.read("rest/tournament_info/tournament_info.xml"));
+        api.respond(PLAYER_PROFILE_EN, 200, Fixtures.read("rest/player/player_profile.xml"));
+        caches.competitor(COMPETITOR, EN, null);
+        caches.tournament(TOURNAMENT, EN, null);
+        caches.player(PLAYER, EN, null);
+
+        caches.clearCompetitor(COMPETITOR);
+        caches.competitor(COMPETITOR, EN, null);
+        caches.tournament(TOURNAMENT, EN, null);
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(2);
+        assertThat(api.requests("GET", TOURNAMENT_INFO_EN)).hasSize(1);
+
+        caches.clearTournament(TOURNAMENT);
+        caches.tournament(TOURNAMENT, EN, null);
+        caches.competitor(COMPETITOR, EN, null);
+        caches.player(PLAYER, EN, null);
+        assertThat(api.requests("GET", TOURNAMENT_INFO_EN)).hasSize(2);
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(2);
+        assertThat(api.requests("GET", PLAYER_PROFILE_EN)).hasSize(1);
+    }
 }

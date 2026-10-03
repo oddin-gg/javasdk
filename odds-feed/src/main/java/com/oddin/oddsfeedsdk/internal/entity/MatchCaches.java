@@ -13,7 +13,9 @@ import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
 import com.oddin.oddsfeedsdk.internal.cache.LiveWrite;
+import com.oddin.oddsfeedsdk.internal.entity.ProfileCaches.Stamps;
 import com.oddin.oddsfeedsdk.internal.loader.Loader;
+import com.oddin.oddsfeedsdk.internal.loader.SideLoads;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus;
@@ -24,6 +26,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
@@ -43,6 +46,10 @@ import org.jspecify.annotations.Nullable;
  *   <li>The live state is loaded again, from the summary, once the feed and REST have both left it
  *       alone for the match status age.
  *   <li>A fixture change invalidates the match and its fixture; a load under way then writes nothing.
+ *   <li>What a summary or a fixture says of the match's competitors, tournament and sport fills the
+ *       profile caches. After a summary, the competitors' profiles in its locale are side-loaded, as
+ *       0.0.x loaded them after every summary, so a reader of the competitors finds them warm; a
+ *       full side-load queue drops them, and the reader loads them itself.
  * </ul>
  *
  * <p>Safe for concurrent use.
@@ -59,6 +66,8 @@ public final class MatchCaches {
     static final Duration MARGIN = Duration.ofSeconds(1);
 
     private final ApiClient client;
+    private final ProfileCaches profiles;
+    private final SideLoads sideLoads;
     private final Locale defaultLocale;
     private final InstantSource clock;
     private final EntityCache<URN> matches;
@@ -68,22 +77,42 @@ public final class MatchCaches {
     private final Loader<URN, Boolean> fixtureLoads;
 
     /**
+     * @param profiles what a match's responses fill, and where its competitors are side-loaded
+     * @param sideLoads where the competitors' profiles are loaded after a summary
      * @param timeout the HTTP client timeout, each load's deadline
      * @param fetches where the loads run: virtual threads
      */
-    public MatchCaches(ApiClient client, Duration timeout, Locale defaultLocale, Executor fetches) {
-        this(client, timeout, defaultLocale, fetches, InstantSource.system(), Ticker.systemTicker());
+    public MatchCaches(
+            ApiClient client,
+            ProfileCaches profiles,
+            SideLoads sideLoads,
+            Duration timeout,
+            Locale defaultLocale,
+            Executor fetches) {
+        this(
+                client,
+                profiles,
+                sideLoads,
+                timeout,
+                defaultLocale,
+                fetches,
+                InstantSource.system(),
+                Ticker.systemTicker());
     }
 
     /** With the clocks a test drives. */
     MatchCaches(
             ApiClient client,
+            ProfileCaches profiles,
+            SideLoads sideLoads,
             Duration timeout,
             Locale defaultLocale,
             Executor fetches,
             InstantSource clock,
             Ticker ticker) {
         this.client = client;
+        this.profiles = profiles;
+        this.sideLoads = sideLoads;
         this.defaultLocale = defaultLocale;
         this.clock = clock;
         Duration longestFetch = timeout.plus(MARGIN);
@@ -156,26 +185,49 @@ public final class MatchCaches {
 
     /** The match changed: what is cached of it and of its fixture is out of date. */
     public void fixtureChange(URN id) {
+        clear(id);
+    }
+
+    /** Drops what is cached of the match and of its fixture, as the public clear of one match does. */
+    public void clear(URN id) {
         matches.invalidate(id);
         fixtures.invalidate(id);
     }
 
     /**
-     * What a schedule or a list of matches said of each, as fills; {@code started} is what the
-     * caller took with {@link #startMany} before fetching it.
+     * What a schedule or a list of matches said of each, and of their competitors, tournaments and
+     * sports, as fills; {@code started} is what the caller took with {@link #startMany} before
+     * fetching it.
      */
-    public void fill(Collection<RASportEvent> events, Locale locale, Stamp started) {
+    public void fill(Collection<RASportEvent> events, Locale locale, Listed started) {
         for (RASportEvent event : events) {
             URN id = ApiValues.urn(event.getId());
             if (id != null) {
-                matches.fill(id, MatchWrites.fill(SCHEDULE, event, locale), started);
+                matches.fill(id, MatchWrites.fill(SCHEDULE, event, locale), started.matches());
             }
+            fillProfiles(event, locale, started.profiles());
         }
     }
 
     /** What a fetch of many matches takes before it starts, to hand to {@link #fill}. */
-    public Stamp startMany(BooleanSupplier abandoned) {
-        return matches.stampForMany(abandoned);
+    public Listed startMany(BooleanSupplier abandoned) {
+        return new Listed(matches.stampForMany(abandoned), profiles.startMany(abandoned));
+    }
+
+    /**
+     * Loads the match in the background in each of {@code locales}, and with it its competitors: the
+     * eager preload a message's match can get, so that its callback reads it warm. Never waits; a
+     * full side-load queue drops it, and a reader loads what it needs itself.
+     */
+    public void preload(URN id, List<Locale> locales) {
+        for (Locale locale : locales) {
+            sideLoads.offer(deadline -> match(id, locale, deadline));
+        }
+    }
+
+    /** The locale the fixtures are loaded in. */
+    public Locale defaultLocale() {
+        return defaultLocale;
     }
 
     /** Drops every cached match and fixture; the live state is the feed's, and stays. */
@@ -204,12 +256,17 @@ public final class MatchCaches {
 
     private Boolean fetchSummary(MatchKey key, Deadline deadline, BooleanSupplier abandoned) {
         Stamp started = matches.stamp(key.id(), abandoned);
+        Stamps listed = profiles.startMany(abandoned);
         var summary = client.fetchMatchSummary(key.id(), key.locale(), deadline);
         var event = summary.getSportEvent();
         var status = summary.getSportEventStatus();
         boolean written = false;
         if (event != null) {
             written = matches.writeAuthoritative(key.id(), MatchWrites.summary(event, status, key.locale()), started);
+            fillProfiles(event, key.locale(), listed);
+            if (written) {
+                warmCompetitors(event, key.locale());
+            }
         }
         // the live state too gives way to a fixture change, or to a summary of another locale fetched
         // since; a summary without a status still says REST was asked, so it is not asked again
@@ -224,12 +281,40 @@ public final class MatchCaches {
     private Boolean fetchFixture(URN id, Deadline deadline, BooleanSupplier abandoned) {
         Stamp fixtureStarted = fixtures.stamp(id, abandoned);
         Stamp matchStarted = matches.stamp(id, abandoned);
+        Stamps listed = profiles.startMany(abandoned);
         RAFixture fixture = client.fetchFixture(id, defaultLocale, deadline).getFixture();
         if (fixture == null) {
             return false;
         }
         matches.fill(id, MatchWrites.fill(FIXTURE_OF_MATCH, fixture, defaultLocale), matchStarted);
+        fillProfiles(fixture, defaultLocale, listed);
         return fixtures.writeAuthoritative(id, MatchWrites.fixture(fixture, defaultLocale), fixtureStarted);
+    }
+
+    /** What a match's response says of its competitors, its tournament and its sport, as fills. */
+    private void fillProfiles(RASportEvent event, Locale locale, Stamps listed) {
+        var competitors = event.getCompetitors();
+        if (competitors != null) {
+            profiles.fillCompetitors(competitors.getCompetitor(), locale, listed);
+        }
+        var tournament = event.getTournament();
+        if (tournament != null) {
+            profiles.fillTournament(tournament, locale, listed);
+        }
+    }
+
+    /** Side-loads the profiles of the summary's competitors in its locale; never waits. */
+    private void warmCompetitors(RASportEvent event, Locale locale) {
+        var competitors = event.getCompetitors();
+        if (competitors == null) {
+            return;
+        }
+        for (var competitor : competitors.getCompetitor()) {
+            URN id = ApiValues.urn(competitor.getId());
+            if (id != null) {
+                sideLoads.offer(deadline -> profiles.competitor(id, locale, deadline));
+            }
+        }
     }
 
     /**
@@ -251,6 +336,9 @@ public final class MatchCaches {
         Entry entry = cache.get(id);
         return entry != null ? entry : Entry.none();
     }
+
+    /** What a fetch of many matches took of the match caches and of the profile caches before it started. */
+    public record Listed(Stamp matches, Stamps profiles) {}
 
     /** A match in a locale: what a summary is loaded for. */
     private record MatchKey(URN id, Locale locale) {}
