@@ -164,20 +164,35 @@ public final class MarketDescriptions {
         return list;
     }
 
-    /** One variant; of the markets the answer describes, the one with the variant's market id. */
+    /**
+     * One variant: of the rows of the variant's market in the answer, the one with the variant, else
+     * one with no variant. A row of another variant describes other outcomes, such as another
+     * match's players, so an answer with only those does not describe the variant.
+     */
     private LocalizedMarket fetchVariant(VariantKey key, @Nullable LocalizedMarket previous, Deadline deadline) {
         int id = key.market().id();
         String variant = requireNonNull(key.market().variant());
         var answer = client.fetchMarketDescriptionsWithDynamicOutcomes(id, variant, key.locale(), deadline);
         RAMarketDescription described = null;
         for (RAMarketDescription market : answer.getMarket()) {
-            if (market.getId() == id && (described == null || variant.equals(market.getVariant()))) {
+            if (market.getId() != id) {
+                continue;
+            }
+            @Nullable String rowVariant = MarketKey.of(id, market.getVariant()).variant();
+            if (variant.equals(rowVariant)) {
+                described = market;
+                break;
+            }
+            if (rowVariant == null && described == null) {
                 described = market;
             }
         }
         if (described == null) {
             throw new ApiException(
-                    "market descriptions: the answer for " + key + " does not describe market " + id, null, null);
+                    "market descriptions: the answer for " + key + " does not describe market " + id
+                            + " with that variant or none",
+                    null,
+                    null);
         }
         return LocalizedMarket.from(described, variant);
     }
