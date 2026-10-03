@@ -3,11 +3,13 @@ package com.oddin.oddsfeedsdk.internal.entity;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.COMPETITOR_PROFILE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.PLAYER_LISTED;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.PLAYER_PROFILE;
+import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.SPORT_LIST;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.SPORT_TOURNAMENT_LIST;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_INFO;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_LISTED;
 
 import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache.Stamp;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
@@ -102,50 +104,53 @@ public final class ProfileCaches {
 
     /** The competitor as its profile in {@code locale} describes it, loaded when missing or out of date. */
     public Entry competitor(URN id, Locale locale, @Nullable Deadline within) {
-        // twice at most: a read just after a clear can join a load from before it, which writes nothing
-        for (int tries = 0; tries < 2 && !competitors.isFresh(id, COMPETITOR_PROFILE, locale); tries++) {
-            competitorLoads.load(new Key(id, locale), within);
-        }
-        return entryOf(competitors, id);
+        return read(
+                competitors, id, COMPETITOR_PROFILE, locale, () -> competitorLoads.load(new Key(id, locale), within));
     }
 
     /** The player as its profile in {@code locale} describes it, loaded when missing or out of date. */
     public Entry player(URN id, Locale locale, @Nullable Deadline within) {
-        // twice at most: a read just after a clear can join a load from before it, which writes nothing
-        for (int tries = 0; tries < 2 && !players.isFresh(id, PLAYER_PROFILE, locale); tries++) {
-            playerLoads.load(new Key(id, locale), within);
-        }
-        return entryOf(players, id);
+        return read(players, id, PLAYER_PROFILE, locale, () -> playerLoads.load(new Key(id, locale), within));
     }
 
     /** The tournament as its info in {@code locale} describes it, loaded when missing or out of date. */
     public Entry tournament(URN id, Locale locale, @Nullable Deadline within) {
-        // twice at most: a read just after a clear can join a load from before it, which writes nothing
-        for (int tries = 0; tries < 2 && !tournaments.isFresh(id, TOURNAMENT_INFO, locale); tries++) {
-            tournamentLoads.load(new Key(id, locale), within);
-        }
-        return entryOf(tournaments, id);
+        return read(tournaments, id, TOURNAMENT_INFO, locale, () -> tournamentLoads.load(new Key(id, locale), within));
     }
 
-    /** The sport as the sport list in {@code locale} describes it, the list loaded when out of date. */
+    /**
+     * The sport as the sport list in {@code locale} describes it, the list loaded when out of date -
+     * or when it names the sport and the sport's own entry is gone or out of date, which the size
+     * bound or a clear under way can leave behind a list still fresh.
+     */
     public Entry sport(URN id, Locale locale, @Nullable Deadline within) {
-        loadSportList(locale, within);
-        return entryOf(sports, id);
+        Entry entry = entryOf(sports, id);
+        // twice at most: a read just after a clear can join a load from before it, which writes nothing
+        for (int tries = 0; tries < 2 && !sportFresh(id, entry, locale); tries++) {
+            sportListLoads.load(locale, within);
+            entry = entryOf(sports, id);
+        }
+        return entry;
     }
 
     /** The sports the list in {@code locale} names, in its order, the list loaded when out of date. */
     public List<URN> sports(Locale locale, @Nullable Deadline within) {
-        loadSportList(locale, within);
-        SportList list = sportLists.get(locale);
+        SportList list = freshList(locale);
+        for (int tries = 0; tries < 2 && list == null; tries++) {
+            sportListLoads.load(locale, within);
+            list = freshList(locale);
+        }
         return list == null ? List.of() : list.ids();
     }
 
     /** The sport with its tournament list in {@code locale}, loaded when missing or out of date. */
     public Entry sportTournaments(URN sportId, Locale locale, @Nullable Deadline within) {
-        for (int tries = 0; tries < 2 && !sports.isFresh(sportId, SPORT_TOURNAMENT_LIST, locale); tries++) {
-            sportTournamentLoads.load(new Key(sportId, locale), within);
-        }
-        return entryOf(sports, sportId);
+        return read(
+                sports,
+                sportId,
+                SPORT_TOURNAMENT_LIST,
+                locale,
+                () -> sportTournamentLoads.load(new Key(sportId, locale), within));
     }
 
     /** What a fetch of a match, a schedule or a list takes before it starts, to hand to the fills. */
@@ -210,15 +215,31 @@ public final class ProfileCaches {
         return sports.get(id);
     }
 
-    private void loadSportList(Locale locale, @Nullable Deadline within) {
-        for (int tries = 0; tries < 2 && !sportListFresh(locale); tries++) {
-            sportListLoads.load(locale, within);
+    /**
+     * The entry once {@code endpoint} is fresh for it in {@code locale}, loaded twice at most: a read
+     * just after a clear can join a load from before it, which writes nothing. Freshness is told from
+     * the entry returned, so a clear after the check cannot leave the read with a tombstone.
+     */
+    private Entry read(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Runnable load) {
+        Entry entry = entryOf(cache, id);
+        for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.instant(), cache.age()); tries++) {
+            load.run();
+            entry = entryOf(cache, id);
         }
+        return entry;
     }
 
-    private boolean sportListFresh(Locale locale) {
+    /** Whether the locale's list is fresh, and so is the sport's entry when the list names it. */
+    private boolean sportFresh(URN id, Entry entry, Locale locale) {
+        SportList list = freshList(locale);
+        return list != null
+                && (!list.ids().contains(id) || entry.isFresh(SPORT_LIST, locale, clock.instant(), sports.age()));
+    }
+
+    /** The locale's sport list, unless it is missing or out of date. */
+    private @Nullable SportList freshList(Locale locale) {
         SportList list = sportLists.get(locale);
-        return list != null && !list.loadedAt().plus(PROFILE_AGE).isBefore(clock.instant());
+        return list != null && !list.loadedAt().plus(PROFILE_AGE).isBefore(clock.instant()) ? list : null;
     }
 
     private Boolean fetchCompetitor(Key key, Deadline deadline, BooleanSupplier abandoned) {
