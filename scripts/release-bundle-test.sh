@@ -37,29 +37,37 @@ gpg --batch --pinentry-mode loopback --passphrase bundle-test \
   || { cat "$work/gpg.log"; echo "could not make the test key" >&2; exit 1; }
 fingerprint=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
 
-# The stand-in portal: it keeps the upload, answers with a deployment id, and reports the
-# deployment published when asked. Every request is recorded.
+# The stand-in portal: it keeps the upload and answers with a deployment id. Asked for the
+# deployment's state, it answers as Central would: PUBLISHED for an upload that asked to be
+# published (publishingType AUTOMATIC), VALIDATED - waiting for someone to press Publish - for any
+# other. Every request is recorded, with the publishing type the upload asked for.
 python3 - "$work/port" "$work" <<'EOF' &
-import http.server, json, os, sys
+import http.server, json, os, sys, urllib.parse
 port_file, out = sys.argv[1], sys.argv[2]
+state = {'type': None}
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get('Content-Length') or 0))
-        path = self.path.split('?')[0]
+        url = urllib.parse.urlparse(self.path)
+        path, query = url.path, urllib.parse.parse_qs(url.query)
         with open(os.path.join(out, 'requests'), 'a') as f:
             f.write(path + '\n')
         if path == '/api/v1/publisher/upload':
+            state['type'] = (query.get('publishingType') or [''])[0]
+            with open(os.path.join(out, 'publishing-type'), 'w') as f:
+                f.write(state['type'])
             with open(os.path.join(out, 'upload'), 'wb') as f:
                 f.write(body)
             self.send_response(201)
             self.end_headers()
             self.wfile.write(b'bundle-test-deployment')
         elif path == '/api/v1/publisher/status':
+            published = 'PUBLISHED' if state['type'] == 'AUTOMATIC' else 'VALIDATED'
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'deploymentId': 'bundle-test-deployment', 'deploymentName': 'test',
-                'deploymentState': 'PUBLISHED', 'purls': [], 'errors': {}, 'warnings': []}).encode())
+                'deploymentState': published, 'purls': [], 'errors': {}, 'warnings': []}).encode())
         else:
             self.send_response(404)
             self.end_headers()
@@ -94,7 +102,7 @@ EOF
 
 cd "$root"
 rm -rf target/central-publishing target/central-staging
-MAVEN_GPG_KEY=$(gpg --batch --pinentry-mode loopback --passphrase bundle-test --armor --export-secret-keys "$fingerprint") \
+MAVEN_GPG_KEY=$(gpg --batch --pinentry-mode loopback --passphrase bundle-test --armor --export-secret-keys "$fingerprint" 2>> "$work/gpg.log") \
 MAVEN_GPG_PASSPHRASE=bundle-test \
   ./mvnw --batch-mode --no-transfer-progress -s "$work/settings.xml" -Prelease -Drevision="$version" \
     -Dcentral.autoPublish=true -Dcentral.waitUntil=published -DcentralBaseUrl="$portal" \
@@ -153,6 +161,9 @@ requests = open(os.path.join(work, 'requests')).read().split()
 check(requests[:1] == ['/api/v1/publisher/upload'] and requests.count('/api/v1/publisher/upload') == 1,
       'the stand-in portal saw %s, not one upload' % requests)
 check('/api/v1/publisher/status' in requests, 'nobody asked the stand-in portal for the state')
+publishing_type = open(os.path.join(work, 'publishing-type')).read()
+check(publishing_type == 'AUTOMATIC',
+      'the upload asked to be published %r, not AUTOMATIC: Central would wait for someone to press Publish' % publishing_type)
 check(data in open(os.path.join(work, 'upload'), 'rb').read(), 'the upload is not the bundle')
 
 for problem in problems:
