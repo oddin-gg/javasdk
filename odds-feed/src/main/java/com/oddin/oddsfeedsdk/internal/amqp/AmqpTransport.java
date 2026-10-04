@@ -41,7 +41,9 @@ import org.slf4j.LoggerFactory;
  * three at least, have gone on for a minute with no connection in between, since an auth backend
  * being deployed refuses for a while and then lets the same token in; a broker out of resources is
  * retried with a long pause, and reported each time. A channel the broker closes or cancels on a
- * live connection is opened again on its own, with growing pauses while that fails.
+ * live connection is opened again on its own, with growing pauses while that fails; its session is
+ * told of the loss before that, since its queue went with it, and of the new channel once it is
+ * bound.
  *
  * <p>The SDK's alive consumer is a channel like a session's, opened, lost and opened again the same
  * way; only its deliveries go to the alive handler, acknowledged by the broker as it sends them. The
@@ -118,7 +120,10 @@ public final class AmqpTransport implements AutoCloseable {
         this.alive = alives == null
                 ? null
                 : channel(
-                        List.of(RoutingKeys.ALIVE), new SessionChannel.Sink.Handled(alives), "the SDK's alive channel");
+                        List.of(RoutingKeys.ALIVE),
+                        new SessionChannel.Sink.Handled(alives),
+                        "the SDK's alive channel",
+                        ChannelEvents.NONE);
         if (alive != null) {
             channels.add(alive);
         }
@@ -126,11 +131,23 @@ public final class AmqpTransport implements AutoCloseable {
 
     /** A session's channel, opened with the others by {@link #open}. */
     public SessionTransport addSession(List<String> bindings) {
-        return addSession(bindings, settings.prefetch());
+        return addSession(bindings, ChannelEvents.NONE);
+    }
+
+    /**
+     * The same, telling {@code told} when the broker takes the session's channel on a live
+     * connection, and when a new one replaced it.
+     */
+    public SessionTransport addSession(List<String> bindings, ChannelEvents told) {
+        return addSession(bindings, settings.prefetch(), told);
     }
 
     /** With a queue of another size than the prefetch, for a test to fill it. */
     SessionTransport addSession(List<String> bindings, int queueCapacity) {
+        return addSession(bindings, queueCapacity, ChannelEvents.NONE);
+    }
+
+    private SessionTransport addSession(List<String> bindings, int queueCapacity, ChannelEvents told) {
         lock.lock();
         try {
             if (connection != null || opened.get()) {
@@ -139,7 +156,8 @@ public final class AmqpTransport implements AutoCloseable {
             var session = channel(
                     bindings,
                     new SessionChannel.Sink.Queued(new SessionQueue(queueCapacity), settings.prefetch()),
-                    "a session's channel");
+                    "a session's channel",
+                    new GuardedChannel(told));
             channels.add(session);
             return session;
         } finally {
@@ -147,7 +165,7 @@ public final class AmqpTransport implements AutoCloseable {
         }
     }
 
-    private SessionChannel channel(List<String> bindings, SessionChannel.Sink sink, String which) {
+    private SessionChannel channel(List<String> bindings, SessionChannel.Sink sink, String which, ChannelEvents told) {
         return new SessionChannel(
                 exchange,
                 bindings,
@@ -156,7 +174,8 @@ public final class AmqpTransport implements AutoCloseable {
                 clock,
                 () -> connection,
                 this::channelLost,
-                e -> reopenFailed(which, e));
+                e -> reopenFailed(which, e),
+                told);
     }
 
     /**
@@ -598,6 +617,36 @@ public final class AmqpTransport implements AutoCloseable {
                 tell.run();
             } catch (RuntimeException e) {
                 LOG.error("The connection listener threw on {}; the transport goes on", event, e);
+            }
+        }
+    }
+
+    /**
+     * A session's channel listener, kept from breaking the transport: one that throws on a loss
+     * would otherwise leave the channel without its reopen.
+     */
+    private static final class GuardedChannel implements ChannelEvents {
+        private final ChannelEvents listener;
+
+        GuardedChannel(ChannelEvents listener) {
+            this.listener = listener;
+        }
+
+        @Override
+        public void lost() {
+            guard("lost", listener::lost);
+        }
+
+        @Override
+        public void reopened() {
+            guard("reopened", listener::reopened);
+        }
+
+        private static void guard(String event, Runnable tell) {
+            try {
+                tell.run();
+            } catch (RuntimeException e) {
+                LOG.error("A session's channel listener threw on {}; the transport goes on", event, e);
             }
         }
     }
