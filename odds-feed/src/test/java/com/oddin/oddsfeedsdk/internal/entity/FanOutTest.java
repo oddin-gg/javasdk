@@ -7,8 +7,10 @@ import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
@@ -93,6 +95,38 @@ class FanOutTest {
                 }))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("not loaded within 200 ms");
+    }
+
+    @Test
+    void aLoadThatHoldsTheLastPermitPastTheLongestLoadFailsTheWholeAndStartsNoMore() {
+        var fanOut = new FanOut(threads, 1, Duration.ofMillis(200));
+        var started = new AtomicInteger();
+        long before = System.nanoTime();
+        assertThatThrownBy(() -> fanOut.each(List.of(0, 1), item -> {
+                    started.incrementAndGet();
+                    if (item == 0) {
+                        sleep(2_000);
+                    }
+                    return item;
+                }))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("no load finished within 200 ms");
+        assertThat(Duration.ofNanos(System.nanoTime() - before))
+                .as("the wait for a permit is bounded")
+                .isLessThan(Duration.ofSeconds(1));
+        assertThat(started.get()).as("the second never started").isEqualTo(1);
+    }
+
+    @Test
+    void anExecutorThatTakesNoLoadFailsTheWhole() {
+        Executor full = load -> {
+            throw new RejectedExecutionException("full");
+        };
+        var fanOut = new FanOut(full, 2, Duration.ofSeconds(5));
+        assertThatThrownBy(() -> fanOut.each(List.of(1, 2), item -> item))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("no load could start")
+                .hasCauseInstanceOf(RejectedExecutionException.class);
     }
 
     private static void sleep(long millis) {
