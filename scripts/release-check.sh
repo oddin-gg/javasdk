@@ -9,14 +9,15 @@
 #
 # Run in a clone with every branch and tag (fetch-depth: 0). It reads the tagged commit from
 # git, not from the working tree. Writes version=, final= and commit= to $GITHUB_OUTPUT when
-# that is set, to stdout otherwise. Needs curl, python3 and yq (mikefarah's, on GitHub's
-# runners). CENTRAL_URL replaces the Central repository and CENTRAL_TIMEOUT its time limit in
-# seconds, for the test.
+# that is set, to stdout otherwise. Needs curl, gh (with GH_TOKEN and GITHUB_REPOSITORY), python3
+# and yq (mikefarah's, on GitHub's runners). CENTRAL_URL replaces the Central repository and
+# CENTRAL_TIMEOUT the time limit in seconds of each lookup, Central's and GitHub's, for the test.
 set -euo pipefail
 
 tag=${1:?usage: release-check.sh <tag>}
 central=${CENTRAL_URL:-https://repo1.maven.org/maven2}
 timeout=${CENTRAL_TIMEOUT:-60}
+repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY names the repository whose pull requests count}
 
 fail() {
   echo "$tag: $*" >&2
@@ -52,6 +53,20 @@ for branch in next main; do
   fi
 done
 [ -n "$on_branch" ] || fail "$commit is on neither next nor main"
+
+# On next or main is not enough: the repository merges by rebase, which puts every intermediate
+# commit of a pull request on the branch, while the review saw only the final state. That state
+# is the pull request's merge commit, the last commit it left on the branch. So the tagged
+# commit must be the merge commit of a pull request merged into next or main.
+limit=()
+if command -v timeout > /dev/null; then
+  limit=(timeout "$timeout")
+fi
+bases=$(${limit[@]+"${limit[@]}"} gh api --paginate "repos/$repository/commits/$commit/pulls?per_page=100" \
+  --jq ".[] | select(.merged_at != null and .merge_commit_sha == \"$commit\") | .base.ref") \
+  || fail "could not ask GitHub which pull request left $commit"
+printf '%s\n' "$bases" | grep -qxE 'next|main' \
+  || fail "$commit is not the merge commit of a pull request merged into next or main"
 
 # one commit, one release (NEXT.md, section 9); any other tag is a question nobody answered
 tags=$(git tag --points-at "$commit")

@@ -245,14 +245,14 @@ check(-1 < index("github-release", "release-tag-check.sh") < index("github-relea
 
 # Job permissions: no more than each job needs. In next.yml, which runs on the tag too, read only.
 EXPECTED_PERMISSIONS = {
-    "check": {"contents": "read"},
+    "check": {"contents": "read", "pull-requests": "read"},
     "build": {"contents": "read", "packages": "read"},
     "publish": {"contents": "read"},
     "github-release": {"contents": "write"},
 }
 for name, expected in EXPECTED_PERMISSIONS.items():
     actual = jobs[name].get("permissions")
-    if name in ("check", "publish") and actual is None:
+    if name == "publish" and actual is None:
         continue
     check(actual == expected, "%s's permissions must be %s, not %s" % (name, expected, actual))
 check(set(jobs) == set(EXPECTED_PERMISSIONS), "release.yml must have the jobs %s, not %s"
@@ -464,6 +464,11 @@ breaks release.yml replace "$check_job" "${check_job}    if: false
 " "check must not be conditional"
 breaks release.yml replace "$check_job" "${check_job}    continue-on-error: true
 " "check must not continue on error"
+breaks release.yml replace '      contents: read
+      pull-requests: read
+' '      contents: read
+      pull-requests: write
+' "check's permissions must be"
 
 # build
 breaks release.yml replace '      revision: ${{ needs.check.outputs.version }}' '      revision: ${{ needs.check.outputs.version }}

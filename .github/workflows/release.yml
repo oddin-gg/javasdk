@@ -17,6 +17,10 @@ jobs:
   check:
     name: Check the tag
     runs-on: ubuntu-latest
+    # pull requests, to ask which one left the tagged commit
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       version: ${{ steps.tag.outputs.version }}
       final: ${{ steps.tag.outputs.final }}
@@ -31,10 +35,13 @@ jobs:
 
       - name: Check the tag
         id: tag
-        # The tag's form, its commit on next or main and alone, the release notes, no other
-        # workflow reacting to tags, and the version not on Central. release-check-test.sh, run
-        # by next.yml on every push, holds each of these to its cases.
+        # The tag's form, its commit the merge commit of a pull request merged into next or main
+        # and alone, the release notes, no other workflow reacting to tags, and the version not
+        # on Central. release-check-test.sh, run by next.yml on every push, holds each of these
+        # to its cases.
         run: ./scripts/release-check.sh "$GITHUB_REF_NAME"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
   build:
     name: Build and test

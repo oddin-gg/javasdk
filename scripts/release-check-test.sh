@@ -62,6 +62,51 @@ absent=$central/404
 # nothing listens on port 1
 silent=http://127.0.0.1:1
 
+# Stub gh, for the question which pull request left a commit. It answers from $work/pulls/<sha>:
+# a .json file holds the pull requests, a .fail file makes the call fail, a .stall file makes it
+# answer only after 10 seconds. Without a file the commit is the merge commit of a pull request
+# merged into next, beside one still open. The answer goes through the caller's --jq, with jq.
+mkdir -p "$work/bin" "$work/pulls"
+cat > "$work/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+pulls=${GH_STUB_PULLS:?}
+echo "gh $*" >> "$pulls/calls"
+endpoint= filter=.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --jq) filter=$2; shift 2 ;;
+    api | --paginate) shift ;;
+    *) endpoint=$1; shift ;;
+  esac
+done
+sha=${endpoint#*/commits/}
+sha=${sha%%/*}
+if [ -e "$pulls/$sha.fail" ]; then
+  echo "gh: HTTP 502" >&2
+  exit 1
+fi
+if [ -e "$pulls/$sha.stall" ]; then
+  sleep 10
+fi
+if [ -e "$pulls/$sha.json" ]; then
+  json=$(cat "$pulls/$sha.json")
+else
+  json='[{"number": 1, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "'$sha'"},
+         {"number": 2, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "0000000"}]'
+fi
+printf '%s' "$json" | jq -r "$filter"
+EOF
+chmod +x "$work/bin/gh"
+
+# pulls <tag> <json, in which SHA stands for the tag's commit and OTHER for the commit before it>
+pulls() {
+  local sha other
+  sha=$(git -C "$repo" rev-parse "$1^{commit}")
+  other=$(git -C "$repo" rev-parse "$1^{commit}~1")
+  printf '%s' "$2" | sed -e "s/SHA/$sha/g" -e "s/OTHER/$other/g" > "$work/pulls/$sha.json"
+}
+
 repo=$work/repo
 git init -q -b main "$repo"
 git -C "$repo" config user.name test
@@ -115,7 +160,9 @@ expect() {
   local want=$1 tag=$2 url=$3 got
   : > "$work/out"
   : > "$work/requests"
-  if (cd "$repo" && GITHUB_OUTPUT=$work/out CENTRAL_URL=$url CENTRAL_TIMEOUT=2 bash "$check" "$tag") 2> "$work/err"; then
+  : > "$work/pulls/calls"
+  if (cd "$repo" && PATH=$work/bin:$PATH GH_STUB_PULLS=$work/pulls GITHUB_REPOSITORY=example/repo \
+    GITHUB_OUTPUT=$work/out CENTRAL_URL=$url CENTRAL_TIMEOUT=2 bash "$check" "$tag") 2> "$work/err"; then
     got=accept
   else
     got=refuse
@@ -131,6 +178,10 @@ expect() {
     if ! grep -qx "version=$version" "$work/out" || ! grep -qx "final=$final" "$work/out" \
       || ! grep -qx "commit=$(git -C "$repo" rev-parse "$tag^{commit}")" "$work/out"; then
       failed "$tag: expected version=$version final=$final and its commit, got: $(cat "$work/out")"
+      return
+    fi
+    if ! grep -qF "gh api --paginate repos/example/repo/commits/$(git -C "$repo" rev-parse "$tag^{commit}")/pulls?per_page=100 --jq" "$work/pulls/calls"; then
+      failed "$tag: GitHub was not asked for the pull requests of its commit: $(cat "$work/pulls/calls")"
       return
     fi
     if [ "$(cat "$work/requests")" != "$lookups" ]; then
@@ -206,11 +257,21 @@ commit "-.github/workflows/ü.yml"
 release v1.0.15 ".github/workflows/nex[t].yml=$release_workflow"
 commit "-.github/workflows/nex[t].yml"
 release v1.0.16
+for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21; do
+  release "$tag"
+done
 git -C "$repo" update-ref refs/remotes/origin/next HEAD
+# an intermediate commit of a pull request: on next, but its merge commit is a later one
+pulls v1.0.17 '[{"number": 3, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "OTHER"}]'
+pulls v1.0.18 '[{"number": 4, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "SHA"}]'
+pulls v1.0.19 '[{"number": 5, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "feature"}, "merge_commit_sha": "SHA"}]'
+touch "$work/pulls/$(git -C "$repo" rev-parse "v1.0.20^{commit}").fail"
+touch "$work/pulls/$(git -C "$repo" rev-parse "v1.0.21^{commit}").stall"
 
 # on main only
 git -C "$repo" checkout -q main
 release v1.1.0
+pulls v1.1.0 '[{"number": 6, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "SHA"}]'
 git -C "$repo" update-ref refs/remotes/origin/main HEAD
 
 # on neither
@@ -242,6 +303,15 @@ expect refuse v1.0.15 "$absent" ".github/workflows/nex[t].yml: a workflow name o
 expect accept v1.0.16 "$absent" 1.0.16 true
 git -C "$repo" cat-file -e "v1.0.16:.github/workflows/next.yml" 2> /dev/null \
   || failed "removing nex[t].yml took next.yml with it"
+expect refuse v1.0.17 "$absent" "is not the merge commit of a pull request merged into next or main"
+expect refuse v1.0.18 "$absent" "is not the merge commit of a pull request merged into next or main"
+expect refuse v1.0.19 "$absent" "is not the merge commit of a pull request merged into next or main"
+expect refuse v1.0.20 "$absent" "could not ask GitHub which pull request left"
+if command -v timeout > /dev/null; then
+  expect refuse v1.0.21 "$absent" "could not ask GitHub which pull request left"
+else
+  echo "skip v1.0.21: no timeout command here to stop a stalled GitHub (CI has one)"
+fi
 expect refuse v1.0.0 "$central/200" "Central already has odds-feed-parent 1.0.0"
 expect refuse v1.0.0 "$central/404-200" "Central already has odds-feed 1.0.0"
 expect refuse v1.0.0 "$central/500" "could not tell whether Central has odds-feed-parent 1.0.0 (500"
