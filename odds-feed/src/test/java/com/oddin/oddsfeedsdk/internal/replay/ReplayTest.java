@@ -88,8 +88,11 @@ class ReplayTest {
         assertThat(replay.play()).isTrue();
         assertThat(replay.play(30, 500)).isTrue();
         assertThat(replay.play(30, 500, true)).isTrue();
+        assertThat(replay.play(30, 500, false)).isTrue();
         assertThat(replay.play(20, 100, "2", false)).isTrue();
+        assertThat(replay.play(20, 100, "2", true)).isTrue();
         assertThat(replay.play(10, 50, "1", true, false)).isTrue();
+        assertThat(replay.play(10, 50, "1", false, true)).isTrue();
         assertThat(replay.play(5, 0, "2", true, true)).isTrue();
 
         assertThat(sent())
@@ -97,9 +100,13 @@ class ReplayTest {
                         "POST /v1/replay/play?node_id=7",
                         "POST /v1/replay/play?node_id=7&speed=30&max_delay=500",
                         "POST /v1/replay/play?node_id=7&speed=30&max_delay=500&run_parallel=true",
+                        "POST /v1/replay/play?node_id=7&speed=30&max_delay=500&run_parallel=false",
                         "POST /v1/replay/play?node_id=7&speed=20&max_delay=100&use_replay_timestamp=false&product=2",
+                        "POST /v1/replay/play?node_id=7&speed=20&max_delay=100&use_replay_timestamp=true&product=2",
                         "POST /v1/replay/play?node_id=7&speed=10&max_delay=50&use_replay_timestamp=true"
                                 + "&run_parallel=false&product=1",
+                        "POST /v1/replay/play?node_id=7&speed=10&max_delay=50&use_replay_timestamp=false"
+                                + "&run_parallel=true&product=1",
                         "POST /v1/replay/play?node_id=7&speed=5&max_delay=0&use_replay_timestamp=true"
                                 + "&run_parallel=true&product=2");
     }
@@ -143,10 +150,11 @@ class ReplayTest {
                 .hasSize(11);
     }
 
-    @Test
-    void theListHoldsTheFactorysEventsInTheApisOrder() {
+    @ParameterizedTest
+    @EnumSource(ExceptionHandlingStrategy.class)
+    void theListHoldsTheFactorysEventsInTheApisOrder(ExceptionHandlingStrategy strategy) {
         api.respond(LIST_PATH, 200, list("od:match:3", "od:match:1", "od:match:2"));
-        Replay replay = replay(ExceptionHandlingStrategy.THROW);
+        Replay replay = replay(strategy);
 
         List<SportEvent> events = replay.getReplayList();
 
