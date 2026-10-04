@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Whether the tag still names the commit the release was checked and built from. A final can wait
-# days for its approval, and the tag can be moved or deleted meanwhile: release.yml runs this
-# right before the upload to Central and again before the GitHub Release. Tested by
+# Whether the tag still names the commit the release was checked and built from. A release can
+# wait days for its approval, and the tag can be moved or deleted meanwhile: release.yml runs
+# this right before the upload to Central and again before the GitHub Release. Tested by
 # scripts/release-check-test.sh.
 #
 #   scripts/release-tag-check.sh <tag> <commit> [remote]
@@ -14,7 +14,15 @@ tag=${1:?usage: release-tag-check.sh <tag> <commit> [remote]}
 commit=${2:?usage: release-tag-check.sh <tag> <commit> [remote]}
 remote=${3:-origin}
 
-refs=$(git ls-remote --tags "$remote" "refs/tags/$tag" "refs/tags/$tag^{}") || {
+# A remote that stalls counts as one that does not answer: git gives up on a transfer slower than
+# a byte a second for 30 seconds, and timeout (coreutils, on the runners) on the whole question
+# after a minute. Without timeout, as on a stock macOS, the transfer limit alone applies.
+limit=()
+if command -v timeout > /dev/null; then
+  limit=(timeout 60)
+fi
+refs=$(${limit[@]+"${limit[@]}"} git -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 \
+  ls-remote --tags "$remote" "refs/tags/$tag" "refs/tags/$tag^{}") || {
   echo "$tag: could not ask $remote for the tag" >&2
   exit 1
 }

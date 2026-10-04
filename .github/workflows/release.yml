@@ -100,7 +100,7 @@ jobs:
           server-password: CENTRAL_TOKEN_PASSWORD
 
       - name: Check the tag still names this commit
-        # a final can wait days for its approval, and the tag be moved or deleted meanwhile
+        # a release can wait days for its approval, and the tag be moved or deleted meanwhile
         run: ./scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT"
         env:
           COMMIT: ${{ needs.check.outputs.commit }}
@@ -134,6 +134,7 @@ jobs:
     # only once Central has the version, for a release candidate as for a final
     if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:

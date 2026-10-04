@@ -40,13 +40,13 @@ jobs:
           fi
 
       - name: Check the release checks refuse what they should
-        # release.yml's only gate before Central for a release candidate, which nobody approves;
-        # it runs on tags alone, so its cases are run here, against a scratch repository
+        # what release.yml checks before it builds anything - every upload then also waits for a
+        # maven-central reviewer; it runs on tags alone, so its cases run here, on a scratch repository
         run: ./scripts/release-check-test.sh
 
       - name: Check release.yml keeps its release policy
-        # a final through the approval only, the secrets in the upload job only; release.yml
-        # itself runs on tags alone
+        # the upload only after check and build, in the maven-central environment its reviewers
+        # approve; no secrets or environment in any other job; release.yml itself runs on tags alone
         run: ./scripts/release-workflow-test.sh
 
       - name: Set up JDK 25
