@@ -852,7 +852,8 @@ Performance is a requirement, not a follow-up.
   publish. Release candidates publish automatically. A final version waits for a
   manual approval step before the Central release, because Central is irreversible.
   The GitHub Release with the jar and POM is created afterwards. Signing key and
-  Central credentials live in repository secrets.
+  Central credentials live in the secrets of an environment only `v1.*` tags can use.
+  `RELEASING.md` has the checklist.
 - The new line publishes `gg.oddin.oddsfeed:odds-feed` to Maven Central only. The old
   line keeps publishing `com.oddin.oddsfeed:odds-feed` to GitHub Packages only, from
   `release/0.x`. Each line's pre-release check queries its own registry. Never two
