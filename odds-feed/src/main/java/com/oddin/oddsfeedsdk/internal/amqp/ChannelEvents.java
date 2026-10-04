@@ -15,7 +15,8 @@ public interface ChannelEvents {
     /**
      * The broker closed or cancelled the session's channel on a live connection: its queue is gone,
      * and what the feed sends until a new queue is bound is lost. Told once per channel, before the
-     * transport opens a new one, so before any delivery of the new channel.
+     * transport opens a new one, so before any delivery of the new channel; not told once the
+     * channel is closed.
      */
     default void lost() {}
 

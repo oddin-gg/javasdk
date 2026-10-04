@@ -64,6 +64,10 @@ final class SessionChannel implements SessionTransport {
     private volatile @Nullable Deliveries current;
     /** Whether a loss was told and no channel has replaced the lost one yet; under the lock. */
     private boolean lossTold;
+    /** Whether the channel is closed for good, so no loss is told; set under the lock. */
+    private boolean closed;
+    /** A test's hook: runs in a callback that found its channel current, before it tells the loss. */
+    volatile Runnable beforeTellingLost = () -> {};
 
     /**
      * @param connection the transport's connection now, null while it has none
@@ -168,7 +172,8 @@ final class SessionChannel implements SessionTransport {
         try {
             Connection now = connection.get();
             if (now == null || !now.isOpen()) {
-                // no connection to open one on: move the epoch on, and the reconnect opens the channel
+                // no connection to open one on: move the epoch on, and the reconnect opens the channel;
+                // a loss told stays told, for that open to tell the new channel
                 closeChannel();
                 removeEpochsBefore(epoch.incrementAndGet());
                 failedReopens.set(0);
@@ -258,6 +263,7 @@ final class SessionChannel implements SessionTransport {
     void close() {
         lock.lock();
         try {
+            closed = true;
             closeChannel();
         } finally {
             lock.unlock();
@@ -370,6 +376,7 @@ final class SessionChannel implements SessionTransport {
         private void taken(long ofEpoch) {
             taken = true;
             if (ofEpoch == epoch.get()) {
+                beforeTellingLost.run();
                 tellLost(ofEpoch);
                 lost.accept(SessionChannel.this);
             }
@@ -377,12 +384,13 @@ final class SessionChannel implements SessionTransport {
 
         /**
          * Tells the loss before anything opens a new channel: under the lock, and only while this
-         * channel is still the current one, since one replaced already lost nothing more.
+         * channel is still the current one, since one replaced already lost nothing more, and not
+         * once the channel is closed, since nobody reads it any more.
          */
         private void tellLost(long ofEpoch) {
             lock.lock();
             try {
-                if (ofEpoch == epoch.get() && !lossTold) {
+                if (ofEpoch == epoch.get() && !lossTold && !closed) {
                     lossTold = true;
                     told.lost();
                 }
