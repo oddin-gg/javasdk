@@ -163,12 +163,26 @@ next attempt is a new version - the next release candidate number, or the next p
 - **During publish:** look the deployment up in the portal. Failed validation published
   nothing: release the next version as above. If it shows Published (the wait timed out),
   the version is out and a re-run would be refused: make the GitHub Release by hand. In a
-  checkout of the tag, zip the jar, the POM and their `.asc` files from Central, in the
-  Maven layout (`gg/oddin/oddsfeed/odds-feed/<version>/...`), as `central-bundle.zip`, and
-  run `scripts/release-github.sh` with `VERSION`, `FINAL` and `GITHUB_REF_NAME` set.
-- **GitHub Release failed:** if it left a draft, delete the draft (`gh release delete <tag>`
-  keeps the tag), then re-run the failed job; the bundle is kept as the run's
-  `central-bundle` artifact.
+  checkout of the tag (it has `release-notes/<version>.md`), with no `bundle/` directory left
+  from an earlier attempt, zip the jar, the POM and their `.asc` files from Central, in the
+  Maven layout (`gg/oddin/oddsfeed/odds-feed/<version>/...`), as `central-bundle.zip`. Then,
+  with `gh` logged in (or `GH_TOKEN` set) as someone who may create releases, and `unzip`
+  installed:
+
+  ```
+  VERSION=<version> FINAL=<true|false> GITHUB_REF_NAME=v<version> GH_REPO=oddin-gg/javasdk scripts/release-github.sh
+  ```
+
+  `FINAL` is `true` for a final and `false` for a release candidate.
+- **GitHub Release failed:** re-run the failed job; the bundle is kept as the run's
+  `central-bundle` artifact. A draft the failed run left is never touched by the re-run,
+  which works only on the release it creates; delete the draft afterwards, by its id, not
+  by the tag (which would also find the published release):
+
+  ```
+  gh api 'repos/oddin-gg/javasdk/releases?per_page=100' --jq '.[] | select(.draft and .tag_name == "<tag>") | .id'
+  gh api -X DELETE repos/oddin-gg/javasdk/releases/<id>
+  ```
 - Never reuse a version Central has.
 
 ## Dry run
