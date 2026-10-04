@@ -13,11 +13,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  # one release at a time: a second tag waits rather than racing the first to Central
-  group: release
-  cancel-in-progress: false
-
 jobs:
   check:
     name: Check the tag
@@ -75,6 +70,12 @@ jobs:
           || (needs.approve.result == 'skipped' && needs.check.outputs.final == 'false'))
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # One upload at a time, set here so a final waiting for approval holds nobody up. GitHub
+    # keeps one run waiting per group and cancels it when a third arrives: RELEASING.md says
+    # to push a tag only once the previous release has finished.
+    concurrency:
+      group: maven-central
+      cancel-in-progress: false
     # holds the portal token and the signing key, and serves v1.* tags only
     environment: maven-central
     steps:
@@ -137,6 +138,9 @@ jobs:
   github-release:
     name: GitHub Release
     needs: [check, publish]
+    # explicit: the default condition would skip it whenever approve was skipped, for every
+    # release candidate, though publish ran
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
