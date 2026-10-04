@@ -1,6 +1,7 @@
 package com.oddin.oddsfeed.systemtests;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
@@ -62,6 +63,27 @@ class FeedMessageScenarioIT {
             assertThat(betStop.getTimestamp().getCreated()).as("created").isBetween(sent.from(), sent.to());
             assertThat(betStop.getGroups()).as("groups").containsExactly("all");
             assertThat(betStop.getMarketStatus()).as("market status").isEqualTo(MarketStatus.SUSPENDED);
+        }
+    }
+
+    /**
+     * A market status the schema does not have still reaches the listener, as in 0.0.x: the public
+     * enum has no constant for it, so only the getter that reads it throws.
+     */
+    @Test
+    void aBetStopWithAnUnknownMarketStatusIsDeliveredAndItsGetterThrows() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            Received received = sdk.open(MessageInterest.ALL);
+            String message = Fixtures.read("feed/bet_stop/bet_stop_all_groups.xml");
+            assertThat(message).as("the fixture's market status").contains("market_status=\"-1\"");
+            Sent.publishing(feed, message.replace("market_status=\"-1\"", "market_status=\"7\""));
+
+            BetStop<?> betStop = received.next(BetStop.class);
+            assertThat(betStop.getEvent().getId()).as("event").isEqualTo(MATCH);
+            assertThat(betStop.getGroups()).as("groups").containsExactly("all");
+            assertThatThrownBy(betStop::getMarketStatus).as("market status").isInstanceOf(NullPointerException.class);
         }
     }
 
@@ -145,14 +167,16 @@ class FeedMessageScenarioIT {
                             tuple(1, Map.of(), null, null),
                             tuple(42, Map.of("setnr", "1"), null, null),
                             tuple(17, Map.of("mapnr", "2"), 4, "minutes=5"));
-            // market 17 carries void_reason="1" as well; 0.0.x never reads it
+            // market 17 carries void_reason="1" as well, the others none; 0.0.x never reads it
             KnownDifference.VOID_REASON_IS_ALWAYS_NULL.expect(
-                    () -> assertThat(cancel.getMarkets().get(2).getVoidReason())
-                            .as("void reason of market 17")
-                            .isNull(),
-                    () -> assertThat(cancel.getMarkets().get(2).getVoidReason())
-                            .as("void reason of market 17")
-                            .isEqualTo("1"));
+                    () -> assertThat(cancel.getMarkets())
+                            .as("void reasons")
+                            .extracting(MarketCancel::getVoidReason)
+                            .containsExactly(null, null, null),
+                    () -> assertThat(cancel.getMarkets())
+                            .as("void reasons")
+                            .extracting(MarketCancel::getVoidReason)
+                            .containsExactly(null, null, "1"));
         }
     }
 

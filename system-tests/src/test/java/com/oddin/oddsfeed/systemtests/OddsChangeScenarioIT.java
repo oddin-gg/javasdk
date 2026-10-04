@@ -73,6 +73,28 @@ class OddsChangeScenarioIT {
         }
     }
 
+    /**
+     * A market status the schema does not have still reaches the listener, as in 0.0.x: the public
+     * enum has no constant for it, so the markets cannot be built and only their getter throws.
+     */
+    @Test
+    void anOddsChangeWithAnUnknownMarketStatusIsDeliveredAndItsMarketsThrow() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            Received received = sdk.open(MessageInterest.ALL);
+            String message = Fixtures.read(ODDS_CHANGE);
+            assertThat(message).as("market 89's status").contains("status=\"-1\"");
+            assertThat(feed.publish(message.replace("status=\"-1\"", "status=\"7\"")))
+                    .as("routed to the SDK's queue")
+                    .isTrue();
+
+            OddsChange<?> oddsChange = received.next(OddsChange.class);
+            assertThat(oddsChange.getEvent().getId()).as("event").isEqualTo(MATCH);
+            assertThatThrownBy(oddsChange::getMarkets).as("markets").isInstanceOf(NullPointerException.class);
+        }
+    }
+
     @Test
     void closingTheFeedLeavesNothingBehind() throws InterruptedException {
         try (LogCapture logs = LogCapture.start();
