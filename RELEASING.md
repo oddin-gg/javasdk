@@ -111,7 +111,9 @@ runs each of these cases against a scratch repository and a stub Central, and
 `scripts/release-workflow-test.sh` holds `release.yml` and the workflows it calls to its policy:
 the release check always run, the upload only after check and build and only in the approved
 environment, no secrets or environment anywhere else, no cache there, and the tag checked
-again first. `scripts/release-bundle-test.sh` runs the signed release build with a throwaway
+again first. It also compares `release.yml` with its pinned form in
+`scripts/release-workflow.json`: a change to the release workflow updates that file too
+(`scripts/release-workflow-test.sh --update`), so the reviewer sees it. `scripts/release-bundle-test.sh` runs the signed release build with a throwaway
 key against a stand-in portal and checks the bundle.
 
 ## When something fails
