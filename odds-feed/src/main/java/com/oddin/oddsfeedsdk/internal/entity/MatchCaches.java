@@ -149,7 +149,7 @@ public final class MatchCaches {
      * The match's live state, its summary loaded again when neither the feed nor REST wrote it within
      * the match status age. A summary without a status leaves a live state without values, fresh as
      * any. Loaded once more when a change since refused the reload's write; null when even then it
-     * has none.
+     * has none, as for a match the API does not describe.
      *
      * @throws com.oddin.oddsfeedsdk.exceptions.ApiException when the load fails or does not finish
      */
@@ -260,13 +260,15 @@ public final class MatchCaches {
         var summary = client.fetchMatchSummary(key.id(), key.locale(), deadline);
         var event = summary.getSportEvent();
         var status = summary.getSportEventStatus();
-        boolean written = false;
-        if (event != null) {
-            written = matches.writeAuthoritative(key.id(), MatchWrites.summary(event, status, key.locale()), started);
-            fillProfiles(event, key.locale(), listed);
-            if (written) {
-                warmCompetitors(event, key.locale());
-            }
+        // a summary that describes no match writes no live state either: the match is not found
+        if (event == null) {
+            return false;
+        }
+        boolean written =
+                matches.writeAuthoritative(key.id(), MatchWrites.summary(event, status, key.locale()), started);
+        fillProfiles(event, key.locale(), listed);
+        if (written) {
+            warmCompetitors(event, key.locale());
         }
         // the live state too gives way to a fixture change, or to a summary of another locale fetched
         // since; a summary without a status still says REST was asked, so it is not asked again
