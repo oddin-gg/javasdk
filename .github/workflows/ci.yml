@@ -112,6 +112,12 @@ jobs:
     needs: [build_and_test_library, build_and_test_examples, test_release_check, check_version]
     if: startsWith(github.ref, 'refs/tags/v0.')
     runs-on: ubuntu-latest
+    # One 0.x publish at a time, so two runs for one version cannot both pass the check before
+    # either uploads. The check, inside the group, also refuses a tag GitHub no longer has
+    # where this run built it.
+    concurrency:
+      group: release-0x
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
