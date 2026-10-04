@@ -167,26 +167,9 @@ jobs:
           name: central-bundle
 
       - name: Create the release
-        # the jar and POM Central has, with their signatures, so the release page and Central agree
-        run: |
-          unzip -q central-bundle.zip -d bundle
-          dir=bundle/gg/oddin/oddsfeed/odds-feed/$VERSION
-          files=()
-          for name in "odds-feed-$VERSION.jar" "odds-feed-$VERSION.pom"; do
-            for file in "$dir/$name" "$dir/$name.asc"; do
-              if [ ! -s "$file" ]; then
-                echo "the bundle has no $file" >&2
-                exit 1
-              fi
-              files+=("$file")
-            done
-          done
-          prerelease=()
-          if [ "$FINAL" != "true" ]; then
-            prerelease=(--prerelease)
-          fi
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$VERSION" \
-            --notes-file "release-notes/$VERSION.md" "${prerelease[@]}" "${files[@]}"
+        # a draft with the notes, the jar, the POM and their signatures, then published: an
+        # immutable release takes no assets once it is out
+        run: ./scripts/release-github.sh
         env:
           VERSION: ${{ needs.check.outputs.version }}
           FINAL: ${{ needs.check.outputs.final }}

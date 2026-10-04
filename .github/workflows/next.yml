@@ -50,6 +50,9 @@ jobs:
         # maven-central reviewer; it runs on tags alone, so its cases run here, on a scratch repository
         run: ./scripts/release-check-test.sh
 
+      - name: Check the GitHub Release is a draft until its files are on it
+        run: ./scripts/release-github-test.sh
+
       - name: Check release.yml keeps its release policy
         # the upload only after check and build, in the maven-central environment its reviewers
         # approve; no secrets or environment in any other job; release.yml itself runs on tags alone

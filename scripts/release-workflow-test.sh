@@ -240,7 +240,11 @@ for job in ("publish", "github-release"):
 upload_index = next((i for i, step in enumerate(steps("publish")) if step.get("id") == "upload"), -1)
 check(-1 < index("publish", "release-tag-check.sh") < upload_index,
       "publish must check the tag again before it deploys")
-check(-1 < index("github-release", "release-tag-check.sh") < index("github-release", "gh release create"),
+RELEASE_STEPS = [i for i, step in enumerate(steps("github-release")) if str(step.get("run", "")).strip() == "./scripts/release-github.sh"]
+check(len(RELEASE_STEPS) == 1, "github-release must create the release with ./scripts/release-github.sh, once")
+for i in RELEASE_STEPS:
+    unconditional("github-release", steps("github-release")[i], "creating the release")
+check(-1 < index("github-release", "release-tag-check.sh") < (RELEASE_STEPS or [-1])[0],
       "github-release must check the tag again before it creates the release")
 
 # Job permissions: no more than each job needs. In next.yml, which runs on the tag too, read only.
@@ -618,6 +622,9 @@ breaks release.yml replace '          VERSION: ${{ needs.check.outputs.version }
           FINAL:' "github-release: 'Create the release' takes VERSION from"
 breaks release.yml replace "$release_job" "${release_job}    environment: maven-central
 " "github-release must not use an environment"
+breaks release.yml replace '        run: ./scripts/release-github.sh
+' '        run: gh release create "$GITHUB_REF_NAME" --notes-file "release-notes/$VERSION.md"
+' "github-release must create the release with ./scripts/release-github.sh, once"
 breaks release.yml replace '          GH_REPO: ${{ github.repository }}' '          GH_REPO: ${{ github.repository }}
           LEAK: ${{ secrets.MAVEN_GPG_KEY }}' "github-release must not read secrets"
 breaks release.yml replace "$release_tag" "${release_tag%%        run:*}        if: false

@@ -86,7 +86,7 @@
             "VERSION": "${{ needs.check.outputs.version }}"
           },
           "name": "Create the release",
-          "run": "unzip -q central-bundle.zip -d bundle\ndir=bundle/gg/oddin/oddsfeed/odds-feed/$VERSION\nfiles=()\nfor name in \"odds-feed-$VERSION.jar\" \"odds-feed-$VERSION.pom\"; do\n  for file in \"$dir/$name\" \"$dir/$name.asc\"; do\n    if [ ! -s \"$file\" ]; then\n      echo \"the bundle has no $file\" >&2\n      exit 1\n    fi\n    files+=(\"$file\")\n  done\ndone\nprerelease=()\nif [ \"$FINAL\" != \"true\" ]; then\n  prerelease=(--prerelease)\nfi\ngh release create \"$GITHUB_REF_NAME\" --verify-tag --title \"$VERSION\" \\\n  --notes-file \"release-notes/$VERSION.md\" \"${prerelease[@]}\" \"${files[@]}\"\n"
+          "run": "./scripts/release-github.sh"
         }
       ],
       "timeout-minutes": 15
