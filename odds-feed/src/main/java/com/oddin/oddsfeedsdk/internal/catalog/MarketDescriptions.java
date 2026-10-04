@@ -122,28 +122,38 @@ public final class MarketDescriptions {
     /**
      * The market's description in {@code locale} as {@link #markets} lists it: a dynamic-outcome
      * variant fetched on its own when one is held, else the locale's list row, so that reading what
-     * the listing gave asks no variant's endpoint. Null when neither has it.
+     * the listing gave asks no variant's endpoint for a row the list has. A dynamic variant the list
+     * has no row for is read from its own endpoint, as {@link #market} reads it. Null when it is not
+     * there.
      *
-     * @throws ApiException when the list is not held and cannot be fetched
+     * @throws ApiException when what it is read from is not held and cannot be fetched
      */
     public @Nullable LocalizedMarket listed(int id, @Nullable String variant, Locale locale) {
         var key = MarketKey.of(id, variant);
-        if (key.isDynamic()) {
-            LocalizedMarket own = variants.peek(new VariantKey(key, locale));
-            if (own != null) {
-                return own;
-            }
+        if (!key.isDynamic()) {
+            return lists.find(locale, key, MarketList::get);
         }
-        return lists.find(locale, key, MarketList::get);
+        LocalizedMarket own = variants.peek(new VariantKey(key, locale));
+        if (own != null) {
+            return own;
+        }
+        // a variant missing from the list is no market new upstream: the list is not fetched again
+        LocalizedMarket row = lists.get(locale).get(key);
+        return row != null ? row : market(id, variant, locale);
     }
 
     /**
      * Whether what {@link #listed} reads the market's description in {@code locale} from is held,
-     * however old: a read of it then waits for no fetch, unless the market is missing from the list.
+     * however old: a read of it then waits for no fetch, unless a listed market is missing from the
+     * list.
      */
     public boolean holdsListed(int id, @Nullable String variant, Locale locale) {
         var key = MarketKey.of(id, variant);
-        return lists.peek(locale) != null || (key.isDynamic() && variants.peek(new VariantKey(key, locale)) != null);
+        MarketList list = lists.peek(locale);
+        if (!key.isDynamic()) {
+            return list != null;
+        }
+        return variants.peek(new VariantKey(key, locale)) != null || (list != null && list.get(key) != null);
     }
 
     /**

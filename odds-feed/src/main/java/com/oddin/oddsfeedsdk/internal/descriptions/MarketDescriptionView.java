@@ -19,7 +19,8 @@ import org.jspecify.annotations.Nullable;
  * the catalog on each call, so it reads what is held now. Nothing is copied: a name is looked up
  * when it is asked for, in the locale it is asked in. One the listing gave reads as the listing
  * does, in every locale: a dynamic-outcome variant fetched on its own when one is held, else the
- * list row, so that reading the listing asks no variant's endpoint.
+ * list row, so that a row the list has asks no variant's endpoint; a variant the list has no row
+ * for is read from its own endpoint.
  *
  * <p>The description gone from the catalog - removed upstream, say - is an {@link
  * com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException} under {@code THROW}, as in 0.0.x; under
