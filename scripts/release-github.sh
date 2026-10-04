@@ -7,7 +7,7 @@
 # created as a draft, the assets go onto that draft, and only then is it published. Everything
 # after the creation addresses the release by the id GitHub gave it, never by the tag: a draft a
 # failed run left for the same tag is never the one filled or published. Such a draft can be
-# deleted (gh release delete <tag>, which keeps the tag) at leisure.
+# deleted by its id at leisure (RELEASING.md, "When something fails").
 #
 # Run by release.yml's github-release job, in a checkout of the released commit holding
 # central-bundle.zip, with VERSION, FINAL (true for a final), GITHUB_REF_NAME (the tag) and gh's
@@ -26,6 +26,7 @@ fail() {
 }
 
 [ -s "$notes" ] || fail "$notes is missing or empty"
+[ ! -e bundle ] || fail "bundle/ is left from an earlier run here; remove it"
 unzip -q central-bundle.zip -d bundle
 dir=bundle/gg/oddin/oddsfeed/odds-feed/$version
 files=()
