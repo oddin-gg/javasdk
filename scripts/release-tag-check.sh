@@ -36,7 +36,7 @@ if [ -z "$now" ]; then
   exit 1
 fi
 if [ "$now" != "$commit" ]; then
-  echo "$tag: now names $now on $remote, not $commit, which this run checked and built" >&2
+  echo "$tag: now names $now on $remote, not $commit, the commit this run is for" >&2
   exit 1
 fi
 echo "$tag: still names $commit" >&2

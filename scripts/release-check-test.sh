@@ -184,9 +184,12 @@ expect() {
   : > "$work/out"
   : > "$work/requests"
   : > "$work/pulls/calls"
-  # the run was started for the tag's commit, unless a case says otherwise in $started
+  # the run was started for the tag's commit, in the scratch repository, asking itself for the
+  # tag - unless a case says otherwise in $started, $in_dir and $in_remote
   local sha=${started:-$(git -C "$repo" rev-parse -q --verify "$tag^{commit}" || echo none)}
-  if (cd "$repo" && PATH=$work/bin:$PATH GH_STUB_PULLS=$work/pulls GITHUB_REPOSITORY=example/repo GITHUB_SHA=$sha \
+  local dir=${in_dir:-$repo} remote=${in_remote:-$repo}
+  if (cd "$dir" && PATH=$work/bin:$PATH GH_STUB_PULLS=$work/pulls GITHUB_REPOSITORY=example/repo GITHUB_SHA=$sha \
+    RELEASE_REMOTE=$remote \
     GITHUB_OUTPUT=$work/out CENTRAL_URL=$url CENTRAL_TIMEOUT=2 bash "$check" "$tag") 2> "$work/err"; then
     got=accept
   else
@@ -282,7 +285,7 @@ commit "-.github/workflows/ü.yml"
 release v1.0.15 ".github/workflows/nex[t].yml=$release_workflow"
 commit "-.github/workflows/nex[t].yml"
 release v1.0.16
-for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24; do
+for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24 v1.0.25; do
   release "$tag"
 done
 git -C "$repo" update-ref refs/remotes/origin/next HEAD
@@ -296,6 +299,9 @@ for tag in v1.0.22 v1.0.23 v1.0.24; do
   pulls "$tag" '[{"number": 7, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "0000000"}]'
 done
 v1022=$(git -C "$repo" rev-parse "v1.0.22^{commit}")
+# a tag moved on origin only: a clone, as the check job's checkout, still has it where it was
+git clone -q "$repo" "$work/moved"
+v1025=$(git -C "$repo" rev-parse "v1.0.25^{commit}")
 printf '[{"number": 8, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "%s"},
   {"number": 9, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "%s"}]' \
   "$v1022" "$(git -C "$repo" rev-parse "v1.0.23^{commit}")" > "$work/pulls/closed-next.json"
@@ -354,6 +360,12 @@ for base in next main; do
   grep -qF "repos/example/repo/pulls?state=closed&base=$base&per_page=100" "$work/pulls/calls" \
     || failed "v1.0.23: the fallback did not ask for the closed pull requests of $base: $(cat "$work/pulls/calls")"
 done
+# only now, so that no other case sees a second tag on the commit it moves to
+git -C "$repo" tag -f -a -m moved v1.0.25 "v1.2.0^{commit}" > /dev/null
+started=$v1025 in_dir=$work/moved in_remote=origin expect refuse v1.0.25 "$absent" \
+  "the tag moved since this run started: now names $(git -C "$repo" rev-parse "v1.2.0^{commit}") on origin, not $v1025"
+[ "$(git -C "$work/moved" rev-parse "v1.0.25^{commit}")" = "$v1025" ] \
+  || failed "v1.0.25: the clone's own tag moved, so the case did not test origin"
 touch "$work/pulls/closed.fail"
 expect refuse v1.0.24 "$absent" "could not ask GitHub for the pull requests merged into next"
 rm "$work/pulls/closed.fail"
