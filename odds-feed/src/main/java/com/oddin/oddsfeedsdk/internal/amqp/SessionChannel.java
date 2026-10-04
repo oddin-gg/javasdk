@@ -23,8 +23,9 @@ import org.jspecify.annotations.Nullable;
  * and a consumer that only hands each delivery over - to a session's queue, with a prefetch and
  * manual acknowledgement, or, for the SDK's own alive consumer, to a handler, with the broker
  * acknowledging each delivery as it sends it. A channel the broker takes is opened again the same
- * way for both. Channel changes and acknowledgements take the channel's lock, so an acknowledgement
- * never reaches a channel other than the one its delivery came from.
+ * way for both, and a session is told of the loss and of the new channel, since its queue lost what
+ * it held. Channel changes and acknowledgements take the channel's lock, so an acknowledgement never
+ * reaches a channel other than the one its delivery came from.
  */
 final class SessionChannel implements SessionTransport {
 
@@ -49,6 +50,7 @@ final class SessionChannel implements SessionTransport {
     private final Supplier<@Nullable Connection> connection;
     private final Consumer<SessionChannel> lost;
     private final Consumer<Exception> reopenFailed;
+    private final ChannelEvents told;
     private final ReentrantLock lock = new ReentrantLock();
     private final AtomicLong skippedAcks = new AtomicLong();
     private final AtomicLong handlerFailures = new AtomicLong();
@@ -60,12 +62,15 @@ final class SessionChannel implements SessionTransport {
     private final AtomicLong epoch = new AtomicLong();
     /** The current channel's consumer, which knows its channel; changed under the lock. */
     private volatile @Nullable Deliveries current;
+    /** Whether a loss was told and no channel has replaced the lost one yet; under the lock. */
+    private boolean lossTold;
 
     /**
      * @param connection the transport's connection now, null while it has none
      * @param lost told when the broker closes or cancels this channel on its own, or it cannot be
      *     opened again on a live connection
      * @param reopenFailed told why each time it cannot be opened again on a live connection
+     * @param told told when the broker takes the channel, and when a new one replaced it
      */
     SessionChannel(
             String exchange,
@@ -75,7 +80,8 @@ final class SessionChannel implements SessionTransport {
             InstantSource clock,
             Supplier<@Nullable Connection> connection,
             Consumer<SessionChannel> lost,
-            Consumer<Exception> reopenFailed) {
+            Consumer<Exception> reopenFailed,
+            ChannelEvents told) {
         this.exchange = exchange;
         this.bindings = List.copyOf(bindings);
         this.sink = sink;
@@ -84,6 +90,7 @@ final class SessionChannel implements SessionTransport {
         this.connection = connection;
         this.lost = lost;
         this.reopenFailed = reopenFailed;
+        this.told = told;
     }
 
     /** Opens the channel on {@code on}, in a new epoch, the old epoch's deliveries taken out first. */
@@ -113,6 +120,10 @@ final class SessionChannel implements SessionTransport {
             // a cancel from here on or before marks this consumer, which isOpen reads
             current = consumer;
             failedReopens.set(0);
+            if (lossTold) {
+                lossTold = false;
+                told.reopened();
+            }
         } finally {
             lock.unlock();
         }
@@ -359,7 +370,24 @@ final class SessionChannel implements SessionTransport {
         private void taken(long ofEpoch) {
             taken = true;
             if (ofEpoch == epoch.get()) {
+                tellLost(ofEpoch);
                 lost.accept(SessionChannel.this);
+            }
+        }
+
+        /**
+         * Tells the loss before anything opens a new channel: under the lock, and only while this
+         * channel is still the current one, since one replaced already lost nothing more.
+         */
+        private void tellLost(long ofEpoch) {
+            lock.lock();
+            try {
+                if (ofEpoch == epoch.get() && !lossTold) {
+                    lossTold = true;
+                    told.lost();
+                }
+            } finally {
+                lock.unlock();
             }
         }
     }
