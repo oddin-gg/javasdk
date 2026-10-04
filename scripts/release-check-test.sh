@@ -65,11 +65,14 @@ git -C "$repo" config user.email test@example.invalid
 git -C "$repo" config commit.gpgsign false
 git -C "$repo" config tag.gpgsign false
 
-# a commit with these tags on it
+# a commit with these tags on it: annotated, or lightweight with a light: prefix
 commit() {
   git -C "$repo" commit -q --allow-empty -m change
   for tag in "$@"; do
-    git -C "$repo" tag -a -m "$tag" "$tag"
+    case "$tag" in
+      light:*) git -C "$repo" tag "${tag#light:}" ;;
+      *) git -C "$repo" tag -a -m "$tag" "$tag" ;;
+    esac
   done
 }
 
@@ -100,8 +103,8 @@ expect() {
   fi
   if [ "$want" = accept ]; then
     local version=$4
-    if ! grep -qx "version=$version" "$work/out"; then
-      failed "$tag: expected version=$version, got: $(cat "$work/out")"
+    if [ "$(cat "$work/out")" != "version=$version" ]; then
+      failed "$tag: expected exactly version=$version, got: $(cat "$work/out")"
       return
     fi
     if [ "$(cat "$work/requests")" != "/com/oddin/oddsfeed/odds-feed/$version/odds-feed-$version.pom" ]; then
@@ -120,14 +123,18 @@ commit v0.0.58
 commit v0.0.59-rc1
 commit v0.0.60 v0.0.60-rc1
 commit v0.0.61 latest
+commit light:v0.0.66
+commit v0.0.67 light:nightly
 for tag in $malformed; do
   commit "$tag"
 done
 commit v0.0.64
 commit v0.0.65
+commit light:v0.0.68
 
 expect accept v0.0.58 "$absent" 0.0.58
 expect accept v0.0.59-rc1 "$absent" 0.0.59-rc1
+expect accept v0.0.66 "$absent" 0.0.66
 expect refuse v0.0.58 "$registry/200" "GitHub Packages already has odds-feed 0.0.58"
 expect refuse v0.0.58 "$registry/302" "GitHub Packages already has odds-feed 0.0.58"
 for status in 401 500; do
@@ -142,13 +149,18 @@ done
 expect refuse v0.0.99 "$absent" "no such tag"
 expect refuse v0.0.60 "$absent" "other tags name"
 expect refuse v0.0.61 "$absent" "other tags name"
+expect refuse v0.0.67 "$absent" "other tags name"
 
 # a run whose tag was moved or deleted on GitHub after it was pushed
 git clone -q "$repo" "$work/clone"
 expect accept v0.0.64 "$absent" 0.0.64 "$work/clone"
-git -C "$repo" tag -f -a -m moved v0.0.64 "v0.0.58^{commit}" > /dev/null
+expect accept v0.0.68 "$absent" 0.0.68 "$work/clone"
+moved=$(git -C "$repo" rev-parse "v0.0.58^{commit}")
+git -C "$repo" tag -f -a -m moved v0.0.64 "$moved" > /dev/null
+git -C "$repo" tag -f v0.0.68 "$moved" > /dev/null
 git -C "$repo" tag -d v0.0.65 > /dev/null
-expect refuse v0.0.64 "$absent" "now names $(git -C "$repo" rev-parse "v0.0.58^{commit}")" "$work/clone"
+expect refuse v0.0.64 "$absent" "now names $moved" "$work/clone"
+expect refuse v0.0.68 "$absent" "now names $moved" "$work/clone"
 expect refuse v0.0.65 "$absent" "no longer on origin" "$work/clone"
 git -C "$work/clone" remote set-url origin "$work/nowhere"
 expect refuse v0.0.64 "$absent" "could not ask origin" "$work/clone"
