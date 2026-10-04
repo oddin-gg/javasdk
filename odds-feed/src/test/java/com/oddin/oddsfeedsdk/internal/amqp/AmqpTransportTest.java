@@ -735,6 +735,90 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aLossTheReopenGetsToBeforeItsCallbackIsToldByTheReopen() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        long before = session.epoch();
+        var once = new AtomicBoolean();
+        // the callback saw its channel taken, and a reopen runs before it tells the loss
+        session.beforeTellingLost = () -> {
+            if (once.compareAndSet(false, true)) {
+                runAndWait(session::reopenIfLost);
+            }
+        };
+
+        feed().deleteClientQueues();
+        awaitReopened(session, before);
+        told.await(2);
+        Thread.sleep(200);
+        assertThat(told.events)
+                .as("told once, by the reopen, before its new channel")
+                .containsExactly("lost in " + before, "reopened in " + session.epoch() + ", open");
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+    }
+
+    @Test
+    void aLossWhoseChannelAResetReplacedBeforeItWasToldIsNotTold() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        long before = session.epoch();
+        var once = new AtomicBoolean();
+        // the callback saw its channel taken, and the caller's reset replaces it before it tells
+        session.beforeTellingLost = () -> {
+            if (once.compareAndSet(false, true)) {
+                runAndWait(session::reset);
+            }
+        };
+
+        feed().deleteClientQueues();
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!once.get() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(once).as("the reset ran in the callback").isTrue();
+        assertThat(deliveredAfterPublishing(session).epoch())
+                .isEqualTo(session.epoch())
+                .isGreaterThan(before);
+        assertThat(told.events).isEmpty();
+    }
+
+    @Test
+    void aChannelCancelledAndThenClosedIsToldLostOnce() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        long before = session.epoch();
+        // the claim held, so the channel stays as the broker leaves it
+        assertThat(session.startReopen()).isTrue();
+        feed().deleteClientQueues();
+        told.await(1);
+
+        // the broker closes the same channel too: an acknowledgement of a tag it never sent
+        var channel = requireNonNull(session.channel());
+        channel.basicAck(9_999, false);
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (channel.isOpen() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(channel.isOpen()).isFalse();
+        Thread.sleep(200);
+        assertThat(told.events).containsExactly("lost in " + before);
+
+        transport.released(session);
+        awaitReopened(session, before);
+        told.await(2);
+        assertThat(told.events).containsExactly("lost in " + before, "reopened in " + session.epoch() + ", open");
+    }
+
+    @Test
     void aLossSeenAsTheChannelClosesIsNotTold() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var told = new ToldChannel();
@@ -1130,6 +1214,16 @@ class AmqpTransportTest {
 
     private static FakeFeed feed() {
         return requireNonNull(feed);
+    }
+
+    /** Runs {@code action} on a thread of its own and waits for it, from a hook that cannot throw. */
+    private static void runAndWait(Runnable action) {
+        Thread running = Thread.ofVirtual().start(action);
+        try {
+            running.join(WAIT);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     /** What a session was told of its channel, with the epoch and state it had then. */
