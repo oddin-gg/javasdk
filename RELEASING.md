@@ -113,8 +113,8 @@ The **check** job (`scripts/release-check.sh`) fails the release, before anythin
 when:
 
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
-- the tag no longer names the commit the run was started for (it moved in between: push it
-  again);
+- the tag, as origin has it, no longer names the commit the run was started for (it moved
+  after the push: push it again) - the same is asked again right before the upload;
 - the tagged commit is on neither `next` nor `main`, or is not the merge commit of a PR merged
   into one of them (an intermediate commit of a rebase-merged PR is on `next`, but was never
   reviewed as a state of its own);
