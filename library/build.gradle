@@ -10,7 +10,8 @@ plugins {
 group 'com.oddin.oddsfeed'
 
 def gitVersionDetails = versionDetails()
-version gitVersionDetails.lastTag.replace('v', '')
+// the publish job passes the version scripts/release-check.sh checked, so the two cannot differ
+version findProperty('releaseVersion') ?: gitVersionDetails.lastTag.replace('v', '')
 
 sourceCompatibility = 1.8
 
