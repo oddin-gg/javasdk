@@ -319,6 +319,48 @@
           </systemPropertyVariables>
         </configuration>
       </plugin>
+      <plugin>
+        <!--
+          verify fails when the unit tests cover less than this. The floor sits just under what the
+          tests covered when it was set (lines 81.6%, branches 75.5%); raise it as coverage grows.
+          The two schema packages are left out: nearly all of them is generated, and a schema bump
+          would move the number without a line of ours changing.
+        -->
+        <groupId>org.jacoco</groupId>
+        <artifactId>jacoco-maven-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>check</id>
+            <phase>verify</phase>
+            <goals>
+              <goal>check</goal>
+            </goals>
+            <configuration>
+              <excludes>
+                <exclude>com/oddin/oddsfeedsdk/schema/feed/v1/**</exclude>
+                <exclude>com/oddin/oddsfeedsdk/schema/rest/v1/**</exclude>
+              </excludes>
+              <rules>
+                <rule>
+                  <element>BUNDLE</element>
+                  <limits>
+                    <limit>
+                      <counter>LINE</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.81</minimum>
+                    </limit>
+                    <limit>
+                      <counter>BRANCH</counter>
+                      <value>COVEREDRATIO</value>
+                      <minimum>0.75</minimum>
+                    </limit>
+                  </limits>
+                </rule>
+              </rules>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
     </plugins>
   </build>
 </project>
