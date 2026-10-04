@@ -285,7 +285,7 @@ commit "-.github/workflows/ü.yml"
 release v1.0.15 ".github/workflows/nex[t].yml=$release_workflow"
 commit "-.github/workflows/nex[t].yml"
 release v1.0.16
-for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24 v1.0.25; do
+for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24 v1.0.25 v1.0.26; do
   release "$tag"
 done
 git -C "$repo" update-ref refs/remotes/origin/next HEAD
@@ -299,6 +299,10 @@ for tag in v1.0.22 v1.0.23 v1.0.24; do
   pulls "$tag" '[{"number": 7, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "0000000"}]'
 done
 v1022=$(git -C "$repo" rev-parse "v1.0.22^{commit}")
+# merged into main: the first lookup and next's closed list miss it, main's has it
+pulls v1.0.26 '[]'
+printf '[{"number": 10, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "%s"}]' \
+  "$(git -C "$repo" rev-parse "v1.0.26^{commit}")" > "$work/pulls/closed-main.json"
 # a tag moved on origin only: a clone, as the check job's checkout, still has it where it was
 git clone -q "$repo" "$work/moved"
 v1025=$(git -C "$repo" rev-parse "v1.0.25^{commit}")
@@ -360,6 +364,10 @@ for base in next main; do
   grep -qF "repos/example/repo/pulls?state=closed&base=$base&per_page=100" "$work/pulls/calls" \
     || failed "v1.0.23: the fallback did not ask for the closed pull requests of $base: $(cat "$work/pulls/calls")"
 done
+expect accept v1.0.26 "$absent" 1.0.26 true
+fallbacks=$(grep -oE 'pulls\?state=closed&base=(next|main)' "$work/pulls/calls" | tr '\n' ' ')
+[ "$fallbacks" = "pulls?state=closed&base=next pulls?state=closed&base=main " ] \
+  || failed "v1.0.26: the fallback should ask next's closed pull requests, then main's, not: $fallbacks"
 # only now, so that no other case sees a second tag on the commit it moves to
 git -C "$repo" tag -f -a -m moved v1.0.25 "v1.2.0^{commit}" > /dev/null
 started=$v1025 in_dir=$work/moved in_remote=origin expect refuse v1.0.25 "$absent" \
