@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd"
+         child.project.url.inherit.append.path="false">
   <modelVersion>4.0.0</modelVersion>
 
   <!--
@@ -15,19 +16,38 @@
 
   <name>Oddin Odds Feed SDK (parent)</name>
   <description>Build for the Java SDK 1.0 line.</description>
+  <!-- the *.inherit.append.path attributes: modules inherit these URLs as they are, without their name appended -->
   <url>https://github.com/oddin-gg/javasdk</url>
 
+  <!-- name, description, url, licenses, developers, scm: Central refuses a POM that lacks one -->
   <licenses>
     <license>
-      <name>MIT License</name>
-      <url>https://opensource.org/licenses/MIT</url>
+      <!-- what LICENSE says -->
+      <name>BSD-3-Clause</name>
+      <url>https://opensource.org/license/bsd-3-clause</url>
     </license>
   </licenses>
 
-  <scm>
+  <developers>
+    <developer>
+      <name>Oddin.gg</name>
+      <organization>Oddin.gg</organization>
+      <organizationUrl>https://oddin.gg</organizationUrl>
+    </developer>
+  </developers>
+
+  <scm child.scm.connection.inherit.append.path="false"
+       child.scm.developerConnection.inherit.append.path="false"
+       child.scm.url.inherit.append.path="false">
     <url>https://github.com/oddin-gg/javasdk</url>
     <connection>scm:git:https://github.com/oddin-gg/javasdk.git</connection>
+    <developerConnection>scm:git:https://github.com/oddin-gg/javasdk.git</developerConnection>
   </scm>
+
+  <issueManagement>
+    <system>GitHub</system>
+    <url>https://github.com/oddin-gg/javasdk/issues</url>
+  </issueManagement>
 
   <modules>
     <module>test-fakes</module>
