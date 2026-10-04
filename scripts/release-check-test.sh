@@ -4,8 +4,12 @@
 # a stub Central, and fails unless every tag below is accepted, with the version and kind it
 # should get and the Central lookups it should make, or refused for the reason it should be.
 # next.yml runs it on every push, so a change that lets a check pass everything shows up before
-# a tag relies on it. Needs git, curl, python3 and yq.
+# a tag relies on it. Needs git, curl, python3, yq and jq (the stub gh filters with it).
 set -euo pipefail
+
+for tool in git curl python3 yq jq; do
+  command -v "$tool" > /dev/null || { echo "needs $tool" >&2; exit 1; }
+done
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 check=$root/scripts/release-check.sh
@@ -62,10 +66,13 @@ absent=$central/404
 # nothing listens on port 1
 silent=http://127.0.0.1:1
 
-# Stub gh, for the question which pull request left a commit. It answers from $work/pulls/<sha>:
-# a .json file holds the pull requests, a .fail file makes the call fail, a .stall file makes it
-# answer only after 10 seconds. Without a file the commit is the merge commit of a pull request
-# merged into next, beside one still open. The answer goes through the caller's --jq, with jq.
+# Stub gh, for the question which pull request left a commit, asked two ways.
+# - commits/<sha>/pulls answers from $work/pulls/<sha>: a .json file holds the pull requests, a
+#   .fail file makes the call fail, a .stall file makes it answer only after 10 seconds. Without
+#   a file the commit is the merge commit of a pull request merged into next, beside an open one.
+# - pulls?state=closed&base=<base> answers from $work/pulls/closed-<base>.json (none: no pull
+#   requests), and fails while $work/pulls/closed.fail exists.
+# Every call is recorded. The answer goes through the caller's --jq, with jq.
 mkdir -p "$work/bin" "$work/pulls"
 cat > "$work/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -80,6 +87,22 @@ while [ $# -gt 0 ]; do
     *) endpoint=$1; shift ;;
   esac
 done
+case "$endpoint" in
+  */pulls\?state=closed\&base=*)
+    base=${endpoint#*base=}
+    base=${base%%&*}
+    if [ -e "$pulls/closed.fail" ]; then
+      echo "gh: HTTP 502" >&2
+      exit 1
+    fi
+    if [ -e "$pulls/closed-$base.json" ]; then
+      jq -r "$filter" "$pulls/closed-$base.json"
+    else
+      echo '[]' | jq -r "$filter"
+    fi
+    exit 0
+    ;;
+esac
 sha=${endpoint#*/commits/}
 sha=${sha%%/*}
 if [ -e "$pulls/$sha.fail" ]; then
@@ -257,7 +280,7 @@ commit "-.github/workflows/ü.yml"
 release v1.0.15 ".github/workflows/nex[t].yml=$release_workflow"
 commit "-.github/workflows/nex[t].yml"
 release v1.0.16
-for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21; do
+for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24; do
   release "$tag"
 done
 git -C "$repo" update-ref refs/remotes/origin/next HEAD
@@ -265,6 +288,15 @@ git -C "$repo" update-ref refs/remotes/origin/next HEAD
 pulls v1.0.17 '[{"number": 3, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "OTHER"}]'
 pulls v1.0.18 '[{"number": 4, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "SHA"}]'
 pulls v1.0.19 '[{"number": 5, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "feature"}, "merge_commit_sha": "SHA"}]'
+# GitHub as documented: for a commit not on main, commits/<sha>/pulls lists only open pull
+# requests; the merged one is found in the closed pull requests of next
+for tag in v1.0.22 v1.0.23 v1.0.24; do
+  pulls "$tag" '[{"number": 7, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "0000000"}]'
+done
+v1022=$(git -C "$repo" rev-parse "v1.0.22^{commit}")
+printf '[{"number": 8, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "%s"},
+  {"number": 9, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "%s"}]' \
+  "$v1022" "$(git -C "$repo" rev-parse "v1.0.23^{commit}")" > "$work/pulls/closed-next.json"
 touch "$work/pulls/$(git -C "$repo" rev-parse "v1.0.20^{commit}").fail"
 touch "$work/pulls/$(git -C "$repo" rev-parse "v1.0.21^{commit}").stall"
 
@@ -307,6 +339,17 @@ expect refuse v1.0.17 "$absent" "is not the merge commit of a pull request merge
 expect refuse v1.0.18 "$absent" "is not the merge commit of a pull request merged into next or main"
 expect refuse v1.0.19 "$absent" "is not the merge commit of a pull request merged into next or main"
 expect refuse v1.0.20 "$absent" "could not ask GitHub which pull request left"
+expect accept v1.0.22 "$absent" 1.0.22 true
+grep -qF "repos/example/repo/pulls?state=closed&base=next&per_page=100" "$work/pulls/calls" \
+  || failed "v1.0.22: the fallback did not ask for the closed pull requests of next: $(cat "$work/pulls/calls")"
+expect refuse v1.0.23 "$absent" "is not the merge commit of a pull request merged into next or main"
+for base in next main; do
+  grep -qF "repos/example/repo/pulls?state=closed&base=$base&per_page=100" "$work/pulls/calls" \
+    || failed "v1.0.23: the fallback did not ask for the closed pull requests of $base: $(cat "$work/pulls/calls")"
+done
+touch "$work/pulls/closed.fail"
+expect refuse v1.0.24 "$absent" "could not ask GitHub for the pull requests merged into next"
+rm "$work/pulls/closed.fail"
 if command -v timeout > /dev/null; then
   expect refuse v1.0.21 "$absent" "could not ask GitHub which pull request left"
 else

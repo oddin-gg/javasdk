@@ -62,9 +62,25 @@ limit=()
 if command -v timeout > /dev/null; then
   limit=(timeout "$timeout")
 fi
-bases=$(${limit[@]+"${limit[@]}"} gh api --paginate "repos/$repository/commits/$commit/pulls?per_page=100" \
-  --jq ".[] | select(.merged_at != null and .merge_commit_sha == \"$commit\") | .base.ref") \
+merged_into() {
+  ${limit[@]+"${limit[@]}"} gh api --paginate "$1" \
+    --jq ".[] | select(.merged_at != null and .merge_commit_sha == \"$commit\") | .base.ref"
+}
+bases=$(merged_into "repos/$repository/commits/$commit/pulls?per_page=100") \
   || fail "could not ask GitHub which pull request left $commit"
+# GitHub documents that for a commit not on the default branch (main) this endpoint returns only
+# open pull requests; checked on 2026-10-04, it returns the merged ones for next as well. Should
+# it come to match its documentation, ask the other way round: the pull requests merged into
+# next and main, for the one whose merge commit this is.
+if ! printf '%s\n' "$bases" | grep -qxE 'next|main'; then
+  for base in next main; do
+    bases=$(merged_into "repos/$repository/pulls?state=closed&base=$base&per_page=100") \
+      || fail "could not ask GitHub for the pull requests merged into $base"
+    if printf '%s\n' "$bases" | grep -qx "$base"; then
+      break
+    fi
+  done
+fi
 printf '%s\n' "$bases" | grep -qxE 'next|main' \
   || fail "$commit is not the merge commit of a pull request merged into next or main"
 
