@@ -642,6 +642,66 @@ breaks release.yml replace "$release_ref" '          ref: main
 breaks release.yml move "$release_checkout" "${release_tag_step%
 }" "github-release must check out once, as its first step"
 
+# rules no copy above reaches yet: one copy each
+breaks release.yml replace "$publish_job" "${publish_job}    if: \${{ success() }}
+" "publish: cannot evaluate if"
+breaks release.yml replace '    uses: ./.github/workflows/next.yml
+' '    uses: oddin-gg/javasdk/.github/workflows/next.yml@main
+' "build calls a workflow this test cannot follow"
+breaks release.yml replace '  github-release:
+' '  extra:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo nothing
+
+  github-release:
+' "release.yml must have the jobs"
+breaks release.yml replace '      commit: ${{ steps.tag.outputs.commit }}' '      commit: ${{ github.sha }}' \
+  "check's commit must be the release check's own output"
+breaks release.yml replace '        id: secrets
+' '        id: check-secrets
+' "publish must have one step with id secrets, found 0"
+breaks release.yml move '      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # the commit check accepted and build tested, whatever the tag names by now
+          ref: ${{ needs.check.outputs.commit }}
+          persist-credentials: false
+
+' '          exit $missing
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+' "publish must check out once, as its first step"
+breaks release.yml replace '      - name: Sign and publish
+' "${publish_tag_step}      - name: Sign and publish
+" "publish must check the tag once, found 2"
+breaks release.yml replace '          VERSION: ${{ needs.check.outputs.version }}
+          CENTRAL_TOKEN_USERNAME' '          VERSION: ${{ github.ref_name }}
+          CENTRAL_TOKEN_USERNAME' "publish: the upload's VERSION must be"
+breaks release.yml replace '    permissions:
+      contents: write
+' '    permissions:
+      contents: read
+' "github-release's permissions must be"
+breaks release.yml replace '          FINAL: ${{ needs.check.outputs.final }}
+' "          FINAL: 'true'
+" "github-release: FINAL must be the check job's output"
+breaks release.yml replace '          GH_REPO: ${{ github.repository }}
+' '          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+' "github-release must take the version, tag and commit from the check job"
+breaks release.yml replace '      - name: Create the release
+' '      - name: Create the release
+        if: false
+' "github-release: creating the release must not be conditional"
+breaks release.yml replace '      - name: Create the release
+' '      - name: Create the release
+        continue-on-error: true
+' "github-release: creating the release must not continue on error"
+
 # next.yml, which release.yml calls
 breaks next.yml replace 'permissions:
   contents: read

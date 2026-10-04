@@ -61,8 +61,10 @@ jobs:
     needs: [check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # Runs for one version take turns: a tag deleted and pushed again cannot upload twice. Per
-    # version, so a run waiting days for its approval holds up no other version.
+    # Publish jobs for one version never overlap: one runs, at most one waits, and a newer run
+    # replaces a waiting one. Per version, so a run waiting for its approval holds up no other.
+    # What stops a second upload of a version is Central, which refuses one it has, and the
+    # check job's lookup there.
     concurrency:
       group: maven-central-${{ github.ref_name }}
       cancel-in-progress: false
