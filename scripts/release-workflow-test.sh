@@ -277,8 +277,18 @@ for path in sorted(seen):
 # build: next.yml, at the version the release check gave
 check(jobs["build"].get("uses") == "./.github/workflows/next.yml",
       "build must call ./.github/workflows/next.yml, not %r" % jobs["build"].get("uses"))
-check(jobs["build"].get("with") == {"revision": "${{ needs.check.outputs.version }}"},
-      "build must pass revision: ${{ needs.check.outputs.version }}, not %r" % jobs["build"].get("with"))
+BUILD_WITH = {"revision": "${{ needs.check.outputs.version }}", "commit": "${{ needs.check.outputs.commit }}"}
+check(jobs["build"].get("with") == BUILD_WITH,
+      "build must pass revision: ${{ needs.check.outputs.version }} and commit: ${{ needs.check.outputs.commit }}, "
+      "not %r" % jobs["build"].get("with"))
+# and next.yml builds that commit: every checkout there takes it
+for path in sorted(seen):
+    for name, nested in load(path).get("jobs", {}).items():
+        for step in nested.get("steps", []):
+            if str(step.get("uses", "")).startswith("actions/checkout@"):
+                ref = (step.get("with") or {}).get("ref")
+                check(ref == "${{ inputs.commit }}", "./%s > %s must check out ${{ inputs.commit }}, not %r"
+                      % (os.path.relpath(path, root), name, ref))
 
 # the version and the release's kind come from the check job, nowhere else
 VERSION = "${{ needs.check.outputs.version }}"
@@ -477,17 +487,25 @@ breaks release.yml replace '      contents: read
 ' "check's permissions must be"
 
 # build
-breaks release.yml replace '      revision: ${{ needs.check.outputs.version }}' '      revision: ${{ needs.check.outputs.version }}
-    secrets: inherit' "build must not pass secrets on"
+breaks release.yml replace '      commit: ${{ needs.check.outputs.commit }}
+' '      commit: ${{ needs.check.outputs.commit }}
+    secrets: inherit
+' "build must not pass secrets on"
 breaks release.yml replace '    uses: ./.github/workflows/next.yml
     with:
       revision: ${{ needs.check.outputs.version }}
+      commit: ${{ needs.check.outputs.commit }}
 ' "    runs-on: ubuntu-latest
     steps:
       - run: 'true'
 " "build must call ./.github/workflows/next.yml"
 breaks release.yml replace '      revision: ${{ needs.check.outputs.version }}' '      revision: ${{ github.ref_name }}' \
   "build must pass revision: \${{ needs.check.outputs.version }}"
+breaks release.yml replace '      commit: ${{ needs.check.outputs.commit }}
+' '' "build must pass revision: \${{ needs.check.outputs.version }} and commit: \${{ needs.check.outputs.commit }}"
+breaks release.yml replace '      commit: ${{ needs.check.outputs.commit }}
+' '      commit: ${{ github.ref }}
+' "build must pass revision: \${{ needs.check.outputs.version }} and commit: \${{ needs.check.outputs.commit }}"
 breaks release.yml replace '    permissions:
       contents: read
       packages: read
@@ -627,6 +645,21 @@ breaks next.yml replace '    name: Build & Test
     permissions:
       contents: write
 ' "./.github/workflows/next.yml > build's permissions must be read-only"
+breaks next.yml replace '    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # a release builds the commit its check accepted; otherwise the event'"'"'s own commit
+          ref: ${{ inputs.commit }}
+' '    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+' ".github/workflows/next.yml > build must check out \${{ inputs.commit }}, not None"
 breaks next.yml replace 'permissions:
   contents: read
   packages: read

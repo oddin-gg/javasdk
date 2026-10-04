@@ -9,6 +9,7 @@
       },
       "uses": "./.github/workflows/next.yml",
       "with": {
+        "commit": "${{ needs.check.outputs.commit }}",
         "revision": "${{ needs.check.outputs.version }}"
       }
     },

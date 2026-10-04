@@ -49,10 +49,11 @@ jobs:
     permissions:
       contents: read
       packages: read
-    # the branch CI, unchanged, at the tag's version: what is published passed the same checks
+    # the branch CI on the checked commit, at the tag's version: what is published passed it
     uses: ./.github/workflows/next.yml
     with:
       revision: ${{ needs.check.outputs.version }}
+      commit: ${{ needs.check.outputs.commit }}
 
   publish:
     name: Sign and publish to Maven Central

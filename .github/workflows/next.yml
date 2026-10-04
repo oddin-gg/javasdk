@@ -14,6 +14,10 @@ on:
         description: The version to build as, from the release tag
         type: string
         required: true
+      commit:
+        description: The commit to build, the one the release check accepted
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -27,6 +31,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # a release builds the commit its check accepted; otherwise the event's own commit
+          ref: ${{ inputs.commit }}
           # do not leave the job token in .git/config for the build to find
           persist-credentials: false
 
@@ -175,6 +181,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # a release builds the commit its check accepted; otherwise the event's own commit
+          ref: ${{ inputs.commit }}
           # do not leave the job token in .git/config for the build to find
           persist-credentials: false
 
