@@ -35,8 +35,8 @@ GitHub Packages.
       `release.yml` skips them.
 - [ ] **Only `release.yml` reacts to tags.** No other workflow on `next` or `main` may run on a
       `v1.*` tag: it would publish as well, unchecked. The check job refuses a tagged commit
-      where another workflow has a `tags` trigger; a bare `on: push` or `create` trigger it does
-      not see.
+      where another workflow would: a push trigger with tags or without a branch filter, or a
+      `create` or `release` trigger.
 - [ ] **Environment `maven-central`** (Settings - Environments), with deployment rule
       "selected tags": `v1.*`, and these secrets:
 
@@ -86,14 +86,21 @@ when:
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
 - the tagged commit is on neither `next` nor `main`;
 - any other tag names the same commit;
-- `release-notes/<version>.md` is missing or empty in the tagged commit;
-- another workflow in the tagged commit has a `tags` trigger;
+- `release-notes/<version>.md` is missing, empty or not a plain file in the tagged commit (`gh`
+  would follow a link into the public release text);
+- another workflow in the tagged commit would also run on the tag;
 - Central already has `odds-feed` or `odds-feed-parent` at that version, or does not answer
-  clearly (anything but 404 counts as "has it").
+  clearly within a minute (anything but 404 counts as "has it").
+
+Right before the upload, and again before the GitHub Release, the run asks GitHub whether the
+tag still names the commit it checked and built (`scripts/release-tag-check.sh`), and stops if
+it was moved or deleted - a final may have waited days for its approval.
 
 The portal also refuses a version it already has, which covers the minutes before a published
-version appears in the repository. `scripts/release-check-test.sh` runs each of these cases
-against a scratch repository and a stub Central on every push to `next`.
+version appears in the repository. On every push to `next`, `scripts/release-check-test.sh`
+runs each of these cases against a scratch repository and a stub Central, and
+`scripts/release-workflow-test.sh` holds `release.yml` to its policy: a final only through the
+approval, the secrets only in the upload job, no cache there, and the tag checked again first.
 
 ## When something fails
 
