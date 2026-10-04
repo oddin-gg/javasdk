@@ -54,7 +54,10 @@ GitHub Packages.
 - [ ] **Environment `maven-central`** (Settings - Environments), set up in this order:
       1. required reviewers - at least two people, so someone other than the one who pushed
          the tag can approve - with **"Prevent self-review"** on, and no bypass for admins;
-      2. deployment rule "selected tags": `v1.*`;
+      2. Deployment branches and tags: "Selected branches and tags", then "Add deployment
+         branch or tag rule" with Ref type **Tag** and name pattern `v1.*` - and no branch
+         rule at all. The Ref type defaults to Branch, and a branch rule `v1.*` would let a
+         branch named, say, `v1.x` run a job with these secrets;
       3. only then these secrets:
 
       | Secret | Value |
