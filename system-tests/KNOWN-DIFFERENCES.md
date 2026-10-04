@@ -222,8 +222,8 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
   session per cool-down, then the session is marked lagging.
 - **Why:** Past a point one snapshot is cheaper than working through the backlog.
 - **Pinned by:** none yet; the limit and window are 1.0 settings a test compiled against 0.0.x
-  cannot set. To be pinned by a test on 1.0 only, with ticket 28's options; until then the
-  recovery actor's `SafetyNetTest` covers the rule.
+  cannot set. To be pinned by a test on 1.0 only, with ticket 28's options; until then the rule
+  is covered by the recovery actor's unit tests, which come with ticket 24.
 - **Found:** by reading the source (`RecoveryManagerImpl.timerTick`, `systemSessionAliveReceived`).
 
 ## KD-18 A producer listed in both scopes has none
