@@ -213,13 +213,25 @@ class MatchViewTest {
     void aMatchTheApiDoesNotDescribeIsNotFound() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(SUMMARY_EN, 200, "<match_summary generated_at=\"2026-08-26T12:00:00\"/>");
-            assertThatThrownBy(() -> world.entities.match(MATCH, List.of(EN)).getName(EN))
+            Match match = world.entities.match(MATCH, List.of(EN));
+            assertThatThrownBy(() -> match.getName(EN))
                     .isInstanceOf(ItemNotFoundException.class)
                     .hasMessageContaining(MATCH.toString());
+            var status = requireNonNull(match.getStatus());
+            assertThatThrownBy(status::getHomeScore)
+                    .as("its status is not found either")
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasMessageContaining(MATCH.toString());
+            assertThatThrownBy(status::getStatus).isInstanceOf(ItemNotFoundException.class);
+            assertThatThrownBy(status::getWinnerId).isInstanceOf(ItemNotFoundException.class);
         }
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
             world.api.respond(SUMMARY_EN, 200, "<match_summary generated_at=\"2026-08-26T12:00:00\"/>");
-            assertThat(world.entities.match(MATCH, List.of(EN)).getName(EN)).isNull();
+            Match match = world.entities.match(MATCH, List.of(EN));
+            assertThat(match.getName(EN)).isNull();
+            assertThat(requireNonNull(match.getStatus()).getHomeScore())
+                    .as("null, not 0: there is no such match")
+                    .isNull();
         }
     }
 
