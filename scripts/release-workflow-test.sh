@@ -237,6 +237,9 @@ for job in ("publish", "github-release"):
         check(str(step.get("run", "")).strip() == TAG_CHECK,
               "%s: the tag check must run %s and nothing else, not %r" % (job, TAG_CHECK, step.get("run")))
         unconditional(job, step, "the tag check")
+        commit = (step.get("env") or {}).get("COMMIT")
+        check(commit == "${{ needs.check.outputs.commit }}",
+              "%s: the tag check's COMMIT must be ${{ needs.check.outputs.commit }}, not %r" % (job, commit))
 upload_index = next((i for i, step in enumerate(steps("publish")) if step.get("id") == "upload"), -1)
 check(-1 < index("publish", "release-tag-check.sh") < upload_index,
       "publish must check the tag again before it deploys")
@@ -701,6 +704,11 @@ breaks release.yml replace '      - name: Create the release
 ' '      - name: Create the release
         continue-on-error: true
 ' "github-release: creating the release must not continue on error"
+
+breaks release.yml replace "$publish_tag_step" "${publish_tag_step/needs.check.outputs.commit/github.sha}" \
+  "publish: the tag check's COMMIT must be"
+breaks release.yml replace "$release_tag_step" "${release_tag_step/needs.check.outputs.commit/github.sha}" \
+  "github-release: the tag check's COMMIT must be"
 
 # next.yml, which release.yml calls
 breaks next.yml replace 'permissions:
