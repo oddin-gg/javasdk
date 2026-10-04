@@ -207,11 +207,23 @@ final class Catalog<K, V> {
      *     backing off
      */
     V get(K key) {
-        Instant now = clock.instant();
         Held<V> current = held.getIfPresent(key);
-        if (current == null) {
-            return fetchNow(key);
-        }
+        return current == null ? fetchNow(key) : served(key, current);
+    }
+
+    /**
+     * What is held for the key, as {@link #get} serves it - a refresh started when it is older than
+     * the refresh age, and the read counted stale - or null when nothing is held; it fetches nothing.
+     */
+    @Nullable
+    V getHeld(K key) {
+        Held<V> current = held.getIfPresent(key);
+        return current == null ? null : served(key, current);
+    }
+
+    /** A held value served: when it is older than the refresh age, marked stale and refreshed. */
+    private V served(K key, Held<V> current) {
+        Instant now = clock.instant();
         if (current.fetchedAt().plus(refreshAge).isBefore(now)) {
             servedStale.incrementAndGet();
             insideStaleRead.run();

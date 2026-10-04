@@ -133,7 +133,8 @@ public final class MarketDescriptions {
         if (!key.isDynamic()) {
             return lists.find(locale, key, MarketList::get);
         }
-        LocalizedMarket own = variants.peek(new VariantKey(key, locale));
+        // served as a read by id serves it: refreshed when old, and counted stale
+        LocalizedMarket own = variants.getHeld(new VariantKey(key, locale));
         if (own != null) {
             return own;
         }
