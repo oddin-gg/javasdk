@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# The checks a v1.* tag passes before release.yml builds or publishes anything. Central never
-# takes a version back, and a release candidate goes out without anyone approving it, so these
-# are the gate. scripts/release-check-test.sh runs them against a scratch repository on every
-# push.
+# The checks a v1.* tag passes before release.yml builds anything. Central never takes a version
+# back; besides these, every upload, release candidates included, waits for a reviewer of the
+# maven-central environment. scripts/release-check-test.sh runs them against a scratch repository
+# on every push.
 #
 #   scripts/release-check.sh <tag>
 #
@@ -73,8 +73,15 @@ esac
 # Parsed, not grepped, so inline YAML counts too: a push trigger with tags, or with no branch
 # filter at all (which runs on tags as well), and create and release events.
 command -v yq >/dev/null || fail "needs yq to read the workflows"
-others=$(git ls-tree --name-only "$commit" .github/workflows/ | grep -E '\.ya?ml$' | grep -vxF .github/workflows/release.yml || true)
-for workflow in $others; do
+# Read NUL-delimited, never split or globbed; a name git would have to quote is refused outright.
+while IFS= read -r -d '' workflow; do
+  case "$workflow" in
+    *.yml | *.yaml) ;;
+    *) continue ;;
+  esac
+  # in the C locale, where A-Z is those 26 letters and no others
+  (LC_ALL=C && [[ "$workflow" =~ ^[A-Za-z0-9._/-]+$ ]]) || fail "$workflow: a workflow name outside A-Z a-z 0-9 . _ -"
+  [ "$workflow" != .github/workflows/release.yml ] || continue
   triggers=$(git show "$commit:$workflow" | yq -o=json '.on') || fail "could not read $workflow"
   if ! printf '%s' "$triggers" | python3 -c '
 import json, sys
@@ -96,7 +103,7 @@ if "push" in on:
 '; then
     fail "$workflow reacts to tags as well; only release.yml may"
   fi
-done
+done < <(git ls-tree -z --name-only "$commit" .github/workflows/)
 
 # 404 is the one answer that means "not there"; anything else stops the release
 for artifact in odds-feed-parent odds-feed; do

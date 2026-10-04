@@ -77,7 +77,7 @@ commit() {
     spec=$1
     shift
     case "$spec" in
-      -*) git -C "$repo" rm -q "${spec#-}" ;;
+      -*) git -C "$repo" --literal-pathspecs rm -q "${spec#-}" ;;
       *=*)
         path=${spec%%=*}
         mkdir -p "$repo/$(dirname "$path")"
@@ -201,6 +201,11 @@ release v1.0.12 ".github/workflows/old.yml=on: {push: {branches: [next], tags-ig
 commit -.github/workflows/old.yml
 release v1.0.13 ".github/workflows/old.yaml=$release_workflow"
 commit -.github/workflows/old.yaml
+release v1.0.14 ".github/workflows/ü.yml=$release_workflow"
+commit "-.github/workflows/ü.yml"
+release v1.0.15 ".github/workflows/nex[t].yml=$release_workflow"
+commit "-.github/workflows/nex[t].yml"
+release v1.0.16
 git -C "$repo" update-ref refs/remotes/origin/next HEAD
 
 # on main only
@@ -231,6 +236,12 @@ for tag in v1.0.6 v1.0.7 v1.0.8 v1.0.9 v1.0.11 v1.0.12; do
   expect refuse "$tag" "$absent" ".github/workflows/old.yml reacts to tags as well"
 done
 expect refuse v1.0.13 "$absent" ".github/workflows/old.yaml reacts to tags as well"
+expect refuse v1.0.14 "$absent" "a workflow name outside A-Z a-z 0-9 . _ -"
+expect refuse v1.0.15 "$absent" ".github/workflows/nex[t].yml: a workflow name outside"
+# the odd names removed again, and next.yml still there: the literal removal hit only them
+expect accept v1.0.16 "$absent" 1.0.16 true
+git -C "$repo" cat-file -e "v1.0.16:.github/workflows/next.yml" 2> /dev/null \
+  || failed "removing nex[t].yml took next.yml with it"
 expect refuse v1.0.0 "$central/200" "Central already has odds-feed-parent 1.0.0"
 expect refuse v1.0.0 "$central/404-200" "Central already has odds-feed 1.0.0"
 expect refuse v1.0.0 "$central/500" "could not tell whether Central has odds-feed-parent 1.0.0 (500"
