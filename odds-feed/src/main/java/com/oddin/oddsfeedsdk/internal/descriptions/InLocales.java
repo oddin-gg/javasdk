@@ -1,10 +1,11 @@
 package com.oddin.oddsfeedsdk.internal.descriptions;
 
+import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
 import java.util.function.Function;
 import java.util.function.Predicate;
@@ -41,7 +42,7 @@ final class InLocales {
         for (int i = 0; i < locales.size(); i++) {
             CompletableFuture<? extends @Nullable R> load = loads.get(i);
             if (load != null) {
-                R found = joined(load);
+                R found = joined(load, loads, locales);
                 first = first == null ? found : first;
             } else if (first == null) {
                 first = read.apply(locales.get(i));
@@ -50,18 +51,33 @@ final class InLocales {
         return first;
     }
 
-    /** What a load got, or its own failure as it was thrown. */
-    private static <R> @Nullable R joined(CompletableFuture<? extends @Nullable R> load) {
+    /**
+     * What a load got, or its own failure as it was thrown. An interrupted caller stops waiting at
+     * once, as a read in one locale does: the interrupt is kept, the loads not done are cancelled,
+     * and the read fails.
+     */
+    private static <R> @Nullable R joined(
+            CompletableFuture<? extends @Nullable R> load,
+            List<@Nullable CompletableFuture<? extends @Nullable R>> loads,
+            List<Locale> locales) {
         try {
-            return load.join();
-        } catch (CompletionException wrapped) {
+            return load.get();
+        } catch (ExecutionException wrapped) {
             if (wrapped.getCause() instanceof RuntimeException failure) {
                 throw failure;
             }
             if (wrapped.getCause() instanceof Error error) {
                 throw error;
             }
-            throw wrapped;
+            throw new ApiException("read in " + locales + " failed: " + wrapped.getCause(), null, wrapped);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            for (CompletableFuture<? extends @Nullable R> pending : loads) {
+                if (pending != null) {
+                    pending.cancel(true);
+                }
+            }
+            throw new ApiException("read in " + locales + ": interrupted", null, e);
         }
     }
 }
