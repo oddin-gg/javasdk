@@ -148,9 +148,11 @@ $(cat "$work/requests")"
 }
 
 # expect_tag accept|refuse <tag> <commit> <what it says> [remote]
+# Runs in the checkout, a clone of the scratch repository, asking its origin unless told
+# otherwise: the tags that move are origin's, the checkout's stay where they were.
 expect_tag() {
-  local want=$1 tag=$2 commit=$3 reason=$4 remote=${5:-$repo} got
-  if (cd "$repo" && bash "$tag_check" "$tag" "$commit" "$remote") 2> "$work/err"; then
+  local want=$1 tag=$2 commit=$3 reason=$4 remote=${5:-origin} got
+  if (cd "$work/checkout" && bash "$tag_check" "$tag" "$commit" "$remote") 2> "$work/err"; then
     got=accept
   else
     got=refuse
@@ -186,13 +188,19 @@ commit release-notes/1.0.4.md= -- v1.0.4
 commit release-notes/1.0.5.md@/proc/self/environ -- v1.0.5
 release v1.0.6 ".github/workflows/old.yml=$release_workflow"
 commit -.github/workflows/old.yml
-release v1.0.7 ".github/workflows/old.yml=on: {push: {tags: ['v1.*']}}"
+release v1.0.7 ".github/workflows/old.yml=on: {push: {branches: [next], tags: ['v1.*']}}"
 commit -.github/workflows/old.yml
 release v1.0.8 ".github/workflows/old.yml=on: [push, pull_request]"
 commit -.github/workflows/old.yml
 release v1.0.9 ".github/workflows/old.yml=on: create"
 commit -.github/workflows/old.yml
 release v1.0.10
+release v1.0.11 ".github/workflows/old.yml=on: {release: {types: [published]}}"
+commit -.github/workflows/old.yml
+release v1.0.12 ".github/workflows/old.yml=on: {push: {branches: [next], tags-ignore: [nightly]}}"
+commit -.github/workflows/old.yml
+release v1.0.13 ".github/workflows/old.yaml=$release_workflow"
+commit -.github/workflows/old.yaml
 git -C "$repo" update-ref refs/remotes/origin/next HEAD
 
 # on main only
@@ -219,9 +227,10 @@ expect refuse v1.0.2 "$absent" "other tags name"
 expect refuse v1.0.3 "$absent" "release-notes/1.0.3.md is missing"
 expect refuse v1.0.4 "$absent" "release-notes/1.0.4.md is empty"
 expect refuse v1.0.5 "$absent" "release-notes/1.0.5.md is not a plain file"
-for tag in v1.0.6 v1.0.7 v1.0.8 v1.0.9; do
+for tag in v1.0.6 v1.0.7 v1.0.8 v1.0.9 v1.0.11 v1.0.12; do
   expect refuse "$tag" "$absent" ".github/workflows/old.yml reacts to tags as well"
 done
+expect refuse v1.0.13 "$absent" ".github/workflows/old.yaml reacts to tags as well"
 expect refuse v1.0.0 "$central/200" "Central already has odds-feed-parent 1.0.0"
 expect refuse v1.0.0 "$central/404-200" "Central already has odds-feed 1.0.0"
 expect refuse v1.0.0 "$central/500" "could not tell whether Central has odds-feed-parent 1.0.0 (500"
@@ -231,14 +240,21 @@ expect refuse v1.0.0 "$central/stall" "could not tell whether Central has odds-f
 
 # the tag as the remote has it, right before the upload
 released=$(git -C "$repo" rev-parse "v1.0.0^{commit}")
-expect_tag accept v1.0.0 "$released" "still names $released"
+other=$(git -C "$repo" rev-parse "v1.1.0^{commit}")
 git -C "$repo" tag lightweight "$released"
+git clone -q "$repo" "$work/checkout"
+expect_tag accept v1.0.0 "$released" "still names $released"
 expect_tag accept lightweight "$released" "still names $released"
-git -C "$repo" tag -f -a -m moved v1.0.0 "v1.1.0^{commit}" > /dev/null
-expect_tag refuse v1.0.0 "$released" "now names $(git -C "$repo" rev-parse "v1.1.0^{commit}")"
+git -C "$repo" tag -f -a -m moved v1.0.0 "$other" > /dev/null
+git -C "$repo" tag -f lightweight "$other" > /dev/null
+expect_tag refuse v1.0.0 "$released" "now names $other"
+expect_tag refuse lightweight "$released" "now names $other"
 git -C "$repo" tag -d v1.0.0 > /dev/null
 expect_tag refuse v1.0.0 "$released" "no longer on"
 expect_tag refuse v1.0.0 "$released" "could not ask" "$work/nowhere"
+# what moved was origin's tag only: the checkout still has the old one
+[ "$(git -C "$work/checkout" rev-parse "v1.0.0^{commit}")" = "$released" ] \
+  || failed "the checkout's own v1.0.0 moved, so the cases above did not test the remote"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures release check case(s) failed" >&2
