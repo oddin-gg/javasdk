@@ -151,6 +151,45 @@ def pom_version(artifact, parent=False):
     m = re.search(r'<version>([^<]+)</version>', text)
     return m and m.group(1)
 check(pom_version(artifacts[0]) == version, 'the parent POM does not say version %s' % version)
+
+# The metadata Central requires, on both POMs: odds-feed's own name and description, the rest as
+# a consumer of odds-feed sees it - inherited from the parent, where Maven appends the module's
+# artifactId to the URLs unless the parent's child.*.inherit.append.path attributes say false.
+import xml.etree.ElementTree as ET
+NS = {'m': 'http://maven.apache.org/POM/4.0.0'}
+parent = ET.parse(os.path.join(work, 'bundle', artifacts[0])).getroot()
+child = ET.parse(os.path.join(work, 'bundle', artifacts[4])).getroot()
+
+def text(root, path):
+    element = root.find(path, NS)
+    return (element.text or '').strip() if element is not None else ''
+
+def effective(path, append_attribute=None, holder_path=None):
+    if text(child, path):
+        return text(child, path)
+    inherited = text(parent, path)
+    if inherited and append_attribute:
+        holder = parent if holder_path is None else parent.find(holder_path, NS)
+        if holder is None or holder.get(append_attribute) != 'false':
+            inherited = inherited.rstrip('/') + '/odds-feed'
+    return inherited
+
+REQUIRED = ['m:name', 'm:description', 'm:url', 'm:licenses/m:license/m:name',
+            'm:developers/m:developer/m:name', 'm:scm/m:url', 'm:scm/m:connection']
+for path in REQUIRED:
+    check(text(parent, path), 'the parent POM has no %s' % path.replace('m:', ''))
+for path in ('m:name', 'm:description'):
+    check(text(child, path), "odds-feed's POM has no %s of its own" % path.replace('m:', ''))
+check(effective('m:licenses/m:license/m:name') == 'BSD-3-Clause',
+      "odds-feed's license is %r, not BSD-3-Clause" % effective('m:licenses/m:license/m:name'))
+check(effective('m:developers/m:developer/m:name'), "odds-feed's POM has no developer, own or inherited")
+REPOSITORY = 'https://github.com/oddin-gg/javasdk'
+for path, attribute, holder, expected in (
+        ('m:url', 'child.project.url.inherit.append.path', None, REPOSITORY),
+        ('m:scm/m:url', 'child.scm.url.inherit.append.path', 'm:scm', REPOSITORY),
+        ('m:scm/m:connection', 'child.scm.connection.inherit.append.path', 'm:scm', 'scm:git:' + REPOSITORY + '.git')):
+    actual = effective(path, attribute, holder)
+    check(actual == expected, "odds-feed's %s is %r, not %r" % (path.replace('m:', ''), actual, expected))
 check(pom_version(artifacts[4], parent=True) == version, "odds-feed's POM does not name parent %s" % version)
 with zipfile.ZipFile(os.path.join(work, 'bundle', artifacts[1])) as jar:
     properties = jar.read('com/oddin/oddsfeedsdk/internal/sdk.properties').decode()
