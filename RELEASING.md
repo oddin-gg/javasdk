@@ -28,6 +28,15 @@ GitHub Packages.
 - [ ] **Signing key.** A key for releases only, not a person's. Its public half is on
       `keyserver.ubuntu.com` and `keys.openpgp.org`, where Central looks for it. Keep the
       revocation certificate offline, and note the expiry date somewhere it will be seen.
+- [ ] **Tag ruleset, before any secret exists.** Only the release reviewers may create,
+      move or delete `v*` tags, with no bypass for anyone else, admins included. This is what
+      protects the secrets and the approval: a tag runs `release.yml` as the tagged commit has
+      it, so the checks in it cannot stop a tag put on an unreviewed commit whose
+      `release.yml` skips them.
+- [ ] **Only `release.yml` reacts to tags.** No other workflow on `next` or `main` may run on a
+      `v1.*` tag: it would publish as well, unchecked. The check job refuses a tagged commit
+      where another workflow has a `tags` trigger; a bare `on: push` or `create` trigger it does
+      not see.
 - [ ] **Environment `maven-central`** (Settings - Environments), with deployment rule
       "selected tags": `v1.*`, and these secrets:
 
@@ -38,13 +47,11 @@ GitHub Packages.
       | `MAVEN_GPG_KEY` | the signing key, ASCII-armoured secret key (`gpg --armor --export-secret-keys <id>`) |
       | `MAVEN_GPG_PASSPHRASE` | its passphrase |
 
-      They are environment secrets, not repository ones, so only a job on a `v1.*` tag can
-      read them.
+      As environment secrets they reach only a job running on a `v1.*` tag; who can push
+      such a tag is the ruleset's to limit.
 - [ ] **Environment `maven-central-approval`**, with required reviewers (the people who may
       release a final; "prevent self-review" on), deployment rule "selected tags": `v1.*`, and
       no secrets.
-- [ ] **Tag ruleset.** Only those people may create, move or delete `v*` tags: a tag is a
-      release.
 
 ## Every release
 
@@ -54,7 +61,9 @@ GitHub Packages.
 3. **Write the release notes** as `release-notes/<version>.md`, e.g.
    `release-notes/1.0.0-rc.1.md`, and merge them through a PR. A final needs this commit
    anyway: it may not share a commit with its last release candidate.
-4. **Tag the merged commit and push the tag:**
+4. **Tag the merged commit and push the tag,** once the previous release run has finished.
+   Uploads take turns, and GitHub cancels a waiting one when a third arrives; re-run a
+   cancelled run from the Actions page.
 
    ```
    git fetch origin
@@ -71,23 +80,27 @@ GitHub Packages.
 
 ## Pre-release checks
 
-The **check** job fails the release, before anything is built, when:
+The **check** job (`scripts/release-check.sh`) fails the release, before anything is built,
+when:
 
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
 - the tagged commit is on neither `next` nor `main`;
-- another `v*` tag names the same commit;
-- `release-notes/<version>.md` is missing or empty;
+- any other tag names the same commit;
+- `release-notes/<version>.md` is missing or empty in the tagged commit;
+- another workflow in the tagged commit has a `tags` trigger;
 - Central already has `odds-feed` or `odds-feed-parent` at that version, or does not answer
   clearly (anything but 404 counts as "has it").
 
 The portal also refuses a version it already has, which covers the minutes before a published
-version appears in the repository.
+version appears in the repository. `scripts/release-check-test.sh` runs each of these cases
+against a scratch repository and a stub Central on every push to `next`.
 
 ## When something fails
 
 - **Before publish:** nothing left the repository. Fix it, delete the tag
   (`git push origin :refs/tags/v1.0.0-rc.1`, then locally) and tag again - or, for a release
-  candidate, take the next number.
+  candidate, take the next number. Either way the failed tag goes first if the new one lands
+  on the same commit: two tags on one commit are refused.
 - **During publish:** look the deployment up in the portal. Failed validation published
   nothing: fix, delete the tag, tag again. If it shows Published (the wait timed out), the
   version is out and a re-run would be refused: create the GitHub Release by hand with
