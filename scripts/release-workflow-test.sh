@@ -81,15 +81,17 @@ if publish_if:
         check(runs == allowed, "publish with build=%s approve=%s final=%s cancelled=%s: runs=%s, should be %s"
               % (build, approve, final, cancelled, runs, allowed))
 
-# github-release: whenever publish succeeded, though approve was skipped
+# github-release: whenever publish succeeded, final or not, whatever approve did
 check("publish" in needs("github-release"), "github-release must need publish")
 release_if = condition("github-release")
 check(release_if is not None, "github-release needs an explicit if: the default skips it after a skipped approve")
 if release_if:
-    for publish, cancelled in itertools.product(RESULTS, [False, True]):
-        runs = release_if({"publish": publish, "approve": "skipped"}, "false", cancelled)
+    for publish, approve, final, cancelled in itertools.product(RESULTS, RESULTS, ["true", "false"], [False, True]):
+        results = {"check": "success", "build": "success", "approve": approve, "publish": publish}
+        runs = release_if(results, final, cancelled)
         check(runs == (publish == "success" and not cancelled),
-              "github-release with publish=%s cancelled=%s: runs=%s" % (publish, cancelled, runs))
+              "github-release with publish=%s approve=%s final=%s cancelled=%s: runs=%s"
+              % (publish, approve, final, cancelled, runs))
 
 # the secrets and the maven-central environment belong to publish alone
 for name, job in jobs.items():
@@ -108,14 +110,27 @@ def index(job, needle):
             return i
     return -1
 
-# publish: no cache another job could have written, and the tag checked again before the upload
+# publish: no cache another job could have written - no cache action in any form, no cache input
+# on any setup action
 for step in steps("publish"):
-    if "setup-java" in step.get("uses", ""):
-        check("cache" not in step.get("with", {}), "publish must not restore a cache: it holds the secrets")
+    uses = step.get("uses", "")
+    check(not re.match(r"actions/cache([/@]|$)", uses), "publish must not restore a cache: %s" % uses)
+    inputs = step.get("with", {}) or {}
+    check(not any(key == "cache" or key.startswith("cache-") for key in inputs),
+          "publish must not restore a cache: %s with %s" % (uses or step.get("name"), sorted(inputs)))
+
+# the tag check again before the upload and before the release, and a failed one stops the job:
+# the script call alone, unconditional, with no continue-on-error on the step or the job
+TAG_CHECK = './scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT"'
 for job in ("publish", "github-release"):
-    for step in steps(job):
-        if "release-tag-check.sh" in json.dumps(step):
-            check("if" not in step, "%s: the tag check must not be conditional" % job)
+    check(not jobs[job].get("continue-on-error"), "%s must not continue on error" % job)
+    found = [step for step in steps(job) if "release-tag-check.sh" in json.dumps(step)]
+    check(len(found) == 1, "%s must check the tag once, found %d" % (job, len(found)))
+    for step in found:
+        check(str(step.get("run", "")).strip() == TAG_CHECK,
+              "%s: the tag check must run %s and nothing else, not %r" % (job, TAG_CHECK, step.get("run")))
+        check("if" not in step, "%s: the tag check must not be conditional" % job)
+        check("continue-on-error" not in step, "%s: the tag check must not continue on error" % job)
 check(-1 < index("publish", "release-tag-check.sh") < index("publish", " deploy"),
       "publish must check the tag again before it deploys")
 check(-1 < index("github-release", "release-tag-check.sh") < index("github-release", "gh release create"),
