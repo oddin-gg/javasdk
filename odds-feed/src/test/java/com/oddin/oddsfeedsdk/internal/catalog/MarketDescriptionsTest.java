@@ -281,6 +281,28 @@ class MarketDescriptionsTest {
     }
 
     @Test
+    void aHeldVariantReadAsListedRefreshesWhenOldAndCountsTheStaleRead() {
+        api.respond(LIST_EN, 200, Fixtures.read("rest/markets/market_descriptions.xml"));
+        api.respond(VARIANT_EN, 200, variant(DYNAMIC, "Player Two"));
+        markets.market(768, DYNAMIC, EN);
+        markets.markets(EN);
+        api.respond(VARIANT_EN, 200, variant(DYNAMIC, "Player Three"));
+        time.advance(PAST_REFRESH);
+
+        assertThat(requireNonNull(markets.listed(768, DYNAMIC, EN)).outcomes())
+                .extracting(Outcome::name)
+                .as("served stale, at once")
+                .containsExactly("Player Two");
+        assertThat(queuedRefreshes).as("the variant's refresh").hasSize(1);
+        assertThat(markets.health().get(1).servedStale()).isEqualTo(1);
+        runRefreshes();
+        assertThat(requireNonNull(markets.listed(768, DYNAMIC, EN)).outcomes())
+                .extracting(Outcome::name)
+                .containsExactly("Player Three");
+        assertThat(api.requests("GET", VARIANT_EN)).hasSize(2);
+    }
+
+    @Test
     void aMarketNewUpstreamShowsUpBeforeTheNextRefresh() {
         api.respond(LIST_EN, 200, list(market(1, "Winner")));
         markets.market(1, null, EN);
