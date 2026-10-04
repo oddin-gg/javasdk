@@ -66,6 +66,8 @@ final class SessionChannel implements SessionTransport {
     private boolean lossTold;
     /** Whether the channel is closed for good, so no loss is told; set under the lock. */
     private boolean closed;
+    /** A test's hook: runs in the broker's callback before it marks its consumer taken. */
+    volatile Runnable beforeTaken = () -> {};
     /** A test's hook: runs in a callback that found its channel current, before it tells the loss. */
     volatile Runnable beforeTellingLost = () -> {};
 
@@ -195,8 +197,8 @@ final class SessionChannel implements SessionTransport {
     /**
      * Reopens the channel unless it is open: one opened since the loss - by a reconnect, or a reset
      * that was under way - must not be thrown away for it. A loss whose callback has not told it
-     * yet is told here first: once the new channel is open, the callback finds its channel replaced
-     * and tells nothing.
+     * yet, or not even run, is told here first: once the new channel is open, the callback finds its
+     * channel replaced and tells nothing.
      *
      * @return whether the session has an open channel now, or no connection to open one on
      */
@@ -207,7 +209,7 @@ final class SessionChannel implements SessionTransport {
                 return true;
             }
             Deliveries consumer = current;
-            if (consumer != null && consumer.taken && !lossTold && !closed) {
+            if (consumer != null && consumer.lostToTheBroker() && !lossTold && !closed) {
                 lossTold = true;
                 told.lost();
             }
@@ -380,7 +382,21 @@ final class SessionChannel implements SessionTransport {
             }
         }
 
+        /**
+         * Whether the broker cancelled this consumer or closed its channel: the client marks a
+         * closed channel before it hands the consumer the callback, so a reopen can see the close
+         * first.
+         */
+        boolean lostToTheBroker() {
+            if (taken) {
+                return true;
+            }
+            ShutdownSignalException reason = getChannel().getCloseReason();
+            return reason != null && !reason.isInitiatedByApplication() && !reason.isHardError();
+        }
+
         private void taken(long ofEpoch) {
+            beforeTaken.run();
             taken = true;
             if (ofEpoch == epoch.get()) {
                 beforeTellingLost.run();
