@@ -194,7 +194,9 @@ final class SessionChannel implements SessionTransport {
 
     /**
      * Reopens the channel unless it is open: one opened since the loss - by a reconnect, or a reset
-     * that was under way - must not be thrown away for it.
+     * that was under way - must not be thrown away for it. A loss whose callback has not told it
+     * yet is told here first: once the new channel is open, the callback finds its channel replaced
+     * and tells nothing.
      *
      * @return whether the session has an open channel now, or no connection to open one on
      */
@@ -203,6 +205,11 @@ final class SessionChannel implements SessionTransport {
         try {
             if (isOpen()) {
                 return true;
+            }
+            Deliveries consumer = current;
+            if (consumer != null && consumer.taken && !lossTold && !closed) {
+                lossTold = true;
+                told.lost();
             }
             return tryReset();
         } finally {
@@ -385,7 +392,9 @@ final class SessionChannel implements SessionTransport {
         /**
          * Tells the loss before anything opens a new channel: under the lock, and only while this
          * channel is still the current one, since one replaced already lost nothing more, and not
-         * once the channel is closed, since nobody reads it any more.
+         * once the channel is closed, since nobody reads it any more. Once per loss: the broker
+         * calls back once per consumer, a cancelled one not again when its channel closes, so the
+         * told mark only guards.
          */
         private void tellLost(long ofEpoch) {
             lock.lock();
