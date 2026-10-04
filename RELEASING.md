@@ -66,8 +66,10 @@ GitHub Packages.
 3. **Write the release notes** as `release-notes/<version>.md`, e.g.
    `release-notes/1.0.0-rc.1.md`, and merge them through a PR. A final needs this commit
    anyway: it may not share a commit with its last release candidate.
-4. **Tag the merged commit and push the tag.** Runs for one version take turns; runs for
-   different versions don't wait for each other.
+4. **Tag the merge commit of the notes PR and push the tag** - or the current tip of `next`,
+   which is always the merge commit of the last PR merged. Not an older commit on `next`: see
+   step 5. Runs for one version take turns; runs for different versions don't wait for each
+   other.
 
    ```
    git fetch origin
@@ -78,11 +80,20 @@ GitHub Packages.
 5. **Approve the upload** under Actions - "Java SDK 1.0 release", once check and build are
    green: every release, candidates included, stops at **publish** until a reviewer other than
    the tag's author approves the `maven-central` deployment. Before approving, the reviewer
-   checks that the run's commit is on `next` or `main` (`git branch -r --contains <commit>`)
-   and approves nothing else. The whole commit is trusted, not just `.github/`: the approved
-   job runs that commit's `mvnw`, POMs and plugins with the token and the key, so what makes it
-   trustworthy is that it went through reviewed PRs on a protected branch. The checks inside a
-   tagged `release.yml` are only as trustworthy as that commit.
+   checks that the run's commit is the merge commit of a PR merged into `next` or `main`, and
+   approves nothing else:
+
+   ```
+   gh api repos/oddin-gg/javasdk/commits/<sha>/pulls \
+     --jq '.[] | select(.merged_at and .merge_commit_sha == "<sha>") | .base.ref'
+   ```
+
+   must print `next` or `main`. Being on `next` is not enough: the repository merges by
+   rebase, which puts every intermediate commit of a PR on `next`, while the review saw only
+   the PR's final state - its merge commit. The whole commit is trusted, not just `.github/`:
+   the approved job runs that commit's `mvnw`, POMs and plugins with the token and the key, so
+   what makes it trustworthy is that it is a reviewed PR's final state on a protected branch.
+   The checks inside a tagged `release.yml` are only as trustworthy as that commit.
 6. **Check the result:** the version in the portal's Deployments as Published, then on
    `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/` (it shows up within about 30
    minutes), and the GitHub Release with its four files.
@@ -93,7 +104,9 @@ The **check** job (`scripts/release-check.sh`) fails the release, before anythin
 when:
 
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
-- the tagged commit is on neither `next` nor `main`;
+- the tagged commit is on neither `next` nor `main`, or is not the merge commit of a PR merged
+  into one of them (an intermediate commit of a rebase-merged PR is on `next`, but was never
+  reviewed as a state of its own);
 - any other tag names the same commit;
 - `release-notes/<version>.md` is missing, empty or not a plain file in the tagged commit (`gh`
   would follow a link into the public release text);
