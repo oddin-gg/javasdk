@@ -30,14 +30,23 @@ GitHub Packages.
       `keyserver.ubuntu.com` and `keys.openpgp.org`, where Central looks for it. Keep the
       revocation certificate offline, and note the expiry date somewhere it will be seen.
 - [ ] **Branch protection on `next` and `main`:** every change through a reviewed PR, no
-      bypass, no force push. This is part of the release's security: the approver approves a
-      commit because it is on one of these branches, and trusts all of it - `mvnw`, the POMs,
-      the plugins, the code - since the approved job builds and signs from it with the secrets
-      at hand.
-- [ ] **Tag ruleset.** Only the release managers may create, move or delete `v*` tags, with no
-      bypass for anyone else, admins included. Defence in depth: a tag runs `release.yml` as
-      the tagged commit has it, so the checks in it cannot stop a tag put on an unreviewed
-      commit whose `release.yml` skips them. The environment's reviewers are the control.
+      bypass, no force push, and - all three required for the release's security:
+      - "Dismiss stale pull request approvals when new commits are pushed";
+      - "Require approval of the most recent reviewable push";
+      - "Require branches to be up to date before merging", so a rebase merge cannot produce
+        a final state nobody saw.
+
+      The approver approves a PR's merge commit as reviewed, and trusts all of it - `mvnw`,
+      the POMs, the plugins, the code - since the approved job builds and signs from it with
+      the secrets at hand. Without these settings an approval can outlive the code it was for.
+- [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
+      creator included - may update or delete one. A published version keeps its tag for good.
+      Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in
+      it cannot stop a tag put on an unreviewed commit whose `release.yml` skips them. The
+      environment's reviewers are the control.
+- [ ] **Immutable releases** (Settings - General - Releases), before the first release: a
+      published GitHub Release and its files cannot change afterwards. The release workflow
+      attaches the files to a draft and publishes it only then.
 - [ ] **Only `release.yml` reacts to tags.** No other workflow on `next` or `main` may run on a
       `v1.*` tag: it would publish as well, unchecked. The check job refuses a tagged commit
       where another workflow would: a push trigger with tags or without a branch filter, or a
@@ -89,7 +98,8 @@ GitHub Packages.
      --jq '.[] | select(.merged_at and .merge_commit_sha == "<sha>") | .base.ref'
    ```
 
-   must print `next` or `main`. If it prints nothing, ask the other way round (GitHub documents
+   must print `next` or `main`. That proves the commit was reviewed only with the branch
+   protection settings above on. If it prints nothing, ask the other way round (GitHub documents
    the first form as listing only open PRs for a commit off `main`, though it lists merged
    ones today), for `base=next` and then `base=main`; it must print a PR number:
 
@@ -113,8 +123,9 @@ The **check** job (`scripts/release-check.sh`) fails the release, before anythin
 when:
 
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
-- the tag, as origin has it, no longer names the commit the run was started for (it moved
-  after the push: push it again) - the same is asked again right before the upload;
+- the tag, as origin has it, no longer names the commit the run was started for (moved after
+  the push, by someone who may bypass the tag ruleset: tags cannot be moved back, so release a
+  new version) - the same is asked again right before the upload;
 - the tagged commit is on neither `next` nor `main`, or is not the merge commit of a PR merged
   into one of them (an intermediate commit of a rebase-merged PR is on `next`, but was never
   reviewed as a state of its own);
@@ -142,17 +153,22 @@ key against a stand-in portal and checks the bundle.
 
 ## When something fails
 
-- **Before publish:** nothing left the repository. Fix it, delete the tag
-  (`git push origin :refs/tags/v1.0.0-rc.1`, then locally) and tag again - or, for a release
-  candidate, take the next number. Either way the failed tag goes first if the new one lands
-  on the same commit: two tags on one commit are refused.
+Tags cannot be moved or deleted, so a failed release is never retried under the same tag: the
+next attempt is a new version - the next release candidate number, or the next patch.
+
+- **Before publish:** nothing left the repository, but the tag stays. Fix what failed, write
+  the release notes for the next version, merge them, and tag that merge commit - a commit of
+  its own, since two tags on one commit are refused.
 - **During publish:** look the deployment up in the portal. Failed validation published
-  nothing: fix, delete the tag, tag again. If it shows Published (the wait timed out), the
-  version is out and a re-run would be refused: create the GitHub Release by hand with
-  `gh release create`, attaching the jar, the POM and their `.asc` files from Central.
-- **GitHub Release failed:** re-run the failed job; the bundle is kept as the run's
+  nothing: release the next version as above. If it shows Published (the wait timed out),
+  the version is out and a re-run would be refused: make the GitHub Release by hand. In a
+  checkout of the tag, zip the jar, the POM and their `.asc` files from Central, in the
+  Maven layout (`gg/oddin/oddsfeed/odds-feed/<version>/...`), as `central-bundle.zip`, and
+  run `scripts/release-github.sh` with `VERSION`, `FINAL` and `GITHUB_REF_NAME` set.
+- **GitHub Release failed:** if it left a draft, delete the draft (`gh release delete <tag>`
+  keeps the tag), then re-run the failed job; the bundle is kept as the run's
   `central-bundle` artifact.
-- Never reuse a version Central has, and never move a tag that was published.
+- Never reuse a version Central has.
 
 ## Dry run
 
