@@ -88,7 +88,15 @@ GitHub Packages.
      --jq '.[] | select(.merged_at and .merge_commit_sha == "<sha>") | .base.ref'
    ```
 
-   must print `next` or `main`. Being on `next` is not enough: the repository merges by
+   must print `next` or `main`. If it prints nothing, ask the other way round (GitHub documents
+   the first form as listing only open PRs for a commit off `main`, though it lists merged
+   ones today), for `base=next` and then `base=main`; it must print a PR number:
+
+   ```
+   gh api --paginate 'repos/oddin-gg/javasdk/pulls?state=closed&base=next&per_page=100' --jq '.[] | select(.merge_commit_sha == "<sha>" and .merged_at) | .number'
+   ```
+
+   Being on `next` is not enough: the repository merges by
    rebase, which puts every intermediate commit of a PR on `next`, while the review saw only
    the PR's final state - its merge commit. The whole commit is trusted, not just `.github/`:
    the approved job runs that commit's `mvnw`, POMs and plugins with the token and the key, so
