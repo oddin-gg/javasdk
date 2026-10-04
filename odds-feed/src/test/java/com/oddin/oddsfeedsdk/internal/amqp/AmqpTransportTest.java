@@ -15,6 +15,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
@@ -742,21 +744,33 @@ class AmqpTransportTest {
         told.session = session;
         transport.open();
         long before = session.epoch();
-        var once = new AtomicBoolean();
+        var reopen = new ReopenFirst(session, told);
         // the callback saw its channel taken, and a reopen runs before it tells the loss
-        session.beforeTellingLost = () -> {
-            if (once.compareAndSet(false, true)) {
-                runAndWait(session::reopenIfLost);
-            }
-        };
+        session.beforeTellingLost = reopen;
 
         feed().deleteClientQueues();
-        awaitReopened(session, before);
-        told.await(2);
+        reopen.assertToldByTheReopen(before);
         Thread.sleep(200);
-        assertThat(told.events)
-                .as("told once, by the reopen, before its new channel")
-                .containsExactly("lost in " + before, "reopened in " + session.epoch() + ", open");
+        assertThat(told.events).as("the callback told nothing more").hasSize(2);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+    }
+
+    @Test
+    void aChannelTheBrokerClosedIsToldLostByAReopenThatRunsBeforeItsCallback() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        long before = session.epoch();
+        var reopen = new ReopenFirst(session, told);
+        // the client has marked the channel closed, and a reopen runs before the callback even starts
+        session.beforeTaken = reopen;
+
+        requireNonNull(session.channel()).basicAck(9_999, false);
+        reopen.assertToldByTheReopen(before);
+        Thread.sleep(200);
+        assertThat(told.events).as("the callback told nothing more").hasSize(2);
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
     }
 
@@ -1223,6 +1237,57 @@ class AmqpTransportTest {
             running.join(WAIT);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * A hook that, the first time it runs, has the transport's reopen run on a thread of its own and
+     * waits for it, and keeps what the reopen returned and what was told by then.
+     */
+    private static final class ReopenFirst implements Runnable {
+        private final SessionChannel session;
+        private final ToldChannel told;
+        private final AtomicBoolean ran = new AtomicBoolean();
+        private final CountDownLatch done = new CountDownLatch(1);
+        private volatile boolean finished;
+        private volatile boolean reopened;
+        private volatile List<String> toldByThen = List.of();
+
+        ReopenFirst(SessionChannel session, ToldChannel told) {
+            this.session = session;
+            this.told = told;
+        }
+
+        @Override
+        public void run() {
+            if (!ran.compareAndSet(false, true)) {
+                return;
+            }
+            var result = new AtomicBoolean();
+            Thread reopening = Thread.ofVirtual().start(() -> result.set(session.reopenIfLost()));
+            try {
+                reopening.join(WAIT);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            finished = !reopening.isAlive();
+            reopened = result.get();
+            toldByThen = List.copyOf(told.events);
+            done.countDown();
+        }
+
+        /** The reopen finished before the callback went on, and told the loss and its new channel. */
+        void assertToldByTheReopen(long before) throws InterruptedException {
+            assertThat(done.await(WAIT.toSeconds() * 2, TimeUnit.SECONDS))
+                    .as("the hook ran")
+                    .isTrue();
+            assertThat(finished)
+                    .as("the reopen finished before the callback went on")
+                    .isTrue();
+            assertThat(reopened).as("what the reopen returned").isTrue();
+            assertThat(toldByThen)
+                    .as("told by the reopen, before the callback went on")
+                    .containsExactly("lost in " + before, "reopened in " + (before + 1) + ", open");
         }
     }
 
