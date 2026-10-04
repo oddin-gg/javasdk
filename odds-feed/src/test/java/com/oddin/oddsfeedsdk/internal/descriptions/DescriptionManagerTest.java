@@ -162,6 +162,33 @@ class DescriptionManagerTest {
     }
 
     @Test
+    void aListedVariantTheListHasNoRowForIsReadFromItsOwnEndpoint() {
+        String nine = "od:dynamic_outcomes:9";
+        String nineEn = "/v1/descriptions/en/markets/768/variants/" + nine;
+        String nineDe = "/v1/descriptions/de/markets/768/variants/" + nine;
+        api.respond(LIST_EN, 200, Fixtures.read("rest/markets/market_descriptions.xml"));
+        api.respond(nineEn, 200, list(player(nine, "Player Nine")));
+        api.respond(nineDe, 200, list(player(nine, "Spieler Neun")));
+        requireNonNull(throwing.getMarketDescription(768, nine, EN));
+        MarketDescription listed = requireNonNull(throwing.getMarketDescriptions(EN)).stream()
+                .filter(market -> nine.equals(market.getVariant()))
+                .findFirst()
+                .orElseThrow();
+
+        assertThat(listed.getOutcomes())
+                .extracting(o -> o.getName(EN), o -> o.getName(DE))
+                .as("in another locale too")
+                .containsExactly(tuple("Player Nine", "Spieler Neun"));
+        throwing.clearMarketDescription(768, nine);
+        assertThat(listed.getName(EN)).as("after a clear").isEqualTo("Player to Score");
+        assertThat(api.requests("GET", nineEn)).hasSize(2);
+        assertThat(api.requests("GET", nineDe)).hasSize(1);
+        assertThat(api.requests("GET", LIST_EN))
+                .as("a variant the list lacks fetches no list")
+                .hasSize(1);
+    }
+
+    @Test
     void aVariantFetchedOnItsOwnOverridesTheListRowItIsListedWith() {
         api.respond(LIST_EN, 200, Fixtures.read("rest/markets/market_descriptions.xml"));
         api.respond(VARIANT_EN, 200, list(player(DYNAMIC, "Player Two")));

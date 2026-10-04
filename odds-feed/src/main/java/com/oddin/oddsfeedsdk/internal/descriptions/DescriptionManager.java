@@ -51,7 +51,7 @@ public final class DescriptionManager implements MarketDescriptionManager {
 
     /**
      * Every market description in {@code locale}: the locale's list, and the dynamic-outcome variants
-     * held in it. Each reads as the listing does, asking no variant's endpoint. A new list each time,
+     * held in it. Each reads as the listing does: a row the list has asks no variant's endpoint. A new list each time,
      * as 0.0.x gave.
      */
     @Override
