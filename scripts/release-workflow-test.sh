@@ -317,15 +317,12 @@ for step in steps("publish"):
 # Last, the whole of release.yml against its pinned form: any change to it, in any job, has to
 # update scripts/release-workflow.json as well, in the same reviewed change. Comments do not count.
 actual_text = json.dumps(w, indent=2, sort_keys=True) + "\n"
-if pinned_path == "--print":
-    sys.stdout.write(actual_text)
-else:
-    pinned_text = open(pinned_path).read()
-    if actual_text != pinned_text:
-        diff = "".join(difflib.unified_diff(pinned_text.splitlines(True), actual_text.splitlines(True),
-                                             "scripts/release-workflow.json", "release.yml"))
-        problems.append("release.yml differs from its pinned form in scripts/release-workflow.json; if the "
-                        "change is meant, update it with scripts/release-workflow-test.sh --update:\n" + diff)
+pinned_text = open(pinned_path).read()
+if actual_text != pinned_text:
+    diff = "".join(difflib.unified_diff(pinned_text.splitlines(True), actual_text.splitlines(True),
+                                         "scripts/release-workflow.json", "release.yml"))
+    problems.append("release.yml differs from its pinned form in scripts/release-workflow.json; if the "
+                    "change is meant, update it with scripts/release-workflow-test.sh --update:\n" + diff)
 
 for problem in problems:
     print("FAIL " + problem, file=sys.stderr)
@@ -337,11 +334,20 @@ policy() {
   python3 "$work/policy.py" "$1" "$pinned"
 }
 
-# --update writes release.yml's current form as the pinned one, for a deliberate change to it
+# --update writes release.yml's current form as the pinned one, for a deliberate change to it.
+# Only loading and dumping, so that the file is written only when that worked; the policy below
+# then still has to pass.
 if [ "${1:-}" = "--update" ]; then
-  python3 "$work/policy.py" "$root" --print > "$pinned.part" || true
-  mv "$pinned.part" "$pinned"
-  echo "wrote $pinned; review the diff, and the policy below still has to pass"
+  if yq -o=json '.' "$root/.github/workflows/release.yml" \
+    | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), indent=2, sort_keys=True))' \
+      > "$pinned.part"; then
+    mv "$pinned.part" "$pinned"
+    echo "wrote $pinned; review the diff"
+  else
+    rm -f "$pinned.part"
+    echo "could not read release.yml; $pinned is unchanged" >&2
+    exit 1
+  fi
 fi
 
 if ! policy "$root"; then
