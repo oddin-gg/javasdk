@@ -104,7 +104,8 @@ runs each of these cases against a scratch repository and a stub Central, and
 `scripts/release-workflow-test.sh` holds `release.yml` and the workflows it calls to its policy:
 the release check always run, the upload only after check and build and only in the approved
 environment, no secrets or environment anywhere else, no cache there, and the tag checked
-again first.
+again first. `scripts/release-bundle-test.sh` runs the signed release build with a throwaway
+key against a stand-in portal and checks the bundle.
 
 ## When something fails
 
@@ -122,7 +123,9 @@ again first.
 
 ## Dry run
 
-The release build without signing or uploading, as CI checks it on every push:
+`scripts/release-bundle-test.sh`, as CI runs it on every push: the signed release build with a
+throwaway key, uploaded to a stand-in portal on `127.0.0.1`, and the bundle checked. Without
+signing or uploading:
 
 ```
 ./mvnw -Prelease -Dgpg.skip -Drevision=1.0.0-rc.1 -DskipTests -pl odds-feed -am verify

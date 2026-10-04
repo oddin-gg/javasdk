@@ -149,20 +149,11 @@ jobs:
           fi
           rm -rf "$(dirname "$installed")"
 
-      - name: Check the release build packages what Central needs
-        # The release profile adds the sources and javadoc jars, which nothing else builds: a
-        # javadoc error would otherwise surface only once a tag is pushed. Unsigned here; the
-        # bundle and its signatures are release.yml's.
-        run: |
-          version=0.0.0-release-check
-          ./mvnw --batch-mode --no-transfer-progress -Prelease -Dgpg.skip -Drevision=$version \
-            -DskipTests -pl odds-feed -am verify
-          for file in odds-feed-$version.jar odds-feed-$version-sources.jar odds-feed-$version-javadoc.jar; do
-            if [ ! -s "odds-feed/target/$file" ]; then
-              echo "the release build did not produce $file" >&2
-              exit 1
-            fi
-          done
+      - name: Check the release build signs and bundles what Central needs
+        # The release profile as release.yml runs it - sources, javadoc, signatures, the bundle
+        # and its upload - with a throwaway key and a stand-in portal on 127.0.0.1. Nothing else
+        # builds the signed bundle; broken signing would otherwise show only once a tag is pushed.
+        run: ./scripts/release-bundle-test.sh
 
       - name: Upload test reports
         if: always()
