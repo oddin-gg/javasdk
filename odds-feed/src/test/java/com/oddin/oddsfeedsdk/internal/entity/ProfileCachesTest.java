@@ -134,6 +134,22 @@ class ProfileCachesTest {
     }
 
     @Test
+    void aSportListsEachTournamentOnceInTheOrderTheApiSent() {
+        api.respond(
+                LOL_TOURNAMENTS_EN,
+                200,
+                Fixtures.read("rest/sport_tournaments/sport_tournaments.xml").replace("<tournaments>", """
+                                <tournaments>
+                                    <tournament id="od:tournament:1043" name="Second Tournament" abbreviation="" risk_tier="2">
+                                        <sport id="od:sport:1" name="League of Legends" abbreviation="LoL"/>
+                                    </tournament>"""));
+        Entry sport = caches.sportTournaments(LOL, EN, null);
+        assertThat(sport.get(SPORT_TOURNAMENTS, null))
+                .as("the repeat dropped, the first place kept")
+                .containsExactly(URN.parse("od:tournament:1043"), TOURNAMENT);
+    }
+
+    @Test
     void theSportListIsLoadedWholeOncePerLocaleAndAgain() {
         api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
         assertThat(caches.sports(EN, null)).containsExactly(LOL, CS2);

@@ -87,12 +87,14 @@ final class ProfileWrites {
         return listedSport(Write.from(SPORT_LISTED, locale), sport);
     }
 
-    /** A sport's tournaments. */
+    /**
+     * A sport's tournaments, each once, in the order the API sent them. The old SDK's cache, the Go
+     * SDK's and the .NET SDK drop a repeat too.
+     */
     static Write sportTournaments(Collection<RATournament> tournaments, Locale locale) {
+        var ids = ids(tournaments.stream().map(RATournament::getId).toList());
         return Write.from(SPORT_TOURNAMENT_LIST, locale)
-                .put(
-                        SPORT_TOURNAMENTS,
-                        ids(tournaments.stream().map(RATournament::getId).toList()));
+                .put(SPORT_TOURNAMENTS, ids.stream().distinct().toList());
     }
 
     private static Write team(Write write, RATeam team) {
