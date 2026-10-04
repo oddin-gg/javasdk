@@ -849,10 +849,12 @@ Performance is a requirement, not a follow-up.
 - Version from the git tag. GitHub Actions on `v1*` tags from `next` or `main`: build,
   compatibility checks, system tests against both versions, then a pipeline step that
   queries the target registry and fails if the version already exists, then sign and
-  publish. Release candidates publish automatically. A final version waits for a
-  manual approval step before the Central release, because Central is irreversible.
+  publish. Every release, candidates included, waits for a second person to approve the
+  upload, because Central is irreversible and the workflow a tag runs is the tagged
+  commit's own.
   The GitHub Release with the jar and POM is created afterwards. Signing key and
-  Central credentials live in the secrets of an environment only `v1.*` tags can use.
+  Central credentials live in the secrets of an environment only `v1.*` tags can use,
+  and only once its reviewers approve the job.
   `RELEASING.md` has the checklist.
 - The new line publishes `gg.oddin.oddsfeed:odds-feed` to Maven Central only. The old
   line keeps publishing `com.oddin.oddsfeed:odds-feed` to GitHub Packages only, from
@@ -1000,7 +1002,7 @@ group by group.
 ### Phase 4 – Release
 
 33. Maven Central pipeline: claim the `gg.oddin` namespace, signing, registry check
-    step, tag-driven publish with manual approval for finals. Also publish a last
+    step, tag-driven publish with manual approval. Also publish a last
     0.0.x version whose POM only relocates to the new coordinates, so a client who
     forgets to change the dependency is told by their own build. Also the GitHub
     Release, a coverage threshold, and the pre-release registry check on both lines.

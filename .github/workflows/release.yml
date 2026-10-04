@@ -1,8 +1,8 @@
 name: Java SDK 1.0 release
 
-# A v1.* tag publishes that version to Maven Central: a release candidate (v1.0.0-rc.1) right
-# away, a final (v1.0.0) once someone approves it. RELEASING.md has the checklist, the secrets
-# and the environments this needs.
+# A v1.* tag publishes that version to Maven Central - a release candidate (v1.0.0-rc.1) or a
+# final (v1.0.0) - once a second person approves the upload. RELEASING.md has the checklist,
+# the secrets and the environment this needs.
 on:
   push:
     tags:
@@ -47,37 +47,20 @@ jobs:
     with:
       revision: ${{ needs.check.outputs.version }}
 
-  approve:
-    name: Approve the final release
-    needs: [check, build]
-    if: needs.check.outputs.final == 'true'
-    runs-on: ubuntu-latest
-    # The approval is this environment's required reviewers; it holds no secrets. A final goes to
-    # every client who updates, and Central cannot take it back.
-    environment: maven-central-approval
-    steps:
-      - name: Approved
-        run: echo "$VERSION approved for Maven Central"
-        env:
-          VERSION: ${{ needs.check.outputs.version }}
-
   publish:
     name: Sign and publish to Maven Central
-    needs: [check, build, approve]
-    # a release candidate goes without approval (NEXT.md, section 9); a final waits for it
-    if: >-
-      !cancelled() && needs.build.result == 'success'
-      && (needs.approve.result == 'success'
-          || (needs.approve.result == 'skipped' && needs.check.outputs.final == 'false'))
+    # the default condition: check and build both succeeded
+    needs: [check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    # One upload at a time, set here so a final waiting for approval holds nobody up. GitHub
-    # keeps one run waiting per group and cancels it when a third arrives: RELEASING.md says
-    # to push a tag only once the previous release has finished.
+    # Runs for one version take turns: a tag deleted and pushed again cannot upload twice. Per
+    # version, so a run waiting days for its approval holds up no other version.
     concurrency:
-      group: maven-central
+      group: maven-central-${{ github.ref_name }}
       cancel-in-progress: false
-    # holds the portal token and the signing key, and serves v1.* tags only
+    # Holds the portal token and the signing key. Its required reviewers, who cannot approve
+    # their own run, are the release's approval, candidates included: GitHub enforces it outside
+    # this file, which the tag's commit decides and so cannot be trusted on its own.
     environment: maven-central
     steps:
       - name: Checkout
@@ -148,8 +131,7 @@ jobs:
   github-release:
     name: GitHub Release
     needs: [check, publish]
-    # explicit: the default condition would skip it whenever approve was skipped, for every
-    # release candidate, though publish ran
+    # only once Central has the version, for a release candidate as for a final
     if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:

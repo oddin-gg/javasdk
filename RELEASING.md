@@ -6,11 +6,11 @@ Central. `.github/workflows/release.yml` does the work:
 1. **check** - refuses the tag unless every pre-release check below passes.
 2. **build** - the branch CI (`next.yml`) on the tagged commit, at the tag's version: unit and
    system tests, the compatibility checks, the coverage floor, the sources and javadoc jars.
-3. **approve** - finals only: waits for a reviewer of the `maven-central-approval` environment.
-   Release candidates skip it.
-4. **publish** - builds `odds-feed` and the parent POM with the `release` profile, signs them,
-   uploads them to the Central Portal and waits until Central has published them.
-5. **github-release** - a GitHub Release for the tag, with `release-notes/<version>.md` as
+3. **publish** - waits until a reviewer of the `maven-central` environment approves it, for a
+   release candidate as for a final. Then it builds `odds-feed` and the parent POM with the
+   `release` profile, signs them, uploads them to the Central Portal and waits until Central
+   has published them.
+4. **github-release** - a GitHub Release for the tag, with `release-notes/<version>.md` as
    its text and the jar, the POM and their signatures attached.
 
 The version comes from the tag (`v1.0.0-rc.1` builds `1.0.0-rc.1` through `-Drevision`).
@@ -28,17 +28,19 @@ GitHub Packages.
 - [ ] **Signing key.** A key for releases only, not a person's. Its public half is on
       `keyserver.ubuntu.com` and `keys.openpgp.org`, where Central looks for it. Keep the
       revocation certificate offline, and note the expiry date somewhere it will be seen.
-- [ ] **Tag ruleset, before any secret exists.** Only the release reviewers may create,
-      move or delete `v*` tags, with no bypass for anyone else, admins included. This is what
-      protects the secrets and the approval: a tag runs `release.yml` as the tagged commit has
-      it, so the checks in it cannot stop a tag put on an unreviewed commit whose
-      `release.yml` skips them.
+- [ ] **Tag ruleset.** Only the release managers may create, move or delete `v*` tags, with no
+      bypass for anyone else, admins included. Defence in depth: a tag runs `release.yml` as
+      the tagged commit has it, so the checks in it cannot stop a tag put on an unreviewed
+      commit whose `release.yml` skips them. The environment's reviewers are the control.
 - [ ] **Only `release.yml` reacts to tags.** No other workflow on `next` or `main` may run on a
       `v1.*` tag: it would publish as well, unchecked. The check job refuses a tagged commit
       where another workflow would: a push trigger with tags or without a branch filter, or a
       `create` or `release` trigger.
-- [ ] **Environment `maven-central`** (Settings - Environments), with deployment rule
-      "selected tags": `v1.*`, and these secrets:
+- [ ] **Environment `maven-central`** (Settings - Environments), set up in this order:
+      1. required reviewers - at least two people, so someone other than the one who pushed
+         the tag can approve - with **"Prevent self-review"** on, and no bypass for admins;
+      2. deployment rule "selected tags": `v1.*`;
+      3. only then these secrets:
 
       | Secret | Value |
       |---|---|
@@ -47,11 +49,9 @@ GitHub Packages.
       | `MAVEN_GPG_KEY` | the signing key, ASCII-armoured secret key (`gpg --armor --export-secret-keys <id>`) |
       | `MAVEN_GPG_PASSPHRASE` | its passphrase |
 
-      As environment secrets they reach only a job running on a `v1.*` tag; who can push
-      such a tag is the ruleset's to limit.
-- [ ] **Environment `maven-central-approval`**, with required reviewers (the people who may
-      release a final; "prevent self-review" on), deployment rule "selected tags": `v1.*`, and
-      no secrets.
+      No job gets them before a second person approves it. GitHub enforces that outside the
+      workflow, which matters because the workflow is whatever the tagged commit says it is.
+      No other environment is needed.
 
 ## Every release
 
@@ -61,9 +61,8 @@ GitHub Packages.
 3. **Write the release notes** as `release-notes/<version>.md`, e.g.
    `release-notes/1.0.0-rc.1.md`, and merge them through a PR. A final needs this commit
    anyway: it may not share a commit with its last release candidate.
-4. **Tag the merged commit and push the tag,** once the previous release run has finished.
-   Uploads take turns, and GitHub cancels a waiting one when a third arrives; re-run a
-   cancelled run from the Actions page.
+4. **Tag the merged commit and push the tag.** Runs for one version take turns; runs for
+   different versions don't wait for each other.
 
    ```
    git fetch origin
@@ -71,9 +70,12 @@ GitHub Packages.
    git push origin v1.0.0-rc.1
    ```
 
-5. **Watch the run** under Actions - "Java SDK 1.0 release". A release candidate publishes on
-   its own. A final stops at **approve** until a reviewer approves the deployment, after the
-   build is green.
+5. **Approve the upload** under Actions - "Java SDK 1.0 release", once check and build are
+   green: every release, candidates included, stops at **publish** until a reviewer other than
+   the tag's author approves the `maven-central` deployment. Before approving, the reviewer
+   checks that the run's commit is on `next` or `main` and that its
+   `.github/workflows/release.yml` is the one on `next` (`git diff origin/next <commit> --
+   .github/`): the checks inside a tagged `release.yml` are only as trustworthy as that file.
 6. **Check the result:** the version in the portal's Deployments as Published, then on
    `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/` (it shows up within about 30
    minutes), and the GitHub Release with its four files.
@@ -94,13 +96,15 @@ when:
 
 Right before the upload, and again before the GitHub Release, the run asks GitHub whether the
 tag still names the commit it checked and built (`scripts/release-tag-check.sh`), and stops if
-it was moved or deleted - a final may have waited days for its approval.
+it was moved or deleted - a release may have waited days for its approval.
 
 The portal also refuses a version it already has, which covers the minutes before a published
 version appears in the repository. On every push to `next`, `scripts/release-check-test.sh`
 runs each of these cases against a scratch repository and a stub Central, and
-`scripts/release-workflow-test.sh` holds `release.yml` to its policy: a final only through the
-approval, the secrets only in the upload job, no cache there, and the tag checked again first.
+`scripts/release-workflow-test.sh` holds `release.yml` and the workflows it calls to its policy:
+the release check always run, the upload only after check and build and only in the approved
+environment, no secrets or environment anywhere else, no cache there, and the tag checked
+again first.
 
 ## When something fails
 
