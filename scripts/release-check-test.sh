@@ -328,7 +328,7 @@ expect accept v1.0.0 "$absent" 1.0.0 true
 started=$(git -C "$repo" rev-parse v1.0.0) expect accept v1.0.0 "$absent" 1.0.0 true
 # the run started for another commit: the tag moved before the check read it
 started=$(git -C "$repo" rev-parse "v1.0.0-rc.1^{commit}") expect refuse v1.0.0 "$absent" \
-  "the tag moved since this run started: it names $(git -C "$repo" rev-parse "v1.0.0^{commit}"), the run was started for $(git -C "$repo" rev-parse "v1.0.0-rc.1^{commit}"); push it again"
+  "the tag moved since this run started: it names $(git -C "$repo" rev-parse "v1.0.0^{commit}"), the run was started for $(git -C "$repo" rev-parse "v1.0.0-rc.1^{commit}"); tags cannot be moved back, so release a new version"
 expect accept v1.1.0 "$absent" 1.1.0 true
 expect accept v1.0.10 "$absent" 1.0.10 true
 

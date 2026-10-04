@@ -43,14 +43,15 @@ commit=$(git rev-parse --verify -q "refs/tags/$tag^{commit}") || fail "no such t
 # The tag must still name the commit the run was started for, GITHUB_SHA (for an annotated tag
 # GitHub may give the tag object; it is peeled). Asked of origin, as release-tag-check.sh does:
 # the checkout writes the local tag to GITHUB_SHA, so the local tag alone would always agree.
-# A tag moved after its push is refused here, and again right before the upload.
+# A tag moved after its push - which the tag ruleset leaves to those who may bypass it - is
+# refused here, and again right before the upload.
 started_commit=$(git rev-parse --verify -q "$started^{commit}") || started_commit=$started
 [ "$commit" = "$started_commit" ] \
-  || fail "the tag moved since this run started: it names $commit, the run was started for $started_commit; push it again"
+  || fail "the tag moved since this run started: it names $commit, the run was started for $started_commit; tags cannot be moved back, so release a new version"
 if ! asked=$("$(dirname "$0")/release-tag-check.sh" "$tag" "$started_commit" "${RELEASE_REMOTE:-origin}" 2>&1); then
   case "$asked" in
     *"could not ask"*) fail "${asked#"$tag: "}" ;;
-    *) fail "the tag moved since this run started: ${asked#"$tag: "}; push it again" ;;
+    *) fail "the tag moved since this run started: ${asked#"$tag: "}; tags cannot be moved back, so release a new version" ;;
   esac
 fi
 
