@@ -281,6 +281,16 @@ BUILD_WITH = {"revision": "${{ needs.check.outputs.version }}", "commit": "${{ n
 check(jobs["build"].get("with") == BUILD_WITH,
       "build must pass revision: ${{ needs.check.outputs.version }} and commit: ${{ needs.check.outputs.commit }}, "
       "not %r" % jobs["build"].get("with"))
+# and next.yml builds at that version: its build step hands inputs.revision to Maven as -Drevision
+BUILD_RUN = "./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION} verify"
+for path in sorted(seen):
+    builds = [step for job_def in load(path).get("jobs", {}).values() for step in job_def.get("steps", [])
+              if " ".join(str(step.get("run", "")).split()) == BUILD_RUN]
+    check(len(builds) == 1, "./%s must build once with: %s" % (os.path.relpath(path, root), BUILD_RUN))
+    for step in builds:
+        check((step.get("env") or {}).get("REVISION") == "${{ inputs.revision }}",
+              "./%s: the build's REVISION must be ${{ inputs.revision }}, not %r"
+              % (os.path.relpath(path, root), (step.get("env") or {}).get("REVISION")))
 # and next.yml builds that commit: every checkout there takes it
 for path in sorted(seen):
     for name, nested in load(path).get("jobs", {}).items():
@@ -645,6 +655,12 @@ breaks next.yml replace '    name: Build & Test
     permissions:
       contents: write
 ' "./.github/workflows/next.yml > build's permissions must be read-only"
+breaks next.yml replace '        run: ./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION} verify
+' '        run: ./mvnw --batch-mode --no-transfer-progress verify
+' ".github/workflows/next.yml must build once with"
+breaks next.yml replace '          REVISION: ${{ inputs.revision }}
+' '          REVISION: ${{ github.ref_name }}
+' ".github/workflows/next.yml: the build's REVISION must be"
 breaks next.yml replace '    name: Build & Test
     runs-on: ubuntu-latest
     steps:
