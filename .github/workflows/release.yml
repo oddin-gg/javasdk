@@ -109,8 +109,9 @@ jobs:
         with:
           java-version: '25'
           distribution: 'corretto'
-          cache: 'maven'
-          # the <server> the release profile uploads with; these name environment variables
+          # No cache: the build job, which runs far more code without secrets, writes it, and a
+          # plugin planted there would run here with the signing key and the token.
+          # The <server> the release profile uploads with; these name environment variables.
           server-id: central
           server-username: CENTRAL_TOKEN_USERNAME
           server-password: CENTRAL_TOKEN_PASSWORD
