@@ -9,7 +9,8 @@
 #
 # Run in a clone with every branch and tag (fetch-depth: 0). It reads the tagged commit from
 # git, not from the working tree. Writes version=, final= and commit= to $GITHUB_OUTPUT when
-# that is set, to stdout otherwise. Needs curl, gh (with GH_TOKEN and GITHUB_REPOSITORY), python3
+# that is set, to stdout otherwise. GITHUB_SHA is the commit the run was started for. Needs curl,
+# gh (with GH_TOKEN and GITHUB_REPOSITORY), python3
 # and yq (mikefarah's, on GitHub's runners). CENTRAL_URL replaces the Central repository and
 # CENTRAL_TIMEOUT the time limit in seconds of each lookup, Central's and GitHub's, for the test.
 set -euo pipefail
@@ -18,6 +19,7 @@ tag=${1:?usage: release-check.sh <tag>}
 central=${CENTRAL_URL:-https://repo1.maven.org/maven2}
 timeout=${CENTRAL_TIMEOUT:-60}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY names the repository whose pull requests count}
+started=${GITHUB_SHA:?GITHUB_SHA names the commit this run was started for}
 
 fail() {
   echo "$tag: $*" >&2
@@ -36,6 +38,13 @@ else
 fi
 
 commit=$(git rev-parse --verify -q "refs/tags/$tag^{commit}") || fail "no such tag here"
+
+# The tag as this clone has it must be the one the run was started for: build checks out that
+# commit, so a tag moved in between would have one commit tested and another published. GitHub
+# gives the commit as GITHUB_SHA; the annotated tag's own object is taken as well.
+object=$(git rev-parse --verify -q "refs/tags/$tag")
+[ "$started" = "$commit" ] || [ "$started" = "$object" ] \
+  || fail "the tag moved since this run started: it names $commit, the run was started for $started; push it again"
 
 # only what was reviewed and merged
 on_branch=

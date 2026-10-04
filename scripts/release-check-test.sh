@@ -184,7 +184,9 @@ expect() {
   : > "$work/out"
   : > "$work/requests"
   : > "$work/pulls/calls"
-  if (cd "$repo" && PATH=$work/bin:$PATH GH_STUB_PULLS=$work/pulls GITHUB_REPOSITORY=example/repo \
+  # the run was started for the tag's commit, unless a case says otherwise in $started
+  local sha=${started:-$(git -C "$repo" rev-parse -q --verify "$tag^{commit}" || echo none)}
+  if (cd "$repo" && PATH=$work/bin:$PATH GH_STUB_PULLS=$work/pulls GITHUB_REPOSITORY=example/repo GITHUB_SHA=$sha \
     GITHUB_OUTPUT=$work/out CENTRAL_URL=$url CENTRAL_TIMEOUT=2 bash "$check" "$tag") 2> "$work/err"; then
     got=accept
   else
@@ -312,6 +314,11 @@ release v1.2.0
 
 expect accept v1.0.0-rc.1 "$absent" 1.0.0-rc.1 false
 expect accept v1.0.0 "$absent" 1.0.0 true
+# the run started for the annotated tag's own object: the same tag
+started=$(git -C "$repo" rev-parse v1.0.0) expect accept v1.0.0 "$absent" 1.0.0 true
+# the run started for another commit: the tag moved before the check read it
+started=$(git -C "$repo" rev-parse "v1.0.0-rc.1^{commit}") expect refuse v1.0.0 "$absent" \
+  "the tag moved since this run started: it names $(git -C "$repo" rev-parse "v1.0.0^{commit}"), the run was started for $(git -C "$repo" rev-parse "v1.0.0-rc.1^{commit}"); push it again"
 expect accept v1.1.0 "$absent" 1.1.0 true
 expect accept v1.0.10 "$absent" 1.0.10 true
 
