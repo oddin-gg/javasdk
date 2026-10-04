@@ -656,6 +656,114 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aLossToldIsFollowedByTheNewChannelWhenAReconnectOpensIt() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        long before = session.epoch();
+        feed().removeExchange(FakeFeed.EXCHANGE);
+        try {
+            // the queue goes, and its reopens fail to bind to the exchange that is gone
+            feed().deleteClientQueues();
+            long deadline = System.nanoTime() + WAIT.toNanos();
+            while (session.failedReopens() < 1 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(told.events).containsExactly("lost in " + before);
+            feed().closeConnections();
+            events.await("down"::equals, WAIT);
+        } finally {
+            feed().restoreExchange(FakeFeed.EXCHANGE);
+        }
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        told.await(2);
+        assertThat(told.events).containsExactly("lost in " + before, "reopened in " + session.epoch() + ", open");
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+    }
+
+    @Test
+    void aLossToldIsFollowedByTheNewChannelWhenTheCallersResetOpensIt() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        long before = session.epoch();
+        // the claim held, so the transport's own reopen leaves the loss to the reset
+        assertThat(session.startReopen()).isTrue();
+        feed().deleteClientQueues();
+        awaitTaken(transport, session, false);
+        told.await(1);
+
+        session.reset();
+        assertThat(told.events).containsExactly("lost in " + before, "reopened in " + session.epoch() + ", open");
+        transport.released(session);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+        assertThat(told.events).as("told once").hasSize(2);
+    }
+
+    @Test
+    void aLossToldStaysToldThroughAResetWithNoConnectionUntilTheReconnectOpensTheChannel() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        long before = session.epoch();
+        assertThat(session.startReopen()).isTrue();
+        feed().deleteClientQueues();
+        awaitTaken(transport, session, false);
+        told.await(1);
+        feed().limitConnections(0);
+        try {
+            feed().closeConnections();
+            events.await("down"::equals, WAIT);
+            // no connection to open one on: the epoch moves, and nothing is bound yet
+            session.reset();
+            assertThat(session.epoch()).isGreaterThan(before);
+            assertThat(told.events).containsExactly("lost in " + before);
+        } finally {
+            feed().limitConnections(-1);
+        }
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        told.await(2);
+        assertThat(told.events).containsExactly("lost in " + before, "reopened in " + session.epoch() + ", open");
+        transport.released(session);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+    }
+
+    @Test
+    void aLossSeenAsTheChannelClosesIsNotTold() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var told = new ToldChannel();
+        var session = (SessionChannel) transport.addSession(allKeys(), told);
+        told.session = session;
+        transport.open();
+        var closedFirst = new AtomicBoolean();
+        // the callback found its channel current, and the transport closes the channel before it tells
+        session.beforeTellingLost = () -> {
+            Thread closing = Thread.ofVirtual().start(session::close);
+            try {
+                closing.join(WAIT);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            closedFirst.set(!closing.isAlive());
+        };
+
+        feed().deleteClientQueues();
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!closedFirst.get() && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(closedFirst).as("closed while the callback waited").isTrue();
+        Thread.sleep(200);
+        assertThat(told.events).isEmpty();
+    }
+
+    @Test
     void aLostConnectionAndAResetAreNotToldAsALostChannel() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var told = new ToldChannel();
@@ -745,6 +853,36 @@ class AmqpTransportTest {
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
         Thread.sleep(500);
         assertThat(events.count("up")).as("the connection it made was kept").isEqualTo(2);
+    }
+
+    @Test
+    void aChannelListenerThatThrowsOnTheNewChannelBreaksNeitherTheReopenNorTheReconnect() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys(), new ChannelEvents() {
+            @Override
+            public void reopened() {
+                throw new IllegalStateException("the listener failed");
+            }
+        });
+        transport.open();
+        long before = session.epoch();
+
+        feed().deleteClientQueues();
+        awaitReopened(session, before);
+        assertThat(session.failedReopens()).as("the reopen counts as made").isZero();
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+
+        // a loss the reconnect replaces
+        assertThat(session.startReopen()).isTrue();
+        feed().deleteClientQueues();
+        awaitTaken(transport, session, false);
+        feed().closeConnections();
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        transport.released(session);
+        assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
+        assertThat(events.events)
+                .as("one up for the one lost connection")
+                .containsExactly("connecting", "up", "down", "recovering", "up");
     }
 
     @Test
