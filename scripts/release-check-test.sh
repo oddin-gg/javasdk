@@ -284,8 +284,10 @@ release v1.0.14 ".github/workflows/ü.yml=$release_workflow"
 commit "-.github/workflows/ü.yml"
 release v1.0.15 ".github/workflows/nex[t].yml=$release_workflow"
 commit "-.github/workflows/nex[t].yml"
+release v1.0.28 ".github/workflows/old.yml=on: [push"
+commit -.github/workflows/old.yml
 release v1.0.16
-for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24 v1.0.25 v1.0.26; do
+for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24 v1.0.25 v1.0.26 v1.0.27; do
   release "$tag"
 done
 git -C "$repo" update-ref refs/remotes/origin/next HEAD
@@ -346,6 +348,7 @@ for tag in v1.0.6 v1.0.7 v1.0.8 v1.0.9 v1.0.11 v1.0.12; do
   expect refuse "$tag" "$absent" ".github/workflows/old.yml reacts to tags as well"
 done
 expect refuse v1.0.13 "$absent" ".github/workflows/old.yaml reacts to tags as well"
+expect refuse v1.0.28 "$absent" "could not read .github/workflows/old.yml"
 expect refuse v1.0.14 "$absent" "a workflow name outside A-Z a-z 0-9 . _ -"
 expect refuse v1.0.15 "$absent" ".github/workflows/nex[t].yml: a workflow name outside"
 # the odd names removed again, and next.yml still there: the literal removal hit only them
@@ -374,6 +377,13 @@ started=$v1025 in_dir=$work/moved in_remote=origin expect refuse v1.0.25 "$absen
   "the tag moved since this run started: now names $(git -C "$repo" rev-parse "v1.2.0^{commit}") on origin, not $v1025"
 [ "$(git -C "$work/moved" rev-parse "v1.0.25^{commit}")" = "$v1025" ] \
   || failed "v1.0.25: the clone's own tag moved, so the case did not test origin"
+# origin unreachable, and origin's tag deleted, from the same clone
+v1027=$(git -C "$repo" rev-parse "v1.0.27^{commit}")
+started=$v1027 in_dir=$work/moved in_remote=$work/nowhere expect refuse v1.0.27 "$absent" \
+  "could not ask $work/nowhere for the tag"
+git -C "$repo" tag -d v1.0.27 > /dev/null
+started=$v1027 in_dir=$work/moved in_remote=origin expect refuse v1.0.27 "$absent" \
+  "the tag moved since this run started: no longer on origin"
 touch "$work/pulls/closed.fail"
 expect refuse v1.0.24 "$absent" "could not ask GitHub for the pull requests merged into next"
 rm "$work/pulls/closed.fail"
