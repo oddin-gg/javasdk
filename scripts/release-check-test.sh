@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #
-# Runs scripts/release-check.sh against a scratch repository and a stub Central, and fails unless
-# every tag below is accepted, with the version and kind it should get and the Central lookups it
-# should make, or refused for the reason it should be.
+# Runs scripts/release-check.sh and scripts/release-tag-check.sh against a scratch repository and
+# a stub Central, and fails unless every tag below is accepted, with the version and kind it
+# should get and the Central lookups it should make, or refused for the reason it should be.
 # next.yml runs it on every push, so a change that lets a check pass everything shows up before
 # a tag relies on it. Needs git, curl, python3 and yq.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 check=$root/scripts/release-check.sh
+tag_check=$root/scripts/release-tag-check.sh
 work=$(mktemp -d)
 server=
 cleanup() {
@@ -146,6 +147,23 @@ $(cat "$work/requests")"
   echo "ok   $want $tag: $(tail -n 1 "$work/err")"
 }
 
+# expect_tag accept|refuse <tag> <commit> <what it says> [remote]
+expect_tag() {
+  local want=$1 tag=$2 commit=$3 reason=$4 remote=${5:-$repo} got
+  if (cd "$repo" && bash "$tag_check" "$tag" "$commit" "$remote") 2> "$work/err"; then
+    got=accept
+  else
+    got=refuse
+  fi
+  if [ "$got" != "$want" ]; then
+    failed "tag check $tag: expected $want, got $got: $(cat "$work/err")"
+  elif ! grep -qF -- "$reason" "$work/err"; then
+    failed "tag check $tag: not \"$reason\": $(cat "$work/err")"
+  else
+    echo "ok   $want tag check $tag: $(tail -n 1 "$work/err")"
+  fi
+}
+
 release_workflow='on:
   push:
     tags:
@@ -210,6 +228,17 @@ expect refuse v1.0.0 "$central/500" "could not tell whether Central has odds-fee
 expect refuse v1.0.0 "$central/404-500" "could not tell whether Central has odds-feed 1.0.0 (500"
 expect refuse v1.0.0 "$silent" "could not tell whether Central has odds-feed-parent 1.0.0 (no answer"
 expect refuse v1.0.0 "$central/stall" "could not tell whether Central has odds-feed-parent 1.0.0 (no answer"
+
+# the tag as the remote has it, right before the upload
+released=$(git -C "$repo" rev-parse "v1.0.0^{commit}")
+expect_tag accept v1.0.0 "$released" "still names $released"
+git -C "$repo" tag lightweight "$released"
+expect_tag accept lightweight "$released" "still names $released"
+git -C "$repo" tag -f -a -m moved v1.0.0 "v1.1.0^{commit}" > /dev/null
+expect_tag refuse v1.0.0 "$released" "now names $(git -C "$repo" rev-parse "v1.1.0^{commit}")"
+git -C "$repo" tag -d v1.0.0 > /dev/null
+expect_tag refuse v1.0.0 "$released" "no longer on"
+expect_tag refuse v1.0.0 "$released" "could not ask" "$work/nowhere"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures release check case(s) failed" >&2

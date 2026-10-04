@@ -20,6 +20,7 @@ jobs:
     outputs:
       version: ${{ steps.tag.outputs.version }}
       final: ${{ steps.tag.outputs.final }}
+      commit: ${{ steps.tag.outputs.commit }}
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -82,6 +83,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # the commit check accepted and build tested, whatever the tag names by now
+          ref: ${{ needs.check.outputs.commit }}
           persist-credentials: false
 
       - name: Check the secrets are set
@@ -111,6 +114,12 @@ jobs:
           server-id: central
           server-username: CENTRAL_TOKEN_USERNAME
           server-password: CENTRAL_TOKEN_PASSWORD
+
+      - name: Check the tag still names this commit
+        # a final can wait days for its approval, and the tag be moved or deleted meanwhile
+        run: ./scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT"
+        env:
+          COMMIT: ${{ needs.check.outputs.commit }}
 
       - name: Sign and publish
         # The published modules and what they build against: -am adds test-fakes, which odds-feed's
@@ -148,7 +157,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ needs.check.outputs.commit }}
           persist-credentials: false
+
+      - name: Check the tag still names the published commit
+        run: ./scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT"
+        env:
+          COMMIT: ${{ needs.check.outputs.commit }}
 
       - name: Fetch the published bundle
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
