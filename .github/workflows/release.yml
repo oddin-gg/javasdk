@@ -33,74 +33,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Read the version from the tag
+      - name: Check the tag
         id: tag
-        run: |
-          if [[ ! "$GITHUB_REF_NAME" =~ ^v(1\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))(-rc\.([1-9][0-9]*))?$ ]]; then
-            echo "$GITHUB_REF_NAME is neither v1.MINOR.PATCH nor v1.MINOR.PATCH-rc.N" >&2
-            exit 1
-          fi
-          version=${GITHUB_REF_NAME#v}
-          final=true
-          if [ -n "${BASH_REMATCH[4]}" ]; then
-            final=false
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "final=$final" >> "$GITHUB_OUTPUT"
-          echo "releasing $version, final: $final"
-
-      - name: Check the tagged commit is on next or main
-        run: |
-          commit=$(git rev-parse HEAD)
-          for branch in next main; do
-            if git rev-parse -q --verify "refs/remotes/origin/$branch" >/dev/null \
-              && git merge-base --is-ancestor "$commit" "refs/remotes/origin/$branch"; then
-              echo "$commit is on $branch"
-              exit 0
-            fi
-          done
-          echo "$commit is on neither next nor main: release only what was reviewed and merged" >&2
-          exit 1
-
-      - name: Check no other release tag names this commit
-        # one commit, one release (NEXT.md, section 9): a final needs a commit of its own after
-        # its last candidate, which its release notes give it
-        run: |
-          tags=$(git tag --points-at HEAD | grep -E '^v[0-9]' || true)
-          if [ "$tags" != "$GITHUB_REF_NAME" ]; then
-            echo "release tags on this commit:" >&2
-            echo "$tags" >&2
-            exit 1
-          fi
-
-      - name: Check the release notes are there
-        # the GitHub Release is made from them once Central has the version; missing then, they
-        # would leave a published version without its release
-        run: |
-          notes=release-notes/$VERSION.md
-          if [ ! -s "$notes" ]; then
-            echo "$notes is missing or empty" >&2
-            exit 1
-          fi
-        env:
-          VERSION: ${{ steps.tag.outputs.version }}
-
-      - name: Check Central does not have this version yet
-        # Central never takes a version back. 404 is the one answer that means "not there"; anything
-        # else stops the release. The repository shows a version some minutes after the portal
-        # publishes it, and for that window the portal itself refuses a version it already has.
-        run: |
-          for artifact in odds-feed-parent odds-feed; do
-            url=https://repo1.maven.org/maven2/gg/oddin/oddsfeed/$artifact/$VERSION/$artifact-$VERSION.pom
-            status=$(curl -sS -o /dev/null -w '%{http_code}' "$url") || status="no answer"
-            case "$status" in
-              404) echo "not on Central: $artifact $VERSION" ;;
-              200) echo "$artifact $VERSION is already on Central" >&2; exit 1 ;;
-              *) echo "could not tell whether $artifact $VERSION is on Central ($status from $url)" >&2; exit 1 ;;
-            esac
-          done
-        env:
-          VERSION: ${{ steps.tag.outputs.version }}
+        # The tag's form, its commit on next or main and alone, the release notes, no other
+        # workflow reacting to tags, and the version not on Central. release-check-test.sh, run
+        # by next.yml on every push, holds each of these to its cases.
+        run: ./scripts/release-check.sh "$GITHUB_REF_NAME"
 
   build:
     name: Build and test
