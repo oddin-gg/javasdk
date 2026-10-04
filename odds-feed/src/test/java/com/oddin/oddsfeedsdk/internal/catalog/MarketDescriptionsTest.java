@@ -151,6 +151,23 @@ class MarketDescriptionsTest {
                 .extracting(Outcome::name)
                 .as("none has it: the row with no variant, not the row of another")
                 .containsExactly("No Variant");
+        api.respond(
+                "/v1/descriptions/de/markets/768/variants/od:dynamic_outcomes:9",
+                200,
+                list(plain, asked.replace(DYNAMIC, "od:dynamic_outcomes:9")));
+        assertThat(requireNonNull(markets.market(768, "od:dynamic_outcomes:9", DE))
+                        .outcomes())
+                .extracting(Outcome::name)
+                .as("the variant's own row, though one with no variant comes first")
+                .containsExactly("Player Two");
+        String empty = "<market id=\"768\" name=\"Player to Score\" variant=\"\">"
+                + "<outcomes><outcome id=\"od:player:4\" name=\"Empty Variant\"/></outcomes></market>";
+        api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:11", 200, list(other, empty));
+        assertThat(requireNonNull(markets.market(768, "od:dynamic_outcomes:11", EN))
+                        .outcomes())
+                .extracting(Outcome::name)
+                .as("an empty variant is none")
+                .containsExactly("Empty Variant");
     }
 
     @Test
