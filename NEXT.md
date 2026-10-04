@@ -1013,3 +1013,9 @@ schema. Woodstox is Apache 2.0, its one dependency BSD.
 - 2026-10-03: the 24-hour maximum staleness of the catalogs is dropped. A catalog entry
   is served stale for as long as refreshes fail, as 0.0.x did; the health reports how
   long, for `getHealth()` to show as degraded.
+- 2026-10-04, ticket 32: the Go SDK swept from 1.4.0 (`f0e8728`) to `a9d29d9`, the .NET
+  SDK from 2026-09-07 to `66fcfca`. One fix applied to merged code: the transport tells a
+  session when the broker takes its channel and when a new one is bound, which recovery
+  after a lost channel needs. Every other fix is in place already or named for the ticket
+  that carries it; the table is in the pull request. The next sweep starts from these
+  two commits.
