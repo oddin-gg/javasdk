@@ -7,6 +7,13 @@ on:
   push:
     branches:
       - 'next'
+  # release.yml runs this same build on the tagged commit, as the tag's version
+  workflow_call:
+    inputs:
+      revision:
+        description: The version to build as, from the release tag
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -91,8 +98,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and test
-        run: ./mvnw --batch-mode --no-transfer-progress verify
+        # no revision outside a release: the build keeps the version in the POM
+        run: ./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION} verify
         env:
+          REVISION: ${{ inputs.revision }}
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -129,6 +138,21 @@ jobs:
             exit 1
           fi
           rm -rf "$(dirname "$installed")"
+
+      - name: Check the release build packages what Central needs
+        # The release profile adds the sources and javadoc jars, which nothing else builds: a
+        # javadoc error would otherwise surface only once a tag is pushed. Unsigned here; the
+        # bundle and its signatures are release.yml's.
+        run: |
+          version=0.0.0-release-check
+          ./mvnw --batch-mode --no-transfer-progress -Prelease -Dgpg.skip -Drevision=$version \
+            -DskipTests -pl odds-feed -am verify
+          for file in odds-feed-$version.jar odds-feed-$version-sources.jar odds-feed-$version-javadoc.jar; do
+            if [ ! -s "odds-feed/target/$file" ]; then
+              echo "the release build did not produce $file" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload test reports
         if: always()
