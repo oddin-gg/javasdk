@@ -4,8 +4,9 @@ A `v1.*` tag on a commit of `next` or `main` releases `gg.oddin.oddsfeed:odds-fe
 Central. `.github/workflows/release.yml` does the work:
 
 1. **check** - refuses the tag unless every pre-release check below passes.
-2. **build** - the branch CI (`next.yml`) on the tagged commit, at the tag's version: unit and
-   system tests, the compatibility checks, the coverage floor, the sources and javadoc jars.
+2. **build** - the branch CI (`next.yml`) on the commit the check accepted, at the tag's
+   version: unit and system tests, the compatibility checks, the coverage floor, the signed
+   release bundle against a stand-in portal.
 3. **publish** - waits until a reviewer of the `maven-central` environment approves it, for a
    release candidate as for a final. Then it builds `odds-feed` and the parent POM with the
    `release` profile, signs them, uploads them to the Central Portal and waits until Central
@@ -112,6 +113,8 @@ The **check** job (`scripts/release-check.sh`) fails the release, before anythin
 when:
 
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
+- the tag no longer names the commit the run was started for (it moved in between: push it
+  again);
 - the tagged commit is on neither `next` nor `main`, or is not the merge commit of a PR merged
   into one of them (an intermediate commit of a rebase-merged PR is on `next`, but was never
   reviewed as a state of its own);
