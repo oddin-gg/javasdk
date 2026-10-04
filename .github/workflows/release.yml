@@ -71,6 +71,8 @@ jobs:
           persist-credentials: false
 
       - name: Check the secrets are set
+        # this step and the upload are the only ones with the secrets (release-workflow-test.sh)
+        id: secrets
         # before the build, so a missing one fails here and not halfway through the upload
         run: |
           missing=0
@@ -106,6 +108,7 @@ jobs:
           COMMIT: ${{ needs.check.outputs.commit }}
 
       - name: Sign and publish
+        id: upload
         # The published modules and what they build against: -am adds test-fakes, which odds-feed's
         # tests compile against and which is not published. The whole reactor would fail anyway -
         # the Central plugin refuses system-tests, which has no jar, even when told to skip it.
@@ -141,6 +144,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          # the commit Central got
           ref: ${{ needs.check.outputs.commit }}
           persist-credentials: false
 
