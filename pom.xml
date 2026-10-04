@@ -102,6 +102,16 @@
     <jacoco-maven-plugin.version>0.8.13</jacoco-maven-plugin.version>
     <flatten-maven-plugin.version>1.8.0</flatten-maven-plugin.version>
     <spotless-maven-plugin.version>3.10.3</spotless-maven-plugin.version>
+    <maven-source-plugin.version>3.4.0</maven-source-plugin.version>
+    <maven-javadoc-plugin.version>3.12.0</maven-javadoc-plugin.version>
+    <maven-gpg-plugin.version>3.2.8</maven-gpg-plugin.version>
+    <central-publishing-maven-plugin.version>0.11.0</central-publishing-maven-plugin.version>
+
+    <!--
+      Whether a module is published. A module that is not sets it to true, and the release profile
+      reads it for the sources, the javadoc, the signatures and the Central upload alike.
+    -->
+    <maven.deploy.skip>false</maven.deploy.skip>
   </properties>
 
   <dependencyManagement>
@@ -331,4 +341,119 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <!--
+        The release build: sources and javadoc jars, signatures, and the upload to Central, for every
+        module whose maven.deploy.skip is false. .github/workflows/release.yml runs it from a tag;
+        RELEASING.md has the rest.
+      -->
+      <id>release</id>
+      <properties>
+        <maven.source.skip>${maven.deploy.skip}</maven.source.skip>
+        <maven.javadoc.skip>${maven.deploy.skip}</maven.javadoc.skip>
+        <gpg.skip>${maven.deploy.skip}</gpg.skip>
+        <!--
+          By default the upload stops once Central has validated it, and someone presses Publish in
+          the portal. The release workflow passes true and published: Central cannot take a version back.
+        -->
+        <central.autoPublish>false</central.autoPublish>
+        <central.waitUntil>validated</central.waitUntil>
+      </properties>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-enforcer-plugin</artifactId>
+            <executions>
+              <execution>
+                <!-- a SNAPSHOT would go to Central's snapshot repository instead: pass -Drevision -->
+                <id>enforce-release-version</id>
+                <goals>
+                  <goal>enforce</goal>
+                </goals>
+                <configuration>
+                  <rules>
+                    <requireReleaseVersion/>
+                  </rules>
+                </configuration>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-source-plugin</artifactId>
+            <version>${maven-source-plugin.version}</version>
+            <executions>
+              <execution>
+                <id>attach-sources</id>
+                <goals>
+                  <goal>jar-no-fork</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-javadoc-plugin</artifactId>
+            <version>${maven-javadoc-plugin.version}</version>
+            <configuration>
+              <quiet>true</quiet>
+              <!-- broken references and HTML still fail it; a missing comment does not -->
+              <doclint>all,-missing</doclint>
+              <!-- public only because Java has no other way across packages; not API (NEXT.md, section 3) -->
+              <excludePackageNames>*.internal:*.internal.*</excludePackageNames>
+            </configuration>
+            <executions>
+              <execution>
+                <id>attach-javadocs</id>
+                <goals>
+                  <goal>jar</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-gpg-plugin</artifactId>
+            <version>${maven-gpg-plugin.version}</version>
+            <configuration>
+              <!--
+                Bouncy Castle in the build, no gpg binary or agent: the armoured key comes from
+                MAVEN_GPG_KEY and its passphrase from MAVEN_GPG_PASSPHRASE, and from nowhere else.
+              -->
+              <signer>bc</signer>
+              <bestPractices>true</bestPractices>
+            </configuration>
+            <executions>
+              <execution>
+                <id>sign-artifacts</id>
+                <phase>verify</phase>
+                <goals>
+                  <goal>sign</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+          <plugin>
+            <!-- takes over deploy: one bundle of every published module, uploaded to the Central Portal -->
+            <groupId>org.sonatype.central</groupId>
+            <artifactId>central-publishing-maven-plugin</artifactId>
+            <version>${central-publishing-maven-plugin.version}</version>
+            <extensions>true</extensions>
+            <configuration>
+              <!-- the <server> holding the portal token; setup-java writes it in CI -->
+              <publishingServerId>central</publishingServerId>
+              <skipPublishing>${maven.deploy.skip}</skipPublishing>
+              <deploymentName>odds-feed ${project.version}</deploymentName>
+              <autoPublish>${central.autoPublish}</autoPublish>
+              <waitUntil>${central.waitUntil}</waitUntil>
+              <waitMaxTime>3600</waitMaxTime>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
 </project>
