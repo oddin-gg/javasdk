@@ -127,14 +127,44 @@ if release_if:
 
 # Secrets and environments: publish alone, here and in every workflow these jobs call, however
 # deep. A called workflow runs on the tag too, so maven-central would admit it.
+#
+# A secret is read through an expression: ${{ }} anywhere, or an if: without it. Any use of the
+# secrets context there counts - secrets.X, secrets['X'], secrets[format(...)], toJSON(secrets),
+# bare secrets - except secrets.GITHUB_TOKEN, the job token.
+def expressions(value, key=None):
+    if isinstance(value, dict):
+        for k, v in value.items():
+            yield from expressions(v, k)
+    elif isinstance(value, list):
+        for v in value:
+            yield from expressions(v)
+    elif isinstance(value, str):
+        yield from re.findall(r"\$\{\{(.*?)\}\}", value, re.S)
+        if key == "if" and "${{" not in value:
+            yield value
+
+def secret_reads(value, allow_token=True):
+    reads = []
+    for expression in expressions(value):
+        for m in re.finditer(r"\bsecrets\b", expression):
+            rest = expression[m.end():]
+            if allow_token and re.match(r"\.GITHUB_TOKEN\b", rest):
+                continue
+            reads.append(expression.strip())
+    return reads
+
 def isolated(where, job_def, allowed_environment=None):
-    text = json.dumps(job_def)
     if allowed_environment is None:
         check(environment(job_def) is None, "%s must not use an environment" % where)
-        others = set(re.findall(r"secrets\.(\w+)", text)) - {"GITHUB_TOKEN"}
-        check(not others, "%s must not read secrets: %s" % (where, ", ".join(sorted(others))))
-    check(not re.search(r"toJSON\(\s*secrets\s*\)", text, re.I), "%s must not hand out every secret" % where)
+        reads = secret_reads(job_def)
+        check(not reads, "%s must not read secrets: %s" % (where, "; ".join(reads)))
     check(job_def.get("secrets") is None, "%s must not pass secrets on" % where)
+
+def workflow_level(where, workflow):
+    # env and defaults here reach every job; no secret at all, not even the job token
+    rest = {k: v for k, v in workflow.items() if k != "jobs"}
+    reads = secret_reads(rest, allow_token=False)
+    check(not reads, "%s must not read secrets outside its jobs: %s" % (where, "; ".join(reads)))
 
 seen = set()
 def called(where, job_def):
@@ -147,13 +177,23 @@ def called(where, job_def):
     if path in seen:
         return
     seen.add(path)
-    for name, nested in load(path).get("jobs", {}).items():
+    nested_workflow = load(path)
+    workflow_level(uses, nested_workflow)
+    for name, nested in nested_workflow.get("jobs", {}).items():
         isolated("%s > %s" % (uses, name), nested)
         called("%s > %s" % (uses, name), nested)
 
+workflow_level("release.yml", w)
 for name, job_def in jobs.items():
     isolated(name, job_def, "maven-central" if name == "publish" else None)
     called(name, job_def)
+
+# publish: the token and the key only on the steps that need them, not on the job
+publish_level = {k: v for k, v in jobs["publish"].items() if k != "steps"}
+check(not secret_reads(publish_level), "publish must read secrets on its steps only, not as a job")
+for step in steps("publish"):
+    if secret_reads(step) and not (" deploy" in str(step.get("run", "")) or step.get("name") == "Check the secrets are set"):
+        problems.append("publish: only the secrets check and the upload may read secrets, not %r" % step.get("name"))
 
 # publish: no cache another job could have written - no cache action in any form, no cache input
 # on any setup action
@@ -193,21 +233,29 @@ if ! policy "$root"; then
 fi
 echo "release.yml keeps its release policy"
 
-# Each rule broken once, in a copy: the policy must refuse each copy, for that rule.
+# Each rule broken once, in a copy: the policy must refuse each copy, for that rule. A break
+# names text that occurs exactly once in its file, so it lands where it is meant to.
 failures=0
-# breaks <workflow file> <what to replace> <what with> <what the refusal says>
+# breaks <workflow file> replace <text> <new text> <what the refusal says>
+# breaks <workflow file> move <text> <anchor> <what the refusal says>  (puts text after anchor)
 breaks() {
-  local file=$1 old=$2 new=$3 reason=$4 copy=$work/copy
+  local file=$1 how=$2 old=$3 new=$4 reason=$5 copy=$work/copy
   rm -rf "$copy"
   mkdir -p "$copy/.github"
   cp -R "$root/.github/workflows" "$copy/.github/"
-  if ! python3 - "$copy/.github/workflows/$file" "$old" "$new" <<'EOF'
+  if ! python3 - "$copy/.github/workflows/$file" "$how" "$old" "$new" <<'EOF'
 import sys
-path, old, new = sys.argv[1:]
+path, how, old, new = sys.argv[1:]
 text = open(path).read()
-if old not in text:
-    sys.exit("the text to replace is not in " + path + ": " + old)
-open(path, "w").write(text.replace(old, new, 1))
+for needle in (old,) if how == "replace" else (old, new):
+    if text.count(needle) != 1:
+        sys.exit("%d times, not once, in %s: %s" % (text.count(needle), path, needle))
+if how == "replace":
+    text = text.replace(old, new)
+else:
+    text = text.replace(old, "")
+    text = text.replace(new, new + "\n" + old.rstrip("\n") + "\n")
+open(path, "w").write(text)
 EOF
   then
     echo "FAIL could not break the copy for \"$reason\"" >&2
@@ -225,52 +273,102 @@ EOF
   fi
 }
 
-check_step='        run: ./scripts/release-check.sh "$GITHUB_REF_NAME"'
-tag_step='      - name: Check the tag still names this commit
+top='permissions:
+  contents: read
+
+jobs:
 '
-breaks release.yml "$check_step" '        run: echo "version=1.0.0" >> "$GITHUB_OUTPUT"' \
+check_job='    name: Check the tag
+'
+check_step='        run: ./scripts/release-check.sh "$GITHUB_REF_NAME"'
+publish_job='    name: Sign and publish to Maven Central
+'
+publish_tag='      - name: Check the tag still names this commit
+        # a release can wait days for its approval, and the tag be moved or deleted meanwhile
+        run: ./scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT"
+'
+publish_tag_step="$publish_tag"'        env:
+          COMMIT: ${{ needs.check.outputs.commit }}
+
+'
+release_job='    name: GitHub Release
+'
+release_tag='      - name: Check the tag still names the published commit
+        run: ./scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT"
+'
+release_tag_step="$release_tag"'        env:
+          COMMIT: ${{ needs.check.outputs.commit }}
+
+'
+
+# the workflow itself
+breaks release.yml replace 'on:
+  push:
+' 'on:
+  workflow_dispatch:
+  push:
+' "release.yml must run on v1.* tags only"
+breaks release.yml replace "$top" 'permissions:
+  contents: write
+
+jobs:
+' "the workflow default must be contents: read"
+breaks release.yml replace "$top" "${top%jobs:
+}env:
+  LEAK: \${{ secrets.MAVEN_GPG_KEY }}
+
+jobs:
+" "release.yml must not read secrets outside its jobs"
+
+# check
+breaks release.yml replace "$check_step" '        run: echo "version=1.0.0" >> "$GITHUB_OUTPUT"' \
   'check must run ./scripts/release-check.sh "$GITHUB_REF_NAME" as a step of its own'
-breaks release.yml "$check_step" "        if: false
+breaks release.yml replace "$check_step" "        if: false
 $check_step" "check: the release check must not be conditional"
-breaks release.yml "$check_step" "        continue-on-error: true
+breaks release.yml replace "$check_step" "        continue-on-error: true
 $check_step" "check: the release check must not continue on error"
-breaks release.yml '      version: ${{ steps.tag.outputs.version }}' '      version: 1.0.0' \
+breaks release.yml replace '      version: ${{ steps.tag.outputs.version }}' '      version: 1.0.0' \
   "check's version must be the release check's own output"
-breaks release.yml '      final: ${{ steps.tag.outputs.final }}' "      final: 'false'" \
+breaks release.yml replace '      final: ${{ steps.tag.outputs.final }}' "      final: 'false'" \
   "check's final must be the release check's own output"
-breaks release.yml '    name: Check the tag
-' '    name: Check the tag
-    if: false
-' "check must not be conditional"
-breaks release.yml '    environment: maven-central' '    environment: production' "publish must use maven-central"
-breaks release.yml '    needs: [check, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 90' '    needs: [check, build]
-    if: ${{ always() }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 90' "publish with check=failure"
-breaks release.yml '    needs: [check, publish]' '    needs: [check, publish]
-    environment: maven-central' "github-release must not use an environment"
-breaks release.yml "if: \${{ !cancelled() && needs.publish.result == 'success' }}" \
-  "if: \${{ !cancelled() && needs.publish.result == 'success' && needs.check.outputs.final == 'false' }}" \
-  "github-release with publish=success final=true"
-breaks release.yml '      revision: ${{ needs.check.outputs.version }}' '      revision: ${{ needs.check.outputs.version }}
+breaks release.yml replace "$check_job" "${check_job}    if: false
+" "check must not be conditional"
+breaks release.yml replace "$check_job" "${check_job}    continue-on-error: true
+" "check must not continue on error"
+
+# build
+breaks release.yml replace '      revision: ${{ needs.check.outputs.version }}' '      revision: ${{ needs.check.outputs.version }}
     secrets: inherit' "build must not pass secrets on"
-breaks release.yml '          GH_REPO: ${{ github.repository }}' '          GH_REPO: ${{ github.repository }}
-          LEAK: ${{ secrets.MAVEN_GPG_KEY }}' "github-release must not read secrets: MAVEN_GPG_KEY"
-breaks next.yml '    name: Build & Test
-    runs-on: ubuntu-latest' '    name: Build & Test
-    environment: maven-central
-    runs-on: ubuntu-latest' "./.github/workflows/next.yml > build must not use an environment"
-breaks next.yml '          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}' '          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          KEY: ${{ secrets.MAVEN_GPG_KEY }}' "./.github/workflows/next.yml > build must not read secrets: MAVEN_GPG_KEY"
-breaks next.yml '          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}' '          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ALL: ${{ toJSON(secrets) }}' "./.github/workflows/next.yml > build must not hand out every secret"
-breaks release.yml "$tag_step" "${tag_step}        continue-on-error: true
-" "publish: the tag check must not continue on error"
-breaks release.yml 'run: ./scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT"' \
-  'run: ./scripts/release-tag-check.sh "$GITHUB_REF_NAME" "$COMMIT" || true' "publish: the tag check must run"
-breaks release.yml '      - name: Sign and publish
+
+# publish
+breaks release.yml replace '    environment: maven-central
+' '    environment: production
+' "publish must use maven-central"
+breaks release.yml replace "$publish_job" "${publish_job}    if: \${{ always() }}
+" "publish with check=failure"
+breaks release.yml replace "$publish_job" "${publish_job}    continue-on-error: true
+" "publish must not continue on error"
+breaks release.yml replace '    environment: maven-central
+' '    environment: maven-central
+    env:
+      KEY: ${{ secrets.MAVEN_GPG_KEY }}
+' "publish must read secrets on its steps only"
+breaks release.yml replace "$publish_tag_step" "${publish_tag_step%
+}          KEY: \${{ secrets.MAVEN_GPG_KEY }}
+
+" "publish: only the secrets check and the upload may read secrets"
+breaks release.yml replace "$publish_tag" "${publish_tag%%        # *}        if: false
+${publish_tag#*
+}" "publish: the tag check must not be conditional"
+breaks release.yml replace "$publish_tag" "${publish_tag%%        # *}        continue-on-error: true
+${publish_tag#*
+}" "publish: the tag check must not continue on error"
+breaks release.yml replace "$publish_tag" "${publish_tag%
+} || true
+" "publish: the tag check must run"
+breaks release.yml move "$publish_tag_step" '          if-no-files-found: error
+' "publish must check the tag again before it deploys"
+breaks release.yml replace '      - name: Sign and publish
 ' '      - name: Restore
         uses: actions/cache/restore@v4
         with:
@@ -279,10 +377,53 @@ breaks release.yml '      - name: Sign and publish
 
       - name: Sign and publish
 ' "publish must not restore a cache: actions/cache/restore@v4"
-breaks release.yml "          distribution: 'corretto'
+breaks release.yml replace "          distribution: 'corretto'
           # No cache" "          distribution: 'corretto'
           cache: 'maven'
           # No cache" "publish must not restore a cache: actions/setup-java"
+
+# github-release
+breaks release.yml replace '    needs: [check, publish]
+' '    needs: [check]
+' "github-release must need publish"
+breaks release.yml replace "if: \${{ !cancelled() && needs.publish.result == 'success' }}" \
+  "if: \${{ !cancelled() && needs.publish.result == 'success' && needs.check.outputs.final == 'false' }}" \
+  "github-release with publish=success final=true"
+breaks release.yml replace "$release_job" "${release_job}    continue-on-error: true
+" "github-release must not continue on error"
+breaks release.yml replace "$release_job" "${release_job}    environment: maven-central
+" "github-release must not use an environment"
+breaks release.yml replace '          GH_REPO: ${{ github.repository }}' '          GH_REPO: ${{ github.repository }}
+          LEAK: ${{ secrets.MAVEN_GPG_KEY }}' "github-release must not read secrets"
+breaks release.yml replace "$release_tag" "${release_tag%%        run:*}        if: false
+        run: ${release_tag#*run: }" "github-release: the tag check must not be conditional"
+breaks release.yml replace "$release_tag" "${release_tag%
+} || true
+" "github-release: the tag check must run"
+breaks release.yml move "$release_tag_step" '          GH_REPO: ${{ github.repository }}
+' "github-release must check the tag again before it creates the release"
+
+# next.yml, which release.yml calls
+breaks next.yml replace 'permissions:
+  contents: read
+  packages: read
+' 'permissions:
+  contents: read
+  packages: read
+
+env:
+  LEAK: ${{ secrets.MAVEN_GPG_KEY }}
+' "./.github/workflows/next.yml must not read secrets outside its jobs"
+breaks next.yml replace '    name: Build & Test
+' '    name: Build & Test
+    environment: maven-central
+' "./.github/workflows/next.yml > build must not use an environment"
+for read in 'secrets.MAVEN_GPG_KEY' "secrets['MAVEN_GPG_KEY']" "secrets[format('MAVEN_{0}', 'GPG_KEY')]" 'toJSON(secrets)'; do
+  breaks next.yml replace '          REVISION: ${{ inputs.revision }}
+' "          REVISION: \${{ inputs.revision }}
+          LEAK: \${{ $read }}
+" "./.github/workflows/next.yml > build must not read secrets: $read"
+done
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures broken copies were not refused as they should be" >&2
