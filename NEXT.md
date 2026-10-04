@@ -533,8 +533,10 @@ and REST workers post facts to it; it decides and posts work out.
   raw value is the number as decoded). The public message enums in `mq.entities`, such
   as `MarketStatus` and `FixtureChangeType`, stay source compatible: no new constants,
   no new getters, and an unknown wire value behaves as in 0.0.x. An unknown fixture
-  change type reads `OTHER_CHANGE`; an unknown market status makes the message
-  unparsable. Unknown attributes and elements
+  change type reads `OTHER_CHANGE`. A message with an unknown market status is still
+  delivered, and the getter that meets the status - `getMarkets()` of an odds change,
+  `getMarketStatus()` of a bet stop - throws a `NullPointerException`, as in 0.0.x.
+  Unknown attributes and elements
   are ignored in production and fail the golden tests, so producer drift shows up in
   CI, not at a client.
 
