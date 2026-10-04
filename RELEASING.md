@@ -78,8 +78,9 @@ GitHub Packages.
    anyway: it may not share a commit with its last release candidate.
 4. **Tag the merge commit of the notes PR and push the tag** - or the current tip of `next`,
    which is always the merge commit of the last PR merged. Not an older commit on `next`: see
-   step 5. Runs for one version take turns; runs for different versions don't wait for each
-   other.
+   step 5. Publish jobs for one version never overlap: one runs, at most one waits, and a
+   newer run replaces a waiting one; different versions don't wait for each other. A version
+   is never uploaded twice because Central refuses one it has, as does the check job's lookup.
 
    ```
    git fetch origin
