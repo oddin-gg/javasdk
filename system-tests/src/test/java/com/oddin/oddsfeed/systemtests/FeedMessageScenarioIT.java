@@ -226,6 +226,23 @@ class FeedMessageScenarioIT {
         }
     }
 
+    /** A change type the schema does not have reads as another change, as in 0.0.x. */
+    @Test
+    void aFixtureChangeOfAnUnknownTypeIsDeliveredAsAnotherChange() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            Received received = sdk.open(MessageInterest.ALL);
+            String message = Fixtures.read("feed/fixture_change/fixture_change.xml");
+            assertThat(message).as("the fixture's change type").contains("change_type=\"1\"");
+            Sent.publishing(feed, message.replace("change_type=\"1\"", "change_type=\"99\""));
+
+            FixtureChange<?> change = received.next(FixtureChange.class);
+            assertThat(change.getEvent().getId()).as("event").isEqualTo(MATCH);
+            assertThat(change.getChangeType()).as("change type").isEqualTo(FixtureChangeType.OTHER_CHANGE);
+        }
+    }
+
     /**
      * A bet stop for some market groups names them separated by a pipe. 0.0.x splits the attribute
      * on the two characters {@code \|} rather than on the pipe, and hands back one group.
