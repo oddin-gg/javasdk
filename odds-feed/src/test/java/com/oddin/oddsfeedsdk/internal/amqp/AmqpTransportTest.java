@@ -562,6 +562,37 @@ class AmqpTransportTest {
     }
 
     @Test
+    void closeDoesNotWaitForAReconnectsHandshake() throws Exception {
+        // a connect timeout far longer than close() may take; the heartbeat notices the frozen broker
+        AmqpSettings slow = withTimeouts(settings(10, 1 << 20), Duration.ofSeconds(1), Duration.ofSeconds(30));
+        AmqpTransport transport = transport(slow, false);
+        transport.addSession(allKeys());
+        transport.open();
+        feed().pause();
+        try {
+            events.await("recovering"::equals, Duration.ofSeconds(15));
+            // past the first pause, so the reconnect waits on a broker that does not answer
+            Thread.sleep(1_000);
+            long closing = System.nanoTime();
+            transport.close();
+            assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                    .as("close() while a reconnect waits for the broker's handshake")
+                    .isLessThan(Duration.ofSeconds(5));
+        } finally {
+            feed().resume();
+        }
+        Thread.sleep(500);
+        assertThat(events.count("up")).as("no up after the close").isEqualTo(1);
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!feed().openConnections().isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(100);
+        }
+        assertThat(feed().openConnections())
+                .as("the connection the reconnect made is cut")
+                .isEmpty();
+    }
+
+    @Test
     void aResetThatCannotOpenTheChannelLeavesItToTheReopenLoop() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());
