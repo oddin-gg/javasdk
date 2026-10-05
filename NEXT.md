@@ -218,9 +218,15 @@ locks.
 
 The events dispatcher has two queues. The control queue carries connection state,
 producer status, fatal errors, health and recovery completion; it is bounded at 10 000
-and a full queue is counted and logged, never blocked on. The telemetry queue carries
-API call events and listener-exception reports; it is bounded at 1 000 and drops the
-oldest with a counter. A wedged events dispatcher is reported by the watchdog through
+and a full queue is counted and logged, never blocked on. Each producer's status, the
+connection's state and each kind of fatal error (the API's, the broker's) have one slot
+in it instead, which the newest fills, as the recovery actor keeps the alives: one still
+queued is replaced rather than queued behind, so none of them is ever the one a full
+queue drops, a client that falls behind hears the state as it is now, and a flood of
+them costs one queued entry each. A connection loss replaced that way is still told by
+`onConnectionDown`. The telemetry queue carries API call events, listener-exception
+reports and the raw API data; it is bounded at 1 000 and drops the oldest with a
+counter. A wedged events dispatcher is reported by the watchdog through
 `getHealth()` and the log, because the health event itself would queue behind the
 wedge.
 
