@@ -206,6 +206,43 @@ class MatchCachesTest {
     }
 
     @Test
+    void aSummaryFetchedBeforeAFixtureChangeFillsNoWinner() throws Exception {
+        api.respond(SUMMARY_EN, Reply.of(200, SUMMARY).after(Duration.ofMillis(500)), Reply.of(500, "<error/>"));
+        var live = new OFSportEventStatus();
+        live.setStatus(OFEventStatus.LIVE);
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), live);
+        Future<Entry> reading = threads.submit(() -> caches.match(MATCH, Locale.ENGLISH));
+        api.awaitRequest("GET", SUMMARY_EN);
+        caches.fixtureChange(MATCH);
+        assertThatThrownBy(() -> reading.get(10, TimeUnit.SECONDS))
+                .as("asked again after the change, and the API failed")
+                .hasCauseInstanceOf(com.oddin.oddsfeedsdk.exceptions.ApiException.class);
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(requireNonNull(caches.cachedLive(MATCH)).get(WINNER_ID))
+                .as("the summary from before the change has a winner, and fills none")
+                .isNull();
+        assertThat(statusOf(caches.cachedLive(MATCH)))
+                .as("the feed's, untouched")
+                .isEqualTo(EventStatus.Live);
+    }
+
+    @Test
+    void aSummaryFetchedBeforeANewerOneInAnotherLocaleFillsNoWinner() throws Exception {
+        api.respond(SUMMARY_DE, Reply.of(200, SUMMARY).after(Duration.ofMillis(500)));
+        api.respond(SUMMARY_EN, 200, WITHOUT_WINNER);
+        var live = new OFSportEventStatus();
+        live.setStatus(OFEventStatus.LIVE);
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), live);
+        Future<Entry> older = threads.submit(() -> caches.match(MATCH, Locale.GERMAN));
+        api.awaitRequest("GET", SUMMARY_DE);
+        caches.match(MATCH, Locale.ENGLISH);
+        older.get(10, TimeUnit.SECONDS);
+        assertThat(requireNonNull(caches.cachedLive(MATCH)).get(WINNER_ID))
+                .as("the German summary was fetched before the newer English one, which has no winner")
+                .isNull();
+    }
+
+    @Test
     void aFixtureIsLoadedInTheDefaultLocaleAndOnlyFillsTheMatch() {
         api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
         api.respond(
