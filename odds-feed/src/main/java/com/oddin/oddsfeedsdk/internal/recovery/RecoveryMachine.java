@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.recovery;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.producer.Recovery;
+import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
@@ -145,8 +146,11 @@ final class RecoveryMachine {
         }
         var session = new SessionState(info);
         long now = now();
+        // a client's alive-only session receives no producer's messages: no lane, so its channel's
+        // loss and its pace take no producer down, and no recovery waits for its snapshot complete
+        boolean receives = info.interest() != MessageInterest.SYSTEM_ALIVE_ONLY;
         for (Track track : tracks.values()) {
-            if (info.interest().isProducerInScope(track.producer)) {
+            if (receives && info.interest().isProducerInScope(track.producer)) {
                 var lane = new Lane();
                 if (started) {
                     Gap gap = openGap(null, recoveryPoint(track), false);

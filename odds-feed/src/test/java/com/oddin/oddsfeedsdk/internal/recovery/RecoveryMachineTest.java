@@ -709,6 +709,35 @@ class RecoveryMachineTest {
         assertThat(feed.producers.isProducerDown(PRE)).isFalse();
     }
 
+    /**
+     * A client's own SYSTEM_ALIVE_ONLY session receives alives only: nothing waits for its snapshot
+     * complete, and losing its channel, or a new one replacing it, takes no producer down and asks
+     * for nothing (design review, finding 11).
+     */
+    @Test
+    void aClientsAliveOnlySessionReceivesNoProducer() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(new SessionInfo(2, MessageInterest.SYSTEM_ALIVE_ONLY, true));
+        feed.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        feed.machine.snapshotComplete(1, PRE, recovery.requestId());
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("up without the alive-only session's snapshot complete")
+                .isFalse();
+        assertThat(feed.machine.checkpoint(2, PRE)).as("no lane").isEqualTo(-1);
+
+        int before = feed.statuses.size();
+        feed.machine.channelLost(2);
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("after its channel was lost")
+                .isFalse();
+        assertThat(feed.statuses).as("status changes").hasSize(before);
+        feed.machine.channelReopened(2);
+        assertThat(feed.snapshots(PRE)).as("recoveries").hasSize(1);
+    }
+
     @Test
     void aSessionThatClosesLeavesTheCompletionsAndTheCheckpointsAtOnce() {
         feed.open(1, MessageInterest.ALL);
