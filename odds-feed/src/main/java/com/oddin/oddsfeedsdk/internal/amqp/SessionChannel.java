@@ -288,6 +288,15 @@ final class SessionChannel implements SessionTransport {
         return skippedAcks.get();
     }
 
+    /**
+     * Whether a channel's shutdown is the broker's doing on a live connection - a channel error -
+     * and so a lost channel: not the SDK's own close, nor the connection's loss, which the transport
+     * handles as a whole.
+     */
+    static boolean closedByTheBroker(@Nullable ShutdownSignalException signal) {
+        return signal != null && !signal.isInitiatedByApplication() && !signal.isHardError();
+    }
+
     /** Closes the channel for good: a reset or a reopen after this opens nothing. */
     void close() {
         lock.lock();
@@ -397,7 +406,7 @@ final class SessionChannel implements SessionTransport {
         @Override
         public void handleShutdownSignal(String consumerTag, ShutdownSignalException signal) {
             // a channel the broker closed on a live connection; a lost connection is the transport's
-            if (!signal.isInitiatedByApplication() && !signal.isHardError()) {
+            if (closedByTheBroker(signal)) {
                 taken(epochOfChannel);
             }
         }
@@ -408,11 +417,7 @@ final class SessionChannel implements SessionTransport {
          * first.
          */
         boolean lostToTheBroker() {
-            if (taken) {
-                return true;
-            }
-            ShutdownSignalException reason = getChannel().getCloseReason();
-            return reason != null && !reason.isInitiatedByApplication() && !reason.isHardError();
+            return taken || closedByTheBroker(getChannel().getCloseReason());
         }
 
         private void taken(long ofEpoch) {
