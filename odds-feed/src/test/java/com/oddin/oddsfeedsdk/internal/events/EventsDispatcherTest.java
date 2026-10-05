@@ -147,7 +147,9 @@ class EventsDispatcherTest {
 
     @Test
     void withoutAnExtendedListenerTheRawApiDataIsNotQueued() throws InterruptedException {
-        EventsDispatcher dispatcher = started(null);
+        // room for one telemetry event: a second one queued would drop the first
+        EventsDispatcher dispatcher = dispatcher(null, 10, 1, EventsDispatcher.TELEMETRY_BYTES);
+        dispatcher.start();
         listener.wedge();
         dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:1"), 1);
         listener.awaitWedged();
@@ -156,6 +158,61 @@ class EventsDispatcherTest {
         }
         assertThat(dispatcher.telemetryDropped()).isZero();
         assertThat(dispatcher.controlDropped()).isZero();
+        assertThat(dispatcher.rawDataDropped()).isZero();
+    }
+
+    /**
+     * The design review's case: large API responses behind a wedged callback. The raw data the
+     * telemetry queue holds stays within its budget of bytes; what does not fit is dropped and
+     * counted, and the other telemetry is not.
+     */
+    @Test
+    void rawApiDataBehindAWedgedCallbackStaysWithinItsBudgetOfBytes() throws InterruptedException {
+        var ext = new Ext();
+        EventsDispatcher dispatcher = dispatcher(ext, 10, 10, 100);
+        dispatcher.start();
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        for (int i = 0; i < 3; i++) {
+            dispatcher.received(URI_CALLED, "response " + i, new byte[60]);
+        }
+        dispatcher.called(call(200, null));
+        dispatcher.received(URI_CALLED, "too large alone", new byte[101]);
+        assertThat(dispatcher.rawDataDropped())
+                .as("the two that did not fit, and the one too large")
+                .isEqualTo(3);
+        assertThat(dispatcher.telemetryDropped()).isZero();
+
+        listener.release();
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .startsWith("onRawApiDataReceived " + URI_CALLED + " response 0");
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS)).startsWith("onRawApiDataBytes");
+        assertThat(listener.take(2)).contains("onApiCall");
+        assertThat(ext.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more queued")
+                .isNull();
+
+        dispatcher.received(URI_CALLED, "after", new byte[100]);
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the delivered one's bytes are free again")
+                .startsWith("onRawApiDataReceived " + URI_CALLED + " after");
+    }
+
+    @Test
+    void rawApiDataDroppedAsTheOldestFreesItsBytes() throws InterruptedException {
+        var ext = new Ext();
+        EventsDispatcher dispatcher = dispatcher(ext, 10, 2, 100);
+        dispatcher.start();
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.received(URI_CALLED, "old", new byte[90]);
+        dispatcher.called(call(200, null));
+        dispatcher.called(call(201, null));
+        assertThat(dispatcher.telemetryDropped()).as("the raw data, oldest").isEqualTo(1);
+        dispatcher.received(URI_CALLED, "new", new byte[90]);
+        assertThat(dispatcher.rawDataDropped()).as("room again for the new one").isZero();
     }
 
     @Test
@@ -357,6 +414,105 @@ class EventsDispatcherTest {
         assertThat(listener.next()).isEqualTo("onConnectionStateChange UP null 0 PT0S");
     }
 
+    /**
+     * A callback that closes the feed, as onFatalError says a client does: the close runs on the
+     * events thread, which cannot wait for itself, so it returns at once rather than after the
+     * close's wait, and nothing queued behind the callback is delivered.
+     */
+    @Test
+    void aCallbackThatClosesTheDispatcherIsNotHeldUpByItsOwnThread() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        var closedIn = new java.util.concurrent.atomic.AtomicLong(-1);
+        listener.onFatal = () -> {
+            long started = System.nanoTime();
+            dispatcher.close();
+            closedIn.set(System.nanoTime() - started);
+        };
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.fatal("refused", null);
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:1"), 1);
+        listener.release();
+        assertThat(listener.take(2))
+                .containsExactly("onConnectionStateChange UP null 0 PT0S", "onFatalError refused null");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (closedIn.get() < 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(Duration.ofNanos(closedIn.get()))
+                .as("close() from the callback")
+                .isLessThan(Duration.ofSeconds(1));
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("after the close")
+                .isNull();
+    }
+
+    /**
+     * Each producer and each source of fatal errors has a slot of its own: behind a wedge, one
+     * producer's status does not replace another's, nor the API's fatal error the broker's.
+     */
+    @Test
+    void eachProducerAndEachSourceOfFatalErrorsHasItsOwnSlot() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, true, false, StatusCause.CONNECTION_LOST, 1));
+        dispatcher.producerStatus(new ProducerStatusChange(99, true, false, StatusCause.UNSUBSCRIBED, 2));
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, false, false, StatusCause.RECOVERY_COMPLETED, 3));
+        dispatcher.producerStatus(new ProducerStatusChange(99, true, false, StatusCause.ALIVE_INTERVAL_VIOLATION, 4));
+        dispatcher.fatal("first broker refusal", null);
+        dispatcher.refused(call(401, null));
+        dispatcher.fatal("second broker refusal", null);
+        dispatcher.refused(call(403, null));
+
+        listener.release();
+        assertThat(listener.take(5))
+                .containsExactly(
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onProducerStatusChange oddsfeed-events",
+                        "onProducerStatusChange oddsfeed-events",
+                        "onFatalError second broker refusal null",
+                        "onFatalError The API refused the access token: GET " + URI_CALLED + " answered 403 null");
+        var first = requireNonNull(listener.statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        var second = requireNonNull(listener.statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(first.getTimestamp().getCreated()).as("producer 1's newest").isEqualTo(3);
+        assertThat(second.getTimestamp().getCreated())
+                .as("producer 99's newest")
+                .isEqualTo(4);
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /**
+     * A close while a callback is wedged, with events queued behind it: once the callback returns,
+     * none of them is delivered.
+     */
+    @Test
+    void eventsQueuedBehindAWedgedCallbackAreNotDeliveredAfterTheClose() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:1"), 1);
+        dispatcher.down("lost");
+        dispatcher.called(call(200, null));
+        var closing = Thread.ofPlatform().start(dispatcher::close);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (closing.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        listener.release();
+        closing.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(closing.isAlive()).as("close() returned").isFalse();
+        assertThat(listener.take(1)).containsExactly("onConnectionStateChange UP null 0 PT0S");
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("after the wedged callback")
+                .isNull();
+    }
+
     @Test
     void afterTheCloseNothingIsDelivered() throws InterruptedException {
         EventsDispatcher dispatcher = started(null);
@@ -370,14 +526,21 @@ class EventsDispatcherTest {
     }
 
     private EventsDispatcher started(@Nullable OddsFeedExtListener ext) {
-        EventsDispatcher started =
-                dispatcher(ext, EventsDispatcher.CONTROL_CAPACITY, EventsDispatcher.TELEMETRY_CAPACITY);
+        EventsDispatcher started = dispatcher(
+                ext,
+                EventsDispatcher.CONTROL_CAPACITY,
+                EventsDispatcher.TELEMETRY_CAPACITY,
+                EventsDispatcher.TELEMETRY_BYTES);
         started.start();
         return started;
     }
 
     private EventsDispatcher dispatcher(@Nullable OddsFeedExtListener ext, int control, int telemetry) {
-        var made = new EventsDispatcher(listener, ext, producers, InstantSource.system(), control, telemetry);
+        return dispatcher(ext, control, telemetry, EventsDispatcher.TELEMETRY_BYTES);
+    }
+
+    private EventsDispatcher dispatcher(@Nullable OddsFeedExtListener ext, int control, int telemetry, long bytes) {
+        var made = new EventsDispatcher(listener, ext, producers, InstantSource.system(), control, telemetry, bytes);
         dispatcher = made;
         return made;
     }
@@ -416,6 +579,7 @@ class EventsDispatcherTest {
         volatile String throwOn = "";
         volatile String errorOn = "";
         volatile String interruptOn = "";
+        volatile Runnable onFatal = () -> {};
         volatile boolean interruptedAfter;
         private volatile @Nullable CountDownLatch wedged;
         private final CountDownLatch entered = new CountDownLatch(1);
@@ -478,6 +642,7 @@ class EventsDispatcherTest {
         @Override
         public void onFatalError(String reason, @Nullable Throwable cause) {
             heard("onFatalError", "onFatalError " + reason + " " + (cause == null ? null : cause.getMessage()));
+            onFatal.run();
         }
 
         @Override
