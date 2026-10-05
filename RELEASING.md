@@ -1,7 +1,9 @@
 # Releasing the Java SDK 1.0 line
 
-A `v1.*` tag on a commit of `next` or `main` releases `gg.oddin.oddsfeed:odds-feed` to Maven
-Central. `.github/workflows/release.yml` does the work:
+A `v1.*` tag on the merge commit of a PR merged into `main` releases
+`gg.oddin.oddsfeed:odds-feed` to Maven Central. Releases - release candidates included - are
+cut from `main` only, after ticket 44 of NEXT.md makes it the 1.0 line; never from `next`.
+`.github/workflows/release.yml` does the work:
 
 1. **check** - refuses the tag unless every pre-release check below passes.
 2. **build** - the branch CI (`next.yml`) on the commit the check accepted, at the tag's
@@ -29,8 +31,9 @@ GitHub Packages.
 - [ ] **Signing key.** A key for releases only, not a person's. Its public half is on
       `keyserver.ubuntu.com` and `keys.openpgp.org`, where Central looks for it. Keep the
       revocation certificate offline, and note the expiry date somewhere it will be seen.
-- [ ] **Branch protection on `next` and `main`:** every change through a reviewed PR, no
-      bypass, no force push, and - all three required for the release's security:
+- [ ] **Branch protection on `main`:** every change through a PR with a required approval and
+      code owners' review, linear history, no bypass, no force push, and - all three required
+      for the release's security:
       - "Dismiss stale pull request approvals when new commits are pushed";
       - "Require approval of the most recent reviewable push";
       - "Require branches to be up to date before merging", so a rebase merge cannot produce
@@ -39,6 +42,10 @@ GitHub Packages.
       The approver approves a PR's merge commit as reviewed, and trusts all of it - `mvnw`,
       the POMs, the plugins, the code - since the approved job builds and signs from it with
       the secrets at hand. Without these settings an approval can outlive the code it was for.
+
+      `next` is deliberately not protected this way: its PRs merge without a required
+      approval. That is why releases never come from it - the check refuses a commit that is on
+      `next` but not on `main`.
 - [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
       creator included - may update or delete one. A published version keeps its tag for good.
       Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in
@@ -47,7 +54,7 @@ GitHub Packages.
 - [ ] **Immutable releases** (Settings - General - Releases), before the first release: a
       published GitHub Release and its files cannot change afterwards. The release workflow
       attaches the files to a draft and publishes it only then.
-- [ ] **Only `release.yml` reacts to tags.** No other workflow on `next` or `main` may run on a
+- [ ] **Only `release.yml` reacts to tags.** No other workflow on `main` may run on a
       `v1.*` tag: it would publish as well, unchecked. The check job refuses a tagged commit
       where another workflow would: a push trigger with tags or without a branch filter, or a
       `create` or `release` trigger.
@@ -75,47 +82,48 @@ GitHub Packages.
 
 1. **Sweep the Go and .NET SDKs** for fixes merged since the last release. Port each one, or
    write down why it does not apply; the list goes into the release notes.
-2. **Check `next` is green**, including the schema drift job.
+2. **Check `main` is green**, including the schema drift job.
 3. **Write the release notes** as `release-notes/<version>.md`, e.g.
-   `release-notes/1.0.0-rc.1.md`, and merge them through a PR. A final needs this commit
-   anyway: it may not share a commit with its last release candidate.
-4. **Tag the merge commit of the notes PR and push the tag** - or the current tip of `next`,
-   which is always the merge commit of the last PR merged. Not an older commit on `next`: see
-   step 5. Publish jobs for one version never overlap: one runs, at most one waits, and a
-   newer run replaces a waiting one; different versions don't wait for each other. A version
-   is never uploaded twice because Central refuses one it has, as does the check job's lookup.
+   `release-notes/1.0.0-rc.1.md`, and merge them through a PR into `main`. A final needs this
+   commit anyway: it may not share a commit with its last release candidate.
+4. **Tag the merge commit of the notes PR on `main` and push the tag** - or the current tip of
+   `main`, which is always the merge commit of the last PR merged. Not an older commit on
+   `main`, and nothing from `next`: see step 5. Publish jobs for one version never overlap:
+   one runs, at most one waits, and a newer run replaces a waiting one; different versions
+   don't wait for each other. A version is never uploaded twice because Central refuses one it
+   has, as does the check job's lookup.
 
    ```
    git fetch origin
-   git tag -a v1.0.0-rc.1 -m 1.0.0-rc.1 origin/next
+   git tag -a v1.0.0-rc.1 -m 1.0.0-rc.1 origin/main
    git push origin v1.0.0-rc.1
    ```
 
 5. **Approve the upload** under Actions - "Java SDK 1.0 release", once check and build are
    green: every release, candidates included, stops at **publish** until a reviewer other than
    the tag's author approves the `maven-central` deployment. Before approving, the reviewer
-   checks that the run's commit is the merge commit of a PR merged into `next` or `main`, and
-   approves nothing else:
+   checks that the run's commit is the merge commit of a PR merged into `main`, and approves
+   nothing else:
 
    ```
    gh api repos/oddin-gg/javasdk/commits/<sha>/pulls \
      --jq '.[] | select(.merged_at and .merge_commit_sha == "<sha>") | .base.ref'
    ```
 
-   must print `next` or `main`. That proves the commit was reviewed only with the branch
-   protection settings above on. If it prints nothing, ask the other way round (GitHub documents
-   the first form as listing only open PRs for a commit off `main`, though it lists merged
-   ones today), for `base=next` and then `base=main`; it must print a PR number:
+   must print `main` (`next` does not count: its PRs need no approval). That proves the commit
+   was reviewed only with `main`'s branch protection settings above on. If it prints nothing,
+   ask the other way round; it must print a PR number:
 
    ```
-   gh api --paginate 'repos/oddin-gg/javasdk/pulls?state=closed&base=next&per_page=100' --jq '.[] | select(.merge_commit_sha == "<sha>" and .merged_at) | .number'
+   gh api --paginate 'repos/oddin-gg/javasdk/pulls?state=closed&base=main&per_page=100' --jq '.[] | select(.merge_commit_sha == "<sha>" and .merged_at) | .number'
    ```
 
-   Being on `next` is not enough: the repository merges by
-   rebase, which puts every intermediate commit of a PR on `next`, while the review saw only
+   Being on `main` is not enough: the repository merges by
+   rebase, which puts every intermediate commit of a PR on `main`, while the review saw only
    the PR's final state - its merge commit. The whole commit is trusted, not just `.github/`:
    the approved job runs that commit's `mvnw`, POMs and plugins with the token and the key, so
-   what makes it trustworthy is that it is a reviewed PR's final state on a protected branch.
+   what makes it trustworthy is that it is the final state of a PR that `main`'s ruleset made
+   someone approve.
    The checks inside a tagged `release.yml` are only as trustworthy as that commit.
 6. **Check the result:** the version in the portal's Deployments as Published, then on
    `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/` (it shows up within about 30
@@ -130,9 +138,10 @@ when:
 - the tag, as origin has it, no longer names the commit the run was started for (moved after
   the push, by someone who may bypass the tag ruleset: tags cannot be moved back, so release a
   new version) - the same is asked again right before the upload;
-- the tagged commit is on neither `next` nor `main`, or is not the merge commit of a PR merged
-  into one of them (an intermediate commit of a rebase-merged PR is on `next`, but was never
-  reviewed as a state of its own);
+- the tagged commit is not on `main` (on `next` only, the message says so: `next` has no
+  required review), or is not the merge commit of a PR merged into `main` (an intermediate
+  commit of a rebase-merged PR is on `main`, but was never reviewed as a state of its own; a
+  PR merged into `next` counts for nothing);
 - any other tag names the same commit;
 - `release-notes/<version>.md` is missing, empty or not a plain file in the tagged commit (`gh`
   would follow a link into the public release text);

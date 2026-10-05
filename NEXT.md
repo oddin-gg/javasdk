@@ -846,7 +846,8 @@ Performance is a requirement, not a follow-up.
   rebuildable. The drift job from section 6 watches the pin.
 - JDK 25 toolchain, JaCoCo, Surefire and Failsafe, Enforcer, the compatibility checks,
   the differences list, XML generation from the vendored schema.
-- Version from the git tag. GitHub Actions on `v1*` tags from `next` or `main`: build,
+- Version from the git tag. GitHub Actions on `v1*` tags on `main` - the merge commit of a
+  PR merged into it, as `main` alone requires review; never from `next`: build,
   compatibility checks, system tests against both versions, then a pipeline step that
   queries the target registry and fails if the version already exists, then sign and
   publish. Every release, candidates included, waits for a second person to approve the
@@ -1002,7 +1003,7 @@ group by group.
 ### Phase 4 – Release
 
 33. Maven Central pipeline: claim the `gg.oddin` namespace, signing, registry check
-    step, tag-driven publish with manual approval. Also publish a last
+    step, tag-driven publish from `main` with manual approval. Also publish a last
     0.0.x version whose POM only relocates to the new coordinates, so a client who
     forgets to change the dependency is told by their own build. Also the GitHub
     Release, a coverage threshold, and the pre-release registry check on both lines.
