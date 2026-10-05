@@ -9,6 +9,7 @@ import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import com.rabbitmq.client.Connection;
 import java.security.KeyStore;
 import java.time.Duration;
 import java.time.Instant;
@@ -562,6 +563,25 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aChannelClosedForGoodOpensNothingOnAConnectionItIsHanded() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        long before = session.epoch();
+        session.close();
+        Connection other = transport.factory().newConnection();
+        try {
+            // an open after the close: the transport's own guard, its lock, keeps it from coming
+            session.open(other);
+            assertThat(session.channel()).as("no channel opened").isNull();
+            assertThat(session.isOpen()).isFalse();
+            assertThat(session.epoch()).isEqualTo(before);
+        } finally {
+            other.abort();
+        }
+    }
+
+    @Test
     void closeDoesNotWaitForAReconnectsHandshake() throws Exception {
         // a connect timeout far longer than close() may take; the heartbeat notices the frozen broker
         AmqpSettings slow = withTimeouts(settings(10, 1 << 20), Duration.ofSeconds(1), Duration.ofSeconds(30));
@@ -590,6 +610,34 @@ class AmqpTransportTest {
         assertThat(feed().openConnections())
                 .as("the connection the reconnect made is cut")
                 .isEmpty();
+    }
+
+    @Test
+    void closeDoesNotWaitForAConsumerCallbackThatIsStillRunning() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var transport = new AmqpTransport(settings(10, 1 << 20), FakeFeed.EXCHANGE, events, alive -> {
+            entered.countDown();
+            try {
+                release.await(WAIT.toSeconds(), TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        open.add(transport);
+        transport.addSession(allKeys());
+        transport.open();
+        try {
+            feed().publishFixture("feed/alive/alive.xml");
+            assertThat(entered.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+            long closing = System.nanoTime();
+            transport.close();
+            assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                    .as("close() with the alive handler running on the consumer thread")
+                    .isLessThan(Duration.ofSeconds(5));
+        } finally {
+            release.countDown();
+        }
     }
 
     @Test
