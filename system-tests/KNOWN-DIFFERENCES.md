@@ -133,15 +133,10 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
 - **Pinned by:** `ThrowingCallbackScenarioIT.aCallbackThatThrowsDoesNotStopTheSession`
 - **Found:** by test against 0.0.56.
 
-## KD-10 Under CATCH a collection that cannot load is empty
-
-- **0.0.x:** `Match.getCompetitors()` under `ExceptionHandlingStrategy.CATCH`, for a match the
-  API cannot serve, returns an empty list.
-- **1.0:** Returns null: "under CATCH the whole collection is null" (section 3, Behaviour that
-  stays).
-- **Why:** An empty list reads as "no competitors" rather than "could not load".
-- **Pinned by:** `ExceptionStrategyScenarioIT.underCatchAGetterTheApiCannotServeReturnsNull`
-- **Found:** by test against 0.0.56.
+KD-10, a collection that cannot load being null under `CATCH` where 0.0.x had it empty, was
+withdrawn: 1.0 keeps 0.0.x's answer. A match's competitors are none, and so are the lists 0.0.x
+answered an outage with, under either strategy (NEXT.md section 3, Behaviour that stays).
+`ExceptionStrategyScenarioIT.underCatchAGetterTheApiCannotServeReturnsNull` checks it on both lines.
 
 ## KD-11 A recovery request the API refused is not asked for again
 
@@ -289,6 +284,21 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
 - **Pinned by:** `MatchStatusScenarioIT.aSettlementRightAfterTheClosingOddsChangeReadsTheFeedsWinner`
 - **Found:** by test against 0.0.57, and in the source (`MatchStatusCache.applyFeedSnapshot`,
   `OFSportEventStatus`).
+
+## KD-22 A getter of several locales fails when one of them cannot load
+
+- **0.0.x:** An entity read in several locales loads each one it does not hold, skips one
+  that fails, and answers from the others: a match in English and German, with the German
+  summary failing, still has its scheduled time and its English name, and a match status
+  description is the one of the locales it holds.
+- **1.0:** The locales load side by side, and a getter of every locale fails as a whole when
+  one fails: an `ItemNotFoundException` under `THROW`, null under `CATCH`. A match status
+  description is null. A getter of one locale is not affected (NEXT.md section 3, Behaviour
+  that stays: never a partial collection).
+- **Why:** An answer from part of the locales reads as complete.
+- **Pinned by:** none; the system tests read every entity in one locale, but the unit tests
+  pin it (`MatchViewTest`, `ProfileViewsTest`, `StatusDescriptionsTest`).
+- **Found:** by reading the source (`Cache.loadFromCache`, `LocalizedStaticDataCache.get`).
 
 ## KD-23 Closing the feed is reported as the connection down
 
