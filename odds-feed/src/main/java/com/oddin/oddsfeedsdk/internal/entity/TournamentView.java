@@ -1,6 +1,5 @@
 package com.oddin.oddsfeedsdk.internal.entity;
 
-import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.COMPETITOR_PROFILE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.END_DATE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.RISK_TIER;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.START_DATE;
@@ -85,27 +84,24 @@ final class TournamentView implements Tournament {
     }
 
     /**
-     * The competitors its info lists, in its order, each loaded in every locale of the tournament
-     * before they are returned, side by side. An info listing none has none.
+     * Every competitor its info lists, in its order, as 0.0.x listed them; their profiles are warmed
+     * in every locale of the tournament first, side by side, and one that does not load is still
+     * listed. An info listing none has none.
      */
     @Override
     public @Nullable List<Competitor> getCompetitors() {
         return entities.guard(this, () -> {
             List<URN> ids = shared().get(TOURNAMENT_COMPETITORS, null);
             List<URN> competitors = ids == null ? List.of() : ids;
-            entities.loadEach(
+            entities.warmEach(
                     competitors,
                     locales,
-                    (competitor, locale) -> Entities.found(
-                            entities.profiles.competitor(competitor, locale, null),
-                            COMPETITOR_PROFILE,
-                            locale,
-                            "competitor " + competitor));
+                    (competitor, locale) -> entities.profiles.competitor(competitor, locale, null));
             var list = new ArrayList<Competitor>(competitors.size());
             for (URN competitor : competitors) {
                 list.add(new CompetitorView(entities, competitor, locales));
             }
-            return List.copyOf(list);
+            return list;
         });
     }
 

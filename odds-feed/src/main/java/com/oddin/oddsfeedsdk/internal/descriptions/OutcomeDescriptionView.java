@@ -32,14 +32,14 @@ final class OutcomeDescriptionView implements OutcomeDescription {
         return null;
     }
 
-    /** Null when the market or the outcome is not described in {@code locale}. */
+    /** Null when the market or the outcome is not described in {@code locale}, or cannot be loaded. */
     @Override
     public @Nullable String getName(Locale locale) {
         Outcome outcome = market.outcome(id, locale);
         return outcome == null ? null : outcome.name();
     }
 
-    /** Null when the outcome has none in {@code locale}, or is not described there. */
+    /** Null when the outcome has none in {@code locale}, is not described there, or cannot be loaded. */
     @Override
     public @Nullable String getDescription(Locale locale) {
         Outcome outcome = market.outcome(id, locale);

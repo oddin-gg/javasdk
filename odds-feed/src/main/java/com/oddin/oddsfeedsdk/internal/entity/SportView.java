@@ -83,7 +83,7 @@ final class SportView implements Sport {
             for (URN tournament : ids == null ? List.<URN>of() : ids) {
                 tournaments.add(new TournamentView(entities, tournament, id, locales));
             }
-            return List.copyOf(tournaments);
+            return tournaments;
         });
     }
 

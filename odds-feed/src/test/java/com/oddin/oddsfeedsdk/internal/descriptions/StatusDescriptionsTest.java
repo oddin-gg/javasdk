@@ -9,8 +9,6 @@ import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.cache.LocalizedStaticData;
-import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
-import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.catalog.MatchStatusDescriptions;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
@@ -38,8 +36,7 @@ class StatusDescriptionsTest {
     private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
     private FakeRestServer api;
     private ApiClient client;
-    private StatusDescriptions throwing;
-    private StatusDescriptions catching;
+    private StatusDescriptions descriptions;
 
     @BeforeEach
     void start() {
@@ -51,8 +48,7 @@ class StatusDescriptionsTest {
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
         var catalog = new MatchStatusDescriptions(client, TIMEOUT, threads);
-        throwing = new StatusDescriptions(catalog, ExceptionHandlingStrategy.THROW, threads);
-        catching = new StatusDescriptions(catalog, ExceptionHandlingStrategy.CATCH, threads);
+        descriptions = new StatusDescriptions(catalog, threads);
     }
 
     @AfterEach
@@ -65,7 +61,7 @@ class StatusDescriptionsTest {
     @Test
     void aStatusReadsItsDescriptionAndLooksUpOtherLocalesWhenAsked() {
         api.respond(STATUSES_DE, 200, statuses("<match_status id=\"1\" description=\"Beendet\"/>"));
-        LocalizedStaticData ended = requireNonNull(throwing.get(1, List.of(EN)));
+        LocalizedStaticData ended = requireNonNull(descriptions.get(1, List.of(EN)));
         assertThat(ended.getId()).isEqualTo(1);
         assertThat(ended.getDescription()).isEqualTo("Ended");
         assertThat(ended.getDescription(EN)).isEqualTo("Ended");
@@ -78,11 +74,10 @@ class StatusDescriptionsTest {
     }
 
     @Test
-    void aStatusNoLocaleDescribesIsNullUnderEitherStrategy() {
-        assertThat(throwing.get(99, List.of(EN))).isNull();
-        assertThat(catching.get(99, List.of(EN))).isNull();
+    void aStatusNoLocaleDescribesIsNull() {
+        assertThat(descriptions.get(99, List.of(EN))).isNull();
         api.respond(STATUSES_DE, 200, statuses("<match_status id=\"0\" description=\"Nicht begonnen\"/>"));
-        assertThat(requireNonNull(throwing.get(1, List.of(EN))).getDescription(DE))
+        assertThat(requireNonNull(descriptions.get(1, List.of(EN))).getDescription(DE))
                 .as("a locale whose list does not describe it")
                 .isNull();
     }
@@ -97,11 +92,11 @@ class StatusDescriptionsTest {
                 STATUSES_DE,
                 Reply.of(200, statuses("<match_status id=\"1\" description=\"Beendet\"/>"))
                         .after(Duration.ofMillis(300)));
-        LocalizedStaticData ended = requireNonNull(throwing.get(1, List.of(EN, DE)));
+        LocalizedStaticData ended = requireNonNull(descriptions.get(1, List.of(EN, DE)));
         assertThat(api.mostInFlight()).as("both lists at once").isEqualTo(2);
         assertThat(ended.getDescription()).isEqualTo("Beendet");
         assertThat(ended.getDescription(EN)).isNull();
-        assertThat(requireNonNull(throwing.get(0, List.of(EN, DE))).getDescription())
+        assertThat(requireNonNull(descriptions.get(0, List.of(EN, DE))).getDescription())
                 .isEqualTo("Not started");
         assertThat(api.requests("GET", STATUSES_EN)).hasSize(1);
         assertThat(api.requests("GET", STATUSES_DE)).hasSize(1);
@@ -111,10 +106,10 @@ class StatusDescriptionsTest {
     void aStatusInSeveralLocalesThatAllDescribeItIsTheFirstLocales() {
         api.respond(STATUSES_DE, 200, statuses("<match_status id=\"1\" description=\"Beendet\"/>"));
         for (String read : List.of("cold", "warm")) {
-            assertThat(requireNonNull(throwing.get(1, List.of(EN, DE))).getDescription())
+            assertThat(requireNonNull(descriptions.get(1, List.of(EN, DE))).getDescription())
                     .as(read)
                     .isEqualTo("Ended");
-            assertThat(requireNonNull(throwing.get(1, List.of(DE, EN))).getDescription())
+            assertThat(requireNonNull(descriptions.get(1, List.of(DE, EN))).getDescription())
                     .as(read)
                     .isEqualTo("Beendet");
         }
@@ -123,22 +118,20 @@ class StatusDescriptionsTest {
     }
 
     @Test
-    void aLocaleThatFailsFailsTheStatusUnderThrowAndMakesItNullUnderCatch() {
+    void aLocaleThatFailsMakesTheStatusNull() {
         api.respond(STATUSES_DE, 400, Fixtures.read("rest/error/not_found.xml"));
-        assertThatThrownBy(() -> throwing.get(1, List.of(EN, DE))).isInstanceOf(ApiException.class);
-        assertThat(catching.get(1, List.of(EN, DE)))
-                .as("never a description from part of the locales")
+        assertThat(descriptions.get(1, List.of(EN, DE)))
+                .as("never a description from part of the locales, and never a failure: 0.0.x had none")
                 .isNull();
 
-        LocalizedStaticData thrown = requireNonNull(throwing.get(1, List.of(EN)));
-        LocalizedStaticData caught = requireNonNull(catching.get(1, List.of(EN)));
-        assertThatThrownBy(() -> thrown.getDescription(DE)).isInstanceOf(ApiException.class);
-        assertThat(caught.getDescription(DE)).isNull();
+        LocalizedStaticData status = requireNonNull(descriptions.get(1, List.of(EN)));
+        assertThat(status.getDescription(DE)).isNull();
+        assertThat(status.getDescription(EN)).isEqualTo(status.getDescription());
     }
 
     @Test
     void aStatusInNoLocaleIsRefused() {
-        assertThatThrownBy(() -> throwing.get(1, List.of())).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> descriptions.get(1, List.of())).isInstanceOf(IllegalArgumentException.class);
     }
 
     private static String statuses(String... statuses) {

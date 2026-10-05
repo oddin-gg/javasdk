@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Sport;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Instant;
@@ -63,16 +64,86 @@ class SportsInfoTest {
     }
 
     @Test
-    void aSportWhoseTournamentsCannotLoadFailsTheActiveTournamentsAsAWhole() {
+    void aSportWhoseTournamentsCannotLoadFailsTheActiveTournamentsUnderThrowAndIsLeftOutUnderCatch() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(CS2_TOURNAMENTS, 500, "");
-            assertThatThrownBy(world.sportsInfo::getActiveTournaments).isInstanceOf(ApiException.class);
+            assertThatThrownBy(world.sportsInfo::getActiveTournaments)
+                    .as("as 0.0.x threw it")
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasCauseInstanceOf(ApiException.class);
+            assertThatThrownBy(() -> world.sportsInfo.getActiveTournaments("Counter-Strike 2"))
+                    .isInstanceOf(ItemNotFoundException.class);
         }
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
             world.api.respond(CS2_TOURNAMENTS, 500, "");
             assertThat(world.sportsInfo.getActiveTournaments())
-                    .as("null, never the tournaments of the other sport")
-                    .isNull();
+                    .as("the other sport's, as 0.0.x left the failed one out")
+                    .extracting(Tournament::getSportId)
+                    .containsOnly(LOL)
+                    .hasSize(2);
+            assertThat(world.sportsInfo.getActiveTournaments("Counter-Strike 2"))
+                    .as("none, never null")
+                    .isNotNull()
+                    .isEmpty();
+        }
+    }
+
+    @Test
+    void withTheSportListDownTheSportsAndTheActiveTournamentsAreNoneUnderEitherStrategy() {
+        for (var strategy : ExceptionHandlingStrategy.values()) {
+            try (var world = EntityWorld.start(strategy)) {
+                world.api.respond("/v1/sports/en/sports", 503, "");
+                assertThat(world.sportsInfo.getSports())
+                        .as(strategy + ": the sports")
+                        .isNotNull()
+                        .isEmpty();
+                assertThat(world.sportsInfo.getActiveTournaments())
+                        .as(strategy + ": the active tournaments")
+                        .isNotNull()
+                        .isEmpty();
+                assertThat(world.sportsInfo.getActiveTournaments("Counter-Strike 2"))
+                        .as(strategy + ": the active tournaments of a sport")
+                        .isNotNull()
+                        .isEmpty();
+            }
+        }
+    }
+
+    @Test
+    void aListTheApiIsAskedForDirectlyFailsWithTheApisOwnException() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(LIVE, 500, "");
+            world.api.respond("/v1/sports/en/fixtures/changes", 500, "");
+            world.api.respond(LOL_TOURNAMENTS, 500, "");
+            assertThatThrownBy(world.sportsInfo::getLiveMatches).isExactlyInstanceOf(ApiException.class);
+            assertThatThrownBy(world.sportsInfo::getFixtureChanges).isExactlyInstanceOf(ApiException.class);
+            assertThatThrownBy(() -> world.sportsInfo.getAvailableTournaments(LOL))
+                    .isExactlyInstanceOf(ApiException.class);
+        }
+    }
+
+    @Test
+    void everyListIsANewOneTheCallerCanChange() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            var sports = requireNonNull(world.sportsInfo.getSports());
+            sports.sort(java.util.Comparator.comparing((Sport s) -> String.valueOf(s.getId()))
+                    .reversed());
+            assertThat(sports).extracting(Sport::getId).containsExactly(CS2, LOL);
+            requireNonNull(world.sportsInfo.getActiveTournaments()).clear();
+            requireNonNull(world.sportsInfo.getActiveTournaments("Counter-Strike 2"))
+                    .clear();
+            requireNonNull(world.sportsInfo.getAvailableTournaments(LOL)).clear();
+            var live = requireNonNull(world.sportsInfo.getLiveMatches());
+            live.removeIf(match -> MATCH.equals(match.getId()));
+            assertThat(live).extracting(Match::getId).containsExactly(OTHER_MATCH);
+            requireNonNull(world.sportsInfo.getFixtureChanges()).clear();
+            requireNonNull(requireNonNull(world.sportsInfo.getSports())
+                            .getFirst()
+                            .getTournaments())
+                    .clear();
+            assertThat(world.sportsInfo.getSports())
+                    .as("its own copy each time")
+                    .hasSize(2);
         }
     }
 

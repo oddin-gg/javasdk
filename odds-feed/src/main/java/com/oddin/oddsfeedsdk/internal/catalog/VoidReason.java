@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.catalog;
 
 import com.oddin.oddsfeedsdk.api.factories.MarketVoidReason;
+import java.util.ArrayList;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
 
@@ -40,8 +41,9 @@ public record VoidReason(
         return template;
     }
 
+    /** A new list each time, the caller's own, as 0.0.x gave. */
     @Override
     public List<String> getParams() {
-        return params;
+        return new ArrayList<>(params);
     }
 }
