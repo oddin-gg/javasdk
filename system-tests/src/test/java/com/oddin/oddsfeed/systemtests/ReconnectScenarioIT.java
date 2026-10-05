@@ -105,6 +105,29 @@ class ReconnectScenarioIT {
         }
     }
 
+    /**
+     * The feed closes its own connection. 0.0.x reports that as the connection down, as it reports
+     * a lost one; 1.0 reports a loss only, since a client alerting on it would alert on every
+     * shutdown.
+     */
+    @Test
+    @SuppressWarnings("try") // closed inside the block, to see what closing reports
+    void closingTheFeedIsNotReportedAsTheConnectionDown() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            sdk.open(MessageInterest.ALL);
+            sdk.close();
+            KnownDifference.CLOSE_IS_REPORTED_AS_CONNECTION_DOWN.expect(
+                    () -> assertThat(sdk.events().awaitConnectionDown(Duration.ofSeconds(10)))
+                            .as("connection down on close")
+                            .isTrue(),
+                    () -> assertThat(sdk.events().awaitConnectionDown(Duration.ofSeconds(2)))
+                            .as("connection down on close")
+                            .isFalse());
+        }
+    }
+
     private static long requestId(String requestId) {
         assertThat(requestId).as("request id of the recovery").isNotBlank();
         return Long.parseLong(requestId);
