@@ -31,6 +31,14 @@ public interface SessionFacts {
      */
     void channelLost();
 
+    /**
+     * A new channel replaced the one {@link #channelLost} told of, its queue bound: until this is
+     * posted nothing is asked for the session's producers, since what the feed sent would reach no
+     * queue. Post it for every loss posted, when the transport says so: {@code
+     * ChannelEvents.reopened()}.
+     */
+    void channelReopened();
+
     /** The session has closed. */
     void closed();
 }

@@ -196,6 +196,12 @@ final class Harness {
         }
     }
 
+    /** The feed open, and the transport up with every session's channel bound. */
+    void start() {
+        machine.start();
+        machine.connectionUp();
+    }
+
     void open(int session, MessageInterest interest) {
         open(new SessionInfo(session, interest, true));
     }
@@ -287,7 +293,7 @@ final class Harness {
     static Harness upWith(MessageInterest interest) {
         var harness = new Harness();
         harness.open(1, interest);
-        harness.machine.start();
+        harness.start();
         harness.bothUp(1);
         return harness;
     }

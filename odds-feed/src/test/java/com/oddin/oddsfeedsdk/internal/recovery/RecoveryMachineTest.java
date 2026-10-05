@@ -31,7 +31,7 @@ class RecoveryMachineTest {
     @Test
     void theFirstAliveAsksForAFullSnapshotAndItsCompletionBringsTheProducerUp() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.advance(Duration.ofSeconds(5));
         assertThat(feed.calls).as("requests before any alive").isEmpty();
         assertThat(feed.producers.isProducerDown(PRE)).isTrue();
@@ -66,7 +66,7 @@ class RecoveryMachineTest {
         long from = feed.now() - Duration.ofHours(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         assertThat(feed.lastSnapshot(PRE).after()).isEqualTo(Instant.ofEpochMilli(from));
         assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(from);
@@ -80,7 +80,7 @@ class RecoveryMachineTest {
                 + Duration.ofMinutes(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.clock.advance(Duration.ofHours(1));
         feed.alive(PRE);
         assertThat(feed.lastSnapshot(PRE).after())
@@ -98,7 +98,7 @@ class RecoveryMachineTest {
                     + Duration.ofMinutes(1).toMillis();
             feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
             feed.open(1, MessageInterest.ALL);
-            feed.machine.start();
+            feed.start();
             feed.clock.advance(Duration.ofHours(1));
             // the producer's clock behind the SDK's by the offset, or ahead of it
             feed.machine.alive(PRE, feed.now() - offset, feed.now(), true);
@@ -130,13 +130,15 @@ class RecoveryMachineTest {
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         // the low-priority session takes no snapshot completes, so nothing moves its checkpoint
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         long boundary = feed.now() - Duration.ofMinutes(30).toMillis();
         feed.alive(PRE);
         feed.complete(feed.lastSnapshot(PRE), 1);
         feed.clock.advance(Duration.ofHours(1));
         feed.machine.channelLost(2);
+        feed.machine.channelReopened(2);
         feed.alive(PRE);
+        assertThat(feed.snapshots(PRE)).hasSize(2);
         assertThat(feed.lastSnapshot(PRE).after())
                 .as("from where its first recovery started, not 30 minutes before the loss")
                 .isEqualTo(Instant.ofEpochMilli(boundary));
@@ -160,7 +162,7 @@ class RecoveryMachineTest {
                 settings.firstResetBackoff(),
                 settings.eventRecoveries(),
                 settings.tick()));
-        feed.machine.start();
+        feed.start();
         feed.clock.advance(Duration.ofMinutes(5));
         // opened after start, before any alive, and taking no snapshot completes
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
@@ -170,7 +172,9 @@ class RecoveryMachineTest {
         assertThat(feed.producers.isProducerDown(PRE)).isFalse();
         feed.clock.advance(Duration.ofHours(1));
         feed.machine.channelLost(2);
+        feed.machine.channelReopened(2);
         feed.alive(PRE);
+        assertThat(feed.snapshots(PRE)).hasSize(2);
         assertThat(feed.lastSnapshot(PRE).after())
                 .as("from where it started when it opened, not 30 minutes before the loss")
                 .isEqualTo(Instant.ofEpochMilli(boundary));
@@ -196,7 +200,7 @@ class RecoveryMachineTest {
                 settings.tick());
         var feed = new Harness(withInterval);
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.clock.advance(Duration.ofSeconds(3));
         feed.alive(PRE);
         Instant boundary = Instant.ofEpochMilli(
@@ -218,13 +222,37 @@ class RecoveryMachineTest {
         feed.open(1, MessageInterest.PREMATCH_ONLY);
         feed.alive(PRE);
         assertThat(feed.calls).as("before start").isEmpty();
-        feed.machine.start();
+        feed.start();
         feed.alive(LIVE);
         assertThat(feed.snapshots(LIVE))
                 .as("no session takes the live producer")
                 .isEmpty();
         feed.alive(PRE);
         assertThat(feed.snapshots(PRE)).hasSize(1);
+    }
+
+    @Test
+    void nothingIsAskedForBeforeTheTransportHasBoundEverySessionsChannel()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        feed.alive(PRE);
+        feed.advance(Duration.ofSeconds(5));
+        feed.alive(PRE);
+        assertThat(feed.calls).as("before the transport's first up").isEmpty();
+        assertThat(done(feed.recoverEvent(LIVE)))
+                .as("an event recovery before it")
+                .isNull();
+
+        // the transport tells up once every session's channel is open
+        feed.machine.connectionUp();
+        assertThat(feed.snapshots(PRE)).as("at once, its alive being recent").hasSize(1);
+        assertThat(feed.snapshots(LIVE)).as("at its first alive").isEmpty();
+        feed.alive(LIVE);
+        assertThat(feed.snapshots(LIVE)).hasSize(1);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.counters.failed()).isZero();
     }
 
     // ---- completion per session
@@ -236,7 +264,7 @@ class RecoveryMachineTest {
         feed.open(3, MessageInterest.HI_PRIORITY_ONLY);
         // next to a high-priority session the low-priority one takes no snapshot completes
         feed.open(new SessionInfo(4, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
         feed.accept(recovery);
@@ -257,7 +285,7 @@ class RecoveryMachineTest {
     @Test
     void aCompletionForAnIdNotInFlightIsIgnoredAndCounted() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         feed.alive(LIVE);
         feed.machine.snapshotComplete(1, PRE, 1);
@@ -270,7 +298,7 @@ class RecoveryMachineTest {
     @Test
     void aSnapshotCompleteQuickerThanTheApisAnswerCompletesTheRecovery() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
         feed.machine.snapshotComplete(1, PRE, recovery.requestId());
@@ -288,7 +316,7 @@ class RecoveryMachineTest {
     @Test
     void aSessionsCheckpointIsTheMostRecentLiveMessageOrSubscribedAliveItFinished() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         long requestedAt = feed.now();
         assertThat(feed.machine.checkpoint(1, PRE))
@@ -315,7 +343,7 @@ class RecoveryMachineTest {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.PREMATCH_ONLY);
         feed.open(3, MessageInterest.LIVE_ONLY);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1, 2, 3);
         feed.clock.advance(Duration.ofMinutes(1));
         long t = feed.now();
@@ -343,7 +371,7 @@ class RecoveryMachineTest {
         long from = feed.now() - Duration.ofHours(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
         feed.accept(first);
@@ -367,7 +395,7 @@ class RecoveryMachineTest {
     @Test
     void anUnsubscribedAliveRecoversFromTheLastSubscribedOneEvenWithSessionsBehind() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.clock.advance(Duration.ofMinutes(1));
         // the alive channel has seen these two; the session has not finished either yet
@@ -392,7 +420,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerWithoutAlivesForTooLongIsDownUntilAnAliveBringsARecovery() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         long lastAlive = feed.now();
         for (int second = 0; second < 20; second++) {
@@ -418,7 +446,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerThatNeverSentAnAliveIsReportedDownOnceTheMaximumInactivityHasPassed() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         for (int second = 0; second < 21; second++) {
             feed.advance(Duration.ofSeconds(1));
         }
@@ -435,7 +463,7 @@ class RecoveryMachineTest {
     @Test
     void triggersWhileARecoveryIsInFlightJoinItAndWhatOpenedSinceAsksForOneMore() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.unsubscribed(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
@@ -462,7 +490,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerThatStopsSendingWhileARecoveryIsInFlightAsksForOneMoreAfterIt() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.unsubscribed(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
@@ -478,7 +506,7 @@ class RecoveryMachineTest {
     @Test
     void aLostConnectionGivesUpTheRecoveryInFlightWhoseSnapshotWentWithTheQueues() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot lost = feed.lastSnapshot(PRE);
         feed.accept(lost);
@@ -501,7 +529,7 @@ class RecoveryMachineTest {
     void aSessionsLostChannelRecoversFromItsCheckpointAndGivesUpARecoveryWaitingForIt() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1, 2);
         feed.clock.advance(Duration.ofMinutes(1));
         long t = feed.now();
@@ -515,6 +543,11 @@ class RecoveryMachineTest {
 
         feed.machine.channelLost(2);
         assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.CHANNEL_LOST);
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).requestId())
+                .as("nothing asked for before the new channel is bound")
+                .isEqualTo(waiting.requestId());
+        feed.machine.channelReopened(2);
         Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
         assertThat(again.requestId()).isNotEqualTo(waiting.requestId());
         assertThat(again.after()).isEqualTo(Instant.ofEpochMilli(t - 30_000));
@@ -526,12 +559,48 @@ class RecoveryMachineTest {
         assertThat(feed.snapshots(LIVE)).hasSize(2);
     }
 
+    @Test
+    void aLostChannelHoldsTheRecoveryOfItsSessionsProducersUntilItsNewOneIsBound()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.LIVE_ONLY);
+        feed.start();
+        feed.bothUp(1, 2);
+        int before = feed.calls.size();
+
+        feed.machine.channelLost(2);
+        feed.runWithAlives(Duration.ofMinutes(1));
+        assertThat(feed.calls)
+                .as("nothing for the live producer, whose snapshot would reach no queue of session 2")
+                .hasSize(before);
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        assertThat(reply).as("an event recovery waits too").isNotDone();
+        assertThat(feed.calls).hasSize(before);
+        // the prematch producer is not session 2's: nothing held it, and nothing was missing
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.counters.timedOut()).isZero();
+
+        feed.machine.channelReopened(2);
+        assertThat(feed.snapshots(LIVE)).as("at once, the alives being recent").hasSize(2);
+        Outbox.Call event = feed.calls.stream()
+                .filter(call -> call instanceof Outbox.Call.Event)
+                .findFirst()
+                .orElseThrow();
+        feed.accept(event);
+        assertThat(done(reply)).isEqualTo(event.requestId());
+        feed.complete(feed.lastSnapshot(LIVE), 1, 2);
+        assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+        // a second report of the same new channel changes nothing
+        feed.machine.channelReopened(2);
+        assertThat(feed.snapshots(LIVE)).hasSize(2);
+    }
+
     // ---- sessions opening and closing
 
     @Test
     void aSessionThatOpensStartsFromTheProducersRecoveryPointAndAsksForARecovery() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.clock.advance(Duration.ofMinutes(1));
         long t = feed.now();
@@ -558,7 +627,7 @@ class RecoveryMachineTest {
     void aSessionThatClosesLeavesTheCompletionsAndTheCheckpointsAtOnce() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
         feed.accept(recovery);
@@ -586,7 +655,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerDownOnlyForAClosedSessionsGapComesBack() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.clock.advance(Duration.ofMinutes(1));
         feed.open(2, MessageInterest.PREMATCH_ONLY);
@@ -604,7 +673,7 @@ class RecoveryMachineTest {
     @Test
     void aFailedRecoveryIsAskedForAgainWithBackoffThreeTimesThenNotUntilTheCooldown() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         long[] pauses = {5, 10, 20};
         for (long pause : pauses) {
@@ -641,7 +710,7 @@ class RecoveryMachineTest {
     @Test
     void anAliveAfterAGapReArmsASpentCapAtOnce() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         for (int attempt = 0; attempt < 4; attempt++) {
             feed.refuse(feed.lastSnapshot(PRE));
@@ -661,7 +730,7 @@ class RecoveryMachineTest {
     @Test
     void aRecoveryWithNoSnapshotCompleteWithinTheMaximumRecoveryTimeIsAskedForAgain() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
         feed.accept(recovery);
@@ -685,7 +754,7 @@ class RecoveryMachineTest {
     void anAliveSayingAProducerStillDownIsUnsubscribedRaisesOnlyTheCauseEvent() {
         // KD-2, as in 0.0.x: down, and for the same public reason, so 0.0.x's callback hears nothing
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         feed.alive(PRE);
         assertThat(feed.statuses).as("alives change no status").isEmpty();
@@ -702,7 +771,7 @@ class RecoveryMachineTest {
     @Test
     void causesSharingAPublicReasonRaiseOnePublicEventAndACauseEventEach() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         int publicBefore = feed.publicStatuses.size();
         int causesBefore = feed.statuses.size();
@@ -743,7 +812,7 @@ class RecoveryMachineTest {
     void aDisabledProducerIsNotRecoveredAndAnUnknownOneIsCounted() {
         feed.producers.setProducerState(LIVE, false);
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(LIVE);
         feed.unsubscribed(LIVE);
         feed.machine.alive(9, feed.now(), feed.now(), true);
@@ -756,7 +825,7 @@ class RecoveryMachineTest {
     @Test
     void aSessionThatProcessesLateTakesTheProducerDownWithoutARecoveryUntilItCatchesUp() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.live(1, PRE, Duration.ofSeconds(25));
         feed.advance(Duration.ofMillis(10));
@@ -779,7 +848,7 @@ class RecoveryMachineTest {
     @Test
     void aSessionThatTakesNothingWhileAlivesFlowIsLate() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.live(1, PRE, Duration.ZERO);
         // alives on the alive channel only: the session's own queue does not move
@@ -804,7 +873,7 @@ class RecoveryMachineTest {
             throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.LIVE_ONLY);
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
         var call = (Outbox.Call.Event) feed.calls.getLast();
         assertThat(call.producer()).isEqualTo("live");
@@ -826,7 +895,7 @@ class RecoveryMachineTest {
     @Test
     void anEventRecoveryTheApiRefusedAnswersNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> reply = feed.recoverEvent(PRE);
         Outbox.Call call = feed.calls.getLast();
         feed.refuse(call);
@@ -846,7 +915,7 @@ class RecoveryMachineTest {
     @Test
     void eventRecoveriesInFlightAreBoundedPerProducerAndExpire() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         for (int i = 0; i < 128; i++) {
             assertThat(feed.recoverEvent(LIVE)).isNotDone();
             feed.accept(feed.calls.getLast());
@@ -868,7 +937,7 @@ class RecoveryMachineTest {
     void aLostConnectionGivesUpTheEventRecoveriesInFlightAndAnswersThoseStillWaiting()
             throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> answered = feed.recoverEvent(LIVE);
         Outbox.Call call = feed.calls.getLast();
         feed.accept(call);
@@ -886,7 +955,7 @@ class RecoveryMachineTest {
     void aSessionsLostChannelGivesUpTheEventRecoveriesWaitingForIt() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         assertThat(feed.recoverEvent(LIVE)).isNotDone();
         Outbox.Call seenByBoth = feed.calls.getLast();
         assertThat(feed.recoverEvent(LIVE)).isNotDone();
@@ -908,7 +977,7 @@ class RecoveryMachineTest {
     @Test
     void closingTheLastSessionWhileTheConnectionIsDownKeepsTheProducerDownUntilItIsBack() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.machine.connectionDown();
         feed.close(1);
@@ -922,7 +991,7 @@ class RecoveryMachineTest {
     @Test
     void anEventRecoveryWhileTheConnectionIsDownIsRefused() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.machine.connectionDown();
         assertThat(done(feed.recoverEvent(LIVE)))
                 .as("its snapshot would have no queue to go to")
@@ -939,7 +1008,7 @@ class RecoveryMachineTest {
             throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         feed.close(1);
         feed.alive(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
@@ -959,7 +1028,7 @@ class RecoveryMachineTest {
     void aSessionClosingBeforeTheApiAnswersLeavesTheAnswerToDecide() {
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot accepted = feed.lastSnapshot(PRE);
         feed.alive(LIVE);
@@ -990,7 +1059,7 @@ class RecoveryMachineTest {
             throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> accepted = feed.recoverEvent(LIVE);
         Outbox.Call acceptedCall = feed.calls.getLast();
         CompletableFuture<@Nullable Long> refused = feed.recoverEvent(LIVE);
@@ -1011,7 +1080,7 @@ class RecoveryMachineTest {
     void aSessionThatSawTheSnapshotCompleteAndClosedStillCompletesIt() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
         // quicker than the API's answer, as a snapshot complete may be
@@ -1023,7 +1092,7 @@ class RecoveryMachineTest {
     @Test
     void aRecoveryThatFailsWithNothingLeftToRecoverBringsTheProducerUp() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.open(2, MessageInterest.PREMATCH_ONLY);
         feed.alive(PRE);
@@ -1040,7 +1109,7 @@ class RecoveryMachineTest {
     @Test
     void aRecoveryThatCompletesWhileASessionProcessesTheProducerLateKeepsItDownForThat() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.unsubscribed(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
@@ -1061,7 +1130,7 @@ class RecoveryMachineTest {
     void anEventRecoveryThatExpiresBeforeTheApiAnswersAnswersItsCallerNull()
             throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
         Outbox.Call call = feed.calls.getLast();
         feed.advance(Duration.ofHours(6).plusSeconds(1));
@@ -1076,7 +1145,7 @@ class RecoveryMachineTest {
     void anEventRecoverysSnapshotCompleteBeforeTheApisAnswerSettlesItsCallerWithTheId()
             throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
         Outbox.Call call = feed.calls.getLast();
         feed.machine.snapshotComplete(1, LIVE, call.requestId());
@@ -1093,7 +1162,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerIsUpForItsFirstRecoveryTheFirstTimeItComesUpAfterAFollowUp() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
         feed.accept(first);
@@ -1112,7 +1181,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerIsUpForItsFirstRecoveryWhenAClosedSessionBringsItUp() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
         feed.accept(first);
@@ -1130,7 +1199,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerLateAtItsFirstRecoveryIsUpForItsFirstRecoveryOnceOnTime() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
         feed.live(1, PRE, Duration.ofSeconds(25));
@@ -1149,7 +1218,7 @@ class RecoveryMachineTest {
     void theFirstSessionsSnapshotCompleteSaysTheApiTookARecoveryWhateverItAnswersLater() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         feed.alive(LIVE);
         Outbox.Call.Snapshot refusedLate = feed.lastSnapshot(PRE);
@@ -1180,7 +1249,7 @@ class RecoveryMachineTest {
             throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> refusedLate = feed.recoverEvent(LIVE);
         Outbox.Call refusedCall = feed.calls.getLast();
         CompletableFuture<@Nullable Long> acceptedLate = feed.recoverEvent(LIVE);
@@ -1205,7 +1274,7 @@ class RecoveryMachineTest {
     @Test
     void aProducerBroughtUpWithNothingMissingHasItsCapReArmed() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.open(2, MessageInterest.PREMATCH_ONLY);
         feed.alive(PRE);
@@ -1227,7 +1296,7 @@ class RecoveryMachineTest {
     void aMaximumInactivityUnderASecondBreaksNoAlive() {
         var feed = new Harness(Harness.settings(Duration.ZERO));
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         feed.clock.advance(Duration.ofSeconds(2));
         feed.alive(PRE);
@@ -1240,7 +1309,7 @@ class RecoveryMachineTest {
     @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         CompletableFuture<@Nullable Long> reply = feed.recoverEvent(PRE);
         feed.machine.close();
         assertThat(done(reply)).isNull();
@@ -1256,7 +1325,7 @@ class RecoveryMachineTest {
     @Test
     void requestIdsAreUniqueAmongThoseInFlight() {
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         feed.alive(LIVE);
         assertThat(feed.recoverEvent(PRE)).isNotDone();

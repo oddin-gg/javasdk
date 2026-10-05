@@ -31,7 +31,7 @@ import org.slf4j.LoggerFactory;
  * consumer thread never posts here at all: the dispatchers do.
  *
  * <p>Three queues. The essential facts - sessions opening and closing, the start, the connection,
- * the alives, snapshot completes, lost channels, the API's answers and finished resets - are never
+ * the alives, snapshot completes, lost and reopened channels, the API's answers and finished resets - are never
  * dropped, since losing one would leave the state wrong for good: an unsubscribed alive is the only
  * word of a gap. They keep their order. That queue has no capacity of its own: what fills it is
  * bounded by what the feed does and what the producers send of their own pace, its sessions, its
@@ -173,13 +173,22 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             }
 
             @Override
+            public void channelReopened() {
+                post(essential, new Fact.ChannelReopened(id));
+            }
+
+            @Override
             public void closed() {
                 post(essential, new Fact.Closed(id));
             }
         };
     }
 
-    /** The feed is open: the actor starts, the sessions opened so far miss everything before now. */
+    /**
+     * The feed is open: the actor starts, the sessions opened so far miss everything before now. It
+     * asks for nothing until the transport's first {@link #up}, which comes once every session's
+     * channel is bound: a recovery sent before would reach no queue.
+     */
     public void start() {
         post(essential, new Fact.Start());
         thread.start();
@@ -436,6 +445,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 case Fact.SnapshotComplete(var session, var producer, var requestId) ->
                     machine.snapshotComplete(session, producer, requestId);
                 case Fact.ChannelLost(var session) -> machine.channelLost(session);
+                case Fact.ChannelReopened(var session) -> machine.channelReopened(session);
                 case Fact.Connection(var up) -> {
                     if (up) {
                         machine.connectionUp();
@@ -688,6 +698,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         record SnapshotComplete(int session, long producerId, long requestId) implements Fact {}
 
         record ChannelLost(int session) implements Fact {}
+
+        record ChannelReopened(int session) implements Fact {}
 
         record Connection(boolean up) implements Fact {}
 
