@@ -285,11 +285,13 @@ class MessageFactoryTest {
     }
 
     @Test
-    void aCatalogThatCannotBeFetchedFailsTheNameUnderThrow() throws Exception {
+    void aCatalogThatCannotBeFetchedIsANameNotFoundUnderThrow() throws Exception {
         var change = (OddsChange<?>) world.build(oddsChange("<market id=\"1\" status=\"1\"/>"));
         world.api.startOutage(500);
         assertThatThrownBy(() -> change.getMarkets().getFirst().getName())
-                .isInstanceOf(com.oddin.oddsfeedsdk.exceptions.ApiException.class);
+                .isInstanceOf(ItemNotFoundException.class)
+                .hasMessage("Cannot find market name")
+                .hasCauseInstanceOf(com.oddin.oddsfeedsdk.exceptions.ApiException.class);
     }
 
     @Test
