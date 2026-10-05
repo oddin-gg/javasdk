@@ -55,27 +55,32 @@ if ! asked=$("$(dirname "$0")/release-tag-check.sh" "$tag" "$started_commit" "${
   esac
 fi
 
-# only what was reviewed and merged
-on_branch=
-for branch in next main; do
-  ref=refs/remotes/origin/$branch
-  if git rev-parse -q --verify "$ref" >/dev/null; then
-    if git merge-base --is-ancestor "$commit" "$ref"; then
-      on_branch=$branch
-      break
-    else
-      # 1 means "not an ancestor"; anything else is git failing, which must not read as either
-      status=$?
-      [ "$status" -eq 1 ] || fail "git merge-base failed ($status) for $branch"
-    fi
+# Releases are cut from main only: main alone has a ruleset that requires review (an approval,
+# code owners), while pull requests into next merge without one.
+on_main() {
+  local status
+  git rev-parse -q --verify refs/remotes/origin/main > /dev/null || fail "this clone has no origin/main"
+  if git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+    return 0
+  else
+    # 1 means "not an ancestor"; anything else is git failing, which must not read as either
+    status=$?
+    [ "$status" -eq 1 ] || fail "git merge-base failed ($status) for main"
+    return 1
   fi
-done
-[ -n "$on_branch" ] || fail "$commit is on neither next nor main"
+}
+if ! on_main; then
+  if git rev-parse -q --verify refs/remotes/origin/next > /dev/null \
+    && git merge-base --is-ancestor "$commit" refs/remotes/origin/next; then
+    fail "$commit is on next but not on main: 1.0 releases are cut from main, whose pull requests are reviewed"
+  fi
+  fail "$commit is not on main"
+fi
 
-# On next or main is not enough: the repository merges by rebase, which puts every intermediate
-# commit of a pull request on the branch, while the review saw only the final state. That state
-# is the pull request's merge commit, the last commit it left on the branch. So the tagged
-# commit must be the merge commit of a pull request merged into next or main.
+# On main is not enough: the repository merges by rebase, which puts every intermediate commit
+# of a pull request on the branch, while the review saw only the final state. That state is the
+# pull request's merge commit, the last commit it left on the branch. So the tagged commit must
+# be the merge commit of a pull request merged into main.
 limit=()
 if command -v timeout > /dev/null; then
   limit=(timeout "$timeout")
@@ -86,21 +91,15 @@ merged_into() {
 }
 bases=$(merged_into "repos/$repository/commits/$commit/pulls?per_page=100") \
   || fail "could not ask GitHub which pull request left $commit"
-# GitHub documents that for a commit not on the default branch (main) this endpoint returns only
-# open pull requests; checked on 2026-10-04, it returns the merged ones for next as well. Should
-# it come to match its documentation, ask the other way round: the pull requests merged into
-# next and main, for the one whose merge commit this is.
-if ! printf '%s\n' "$bases" | grep -qxE 'next|main'; then
-  for base in next main; do
-    bases=$(merged_into "repos/$repository/pulls?state=closed&base=$base&per_page=100") \
-      || fail "could not ask GitHub for the pull requests merged into $base"
-    if printf '%s\n' "$bases" | grep -qx "$base"; then
-      break
-    fi
-  done
+# Should this endpoint ever leave out a merged pull request (GitHub documents it as listing only
+# open ones for a commit off the default branch), ask the other way round: the pull requests
+# merged into main, for the one whose merge commit this is.
+if ! printf '%s\n' "$bases" | grep -qx main; then
+  bases=$(merged_into "repos/$repository/pulls?state=closed&base=main&per_page=100") \
+    || fail "could not ask GitHub for the pull requests merged into main"
 fi
-printf '%s\n' "$bases" | grep -qxE 'next|main' \
-  || fail "$commit is not the merge commit of a pull request merged into next or main"
+printf '%s\n' "$bases" | grep -qx main \
+  || fail "$commit is not the merge commit of a pull request merged into main"
 
 # one commit, one release (NEXT.md, section 9); any other tag is a question nobody answered
 tags=$(git tag --points-at "$commit")
@@ -166,7 +165,7 @@ for artifact in odds-feed-parent odds-feed; do
   esac
 done
 
-echo "$tag: $version on $on_branch, final: $final" >&2
+echo "$tag: $version on main, final: $final" >&2
 {
   echo "version=$version"
   echo "final=$final"

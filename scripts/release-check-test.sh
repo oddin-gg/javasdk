@@ -69,7 +69,7 @@ silent=http://127.0.0.1:1
 # Stub gh, for the question which pull request left a commit, asked two ways.
 # - commits/<sha>/pulls answers from $work/pulls/<sha>: a .json file holds the pull requests, a
 #   .fail file makes the call fail, a .stall file makes it answer only after 10 seconds. Without
-#   a file the commit is the merge commit of a pull request merged into next, beside an open one.
+#   a file the commit is the merge commit of a pull request merged into main, beside an open one.
 # - pulls?state=closed&base=<base> answers from $work/pulls/closed-<base>.json (none: no pull
 #   requests), and fails while $work/pulls/closed.fail exists.
 # Every call is recorded. The answer goes through the caller's --jq, with jq.
@@ -115,8 +115,8 @@ fi
 if [ -e "$pulls/$sha.json" ]; then
   json=$(cat "$pulls/$sha.json")
 else
-  json='[{"number": 1, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "'$sha'"},
-         {"number": 2, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "0000000"}]'
+  json='[{"number": 1, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "'$sha'"},
+         {"number": 2, "merged_at": null, "base": {"ref": "main"}, "merge_commit_sha": "0000000"}]'
 fi
 printf '%s' "$json" | jq -r "$filter"
 EOF
@@ -131,7 +131,7 @@ pulls() {
 }
 
 repo=$work/repo
-git init -q -b main "$repo"
+git init -q -b next "$repo"
 git -C "$repo" config user.name test
 git -C "$repo" config user.email test@example.invalid
 git -C "$repo" config commit.gpgsign false
@@ -253,8 +253,8 @@ release_workflow='on:
 commit ".github/workflows/release.yml=$release_workflow" \
   ".github/workflows/next.yml=on: {push: {branches: [next]}, pull_request: {branches: [next]}, workflow_call: {}}"
 
-# on next
-git -C "$repo" checkout -q -b next
+# on main
+git -C "$repo" checkout -q -b main
 release v1.0.0-rc.1
 release v1.0.0
 for tag in v1.0.0-rc.0 v1.01.0 v1.0 v1.0.0-beta.1 v1.0.0-rc.1x v2.0.0 v0.0.58 1.0.0; do
@@ -290,35 +290,33 @@ release v1.0.16
 for tag in v1.0.17 v1.0.18 v1.0.19 v1.0.20 v1.0.21 v1.0.22 v1.0.23 v1.0.24 v1.0.25 v1.0.26 v1.0.27; do
   release "$tag"
 done
-git -C "$repo" update-ref refs/remotes/origin/next HEAD
-# an intermediate commit of a pull request: on next, but its merge commit is a later one
-pulls v1.0.17 '[{"number": 3, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "OTHER"}]'
-pulls v1.0.18 '[{"number": 4, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "SHA"}]'
+git -C "$repo" update-ref refs/remotes/origin/main HEAD
+# an intermediate commit of a pull request: on main, but its merge commit is a later one
+pulls v1.0.17 '[{"number": 3, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "OTHER"}]'
+pulls v1.0.18 '[{"number": 4, "merged_at": null, "base": {"ref": "main"}, "merge_commit_sha": "SHA"}]'
 pulls v1.0.19 '[{"number": 5, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "feature"}, "merge_commit_sha": "SHA"}]'
-# GitHub as documented: for a commit not on main, commits/<sha>/pulls lists only open pull
-# requests; the merged one is found in the closed pull requests of next
+# the first lookup leaves the merged pull request out (GitHub documents it doing so for commits
+# off the default branch); it is found in main's closed pull requests
 for tag in v1.0.22 v1.0.23 v1.0.24; do
-  pulls "$tag" '[{"number": 7, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "0000000"}]'
+  pulls "$tag" '[{"number": 7, "merged_at": null, "base": {"ref": "main"}, "merge_commit_sha": "0000000"}]'
 done
 v1022=$(git -C "$repo" rev-parse "v1.0.22^{commit}")
-# merged into main: the first lookup and next's closed list miss it, main's has it
-pulls v1.0.26 '[]'
-printf '[{"number": 10, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "%s"}]' \
-  "$(git -C "$repo" rev-parse "v1.0.26^{commit}")" > "$work/pulls/closed-main.json"
+# merged, but into next: on main by now, but its review is next's, which has none
+pulls v1.0.26 '[{"number": 10, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "SHA"}]'
 # a tag moved on origin only: a clone, as the check job's checkout, still has it where it was
 git clone -q "$repo" "$work/moved"
 v1025=$(git -C "$repo" rev-parse "v1.0.25^{commit}")
-printf '[{"number": 8, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "%s"},
-  {"number": 9, "merged_at": null, "base": {"ref": "next"}, "merge_commit_sha": "%s"}]' \
-  "$v1022" "$(git -C "$repo" rev-parse "v1.0.23^{commit}")" > "$work/pulls/closed-next.json"
+printf '[{"number": 8, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "%s"},
+  {"number": 9, "merged_at": null, "base": {"ref": "main"}, "merge_commit_sha": "%s"}]' \
+  "$v1022" "$(git -C "$repo" rev-parse "v1.0.23^{commit}")" > "$work/pulls/closed-main.json"
 touch "$work/pulls/$(git -C "$repo" rev-parse "v1.0.20^{commit}").fail"
 touch "$work/pulls/$(git -C "$repo" rev-parse "v1.0.21^{commit}").stall"
 
-# on main only
-git -C "$repo" checkout -q main
+# on next only: a merged pull request into next, which releases never come from
+git -C "$repo" checkout -q next
 release v1.1.0
-pulls v1.1.0 '[{"number": 6, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "main"}, "merge_commit_sha": "SHA"}]'
-git -C "$repo" update-ref refs/remotes/origin/main HEAD
+pulls v1.1.0 '[{"number": 6, "merged_at": "2026-10-01T00:00:00Z", "base": {"ref": "next"}, "merge_commit_sha": "SHA"}]'
+git -C "$repo" update-ref refs/remotes/origin/next HEAD
 
 # on neither
 git -C "$repo" checkout -q -b feature
@@ -331,14 +329,14 @@ started=$(git -C "$repo" rev-parse v1.0.0) expect accept v1.0.0 "$absent" 1.0.0 
 # the run started for another commit: the tag moved before the check read it
 started=$(git -C "$repo" rev-parse "v1.0.0-rc.1^{commit}") expect refuse v1.0.0 "$absent" \
   "the tag moved since this run started: it names $(git -C "$repo" rev-parse "v1.0.0^{commit}"), the run was started for $(git -C "$repo" rev-parse "v1.0.0-rc.1^{commit}"); tags cannot be moved back, so release a new version"
-expect accept v1.1.0 "$absent" 1.1.0 true
+expect refuse v1.1.0 "$absent" "is on next but not on main: 1.0 releases are cut from main"
 expect accept v1.0.10 "$absent" 1.0.10 true
 
 for tag in v1.0.0-rc.0 v1.01.0 v1.0 v1.0.0-beta.1 v1.0.0-rc.1x v2.0.0 v0.0.58 1.0.0; do
   expect refuse "$tag" "$absent" "neither v1.MINOR.PATCH nor v1.MINOR.PATCH-rc.N"
 done
 expect refuse v1.0.99 "$absent" "no such tag"
-expect refuse v1.2.0 "$absent" "is on neither next nor main"
+expect refuse v1.2.0 "$absent" "is not on main"
 expect refuse v1.0.1 "$absent" "other tags name"
 expect refuse v1.0.2 "$absent" "other tags name"
 expect refuse v1.0.3 "$absent" "release-notes/1.0.3.md is missing"
@@ -355,22 +353,18 @@ expect refuse v1.0.15 "$absent" ".github/workflows/nex[t].yml: a workflow name o
 expect accept v1.0.16 "$absent" 1.0.16 true
 git -C "$repo" cat-file -e "v1.0.16:.github/workflows/next.yml" 2> /dev/null \
   || failed "removing nex[t].yml took next.yml with it"
-expect refuse v1.0.17 "$absent" "is not the merge commit of a pull request merged into next or main"
-expect refuse v1.0.18 "$absent" "is not the merge commit of a pull request merged into next or main"
-expect refuse v1.0.19 "$absent" "is not the merge commit of a pull request merged into next or main"
+expect refuse v1.0.17 "$absent" "is not the merge commit of a pull request merged into main"
+expect refuse v1.0.18 "$absent" "is not the merge commit of a pull request merged into main"
+expect refuse v1.0.19 "$absent" "is not the merge commit of a pull request merged into main"
 expect refuse v1.0.20 "$absent" "could not ask GitHub which pull request left"
 expect accept v1.0.22 "$absent" 1.0.22 true
-grep -qF "repos/example/repo/pulls?state=closed&base=next&per_page=100" "$work/pulls/calls" \
-  || failed "v1.0.22: the fallback did not ask for the closed pull requests of next: $(cat "$work/pulls/calls")"
-expect refuse v1.0.23 "$absent" "is not the merge commit of a pull request merged into next or main"
-for base in next main; do
-  grep -qF "repos/example/repo/pulls?state=closed&base=$base&per_page=100" "$work/pulls/calls" \
-    || failed "v1.0.23: the fallback did not ask for the closed pull requests of $base: $(cat "$work/pulls/calls")"
-done
-expect accept v1.0.26 "$absent" 1.0.26 true
-fallbacks=$(grep -oE 'pulls\?state=closed&base=(next|main)' "$work/pulls/calls" | tr '\n' ' ')
-[ "$fallbacks" = "pulls?state=closed&base=next pulls?state=closed&base=main " ] \
-  || failed "v1.0.26: the fallback should ask next's closed pull requests, then main's, not: $fallbacks"
+grep -qF "repos/example/repo/pulls?state=closed&base=main&per_page=100" "$work/pulls/calls" \
+  || failed "v1.0.22: the fallback did not ask for the closed pull requests of main: $(cat "$work/pulls/calls")"
+expect refuse v1.0.23 "$absent" "is not the merge commit of a pull request merged into main"
+fallbacks=$(grep -oE 'pulls\?state=closed&base=[a-z]+' "$work/pulls/calls" | tr '\n' ' ')
+[ "$fallbacks" = "pulls?state=closed&base=main " ] \
+  || failed "v1.0.23: the fallback should ask main's closed pull requests, and only those, not: $fallbacks"
+expect refuse v1.0.26 "$absent" "is not the merge commit of a pull request merged into main"
 # only now, so that no other case sees a second tag on the commit it moves to
 git -C "$repo" tag -f -a -m moved v1.0.25 "v1.2.0^{commit}" > /dev/null
 started=$v1025 in_dir=$work/moved in_remote=origin expect refuse v1.0.25 "$absent" \
@@ -385,7 +379,7 @@ git -C "$repo" tag -d v1.0.27 > /dev/null
 started=$v1027 in_dir=$work/moved in_remote=origin expect refuse v1.0.27 "$absent" \
   "the tag moved since this run started: no longer on origin"
 touch "$work/pulls/closed.fail"
-expect refuse v1.0.24 "$absent" "could not ask GitHub for the pull requests merged into next"
+expect refuse v1.0.24 "$absent" "could not ask GitHub for the pull requests merged into main"
 rm "$work/pulls/closed.fail"
 if command -v timeout > /dev/null; then
   expect refuse v1.0.21 "$absent" "could not ask GitHub which pull request left"
