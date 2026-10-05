@@ -102,8 +102,8 @@ final class MatchWrites {
         OFScoreboard scoreboard = status.getScoreboard();
         OFEventStatus eventStatus = status.getStatus();
         return LiveWrite.of()
-                // a message without the attribute says nothing of the status, which is kept
-                .put(STATUS, eventStatus == null ? null : EventStatus.fromFeedEventStatus(eventStatus))
+                // the schema requires the attribute: a message without it is Unknown, as in 0.0.x, not a failure
+                .put(STATUS, eventStatus == null ? EventStatus.Unknown : EventStatus.fromFeedEventStatus(eventStatus))
                 .put(MATCH_STATUS_ID, status.getMatchStatus())
                 .put(HOME_SCORE, status.getHomeScore())
                 .put(AWAY_SCORE, status.getAwayScore())
