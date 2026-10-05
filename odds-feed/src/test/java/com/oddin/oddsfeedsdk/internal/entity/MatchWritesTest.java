@@ -245,8 +245,8 @@ class MatchWritesTest {
                 .isNotEmpty();
         assertThat(after.get(SCOREBOARD)).isEqualTo(before.get(SCOREBOARD)).isNotNull();
         assertThat(after.get(STATUS))
-                .as("a feed status without its attribute says nothing of it")
-                .isEqualTo(EventStatus.Live);
+                .as("a feed status without its attribute, which the schema requires, reads as Unknown, as in 0.0.x")
+                .isEqualTo(EventStatus.Unknown);
     }
 
     @Test
