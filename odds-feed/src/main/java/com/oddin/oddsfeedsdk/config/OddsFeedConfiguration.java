@@ -13,6 +13,9 @@ public final class OddsFeedConfiguration {
     public static final long DEFAULT_MAX_COMPETITOR_CACHE_SIZE = 20_000L;
     public static final long DEFAULT_MAX_PLAYER_CACHE_SIZE = 50_000L;
 
+    /** 0.0.x's six hours, which it had no setter for. */
+    static final int DEFAULT_MAX_RECOVERY_EXECUTION_MINUTES = 360;
+
     static final Duration DEFAULT_HTTP_CLIENT_TIMEOUT = Duration.ofSeconds(30);
     static final int DEFAULT_REST_CONCURRENCY_LIMIT = 16;
     /** The startup timeout, when none is set, is this many HTTP timeouts. */

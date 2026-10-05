@@ -14,7 +14,7 @@ public final class OddsFeedConfigurationBuilder {
     private final Locale defaultLocale = Locale.ENGLISH;
     private @Nullable Environment selectedEnvironment;
     private final int maxInactivitySeconds = 20;
-    private final int maxRecoveryExecutionMinutes = 360;
+    private int maxRecoveryExecutionMinutes = OddsFeedConfiguration.DEFAULT_MAX_RECOVERY_EXECUTION_MINUTES;
     private @Nullable Integer sdkNodeId;
     private ExceptionHandlingStrategy exceptionHandlingStrategy = ExceptionHandlingStrategy.THROW;
     private @Nullable Duration initialSnapshotRecoveryInterval;
@@ -183,6 +183,20 @@ public final class OddsFeedConfigurationBuilder {
      */
     public OddsFeedConfigurationBuilder setMessagingSslContext(SSLContext context) {
         this.messagingSslContext = context;
+        return this;
+    }
+
+    /**
+     * How long a recovery may take before it counts as failed, and is asked for again; 0.0.x's
+     * six hours unless set. Not public: 0.0.x had no setter, and the option is ticket 28's to add.
+     *
+     * @throws IllegalArgumentException unless it is at least a minute
+     */
+    OddsFeedConfigurationBuilder setMaxRecoveryExecutionMinutes(int minutes) {
+        if (minutes < 1) {
+            throw new IllegalArgumentException("maximum recovery time must be at least 1 minute, was " + minutes);
+        }
+        this.maxRecoveryExecutionMinutes = minutes;
         return this;
     }
 
