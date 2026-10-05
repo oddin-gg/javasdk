@@ -497,7 +497,17 @@ and REST workers post facts to it; it decides and posts work out.
   loss starts from it too, rather than from an interval counted back from the loss.
 - A recovery is asked for only while an alive says the producer is there, as 0.0.x
   asks at the first alive: after `open()`, after a reconnect, after a gap in the
-  alives. Nothing goes out while the connection is down.
+  alives. Nothing goes out while the connection is down, nor before the transport's
+  first up, which it tells once every session's channel is bound: a snapshot sent
+  earlier reaches no queue, and its `snapshot_complete` is lost with it. So the actor
+  takes the connection's events from the transport itself, not through the events
+  dispatcher's queue (ticket 26), and starts with the connection not up. In the same
+  way nothing is asked for a producer while a session that receives it has lost its
+  channel: the transport tells the loss (`ChannelEvents.lost()`) and the new channel
+  once its queue is bound (`reopened()`, for every loss told, whether the transport's
+  own reopen, a reconnect or a reset opened it), and ticket 26 posts both to the
+  session's `SessionFacts`. An event recovery asked for meanwhile waits, as one does
+  during a reset.
 - Session lifecycle: a session that closes leaves the checkpoint and completion sets
   at once. A session that opens is seeded with the producer's current recovery-from
   point and triggers a recovery for its interests, as today on `open()`; the producers
@@ -512,15 +522,31 @@ and REST workers post facts to it; it decides and posts work out.
 - Requests for one producer are coalesced: while a recovery is in flight, further
   triggers join it instead of issuing a second one, and their reasons are recorded. A
   recovery covers the gaps open when it was asked for; a gap that opens while it is in
-  flight asks for one more once it completes. A loss that takes the recovery's own
+  flight asks for one more once it completes - another session's, say, which leaves the
+  recovery's snapshot on its way. A producer gap is different, since the producer may
+  have lost the request with its state: an alive still unsubscribed after the API
+  accepted the recovery, or no alive for longer than the maximum inactivity, gives the
+  recovery up, uncounted, and the next alive asks again, where 0.0.x and the .NET SDK
+  ask again at once (KD-26). An unsubscribed alive before the API's answer joins: the
+  producer may not have seen the request yet. A loss that takes the recovery's own
   snapshot with it - the connection, or the channel of a session that has not seen the
   `snapshot_complete` yet - gives the recovery up, uncounted, and a new one is asked for.
-- Recovery that the API does not accept, or that times out (the maximum recovery time,
-  0.0.x's six hours unless set), is re-issued with backoff from five seconds, doubling,
-  at most three times in a row. After that the producer stays down and the client gets
-  a producer-status event with the reason. The cap re-arms after a cool-down of ten
-  minutes, and immediately when an alive arrives after a gap. Nothing stays down for
-  the process lifetime without a further attempt.
+- A producer's recovery waits five minutes at most for its `snapshot_complete`: five
+  minutes after it was asked for, or after a session that awaits it last took a snapshot
+  message, or a message sent before the request, which the snapshot queues behind. A
+  slow session is not given up while its snapshot is still coming; a lost
+  `snapshot_complete` - the Go SDK saw one on the test environment, on a bound and
+  consuming queue - costs minutes, not the maximum recovery time. Five minutes is the
+  Go SDK's deadline (recoveries completed there in 83 to 139 s); 0.0.x and the .NET SDK
+  have none and wait out the maximum recovery time (KD-25). That time, 0.0.x's six
+  hours, stays the bound on a recovery that keeps coming, and on event recoveries; the
+  configuration carries it, and ticket 28 makes it settable.
+- Recovery that the API does not accept, or that times out (either deadline), is
+  re-issued with backoff from five seconds, doubling, at most three times in a row.
+  After that the producer stays down and the client gets a producer-status event with
+  the reason. The cap re-arms after a cool-down of ten minutes, and immediately when an
+  alive arrives after a gap. Nothing stays down for the process lifetime without a
+  further attempt.
 - Event recoveries take their ids from the same sequence. At most 128 are in flight per
   producer, and one without a `snapshot_complete` within the maximum recovery time is
   dropped and counted, as is one whose `snapshot_complete` went with a lost queue; a
@@ -535,13 +561,14 @@ and REST workers post facts to it; it decides and posts work out.
 - The facts posted to the actor are of two kinds. Those whose loss would leave the
   state wrong for good - sessions opening and closing, the connection going and coming,
   the alives from the SDK's alive channel (an unsubscribed one is the only word of a
-  gap), `snapshot_complete`s, lost channels, the API's answers, finished resets - are
-  never dropped and keep their order. The alives are kept per producer of the list: the
-  latest, and of the first unsubscribed one and the last subscribed one before it, so a
-  flood of them costs one slot and one queued fact per producer, and an alive of a
-  producer the list does not have is dropped and counted. Of the rest of that queue,
-  sessions, connection changes, the API's answers and finished resets are bounded by
-  what the feed itself does; lost channels by the transport's own reopening; and the
+  gap), `snapshot_complete`s, lost and reopened channels, the API's answers, finished
+  resets - are never dropped and keep their order. The alives are kept per producer of
+  the list: the latest, and of the first unsubscribed one and the last subscribed one
+  before it, so a flood of them costs one slot and one queued fact per producer, and an
+  alive of a producer the list does not have is dropped and counted. Of the rest of
+  that queue, sessions, connection changes, the API's answers and finished resets are
+  bounded by what the feed itself does; lost and reopened channels by the transport's
+  own reopening; and the
   `snapshot_complete`s, one per request per session, by the recoveries asked for on the
   node id - which include another instance's sharing it, the one input there not
   bounded by this feed alone.
@@ -627,7 +654,8 @@ and REST workers post facts to it; it decides and posts work out.
     like one asked for. A reset that could not be handed to the AMQP layer at all, or that
     failed before the old channel's deliveries were taken out - the channel's epoch tells,
     since it moves exactly then - is reported as not made: nothing was dropped, nothing
-    counts against the cap, and the recoveries whose `snapshot_complete` was ignored
+    counts against the cap, the net waits as long as after the last reset made - its
+    backoff does not grow - and the recoveries whose `snapshot_complete` was ignored
     meanwhile are asked for again. The net's numbers - the limit of two minutes, the window
     of one, three resets per session per ten minutes, a minute's backoff doubling - are
     decided defaults, fixed until ticket 28's options make them settable.
@@ -658,6 +686,11 @@ and REST workers post facts to it; it decides and posts work out.
   and a refused login on the first then reads as a network failure on the last.
 - Reconnect with backoff on network failures. Exclusive queues are always re-declared;
   whatever the broker buffered for the old queue is gone, and recovery covers it.
+- A channel the broker closes or cancels while the connection stays up is opened again
+  by the transport, with a pause from a second, doubling to thirty while it fails; 0.0.x
+  left it closed (KD-27). The session is told of the loss before the new channel can
+  deliver, and of the new channel once its queue is bound, and recovery covers what the
+  old queue held.
 - Authentication and authorisation failures and a wrong virtual host are treated as
   permanent once at least three refusals have gone on for a whole minute with no
   connection in between. They are counted by the clock, not by attempts, which the
@@ -1175,3 +1208,11 @@ schema. Woodstox is Apache 2.0, its one dependency BSD.
   after a lost channel needs. Every other fix is in place already or named for the ticket
   that carries it; the table is in the pull request. The next sweep starts from these
   two commits.
+- 2026-10-05, tickets 24 and 41, after the runtime design review: a recovery the
+  producer lost is given up at its producer gap and asked for again at the next alive,
+  instead of being waited out for the maximum recovery time; a producer's recovery
+  waits five minutes at most for its `snapshot_complete` once nothing more of it comes,
+  after the Go SDK's unmerged fix for a lost one; the actor asks for nothing before the
+  transport's first up, nor for a session's producers between its lost channel and the
+  new one. The remaining findings on the approved pull requests of tickets 21 and 24
+  are each fixed or answered in the pull request.

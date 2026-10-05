@@ -301,3 +301,53 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
 - **Pinned by:** `ReconnectScenarioIT.closingTheFeedIsNotReportedAsTheConnectionDown`
 - **Found:** in the source (`AMQPConnectionProvider`, `addShutdownListener`), and by test against
   0.0.57.
+
+## KD-25 A lost snapshot complete keeps a producer down for six hours
+
+- **0.0.x:** A recovery whose `snapshot_complete` never arrives is asked for again only once the
+  maximum recovery time has passed: 360 minutes, with no setter. The producer stays down
+  meanwhile. The .NET SDK does the same, with a setter.
+- **1.0:** A producer's recovery waits five minutes at most for its `snapshot_complete`, counted
+  from the request, or from the last snapshot message, or message sent before the request, that
+  a session awaiting it took; then it is asked for again with backoff, as one the API refused
+  (KD-11). The maximum recovery time still bounds a recovery that keeps coming, and event
+  recoveries (NEXT.md section 4, Recovery and producers).
+- **Why:** The Go SDK saw a `snapshot_complete` that never arrived on a bound, consuming queue;
+  until the recovery is given up, the client drops or buffers the producer's live feed.
+- **Pinned by:** none in the system tests; the fake feed cannot lose one message of a recovery,
+  and a scenario of five minutes is not worth it. The recovery actor's unit tests pin the
+  deadline.
+- **Found:** by reading the source (`RecoveryManagerImpl.systemSessionAliveReceived`), after the
+  Go SDK's unmerged fix for it.
+
+## KD-26 An unsubscribed alive during a recovery asks again at once
+
+- **0.0.x:** Every alive with `subscribed="0"` asks for a new recovery at once, which replaces
+  the one in flight: an alive sent before the producer saw the request replaces it too, and so
+  does every further alive while the producer stays unsubscribed. A producer silent for longer
+  than the maximum inactivity interrupts the recovery, and its next alive asks again.
+- **1.0:** One recovery in flight per producer. An unsubscribed alive that arrives after the API
+  accepted the recovery means the producer lost it: the recovery is given up, uncounted, and the
+  next alive asks again, about one alive interval later. One that arrives before the API's
+  answer joins the recovery, and one more is asked for once it completes. Silence gives the
+  recovery up, and the next alive asks again, as in 0.0.x (NEXT.md section 4, Recovery and
+  producers).
+- **Why:** A client that counts recovery requests, or watches their ids, sees fewer of them, and
+  the new request ten seconds later than on 0.0.x.
+- **Pinned by:** none in the system tests; the recovery actor's unit tests pin it.
+- **Found:** by reading the source (`RecoveryManagerImpl.systemSessionAliveReceived`).
+
+## KD-27 A channel the broker takes on a live connection is not opened again
+
+- **0.0.x:** The AMQP client's automatic recovery opens a lost connection again, with its
+  channels, but not a channel the broker closes or a consumer it cancels while the connection
+  stays up - a deleted queue, say. The session then receives nothing more, and nothing is
+  recovered.
+- **1.0:** The transport opens such a channel again, tells the session of the loss and of the
+  new channel, and recovery covers what the old queue held, once the new one is bound (NEXT.md
+  section 4, Connection, and Recovery and producers).
+- **Why:** A session that silently stops receiving keeps its producers up with stale state.
+- **Pinned by:** none in the system tests; the transport's and the recovery actor's unit tests
+  pin it.
+- **Found:** by reading the source (`ChannelConsumer`, `AMQPConnectionProvider`) and the AMQP
+  client's documentation of automatic recovery, which a channel-level error does not start.
