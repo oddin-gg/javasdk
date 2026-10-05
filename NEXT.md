@@ -355,7 +355,7 @@ Write rule:
 - An authoritative response replaces the fields it is authoritative for, in the locale
   it was fetched for, and marks them **authoritatively written**. A field the response
   omits is cleared and stays marked when the endpoint always serialises it when it
-  exists; that is how a retracted winner disappears from the summary. A field the
+  exists; that is how a competitor's player list empties. A field the
   endpoint may leave out is kept as it is when it does, localized or not.
   Locale-independent fields are written by every authoritative response regardless of
   locale; two parallel locale fetches carry the same server state, so last writer
@@ -379,8 +379,13 @@ Write rule:
 
 Ownership and ordering:
 
-- Feed messages own live status, scores, period scores and the match clock. REST owns
-  everything else. Market state and odds are not cached.
+- Feed messages own live status, scores, period scores, the match clock and the winner.
+  REST owns everything else. Market state and odds are not cached.
+- The winner has a rule of its own, since the feed sends it only once there is one and
+  only the summary retracts it: a message that carries it writes it, one without it keeps
+  it; the summary writes it, its absence clearing it, once the feed is quiet, as for the
+  other feed-owned fields; while the feed is live, the summary's winner fills one the feed
+  has not sent. A settlement right after the closing odds change reads the feed's.
 - The feed-owned fields are not entity-cache fields, since they have two writers and
   only the watermarks know their order. They live in one bounded record per entity,
   the **live state**, next to the entity's watermarks; a value and its watermark change
