@@ -848,6 +848,24 @@ class SafetyNetTest {
     }
 
     @Test
+    void aRecoveryWhoseSessionTheTransportStillResetsDoesNotTimeOutAndIsAskedForAgainOnceItIsDone() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
+
+        // the new channel takes the transport longer than the deadline for a snapshot complete
+        feed.runWithAlives(Duration.ofMinutes(6));
+        assertThat(feed.counters.timedOut()).isZero();
+        assertThat(feed.calls).hasSize(before + 2);
+        feed.resetDone();
+        assertThat(feed.calls).as("asked for again once it is done").hasSize(before + 4);
+        assertThat(feed.counters.failed()).isZero();
+    }
+
+    @Test
     void aLostConnectionWhileAResetWaitsMakesNone() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();

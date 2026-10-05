@@ -43,9 +43,13 @@ import org.slf4j.LoggerFactory;
  * that receives the producer and takes snapshot completions has seen its snapshot complete; a gap
  * opened later asks for one more. A loss that takes the recovery's own snapshot with it - the
  * connection, or the channel of a session that has not seen the snapshot complete yet - gives it up,
- * and a new one is asked for. A recovery is asked for only while an alive says the producer is
- * there, the transport has reported the connection up, and every session that receives the producer
- * has a bound queue. One that fails or times out is asked for again with backoff, at most {@link
+ * and a new one is asked for. So does a gap of the producer's, which may have lost the request: an
+ * alive still unsubscribed after the API accepted it, or no alive for too long; the next alive asks
+ * again. A recovery is asked for only while an alive says the producer is there, the transport has
+ * reported the connection up, and every session that receives the producer has a bound queue. One
+ * that fails, or times out - no snapshot complete within {@link
+ * RecoverySettings#snapshotCompleteTimeout()} once nothing more of it comes, or within the maximum
+ * recovery time at all - is asked for again with backoff, at most {@link
  * RecoverySettings#reissues()} times in a row; then the producer stays down for a cool-down, or until
  * an alive arrives after a gap.
  *
@@ -240,7 +244,7 @@ final class RecoveryMachine {
         long now = now();
         for (Track track : tracks.values()) {
             if (track.active != null) {
-                giveUp(track, now);
+                giveUp(track, now, "its snapshot went with the connection");
             }
         }
         for (SessionState session : sessions.values()) {
@@ -343,11 +347,11 @@ final class RecoveryMachine {
         releaseDeferred();
     }
 
-    /** The event recoveries that waited for a reset no longer underway are asked for now. */
+    /** The event recoveries that waited for a session's channel are asked for once none waits. */
     private void releaseDeferred() {
         for (DeferredEvent event : new ArrayList<>(deferred)) {
             Track track = track(event.producerId());
-            if (!underway(track)) {
+            if (!awaitsChannel(track)) {
                 deferred.remove(event);
                 recoverEvent(event.producerId(), event.eventId(), event.stateful(), event.reply());
             }
@@ -381,7 +385,7 @@ final class RecoveryMachine {
             Track track = track(producerId);
             Active active = track.active;
             if (active != null && active.awaited.contains(id) && !active.seen.contains(id)) {
-                giveUp(track, now);
+                giveUp(track, now, "its snapshot went with session " + id + "'s queue");
             }
             maybeRequest(track, now);
         }
@@ -402,6 +406,8 @@ final class RecoveryMachine {
             return;
         }
         long now = now();
+        // the alive after the one that gave a recovery up: it may be asked for again
+        track.awaitsAlive = false;
         if (track.lastAliveAt != 0) {
             // a second at least, and the maximum inactivity at most, unless that is less
             long measured = Math.clamp(
@@ -426,6 +432,13 @@ final class RecoveryMachine {
             }
         } else {
             openProducerGap(track, generatedAt);
+            Active active = track.active;
+            if (active != null && active.accepted && receivedAt >= active.acceptedAt) {
+                // still unsubscribed after the producer took the request: it lost it, restarting say,
+                // and will send neither the snapshot nor its snapshot complete
+                giveUp(track, now, "the producer says unsubscribed since it accepted it");
+                track.awaitsAlive = true;
+            }
             markDown(track, StatusCause.UNSUBSCRIBED, now);
         }
         maybeRequest(track, now);
@@ -447,6 +460,7 @@ final class RecoveryMachine {
         producers.setLastMessageTimestamp(producerId, Math.max(1, takenAt));
         producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
         lane.lastAt = takenAt;
+        heard(track, id, generatedAt, snapshot);
         if (!snapshot) {
             lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
             sample(session, lane, track, generatedAt, takenAt);
@@ -466,10 +480,26 @@ final class RecoveryMachine {
         }
         producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
         lane.lastAt = takenAt;
+        heard(track, id, generatedAt, false);
         if (subscribed) {
             lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
         }
         sample(session, lane, track, generatedAt, takenAt);
+    }
+
+    /**
+     * Whether what a session took says the recovery in flight is still on its way to it: a snapshot
+     * message, or one sent before the request, which the snapshot and its snapshot complete queue
+     * behind. Either puts off the deadline for its snapshot complete.
+     */
+    private void heard(Track track, int id, long generatedAt, boolean snapshot) {
+        Active active = track.active;
+        if (active != null
+                && active.awaited.contains(id)
+                && !active.seen.contains(id)
+                && (snapshot || generatedAt < active.requestedAt)) {
+            active.heardAt = now();
+        }
     }
 
     /** A session has seen a snapshot complete; an id the actor has not in flight is counted, and ignored. */
@@ -617,16 +647,30 @@ final class RecoveryMachine {
                 continue;
             }
             Active active = track.active;
-            if (active != null
-                    && now - active.issuedAt > settings.maxRecoveryTime().toMillis()) {
-                counters.timedOut.incrementAndGet();
-                failed(track, active, now, "no snapshot complete within " + settings.maxRecoveryTime());
+            if (active != null) {
+                if (now - active.issuedAt > settings.maxRecoveryTime().toMillis()) {
+                    counters.timedOut.incrementAndGet();
+                    failed(track, active, now, "no snapshot complete within " + settings.maxRecoveryTime());
+                } else if (now - active.heardAt
+                                > settings.snapshotCompleteTimeout().toMillis()
+                        && !underway(track)) {
+                    // a reset underway gives it up once done; else its snapshot complete is lost
+                    counters.timedOut.incrementAndGet();
+                    failed(
+                            track,
+                            active,
+                            now,
+                            "no snapshot complete, nor anything on its way, within "
+                                    + settings.snapshotCompleteTimeout());
+                }
             }
             if (started) {
                 long last = track.lastAliveAt != 0 ? track.lastAliveAt : startedAt;
                 if (!track.inactive && now - last > settings.maxInactivity().toMillis()) {
                     track.inactive = true;
                     openProducerGap(track, track.lastAliveGen);
+                    // a producer that went silent while a recovery was in flight may have lost it
+                    giveUp(track, now, "the producer sent no alive for " + settings.maxInactivity());
                     markDown(track, StatusCause.ALIVE_INTERVAL_VIOLATION, now);
                 }
                 checkDelay(track, now);
@@ -677,8 +721,8 @@ final class RecoveryMachine {
 
     /**
      * Whether a recovery may go out now: none in flight, a session to receive it, the connection up,
-     * every channel that receives it bound, an alive that says the producer is there, its backoff and
-     * its cap's cool-down over.
+     * every channel that receives it bound, an alive that says the producer is there - after the one
+     * that gave the last recovery up - and its backoff and its cap's cool-down over.
      */
     private boolean canRequest(Track track, long now) {
         return started
@@ -687,6 +731,7 @@ final class RecoveryMachine {
                 && enabled(track)
                 && receivers(track) > 0
                 && aliveRecent(track, now)
+                && !track.awaitsAlive
                 && !awaitsChannel(track)
                 && now >= track.retryAt
                 && (track.capSpentAt == 0
@@ -735,6 +780,7 @@ final class RecoveryMachine {
 
     private void accepted(Track track, Active active, long now) {
         active.accepted = true;
+        active.acceptedAt = now;
         producers.setRecoveryInfo(
                 track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), true));
         for (SessionState session : sessions.values()) {
@@ -851,8 +897,11 @@ final class RecoveryMachine {
         }
     }
 
-    /** The recovery's snapshot was lost with a queue: it is no longer waited for, and its gaps stay open. */
-    private void giveUp(Track track, long now) {
+    /**
+     * The recovery's snapshot will not come, through no fault of the request: lost with a queue, or
+     * by the producer. It is no longer waited for, its gaps stay open, and no failure is counted.
+     */
+    private void giveUp(Track track, long now, String reason) {
         Active active = track.active;
         if (active == null) {
             return;
@@ -860,8 +909,7 @@ final class RecoveryMachine {
         track.active = null;
         track.pausedUntil = now;
         counters.abandoned.incrementAndGet();
-        LOG.info(
-                "Recovery {} of producer {} given up: its snapshot went with a lost queue", active.requestId, track.id);
+        LOG.info("Recovery {} of producer {} given up: {}", active.requestId, track.id, reason);
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
             if (pending != null && pending.unaccepted.contains(track.id)) {
@@ -1388,6 +1436,8 @@ final class RecoveryMachine {
         long aliveInterval;
         /** Whether the producer went too long without an alive, and no alive has come since. */
         boolean inactive;
+        /** Whether an unsubscribed alive gave the last recovery up, and no alive has come since. */
+        boolean awaitsAlive;
         /** What every session misses because the producer stopped sending; null for nothing. */
         @Nullable
         Gap gap;
@@ -1488,6 +1538,13 @@ final class RecoveryMachine {
         final Set<StatusCause> causes = EnumSet.noneOf(StatusCause.class);
 
         boolean accepted;
+        /** When the API accepted it, or a snapshot complete said so, by the SDK's clock. */
+        long acceptedAt;
+        /**
+         * When a session that awaits it last took something that says it is on its way, or when it
+         * was asked for: its snapshot complete is waited for this long after, at most.
+         */
+        long heardAt;
 
         Active(long requestId, long after, long issuedAt, long requestedAt, long covers, Set<Integer> awaited) {
             this.requestId = requestId;
@@ -1496,6 +1553,7 @@ final class RecoveryMachine {
             this.requestedAt = requestedAt;
             this.covers = covers;
             this.awaited = awaited;
+            this.heardAt = issuedAt;
         }
     }
 

@@ -1133,6 +1133,7 @@ class RecoveryActorTest {
         return new RecoverySettings(
                 settings.maxInactivity(),
                 settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
                 settings.initialSnapshotInterval(),
                 settings.nodeId(),
                 settings.reissues(),

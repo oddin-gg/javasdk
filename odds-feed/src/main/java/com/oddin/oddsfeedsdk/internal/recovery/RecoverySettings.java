@@ -11,6 +11,10 @@ import org.jspecify.annotations.Nullable;
  *     the producer is down: 0.0.x's max inactivity
  * @param maxRecoveryTime how long a recovery may take before it counts as failed: 0.0.x's max
  *     recovery execution time
+ * @param snapshotCompleteTimeout how long a producer's recovery waits for its snapshot complete
+ *     after it was asked for, or after a session that awaits it last took something that says it
+ *     is on its way, before it counts as failed: well under the maximum recovery time, so a lost
+ *     snapshot complete keeps the producer down for minutes, not hours
  * @param initialSnapshotInterval how far back a cold start with no recovery point asks for, or null
  *     for a full snapshot
  * @param nodeId the node id the requests carry, for the recovery info the client reads
@@ -29,6 +33,7 @@ import org.jspecify.annotations.Nullable;
 public record RecoverySettings(
         Duration maxInactivity,
         Duration maxRecoveryTime,
+        Duration snapshotCompleteTimeout,
         @Nullable Duration initialSnapshotInterval,
         @Nullable Integer nodeId,
         int reissues,
@@ -41,6 +46,13 @@ public record RecoverySettings(
         Duration firstResetBackoff,
         int eventRecoveries,
         Duration tick) {
+
+    /**
+     * Five minutes, as the Go SDK has it: recoveries observed there completed in 83 to 139 s, and a
+     * snapshot complete rides the queue behind its snapshot. A session still taking the snapshot, or
+     * what was queued before the request, puts it off, so a slow one is not given up.
+     */
+    static final Duration SNAPSHOT_COMPLETE_TIMEOUT = Duration.ofMinutes(5);
 
     static final int REISSUES = 3;
     static final Duration FIRST_REISSUE_BACKOFF = Duration.ofSeconds(5);
@@ -58,6 +70,7 @@ public record RecoverySettings(
         return new RecoverySettings(
                 Duration.ofSeconds(configuration.getMaxInactivitySeconds()),
                 Duration.ofMinutes(configuration.getMaxRecoveryExecutionMinutes()),
+                SNAPSHOT_COMPLETE_TIMEOUT,
                 configuration.getInitialSnapshotRecoveryInterval(),
                 configuration.getSdkNodeId(),
                 REISSUES,

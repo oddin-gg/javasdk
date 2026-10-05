@@ -115,6 +115,7 @@ class RecoveryMachineTest {
         var feed = new Harness(new RecoverySettings(
                 settings.maxInactivity(),
                 settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
                 Duration.ofMinutes(30),
                 settings.nodeId(),
                 settings.reissues(),
@@ -150,6 +151,7 @@ class RecoveryMachineTest {
         var feed = new Harness(new RecoverySettings(
                 settings.maxInactivity(),
                 settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
                 Duration.ofMinutes(30),
                 settings.nodeId(),
                 settings.reissues(),
@@ -186,6 +188,7 @@ class RecoveryMachineTest {
         var withInterval = new RecoverySettings(
                 settings.maxInactivity(),
                 settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
                 Duration.ofMinutes(30),
                 settings.nodeId(),
                 settings.reissues(),
@@ -370,7 +373,7 @@ class RecoveryMachineTest {
     void aRecoveryAskedForAgainStartsFromTheSamePoint() {
         long from = feed.now() - Duration.ofHours(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
-        feed.open(1, MessageInterest.ALL);
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
         feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
@@ -382,8 +385,8 @@ class RecoveryMachineTest {
         feed.sessionAlive(1, PRE);
         assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t);
 
-        // the rest never comes: it times out, and is asked for again
-        feed.runWithAlives(Duration.ofHours(6).plusSeconds(6));
+        // the rest never comes: past the deadline for its snapshot complete it is asked for again
+        feed.runWithAlives(Duration.ofMinutes(5).plusSeconds(6));
         Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
         assertThat(again.requestId()).isNotEqualTo(first.requestId());
         assertThat(feed.counters.timedOut()).isEqualTo(1);
@@ -467,9 +470,11 @@ class RecoveryMachineTest {
         feed.bothUp(1);
         feed.unsubscribed(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
-        feed.accept(recovery);
+        // before the producer took the request: it may not have seen it yet
         feed.unsubscribed(PRE);
         feed.alive(PRE);
+        feed.accept(recovery);
+        // another session's gap: the producer still has what the recovery is sending
         feed.open(2, MessageInterest.ALL);
         feed.advance(Duration.ofSeconds(5));
         assertThat(feed.snapshots(PRE)).as("one in flight at a time").hasSize(2);
@@ -488,19 +493,78 @@ class RecoveryMachineTest {
     }
 
     @Test
-    void aProducerThatStopsSendingWhileARecoveryIsInFlightAsksForOneMoreAfterIt() {
+    void anUnsubscribedAliveBeforeTheProducerTookTheRecoveryJoinsItAndAsksForOneMoreAfterIt() {
         feed.open(1, MessageInterest.ALL);
         feed.start();
         feed.bothUp(1);
         feed.unsubscribed(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
-        feed.accept(recovery);
-        // the producer still says unsubscribed after the request went out
+        // sent before the API had answered: the producer may not have seen the request yet
         feed.unsubscribed(PRE);
+        feed.accept(recovery);
         assertThat(feed.snapshots(PRE)).hasSize(2);
         feed.machine.snapshotComplete(1, PRE, recovery.requestId());
         assertThat(feed.snapshots(PRE)).as("one more").hasSize(3);
         assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+    }
+
+    @Test
+    void aProducerThatRestartsDuringARecoveryGivesItUpAndIsAskedAgainAtTheNextAlive() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1, 2);
+        feed.unsubscribed(PRE);
+        Outbox.Call.Snapshot lost = feed.lastSnapshot(PRE);
+        feed.accept(lost);
+        feed.machine.snapshotComplete(1, PRE, lost.requestId());
+        long downAt = feed.now();
+
+        // the producer took the request, then restarted: it says unsubscribed again
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.unsubscribed(PRE);
+        assertThat(feed.machine.inFlightRecovery(PRE)).as("given up").isZero();
+        assertThat(feed.counters.abandoned()).isEqualTo(1);
+        assertThat(feed.counters.failed()).as("not the request's failure").isZero();
+        feed.advance(Duration.ofSeconds(5));
+        assertThat(feed.snapshots(PRE)).as("not before the next alive").hasSize(2);
+
+        feed.clock.advance(Duration.ofSeconds(5));
+        feed.unsubscribed(PRE);
+        Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
+        assertThat(again.requestId()).isNotEqualTo(lost.requestId());
+        assertThat(again.after()).as("from the same point").isEqualTo(lost.after());
+        // what the lost one would have completed changes nothing
+        feed.machine.snapshotComplete(2, PRE, lost.requestId());
+        assertThat(feed.counters.unknownCompletions()).isEqualTo(1);
+        feed.complete(again, 1, 2);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+        assertThat(feed.now() - downAt).as("up again within seconds").isLessThan(30_000);
+    }
+
+    @Test
+    void aProducerSilentDuringARecoveryGivesItUpAndIsAskedAgainAtItsNextAlive() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        feed.unsubscribed(PRE);
+        Outbox.Call.Snapshot lost = feed.lastSnapshot(PRE);
+        feed.accept(lost);
+        for (int second = 0; second < 21; second++) {
+            feed.advance(Duration.ofSeconds(1));
+        }
+        assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.ALIVE_INTERVAL_VIOLATION);
+        assertThat(feed.machine.inFlightRecovery(PRE)).as("given up").isZero();
+        assertThat(feed.counters.abandoned()).isEqualTo(1);
+        assertThat(feed.counters.failed()).isZero();
+        assertThat(feed.snapshots(PRE)).as("not without an alive").hasSize(2);
+
+        feed.alive(PRE);
+        Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
+        assertThat(again.requestId()).isNotEqualTo(lost.requestId());
+        assertThat(again.after()).isEqualTo(lost.after());
+        feed.complete(again, 1);
+        assertThat(feed.producers.isProducerDown(PRE)).isFalse();
     }
 
     @Test
@@ -728,24 +792,100 @@ class RecoveryMachineTest {
     }
 
     @Test
-    void aRecoveryWithNoSnapshotCompleteWithinTheMaximumRecoveryTimeIsAskedForAgain() {
-        feed.open(1, MessageInterest.ALL);
+    void aRecoveryWhoseSnapshotCompleteIsLostIsAskedForAgainAfterItsDeadline() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
         feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
         feed.accept(recovery);
-        feed.runWithAlives(Duration.ofHours(6));
-        assertThat(feed.snapshots(PRE)).as("at the maximum recovery time").hasSize(1);
-        assertThat(feed.counters.timedOut()).as("at the maximum recovery time").isZero();
+        // the session takes the snapshot, and live messages after it; its snapshot complete never comes
+        feed.machine.processed(1, PRE, feed.now(), feed.now(), true);
+        feed.runWithAlives(Duration.ofMinutes(5));
+        assertThat(feed.snapshots(PRE)).as("at the deadline").hasSize(1);
+        assertThat(feed.counters.timedOut()).as("at the deadline").isZero();
         feed.runWithAlives(Duration.ofSeconds(1));
         assertThat(feed.counters.timedOut()).isEqualTo(1);
-        feed.runWithAlives(Duration.ofSeconds(5));
-        assertThat(feed.snapshots(PRE)).hasSize(2);
         assertThat(requireNonNull(
                                 requireNonNull(feed.producers.getProducer(PRE)).getRecoveryInfo())
                         .getSuccessful())
                 .as("the timed-out one")
                 .isFalse();
+        feed.runWithAlives(Duration.ofSeconds(5));
+        assertThat(feed.snapshots(PRE)).as("after the first backoff").hasSize(2);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        assertThat(feed.producers.isProducerDown(PRE)).as("up within minutes").isFalse();
+    }
+
+    @Test
+    void aSnapshotStillOnItsWayPutsOffTheDeadlineForItsSnapshotComplete() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.PREMATCH_ONLY, false));
+        feed.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        long requestedAt = feed.now();
+        // a slow session: first what was queued before the request, then the snapshot
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, requestedAt - 1_000, feed.now(), false);
+        }
+        for (int minute = 1; minute <= 4; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), true);
+            // a session that takes no snapshot completes is not waited for, nor heard
+            feed.machine.processed(2, PRE, feed.now(), feed.now(), true);
+        }
+        assertThat(feed.counters.timedOut()).as("ten minutes in, still coming").isZero();
+        feed.runWithAlives(Duration.ofMinutes(5));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
+
+        // only what the awaited sessions take puts it off
+        int asked = feed.snapshots(PRE).size();
+        feed.runWithAlives(Duration.ofSeconds(5));
+        assertThat(feed.snapshots(PRE)).hasSize(asked + 1);
+        for (int minute = 1; minute <= 5; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(2, PRE, feed.now(), feed.now(), true);
+        }
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(2);
+    }
+
+    @Test
+    void aRecoveryStillOnItsWayAtTheMaximumRecoveryTimeTimesOut() {
+        var settings = Harness.settings();
+        var feed = new Harness(new RecoverySettings(
+                settings.maxInactivity(),
+                Duration.ofMinutes(30),
+                settings.snapshotCompleteTimeout(),
+                settings.initialSnapshotInterval(),
+                settings.nodeId(),
+                settings.reissues(),
+                settings.firstReissueBackoff(),
+                settings.cooldown(),
+                settings.aliveInterval(),
+                settings.staleLimit(),
+                settings.staleWindow(),
+                settings.resets(),
+                settings.firstResetBackoff(),
+                settings.eventRecoveries(),
+                settings.tick()));
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.accept(feed.lastSnapshot(PRE));
+        for (int minute = 1; minute <= 30; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), true);
+        }
+        assertThat(feed.counters.timedOut()).as("at the maximum recovery time").isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
     }
 
     // ---- what the client hears
@@ -1165,9 +1305,9 @@ class RecoveryMachineTest {
         feed.start();
         feed.alive(PRE);
         Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
-        feed.accept(first);
-        // the producer stops sending while the first recovery is in flight
+        // the producer stops sending while the first recovery waits for the API
         feed.unsubscribed(PRE);
+        feed.accept(first);
         feed.machine.snapshotComplete(1, PRE, first.requestId());
         Outbox.Call.Snapshot followUp = feed.lastSnapshot(PRE);
         assertThat(followUp.requestId()).isNotEqualTo(first.requestId());
