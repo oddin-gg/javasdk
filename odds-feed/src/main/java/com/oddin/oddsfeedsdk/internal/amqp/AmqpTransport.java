@@ -85,6 +85,8 @@ public final class AmqpTransport implements AutoCloseable {
     private volatile boolean failed;
     /** A test's hook: runs under the lock once a connect has opened every channel, before up is told. */
     volatile Runnable afterChannelsOpen = () -> {};
+    /** A test's hook: runs in close() once the connection is aborted, before the channels close. */
+    volatile Runnable afterAbort = () -> {};
 
     /**
      * @param exchange the feed's exchange, or the replay one
@@ -173,6 +175,7 @@ public final class AmqpTransport implements AutoCloseable {
                 settings.maxMessageSize(),
                 clock,
                 () -> connection,
+                () -> closed,
                 this::channelLost,
                 e -> reopenFailed(which, e),
                 told);
@@ -266,6 +269,7 @@ public final class AmqpTransport implements AutoCloseable {
             // briefly: a broker that does not answer the declare does not answer the close either
             now.abort(ABORT_MILLIS);
         }
+        afterAbort.run();
         lock.lock();
         try {
             closeEverything();

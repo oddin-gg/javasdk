@@ -14,6 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
@@ -48,6 +49,7 @@ final class SessionChannel implements SessionTransport {
     private final int maxMessageSize;
     private final InstantSource clock;
     private final Supplier<@Nullable Connection> connection;
+    private final BooleanSupplier closing;
     private final Consumer<SessionChannel> lost;
     private final Consumer<Exception> reopenFailed;
     private final ChannelEvents told;
@@ -73,6 +75,7 @@ final class SessionChannel implements SessionTransport {
 
     /**
      * @param connection the transport's connection now, null while it has none
+     * @param closing whether the transport is closing, from before it aborts the connection
      * @param lost told when the broker closes or cancels this channel on its own, or it cannot be
      *     opened again on a live connection
      * @param reopenFailed told why each time it cannot be opened again on a live connection
@@ -85,6 +88,7 @@ final class SessionChannel implements SessionTransport {
             int maxMessageSize,
             InstantSource clock,
             Supplier<@Nullable Connection> connection,
+            BooleanSupplier closing,
             Consumer<SessionChannel> lost,
             Consumer<Exception> reopenFailed,
             ChannelEvents told) {
@@ -94,6 +98,7 @@ final class SessionChannel implements SessionTransport {
         this.maxMessageSize = maxMessageSize;
         this.clock = clock;
         this.connection = connection;
+        this.closing = closing;
         this.lost = lost;
         this.reopenFailed = reopenFailed;
         this.told = told;
@@ -182,6 +187,11 @@ final class SessionChannel implements SessionTransport {
             }
             Connection now = connection.get();
             if (now == null || !now.isOpen()) {
+                if (closing.getAsBoolean()) {
+                    // the transport aborted the connection to close, and closes this channel next:
+                    // nothing is replaced, and the deliveries taken already stay for the session
+                    return true;
+                }
                 // no connection to open one on: move the epoch on, and the reconnect opens the channel;
                 // a loss told stays told, for that open to tell the new channel
                 closeChannel();
