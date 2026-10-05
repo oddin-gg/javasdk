@@ -13,12 +13,13 @@ import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
 
 /**
- * The fields the feed owns - live status, scores, period scores, the match clock - of each entity,
- * kept with the watermarks that say who may write them: the feed, or REST once the feed has gone
- * quiet on the entity. They are not in an {@link EntityCache}: there one endpoint owns each field,
- * and these have two writers whose order only the watermarks know. A value and its watermark change
- * in one step, so neither writer can put an older value over a newer one, and nothing else is
- * waited for: a write here never waits for an entity cache, or its clear.
+ * The fields the feed owns - live status, scores, period scores, the match clock, the winner - of
+ * each entity, kept with the watermarks that say who may write them: the feed, or REST once the feed
+ * has gone quiet on the entity; while it is live, REST only fills what the feed has not sent. They
+ * are not in an {@link EntityCache}: there one endpoint owns each field, and these have two writers
+ * whose order only the watermarks know. A value and its watermark change in one step, so neither
+ * writer can put an older value over a newer one, and nothing else is waited for: a write here
+ * never waits for an entity cache, or its clear.
  *
  * <p>The watermark is the timestamp of the last live message that wrote, per entity and producer,
  * with when the SDK received it. A message older than the watermark of its producer does not write;
@@ -153,6 +154,38 @@ public final class LiveState<K> {
         return restWriteIfQuiet(entity, now, write, () -> false);
     }
 
+    /**
+     * Fills the fields the entity's record has no value for from a REST response, whoever owns it:
+     * for a value a live feed may never send, such as a match's winner, which REST may have first.
+     * It clears nothing, and changes neither the watermarks nor how fresh the values are, so it
+     * takes nothing over from the feed. An entity with no record gets none: its next read loads the
+     * summary anyway. Nor does a fetch its loader abandoned fill anything.
+     *
+     * @param abandoned whether the fetch the values came from was abandoned
+     * @return whether it filled anything
+     */
+    public boolean restFill(K entity, LiveWrite write, BooleanSupplier abandoned) {
+        lock.lock();
+        try {
+            Live current = current(entity, ticker.read());
+            if (current == null || abandoned.getAsBoolean()) {
+                return false;
+            }
+            var values = write.fill(current.values());
+            if (values.equals(current.values())) {
+                return false;
+            }
+            // in its place: a fill is no write, and moves nothing nearer to or further from eviction
+            (owned.containsKey(entity) ? owned : others)
+                    .put(
+                            entity,
+                            new Live(current.marks(), values, current.changedAt(), current.feedAt(), current.restAt()));
+            return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
     /** The entity's live values, or null when it has no record: then its summary is loaded again. */
     public @Nullable LiveValues get(K entity) {
         Live live;
@@ -271,7 +304,7 @@ public final class LiveState<K> {
         return live == null ? Map.of() : live.values();
     }
 
-    /** An entity's live values at one moment, all from the same write, and how recent they are. */
+    /** An entity's live values at one moment, from one write and the fills since, and how recent they are. */
     public static final class LiveValues {
         private final Map<Field<?>, Object> values;
         private final @Nullable Instant lastFeed;

@@ -49,6 +49,13 @@ public final class LiveWrite {
         return Map.copyOf(after);
     }
 
+    /** The values once this write fills {@code before}: only the fields it has none for, clearing nothing. */
+    Map<Field<?>, Object> fill(Map<Field<?>, Object> before) {
+        var after = new HashMap<>(before);
+        values.forEach(after::putIfAbsent);
+        return Map.copyOf(after);
+    }
+
     private static void shared(Field<?> field) {
         if (field.isLocalized()) {
             throw new IllegalArgumentException(field + " has a value per locale; live state has none");

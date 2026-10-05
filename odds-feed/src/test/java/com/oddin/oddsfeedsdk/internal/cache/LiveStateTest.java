@@ -113,6 +113,43 @@ class LiveStateTest {
     }
 
     @Test
+    void restFillsWhatTheFeedHasNotSentAndTakesNothingOver() {
+        assertThat(live.restFill("m1", LiveWrite.of().put(CLOCK, "from REST"), () -> false))
+                .as("no record: the next read loads the summary")
+                .isFalse();
+        assertThat(live.get("m1")).isNull();
+
+        live.feedWriteIfNewer("m1", LIVE, 1_000, FRESH, now(), status("live"));
+        time.advance(LiveState.STATUS_AGE.minusMinutes(1));
+        assertThat(live.restFill("m1", LiveWrite.of().put(CLOCK, "12:00"), () -> true))
+                .as("from an abandoned fetch")
+                .isFalse();
+        assertThat(live.restFill(
+                        "m1",
+                        LiveWrite.of().put(STATUS, "ended").put(CLOCK, "12:00").clear(STATUS),
+                        () -> false))
+                .isTrue();
+        var values = requireNonNull(live.get("m1"));
+        assertThat(values.get(CLOCK)).as("none yet: filled").isEqualTo("12:00");
+        assertThat(values.get(STATUS))
+                .as("the feed's: neither replaced nor cleared")
+                .isEqualTo("live");
+        assertThat(live.restFill("m1", LiveWrite.of().put(CLOCK, "13:00"), () -> false))
+                .as("nothing left to fill")
+                .isFalse();
+
+        time.advance(Duration.ofMinutes(2));
+        assertThat(requireNonNull(live.get("m1")).isFresh(now()))
+                .as("a fill is no REST write: quiet since the feed's last message")
+                .isFalse();
+        assertThat(feedWrite("m1", LIVE, 999, FRESH))
+                .as("nor did it move the watermark")
+                .isFalse();
+        assertThat(live.restWriteIfQuiet("m1", now(), status("ended"))).isTrue();
+        assertThat(statusOf("m1")).isEqualTo("ended");
+    }
+
+    @Test
     void aSummaryFromAnAbandonedFetchDoesNotWrite() {
         live.restWriteIfQuiet("m1", now(), status("ended"), () -> false);
         assertThat(live.restWriteIfQuiet("m1", now(), status("not started"), () -> true))
