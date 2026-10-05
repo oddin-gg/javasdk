@@ -28,10 +28,6 @@ gone | mq/ChannelConsumer | internal AMQP consumer
 gone | mq/ExchangeNameProvider | internal AMQP consumer
 gone | mq/FeedMessageFactory | internal message building
 gone | mq/entities/MarketInitializer | internal message building
-gone | mq/entities/MarketStatus$Companion | maps a feed enum to a message enum, arrives with the message building
-gone | mq/entities/FixtureChangeType$Companion | maps a feed enum to a message enum, arrives with the message building
-gone | mq/entities/MarketStatus.Companion Lcom/oddin/oddsfeedsdk/mq/entities/MarketStatus$Companion; | maps a feed enum to a message enum, arrives with the message building
-gone | mq/entities/FixtureChangeType.Companion Lcom/oddin/oddsfeedsdk/mq/entities/FixtureChangeType$Companion; | maps a feed enum to a message enum, arrives with the message building
 
 # Kotlin let OddsChange.getMarkets() narrow List<Market>; Java allows that only when the parent says
 # List<? extends Market>. The erased signature is unchanged.
@@ -42,6 +38,8 @@ signature | mq/entities/MarketMessage.getMarkets ()Ljava/util/List; | ()Ljava/ut
 added | api/entities/sportevent/EventStatus.fromApiEventStatus (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus; | for Kotlin callers of the companion function
 added | api/entities/sportevent/EventStatus.fromFeedEventStatus (Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFEventStatus;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/EventStatus; | for Kotlin callers of the companion function
 added | api/entities/sportevent/LiveOddsAvailability.fromApiEvent (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/LiveOddsAvailability; | for Kotlin callers of the companion function
+added | mq/entities/MarketStatus.fromFeedValue (Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFMarketStatus;)Lcom/oddin/oddsfeedsdk/mq/entities/MarketStatus; | for Kotlin callers of the companion function
+added | mq/entities/FixtureChangeType.fromFeedType (Lcom/oddin/oddsfeedsdk/schema/feed/v1/OFChangeType;)Lcom/oddin/oddsfeedsdk/mq/entities/FixtureChangeType; | for Kotlin callers of the companion function
 added | exceptions/ApiException.<init> (Ljava/lang/String;)V | 0.0.x defaulted the error and the cause, which Kotlin callers could leave out
 added | exceptions/ApiException.<init> (Ljava/lang/String;Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAError;)V | 0.0.x defaulted the cause, which Kotlin callers could leave out
 
