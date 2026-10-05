@@ -1,0 +1,113 @@
+package com.oddin.oddsfeedsdk.internal.dispatch;
+
+import static java.util.Objects.requireNonNull;
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.oddin.oddsfeed.fakes.FeedMessages;
+import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
+import com.oddin.oddsfeedsdk.internal.recovery.AliveFacts;
+import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
+import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+/**
+ * The alive dispatcher on its own thread: every alive of the SDK's channel reaches the recovery
+ * actor, decoded, and measures its producer's clock offset; what is no alive breaks nothing.
+ */
+class AliveDispatcherTest {
+
+    private static final long WAIT_SECONDS = 10;
+
+    private final BlockingQueue<String> posted = new LinkedBlockingQueue<>();
+    private final ClockOffsets offsets = new ClockOffsets();
+    private final AliveFacts actor = (producer, generatedAt, receivedAt, subscribed) ->
+            posted.add(producer + " " + generatedAt + " " + receivedAt + " " + subscribed + " "
+                    + Thread.currentThread().getName());
+    private @Nullable AliveDispatcher dispatcher;
+
+    @AfterEach
+    void close() {
+        if (dispatcher != null) {
+            dispatcher.close();
+        }
+    }
+
+    @Test
+    void anAliveReachesTheActorWithWhenTheSdkReceivedItAndMeasuresTheOffset() throws InterruptedException {
+        AliveDispatcher dispatcher = started();
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 10_000), 12_500));
+        assertThat(next()).isEqualTo("2 10000 12500 true oddsfeed-alives");
+        assertThat(offsets.age(2, 20_000, 22_500))
+                .as("the producer's clock 2.5 s behind")
+                .isZero();
+        assertThat(offsets.age(1, 20_000, 22_500))
+                .as("no alive of producer 1: no offset")
+                .isEqualTo(2_500);
+
+        dispatcher.accept(alive(FeedMessages.alive(1, false), 99));
+        assertThat(next()).startsWith("1 1777832981632 99 false");
+    }
+
+    @Test
+    void whatIsNoAliveIsCountedAndTheNextAliveStillArrives() throws InterruptedException {
+        AliveDispatcher dispatcher = started();
+        dispatcher.accept(alive("<alive", 1));
+        dispatcher.accept(alive(Fixtures.read("feed/bet_stop/bet_stop_all_groups.xml"), 1));
+        dispatcher.accept(new RawDelivery(null, 2 << 20, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, null));
+        dispatcher.accept(alive(FeedMessages.alive(2, true), 5));
+        assertThat(next()).startsWith("2 1777832981632 5 true");
+        assertThat(dispatcher.unreadable()).isEqualTo(3);
+        assertThat(dispatcher.handled()).isEqualTo(4);
+    }
+
+    @Test
+    void anActorThatThrowsDoesNotEndTheDispatcher() throws InterruptedException {
+        var throwing = new AliveDispatcher(
+                FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES),
+                offsets,
+                (producer, generatedAt, receivedAt, subscribed) -> {
+                    if (producer == 1) {
+                        throw new IllegalStateException("the actor's bug");
+                    }
+                    actor.alive(producer, generatedAt, receivedAt, subscribed);
+                });
+        dispatcher = throwing;
+        throwing.start();
+        throwing.accept(alive(FeedMessages.alive(1, true), 1));
+        throwing.accept(alive(FeedMessages.alive(2, true), 2));
+        assertThat(next()).startsWith("2 ");
+    }
+
+    @Test
+    void alivesHandedOverBeforeTheStartArriveOnceItStarts() throws InterruptedException {
+        var waiting = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
+        dispatcher = waiting;
+        waiting.accept(alive(FeedMessages.alive(2, true), 1));
+        assertThat(waiting.queued()).isEqualTo(1);
+        waiting.start();
+        assertThat(next()).startsWith("2 ");
+    }
+
+    private AliveDispatcher started() {
+        var started = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
+        dispatcher = started;
+        started.start();
+        return started;
+    }
+
+    private String next() throws InterruptedException {
+        return requireNonNull(posted.poll(WAIT_SECONDS, TimeUnit.SECONDS), "an alive posted");
+    }
+
+    private static RawDelivery alive(String xml, long receivedAt) {
+        byte[] body = xml.getBytes(StandardCharsets.UTF_8);
+        return new RawDelivery(body, body.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.ofEpochMilli(receivedAt), null);
+    }
+}
