@@ -15,9 +15,11 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * The client's {@link MarketDescriptionManager}, over the market description and void reason
- * catalogs. A getter that cannot load what it returns fails under {@code THROW} and returns null
- * under {@code CATCH}. A market the catalog does not have is null under either, as in 0.0.x; a list
- * is never one with only part of what it should have.
+ * catalogs, answering an outage as 0.0.x did: the market descriptions are an empty list and a market
+ * description is null under either strategy, while the void reasons fail under {@code THROW}, with
+ * the API's own exception, and are null under {@code CATCH}. A market the catalog does not have is
+ * null under either, as in 0.0.x; a list is never one with only part of what it should have, and
+ * always a new one, the caller's own.
  *
  * <p>Safe for concurrent use.
  */
@@ -51,26 +53,26 @@ public final class DescriptionManager implements MarketDescriptionManager {
 
     /**
      * Every market description in {@code locale}: the locale's list, and the dynamic-outcome variants
-     * held in it. Each reads as the listing does: a row the list has asks no variant's endpoint. A new list each time,
-     * as 0.0.x gave.
+     * held in it. Each reads as the listing does: a row the list has asks no variant's endpoint. A new
+     * list each time, as 0.0.x gave; an empty one when the list cannot be loaded, under either
+     * strategy, as 0.0.x gave too.
      */
     @Override
     public @Nullable List<MarketDescription> getMarketDescriptions(Locale locale) {
-        return strategy.read(
-                () -> {
-                    List<LocalizedMarket> described = markets.markets(locale);
-                    var in = List.of(locale);
-                    var all = new ArrayList<MarketDescription>(described.size());
-                    for (LocalizedMarket market : described) {
-                        all.add(new MarketDescriptionView(reads, market, in, true));
-                    }
-                    return all;
-                },
-                "market descriptions in",
-                locale);
+        List<LocalizedMarket> described =
+                Strategy.quietly(() -> markets.markets(locale), "market descriptions in", locale);
+        var in = List.of(locale);
+        var all = new ArrayList<MarketDescription>(described == null ? 0 : described.size());
+        for (LocalizedMarket market : described == null ? List.<LocalizedMarket>of() : described) {
+            all.add(new MarketDescriptionView(reads, market, in, true));
+        }
+        return all;
     }
 
-    /** The market's description in {@code locale}; null when the catalog does not have it. */
+    /**
+     * The market's description in {@code locale}; null when the catalog does not have it, or cannot
+     * be loaded, under either strategy, as in 0.0.x.
+     */
     @Override
     public @Nullable MarketDescription getMarketDescription(int marketId, @Nullable String variant, Locale locale) {
         return getMarketDescription(marketId, variant, List.of(locale));
@@ -78,14 +80,15 @@ public final class DescriptionManager implements MarketDescriptionManager {
 
     /**
      * The market's description in {@code locales}, each loaded, the ones not held in parallel; null
-     * when none of them has it. For the markets of a message, in the locales the client wants.
+     * when none of them has it, or one cannot be loaded, under either strategy, as in 0.0.x. For the
+     * markets of a message, in the locales the client wants.
      *
      * @param locales none for the default locale
      */
     public @Nullable MarketDescription getMarketDescription(
             int marketId, @Nullable String variant, List<Locale> locales) {
         List<Locale> in = locales.isEmpty() ? List.of(defaultLocale) : List.copyOf(locales);
-        return strategy.read(
+        return Strategy.quietly(
                 () -> {
                     LocalizedMarket described = reads.first(marketId, variant, in, false);
                     return described == null ? null : new MarketDescriptionView(reads, described, in, false);
@@ -103,10 +106,10 @@ public final class DescriptionManager implements MarketDescriptionManager {
         markets.clear(marketId, variant);
     }
 
-    /** Every void reason, by id. A new list each time, as 0.0.x gave. */
+    /** Every void reason, by id. A new list each time, as 0.0.x gave; the API's failure as it is. */
     @Override
     public @Nullable List<MarketVoidReason> getMarketVoidReasons() {
-        return strategy.read(() -> new ArrayList<MarketVoidReason>(voidReasons.all()), "void reasons", "");
+        return strategy.call(() -> new ArrayList<MarketVoidReason>(voidReasons.all()), "void reasons", "");
     }
 
     /** Drops the void reasons, so the next read fetches them again. */
@@ -120,6 +123,6 @@ public final class DescriptionManager implements MarketDescriptionManager {
      * in 1.0, as the Go SDK has it.
      */
     public @Nullable List<MarketVoidReason> reloadMarketVoidReasons() {
-        return strategy.read(() -> new ArrayList<MarketVoidReason>(voidReasons.reload()), "void reasons", "reloaded");
+        return strategy.call(() -> new ArrayList<MarketVoidReason>(voidReasons.reload()), "void reasons", "reloaded");
     }
 }

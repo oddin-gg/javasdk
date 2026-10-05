@@ -17,6 +17,8 @@ import com.oddin.oddsfeedsdk.cache.LocalizedStaticData;
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -46,7 +48,7 @@ final class MatchStatusView implements MatchStatus {
     public @Nullable List<PeriodScore> getPeriodScores() {
         return entities.guard(this, () -> {
             List<PeriodScore> periods = live().get(PERIOD_SCORES);
-            return periods == null ? List.of() : periods;
+            return periods == null ? new ArrayList<>() : new ArrayList<>(periods);
         });
     }
 
@@ -107,7 +109,7 @@ final class MatchStatusView implements MatchStatus {
     public @Nullable Map<String, @Nullable Object> getProperties() {
         return entities.<Map<String, @Nullable Object>>guard(this, () -> {
             live();
-            return Map.of();
+            return new LinkedHashMap<>();
         });
     }
 

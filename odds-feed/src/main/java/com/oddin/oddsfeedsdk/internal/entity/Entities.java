@@ -6,6 +6,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Player;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Sport;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
+import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
 import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
@@ -14,7 +15,6 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -36,13 +36,16 @@ import org.slf4j.LoggerFactory;
  * <p>An entity built here loads nothing until one of its getters is called, and every getter reads
  * the caches anew, so it sees what was loaded or written since. A getter given a locale loads that
  * locale; any other loads every locale of the entity, side by side. A getter of a match's or a
- * tournament's competitors, or of a competitor's players, loads them too, side by side, so its
- * reader waits for one round of loads rather than one per member. The getters run on the caller's
- * thread, and wait there.
+ * tournament's competitors, or of a competitor's players, lists every member its entity names, as
+ * 0.0.x did, and warms their profiles side by side, so its reader waits for one round of loads
+ * rather than one per member; a member whose profile does not load is still listed, and its own
+ * getters fail as the strategy says. The getters run on the caller's thread, and wait there.
  *
- * <p>A getter that cannot load what it reads follows the exception strategy: {@code THROW} throws the
- * first failure, {@code CATCH} logs it and returns null - a collection as a whole, never a part of
- * it.
+ * <p>A getter that cannot load what it reads follows the exception strategy: {@code THROW} throws
+ * an {@link ItemNotFoundException}, as 0.0.x threw for an entity it could not load, with the API's
+ * failure as its cause; {@code CATCH} logs it and returns null - a collection as a whole, never a
+ * part of it, except a match's competitors, which are none, as 0.0.x had them. Returned collections
+ * are the caller's own: a new mutable one on every call.
  *
  * <p>Safe for concurrent use.
  */
@@ -111,18 +114,34 @@ public final class Entities {
     }
 
     /**
-     * What the getter returns, by the exception strategy: under {@code THROW} its failure is thrown
-     * as it is; under {@code CATCH} it is logged, and the getter returns null.
+     * What the getter returns, by the exception strategy: under {@code THROW} a load that failed is
+     * an {@link ItemNotFoundException} with the API's failure as its cause, the exception 0.0.x threw
+     * for an entity it could not load, and any other failure is thrown as it is; under {@code CATCH}
+     * it is logged, and the getter returns null.
      */
     <T> @Nullable T guard(Object entity, Supplier<@Nullable T> getter) {
+        return guardCall(entity, () -> {
+            try {
+                return getter.get();
+            } catch (ApiException failed) {
+                throw new ItemNotFoundException(entity + " could not be loaded: " + failed.getMessage(), failed);
+            }
+        });
+    }
+
+    /**
+     * The same for a call that asks the API itself, such as a schedule, which 0.0.x let fail with
+     * the API's own exception: under {@code THROW} its failure is thrown as it is.
+     */
+    <T> @Nullable T guardCall(Object what, Supplier<@Nullable T> call) {
         try {
-            return getter.get();
+            return call.get();
         } catch (RuntimeException e) {
             if (strategy == ExceptionHandlingStrategy.THROW) {
                 throw e;
             }
             // under an outage every getter fails: a line each would drown the client's own log
-            LOG.debug("{} could not be loaded; null under the CATCH strategy", entity, e);
+            LOG.debug("{} could not be loaded; null under the CATCH strategy", what, e);
             return null;
         }
     }
@@ -132,18 +151,34 @@ public final class Entities {
         return fanOut.each(items, load);
     }
 
-    /** Loads each of {@code members} in each of {@code locales}, side by side. */
-    <T> void loadEach(List<T> members, List<Locale> locales, BiFunction<T, Locale, Entry> load) {
+    /**
+     * Warms each of {@code members} in each of {@code locales}, side by side: what a list of members
+     * loads so that its reader waits for one round of loads, not one per member. Best effort: a load
+     * that fails fails nothing, and the member's own getters load it again when they are called.
+     */
+    <T> void warmEach(List<T> members, List<Locale> locales, BiFunction<T, Locale, Entry> load) {
         var pairs = new ArrayList<InLocale<T>>(members.size() * locales.size());
         for (T member : members) {
             for (Locale locale : locales) {
                 pairs.add(new InLocale<>(member, locale));
             }
         }
-        each(pairs, pair -> load.apply(pair.member(), pair.locale()));
+        try {
+            each(pairs, pair -> {
+                try {
+                    return load.apply(pair.member(), pair.locale());
+                } catch (RuntimeException failed) {
+                    LOG.debug("{} not warmed in {}", pair.member(), pair.locale(), failed);
+                    return Entry.none();
+                }
+            });
+        } catch (RuntimeException failed) {
+            // the fan-out's own limits, such as no load finishing in time
+            LOG.debug("members not warmed", failed);
+        }
     }
 
-    /** A localized field in each of {@code locales} that has it, in their order. */
+    /** A localized field in each of {@code locales} that has it, in their order; a new map. */
     <T> Map<Locale, T> perLocale(List<Locale> locales, Function<Locale, Entry> load, Field<T> field) {
         List<Entry> entries = each(locales, load);
         var values = new LinkedHashMap<Locale, T>();
@@ -154,7 +189,7 @@ public final class Entities {
                 values.put(locale, value);
             }
         }
-        return Collections.unmodifiableMap(values);
+        return values;
     }
 
     /**

@@ -5,6 +5,7 @@ import com.oddin.oddsfeedsdk.api.entities.ProducerScope;
 import com.oddin.oddsfeedsdk.api.entities.RecoveryInfo;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.LinkedHashSet;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import org.jspecify.annotations.Nullable;
@@ -66,9 +67,10 @@ final class ProducerView implements Producer {
         return atCreation.apiUrl();
     }
 
+    /** A new set each time, the caller's own. */
     @Override
     public Set<ProducerScope> getProducerScopes() {
-        return atCreation.scopes();
+        return new LinkedHashSet<>(atCreation.scopes());
     }
 
     @Override

@@ -63,6 +63,10 @@ class ProducersTest {
         assertThat(pre.isAvailable()).isTrue();
         assertThat(pre.isEnabled()).isTrue();
         assertThat(pre.getProducerScopes()).containsExactly(ProducerScope.PREMATCH);
+        pre.getProducerScopes().add(ProducerScope.LIVE);
+        assertThat(pre.getProducerScopes())
+                .as("a new set each time, the caller's own")
+                .containsExactly(ProducerScope.PREMATCH);
         assertThat(pre.getStatefulRecoveryWindowInMinutes()).isEqualTo(4320);
         assertThat(producers.getProducer(2L)).isNotNull();
         assertThat(producers.getActiveProducers()).containsOnlyKeys(1L, 2L);

@@ -95,17 +95,31 @@ class ProfileViewsTest {
     }
 
     @Test
-    void aPlayerThatCannotLoadFailsThePlayersUnderThrowAndNullsThemUnderCatch() {
+    void aPlayerWhoseProfileCannotLoadIsStillListedAndFailsOnItsOwn() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(PLAYER_EN, 500, "");
-            assertThatThrownBy(() ->
-                            world.entities.competitor(COMPETITOR, List.of(EN)).getPlayers())
-                    .isInstanceOf(ApiException.class);
+            List<@Nullable Player> players = requireNonNull(
+                    world.entities.competitor(COMPETITOR, List.of(EN)).getPlayers());
+            assertThat(players)
+                    .as("the profile's ids, as 0.0.x listed them")
+                    .extracting(player -> requireNonNull(player).getId())
+                    .containsExactly(PLAYER);
+            Player player = requireNonNull(players.getFirst());
+            assertThatThrownBy(() -> player.getName(EN))
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasCauseInstanceOf(ApiException.class);
+            players.add(player);
+            assertThat(players).as("the caller's own list").hasSize(2);
         }
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
             world.api.respond(PLAYER_EN, 500, "");
             Competitor competitor = world.entities.competitor(COMPETITOR, List.of(EN));
-            assertThat(competitor.getPlayers()).isNull();
+            assertThat(competitor.getPlayers())
+                    .extracting(player -> requireNonNull(player).getId())
+                    .containsExactly(PLAYER);
+            assertThat(requireNonNull(requireNonNull(competitor.getPlayers()).getFirst())
+                            .getName(EN))
+                    .isNull();
             assertThat(competitor.getName(EN)).isEqualTo("Team Alpha");
         }
     }
@@ -115,7 +129,9 @@ class ProfileViewsTest {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(PROFILE_DE, 500, "");
             Competitor competitor = world.entities.competitor(COMPETITOR, List.of(EN, DE));
-            assertThatThrownBy(competitor::getNames).isInstanceOf(ApiException.class);
+            assertThatThrownBy(competitor::getNames)
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasCauseInstanceOf(ApiException.class);
             assertThat(competitor.getName(EN)).isEqualTo("Team Alpha");
         }
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
@@ -151,7 +167,9 @@ class ProfileViewsTest {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(PLAYER_EN, 404, Fixtures.read("rest/error/not_found.xml"));
             assertThatThrownBy(() -> world.entities.player(PLAYER, List.of(EN)).getName(EN))
-                    .isInstanceOf(ApiException.class);
+                    .as("as 0.0.x threw it")
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasCauseInstanceOf(ApiException.class);
         }
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
             world.api.respond(PLAYER_EN, 404, Fixtures.read("rest/error/not_found.xml"));

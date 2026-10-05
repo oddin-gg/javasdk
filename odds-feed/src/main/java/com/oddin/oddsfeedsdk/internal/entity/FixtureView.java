@@ -9,7 +9,9 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Fixture;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.TvChannel;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
@@ -37,7 +39,7 @@ final class FixtureView implements Fixture {
     public @Nullable Map<String, String> getExtraInfo() {
         return entities.guard(this, () -> {
             Map<String, String> info = fixture().get(FIXTURE_EXTRA_INFO, null);
-            return info == null ? Map.of() : info;
+            return info == null ? new LinkedHashMap<>() : new LinkedHashMap<>(info);
         });
     }
 
@@ -45,7 +47,7 @@ final class FixtureView implements Fixture {
     public @Nullable List<TvChannel> getTvChannels() {
         return entities.guard(this, () -> {
             List<TvChannel> channels = fixture().get(TV_CHANNELS, null);
-            return channels == null ? List.of() : channels;
+            return channels == null ? new ArrayList<>() : new ArrayList<>(channels);
         });
     }
 

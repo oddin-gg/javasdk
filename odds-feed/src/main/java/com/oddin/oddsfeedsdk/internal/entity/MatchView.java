@@ -23,6 +23,7 @@ import com.oddin.oddsfeedsdk.internal.entity.MatchFields.CompetitorRef;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -101,27 +102,22 @@ final class MatchView implements Match {
     }
 
     /**
-     * The competitors in the order the summary lists them, each loaded in every locale of the match
-     * before they are returned, side by side.
+     * Every competitor the summary lists, in its order, as 0.0.x listed them; their profiles are
+     * warmed in every locale of the match first, side by side, and one that does not load is still
+     * listed. A match that cannot be loaded has none under {@code CATCH}, as in 0.0.x.
      */
     @Override
     public @Nullable List<Competitor> getCompetitors() {
-        return entities.guard(this, () -> {
+        List<Competitor> listed = entities.guard(this, () -> {
             List<CompetitorRef> refs = refs(shared());
-            entities.loadEach(
-                    refs,
-                    locales,
-                    (ref, locale) -> Entities.found(
-                            entities.profiles.competitor(ref.id(), locale, null),
-                            ProfileFields.COMPETITOR_PROFILE,
-                            locale,
-                            "competitor " + ref.id()));
+            entities.warmEach(refs, locales, (ref, locale) -> entities.profiles.competitor(ref.id(), locale, null));
             var competitors = new ArrayList<Competitor>(refs.size());
             for (CompetitorRef ref : refs) {
                 competitors.add(new TeamCompetitorView(entities, ref.id(), ref.qualifier(), locales));
             }
-            return List.copyOf(competitors);
+            return competitors;
         });
+        return listed == null ? new ArrayList<>() : listed;
     }
 
     @Override
@@ -159,7 +155,10 @@ final class MatchView implements Match {
 
     @Override
     public @Nullable Map<String, String> getExtraInfo() {
-        return entities.guard(this, () -> shared().get(EXTRA_INFO, null));
+        return entities.guard(this, () -> {
+            Map<String, String> info = shared().get(EXTRA_INFO, null);
+            return info == null ? null : new LinkedHashMap<>(info);
+        });
     }
 
     @Override

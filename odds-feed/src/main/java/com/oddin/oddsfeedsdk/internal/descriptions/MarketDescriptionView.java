@@ -8,7 +8,6 @@ import com.oddin.oddsfeedsdk.internal.catalog.LocalizedMarket;
 import com.oddin.oddsfeedsdk.internal.catalog.LocalizedMarket.Outcome;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketKey;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import org.jspecify.annotations.Nullable;
@@ -22,9 +21,10 @@ import org.jspecify.annotations.Nullable;
  * list row, so that a row the list has asks no variant's endpoint; a variant the list has no row
  * for is read from its own endpoint.
  *
- * <p>The description gone from the catalog - removed upstream, say - is an {@link
- * com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException} under {@code THROW}, as in 0.0.x; under
- * {@code CATCH} the name and the specifiers are null, the outcomes and the groups empty.
+ * <p>The description gone from the catalog - removed upstream, say - or one that cannot be loaded
+ * is an {@link com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException} under {@code THROW}, as in
+ * 0.0.x; under {@code CATCH} the name and the specifiers are null, the outcomes and the groups
+ * empty. Every list it returns is a new one, the caller's own.
  */
 final class MarketDescriptionView implements MarketDescription {
 
@@ -74,7 +74,7 @@ final class MarketDescriptionView implements MarketDescription {
     public List<OutcomeDescription> getOutcomes() {
         LocalizedMarket described = described(locales);
         if (described == null) {
-            return List.of();
+            return new ArrayList<>();
         }
         var outcomes = new ArrayList<OutcomeDescription>(described.outcomes().size());
         for (Outcome outcome : described.outcomes()) {
@@ -92,7 +92,7 @@ final class MarketDescriptionView implements MarketDescription {
     public @Nullable List<Specifier> getSpecifiers() {
         LocalizedMarket described = described(locales);
         List<LocalizedMarket.Specifier> specifiers = described == null ? null : described.specifiers();
-        return specifiers == null ? null : Collections.unmodifiableList(specifiers);
+        return specifiers == null ? null : new ArrayList<>(specifiers);
     }
 
     @Override
@@ -108,23 +108,23 @@ final class MarketDescriptionView implements MarketDescription {
     @Override
     public List<String> getGroups() {
         LocalizedMarket described = described(locales);
-        return described == null ? List.of() : described.groups();
+        return described == null ? new ArrayList<>() : new ArrayList<>(described.groups());
     }
 
     /**
      * The outcome {@code id} in {@code locale}, null when the market or the outcome is not there
-     * then, which 0.0.x answered with null too; a fetch that fails, as the strategy says.
+     * then, or cannot be loaded, under either strategy: 0.0.x read it from what it held, and
+     * answered null when it held nothing.
      */
     @Nullable
     Outcome outcome(String id, Locale locale) {
-        return reads.strategy()
-                .read(
-                        () -> {
-                            LocalizedMarket described = reads.in(key.id(), key.variant(), locale, listed);
-                            return described == null ? null : described.outcome(id);
-                        },
-                        "an outcome of " + WHAT,
-                        key);
+        return Strategy.quietly(
+                () -> {
+                    LocalizedMarket described = reads.in(key.id(), key.variant(), locale, listed);
+                    return described == null ? null : described.outcome(id);
+                },
+                "an outcome of " + WHAT,
+                key);
     }
 
     @Override

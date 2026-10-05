@@ -241,19 +241,55 @@ class DescriptionManagerTest {
     }
 
     @Test
-    void aFailedFetchFailsTheGetterUnderThrowAndIsNullUnderCatch() {
+    void aFailedFetchAnswersAs0xDid() {
         api.respond(LIST_EN, 400, Fixtures.read("rest/error/not_found.xml"));
         api.respond(VOID_REASONS, 400, Fixtures.read("rest/error/not_found.xml"));
-        assertThatThrownBy(() -> throwing.getMarketDescription(1, null, EN)).isInstanceOf(ApiException.class);
-        assertThatThrownBy(() -> throwing.getMarketDescriptions(EN)).isInstanceOf(ApiException.class);
-        assertThatThrownBy(throwing::getMarketDescriptions).isInstanceOf(ApiException.class);
-        assertThatThrownBy(throwing::getMarketVoidReasons).isInstanceOf(ApiException.class);
-        assertThatThrownBy(throwing::reloadMarketVoidReasons).isInstanceOf(ApiException.class);
-        assertThat(catching.getMarketDescription(1, null, EN)).isNull();
-        assertThat(catching.getMarketDescriptions(EN)).isNull();
-        assertThat(catching.getMarketDescriptions()).isNull();
+        for (DescriptionManager manager : List.of(throwing, catching)) {
+            assertThat(manager.getMarketDescription(1, null, EN))
+                    .as("a market description: null under either strategy")
+                    .isNull();
+            assertThat(manager.getMarketDescriptions(EN))
+                    .as("the market descriptions: none under either strategy")
+                    .isNotNull()
+                    .isEmpty();
+            assertThat(manager.getMarketDescriptions()).isNotNull().isEmpty();
+        }
+        assertThatThrownBy(throwing::getMarketVoidReasons)
+                .as("the void reasons: the API's own exception, as 0.0.x threw it")
+                .isExactlyInstanceOf(ApiException.class);
+        assertThatThrownBy(throwing::reloadMarketVoidReasons).isExactlyInstanceOf(ApiException.class);
         assertThat(catching.getMarketVoidReasons()).isNull();
         assertThat(catching.reloadMarketVoidReasons()).isNull();
+    }
+
+    @Test
+    void aDescriptionThatCannotBeLoadedAgainIsNotFoundUnderThrowWithTheApisFailureAsItsCause() {
+        api.respond(LIST_EN, 200, list(winner("Winner", "Team Alpha", "Team Beta")));
+        MarketDescription thrown = requireNonNull(throwing.getMarketDescription(1, null, EN));
+        MarketDescription caught = requireNonNull(catching.getMarketDescription(1, null, EN));
+        api.respond(LIST_EN, 500, "");
+        throwing.clearMarketDescription(1, null);
+        assertThatThrownBy(() -> thrown.getName(EN))
+                .isInstanceOf(ItemNotFoundException.class)
+                .hasCauseInstanceOf(ApiException.class);
+        assertThatThrownBy(thrown::getOutcomes).isInstanceOf(ItemNotFoundException.class);
+        assertThat(caught.getName(EN)).isNull();
+        assertThat(caught.getGroups()).isEmpty();
+    }
+
+    @Test
+    void everyListADescriptionGivesIsANewOneTheCallerCanChange() {
+        api.respond(LIST_EN, 200, list(winner("Winner", "Team Alpha", "Team Beta")));
+        MarketDescription market = requireNonNull(throwing.getMarketDescription(1, null, EN));
+        requireNonNull(market.getSpecifiers()).clear();
+        market.getGroups().clear();
+        market.getOutcomes().clear();
+        assertThat(market.getSpecifiers()).isNotEmpty();
+        assertThat(market.getGroups()).isNotEmpty();
+        assertThat(market.getOutcomes()).isNotEmpty();
+        MarketVoidReason late = requireNonNull(throwing.getMarketVoidReasons()).get(1);
+        requireNonNull(late.getParams()).add("another");
+        assertThat(late.getParams()).containsExactly("minutes");
     }
 
     @Test
@@ -322,7 +358,7 @@ class DescriptionManagerTest {
     }
 
     @Test
-    void anOutcomeNameThatCannotBeFetchedFailsUnderThrowAndIsNullUnderCatch() {
+    void anOutcomeNameThatCannotBeFetchedIsNullUnderEitherStrategy() {
         api.respond(LIST_EN, 200, list(winner("Winner", "Team Alpha", "Team Beta")));
         api.respond(LIST_DE, 400, Fixtures.read("rest/error/not_found.xml"));
         OutcomeDescription thrown = requireNonNull(throwing.getMarketDescription(1, null, EN))
@@ -331,8 +367,10 @@ class DescriptionManagerTest {
         OutcomeDescription caught = requireNonNull(catching.getMarketDescription(1, null, EN))
                 .getOutcomes()
                 .getFirst();
-        assertThatThrownBy(() -> thrown.getName(DE)).isInstanceOf(ApiException.class);
-        assertThatThrownBy(() -> thrown.getDescription(DE)).isInstanceOf(ApiException.class);
+        assertThat(thrown.getName(DE))
+                .as("under THROW too: 0.0.x read it from what it held, and never threw")
+                .isNull();
+        assertThat(thrown.getDescription(DE)).isNull();
         assertThat(caught.getName(DE)).isNull();
         assertThat(caught.getDescription(DE)).isNull();
         assertThat(caught.getName(EN)).isEqualTo("Team Alpha");
@@ -374,11 +412,10 @@ class DescriptionManagerTest {
     }
 
     @Test
-    void aLocaleThatFailsFailsTheDescriptionInSeveralUnderThrowAndMakesItNullUnderCatch() {
+    void aLocaleThatFailsMakesTheDescriptionInSeveralNullUnderEitherStrategy() {
         api.respond(LIST_EN, 200, list(winner("Winner", "Team Alpha", "Team Beta")));
         api.respond(LIST_DE, 400, Fixtures.read("rest/error/not_found.xml"));
-        assertThatThrownBy(() -> throwing.getMarketDescription(1, null, List.of(EN, DE)))
-                .isInstanceOf(ApiException.class);
+        assertThat(throwing.getMarketDescription(1, null, List.of(EN, DE))).isNull();
         assertThat(catching.getMarketDescription(1, null, List.of(EN, DE)))
                 .as("never a description from part of the locales")
                 .isNull();

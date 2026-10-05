@@ -7,7 +7,6 @@ import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.COUNTRY;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.COUNTRY_CODE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.ICON_PATH;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.PLAYERS;
-import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.PLAYER_PROFILE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.UNDERAGE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.VIRTUAL;
 
@@ -16,7 +15,6 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Player;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -103,28 +101,22 @@ class CompetitorView implements Competitor {
     }
 
     /**
-     * The players the profile lists, in its order, each loaded in every locale of the competitor
-     * before they are returned, side by side. A profile listing none has none: unlike 0.0.x, an
-     * empty list is not loaded again on every call.
+     * Every player the profile lists, in its order, as 0.0.x listed them; their profiles are warmed
+     * in every locale of the competitor first, side by side, and one that does not load is still
+     * listed. A profile listing none has none: unlike 0.0.x, an empty list is not loaded again on
+     * every call.
      */
     @Override
     public @Nullable List<@Nullable Player> getPlayers() {
         return entities.<List<@Nullable Player>>guard(this, () -> {
             List<URN> ids = shared().get(PLAYERS, null);
             List<URN> players = ids == null ? List.of() : ids;
-            entities.loadEach(
-                    players,
-                    locales,
-                    (player, locale) -> Entities.found(
-                            entities.profiles.player(player, locale, null),
-                            PLAYER_PROFILE,
-                            locale,
-                            "player " + player));
+            entities.warmEach(players, locales, (player, locale) -> entities.profiles.player(player, locale, null));
             var list = new ArrayList<@Nullable Player>(players.size());
             for (URN player : players) {
                 list.add(new PlayerView(entities, player, locales));
             }
-            return Collections.unmodifiableList(list);
+            return list;
         });
     }
 

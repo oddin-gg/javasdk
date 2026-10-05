@@ -166,17 +166,50 @@ class MatchViewTest {
     }
 
     @Test
-    void aCompetitorThatCannotLoadFailsTheListUnderThrowAndNullsItUnderCatch() {
+    void aCompetitorWhoseProfileCannotLoadIsStillListedAndFailsOnItsOwn() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(AWAY_EN, 500, "");
-            assertThatThrownBy(() -> world.entities.match(MATCH, List.of(EN)).getCompetitors())
-                    .isInstanceOf(ApiException.class);
+            List<Competitor> competitors =
+                    requireNonNull(world.entities.match(MATCH, List.of(EN)).getCompetitors());
+            assertThat(competitors)
+                    .as("the summary's ids, as 0.0.x listed them")
+                    .extracting(Competitor::getId)
+                    .containsExactly(HOME, AWAY);
+            assertThat(world.api.requests("GET", AWAY_EN)).as("warmed").isNotEmpty();
+            assertThat(competitors.get(0).getName(EN)).isEqualTo("Team Alpha");
+            assertThatThrownBy(() -> competitors.get(1).getName(EN))
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasCauseInstanceOf(ApiException.class);
         }
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
             world.api.respond(AWAY_EN, 500, "");
             Match match = world.entities.match(MATCH, List.of(EN));
-            assertThat(match.getCompetitors()).as("null, never a short list").isNull();
-            assertThat(match.getName(EN)).as("what can load still does").isEqualTo("Team Alpha vs Team Beta");
+            List<Competitor> competitors = requireNonNull(match.getCompetitors());
+            assertThat(competitors).extracting(Competitor::getId).containsExactly(HOME, AWAY);
+            assertThat(competitors.get(1).getName(EN)).isNull();
+        }
+    }
+
+    @Test
+    void theCompetitorsAreANewListTheCallerCanChange() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            Match match = world.entities.match(MATCH, List.of(EN));
+            List<Competitor> competitors = requireNonNull(match.getCompetitors());
+            competitors.sort(java.util.Comparator.comparing((Competitor c) -> String.valueOf(c.getId()))
+                    .reversed());
+            competitors.add(competitors.getFirst());
+            assertThat(competitors).extracting(Competitor::getId).containsExactly(AWAY, HOME, AWAY);
+            assertThat(match.getCompetitors()).extracting(Competitor::getId).containsExactly(HOME, AWAY);
+            var channels = requireNonNull(requireNonNull(match.getFixture()).getTvChannels());
+            channels.clear();
+            assertThat(requireNonNull(match.getFixture()).getTvChannels()).hasSize(1);
+            requireNonNull(requireNonNull(match.getFixture()).getExtraInfo()).put("added", "by the client");
+            assertThat(requireNonNull(match.getFixture()).getExtraInfo()).doesNotContainKey("added");
+            var periods = requireNonNull(requireNonNull(match.getStatus()).getPeriodScores());
+            periods.clear();
+            assertThat(requireNonNull(match.getStatus()).getPeriodScores())
+                    .as("its own copy")
+                    .hasSize(5);
         }
     }
 
@@ -197,7 +230,9 @@ class MatchViewTest {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(SUMMARY_DE, 500, "");
             Match match = world.entities.match(MATCH, List.of(EN, DE));
-            assertThatThrownBy(match::getScheduledTime).isInstanceOf(ApiException.class);
+            assertThatThrownBy(match::getScheduledTime)
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasCauseInstanceOf(ApiException.class);
             assertThat(match.getName(EN))
                     .as("a getter of one locale loads only it")
                     .isNotNull();
@@ -205,7 +240,9 @@ class MatchViewTest {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
             world.api.respond(SUMMARY_DE, 500, "");
             assertThat(world.entities.match(MATCH, List.of(EN, DE)).getCompetitors())
-                    .isNull();
+                    .as("none, as 0.0.x had them")
+                    .isNotNull()
+                    .isEmpty();
         }
     }
 
@@ -319,8 +356,10 @@ class MatchViewTest {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(SUMMARY_EN, 500, "");
             var status = requireNonNull(world.entities.match(MATCH, List.of(EN)).getStatus());
-            assertThatThrownBy(status::getStatus).isInstanceOf(ApiException.class);
-            assertThatThrownBy(status::isScoreboardAvailable).isInstanceOf(ApiException.class);
+            assertThatThrownBy(status::getStatus)
+                    .isInstanceOf(ItemNotFoundException.class)
+                    .hasCauseInstanceOf(ApiException.class);
+            assertThatThrownBy(status::isScoreboardAvailable).isInstanceOf(ItemNotFoundException.class);
         }
     }
 

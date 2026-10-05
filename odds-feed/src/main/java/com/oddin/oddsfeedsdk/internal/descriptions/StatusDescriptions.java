@@ -1,7 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.descriptions;
 
 import com.oddin.oddsfeedsdk.cache.LocalizedStaticData;
-import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.internal.catalog.MatchStatusDescriptions;
 import java.util.List;
 import java.util.Locale;
@@ -17,20 +16,18 @@ import org.jspecify.annotations.Nullable;
 public final class StatusDescriptions {
 
     private final MatchStatusDescriptions catalog;
-    private final Strategy strategy;
     private final Executor fetches;
 
     /** @param fetches where the locales not held load, in parallel: virtual threads */
-    public StatusDescriptions(MatchStatusDescriptions catalog, ExceptionHandlingStrategy strategy, Executor fetches) {
+    public StatusDescriptions(MatchStatusDescriptions catalog, Executor fetches) {
         this.catalog = catalog;
-        this.strategy = new Strategy(strategy);
         this.fetches = fetches;
     }
 
     /**
      * The match status {@code id} in {@code locales}, each loaded, the ones not held in parallel; null
-     * when none of them describes it, as in 0.0.x. A locale that cannot be fetched fails it under
-     * {@code THROW} and makes it null under {@code CATCH}.
+     * when none of them describes it, or one cannot be fetched, under either strategy, as in 0.0.x,
+     * which read it from what it held and never failed.
      *
      * @param locales not empty
      */
@@ -38,7 +35,7 @@ public final class StatusDescriptions {
         if (locales.isEmpty()) {
             throw new IllegalArgumentException("match status " + id + " asked for in no locale");
         }
-        return strategy.read(
+        return Strategy.quietly(
                 () -> {
                     String first = InLocales.first(
                             locales, catalog::holds, locale -> catalog.description(id, locale), fetches);
@@ -48,9 +45,9 @@ public final class StatusDescriptions {
                 id);
     }
 
-    /** What the match status {@code id} means in {@code locale}, failing as the strategy says. */
+    /** What the match status {@code id} means in {@code locale}; null when it cannot be fetched, as in 0.0.x. */
     @Nullable
     String description(long id, Locale locale) {
-        return strategy.read(() -> catalog.description(id, locale), "match status description", id);
+        return Strategy.quietly(() -> catalog.description(id, locale), "match status description", id);
     }
 }
