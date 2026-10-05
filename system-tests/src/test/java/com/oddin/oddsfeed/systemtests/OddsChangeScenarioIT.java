@@ -7,12 +7,15 @@ import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.fakes.RecordedRequest;
+import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.LogCapture;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
+import com.oddin.oddsfeedsdk.mq.entities.OddsDisplayType;
+import com.oddin.oddsfeedsdk.mq.entities.OutcomeOdds;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.util.List;
@@ -92,6 +95,39 @@ class OddsChangeScenarioIT {
             OddsChange<?> oddsChange = received.next(OddsChange.class);
             assertThat(oddsChange.getEvent().getId()).as("event").isEqualTo(MATCH);
             assertThatThrownBy(oddsChange::getMarkets).as("markets").isInstanceOf(NullPointerException.class);
+        }
+    }
+
+    /**
+     * Odds of 2.5 in American display are +150. 0.0.x subtracts 100 from the decimal odds instead of
+     * multiplying what is over 1 by 100, and gives -97.5; odds under 2 it converts right.
+     */
+    @Test
+    void americanOddsAreMoneylineOdds() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            Received received = sdk.open(MessageInterest.ALL);
+            feed.publishFixture(ODDS_CHANGE);
+
+            OddsChange<?> oddsChange = received.next(OddsChange.class);
+            List<OutcomeOdds> outcomes = oddsChange.getMarkets().get(0).getOutcomeOdds();
+            assertThat(outcomes.get(0).getOdds(OddsDisplayType.DECIMAL))
+                    .as("decimal odds")
+                    .isEqualTo(1.5);
+            assertThat(outcomes.get(0).getOdds(OddsDisplayType.AMERICAN))
+                    .as("American, under 2")
+                    .isEqualTo(-200.0);
+            assertThat(outcomes.get(1).getOdds(OddsDisplayType.DECIMAL))
+                    .as("decimal odds")
+                    .isEqualTo(2.5);
+            KnownDifference.AMERICAN_ODDS_FROM_2_ARE_WRONG.expect(
+                    () -> assertThat(outcomes.get(1).getOdds(OddsDisplayType.AMERICAN))
+                            .as("American, from 2")
+                            .isEqualTo(-97.5),
+                    () -> assertThat(outcomes.get(1).getOdds(OddsDisplayType.AMERICAN))
+                            .as("American, from 2")
+                            .isEqualTo(150.0));
         }
     }
 

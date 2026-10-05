@@ -42,7 +42,8 @@ public enum KnownDifference {
     REFUSED_LOGIN_ESCAPES_AS_A_BROKER_EXCEPTION("KD-16", true),
     PRODUCER_IN_BOTH_SCOPES_HAS_NONE("KD-18", true),
     FEED_WINNER_IS_DROPPED("KD-21", true),
-    CLOSE_IS_REPORTED_AS_CONNECTION_DOWN("KD-23", true);
+    CLOSE_IS_REPORTED_AS_CONNECTION_DOWN("KD-23", true),
+    AMERICAN_ODDS_FROM_2_ARE_WRONG("KD-24", true);
 
     /** The SDK lines a scenario can run against. */
     public enum Line {
