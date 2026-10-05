@@ -76,6 +76,18 @@ added | config/OddsFeedConfigurationBuilder.setHttpClientTimeout (Ljava/time/Dur
 added | config/OddsFeedConfigurationBuilder.setRestConcurrencyLimit (I)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the most entity requests in flight at once
 added | config/OddsFeedConfigurationBuilder.setStartupTimeout (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long opening the feed keeps trying the API
 
+# Events of the feed as a whole, as default methods, so a listener written for 0.0.x compiles as it is.
+added | subscribe/GlobalEventsListener.onConnectionStateChange (Lcom/oddin/oddsfeedsdk/subscribe/ConnectionStateChange;)V | the broker connection's state, up as well as down
+added | subscribe/GlobalEventsListener.onFatalError (Ljava/lang/String;Ljava/lang/Throwable;)V | what no retry can fix: the token refused by the API, or the login by the broker
+added | subscribe/GlobalEventsListener.onApiCall (Lcom/oddin/oddsfeedsdk/subscribe/ApiCallEvent;)V | each HTTP attempt of the SDK's API calls
+added | subscribe/GlobalEventsListener.onCallbackFailure (Lcom/oddin/oddsfeedsdk/subscribe/CallbackFailure;)V | a callback that threw, or a message the SDK failed on, reported apart from the unparsable messages
+added | subscribe/ConnectionState | the broker connection's states
+added | subscribe/ConnectionStateChange | a change of the broker connection's state
+added | subscribe/ApiCallEvent | one HTTP attempt of an API call
+added | subscribe/CallbackFailure | a callback that threw, or a step of the SDK's own that failed
+added | subscribe/OddsFeedExtListener.onRawFeedMessageBytes ([BLcom/oddin/oddsfeedsdk/mq/MessageInterest;Lcom/oddin/oddsfeedsdk/mq/RoutingKeyInfo;Lcom/oddin/oddsfeedsdk/mq/entities/MessageTimestamp;)V | a feed message as the bytes the broker delivered
+added | subscribe/OddsFeedExtListener.onRawApiDataBytes (Ljava/net/URI;[B)V | an API response as the bytes the API answered
+
 # ---- feed XML classes, generated from the vendored schema
 # The schema describes what the producers send. What it dropped as legacy, the classes do not have.
 # Enum attributes keep their 0.0.x enum getter, and the number as decoded next to it.
