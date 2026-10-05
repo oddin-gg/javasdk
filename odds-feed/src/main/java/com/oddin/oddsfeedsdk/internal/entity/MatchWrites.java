@@ -51,18 +51,9 @@ final class MatchWrites {
 
     private MatchWrites() {}
 
-    /**
-     * A summary's match fields, its winner included: a status without a winner retracts it, a
-     * summary without a status, or with a winner that is not a URN, says nothing of it.
-     */
-    static Write summary(RASportEvent event, @Nullable RASportEventStatus status, Locale locale) {
-        Write write = match(Write.from(SUMMARY, locale), event);
-        if (status == null) {
-            return write.unsaid(WINNER_ID);
-        }
-        String sent = status.getWinnerId();
-        URN winner = ApiValues.urn(sent);
-        return sent != null && winner == null ? write.unsaid(WINNER_ID) : write.put(WINNER_ID, winner);
+    /** A summary's match fields; its status is the live state's. */
+    static Write summary(RASportEvent event, Locale locale) {
+        return match(Write.from(SUMMARY, locale), event);
     }
 
     /** What a fixture or a schedule says of the match: it only fills. */
@@ -78,11 +69,14 @@ final class MatchWrites {
                 .put(TV_CHANNELS, tvChannels(fixture.getTvChannels()));
     }
 
-    /** A summary's live status. */
+    /**
+     * A summary's live status, its winner included: the summary sends the winner whenever there is
+     * one, so a status without it retracts it; a winner that is not a URN says nothing of it.
+     */
     static LiveWrite live(RASportEventStatus status) {
         RAPeriodScores periods = status.getPeriodScores();
         RAScoreboard scoreboard = status.getScoreboard();
-        return LiveWrite.of()
+        var write = LiveWrite.of()
                 .put(STATUS, EventStatus.fromApiEventStatus(status.getStatus()))
                 .put(MATCH_STATUS_ID, status.getMatchStatusCode())
                 .put(HOME_SCORE, status.getHomeScore())
@@ -90,9 +84,19 @@ final class MatchWrites {
                 .put(PERIOD_SCORES, periods == null ? null : restPeriods(periods))
                 .put(SCOREBOARD, scoreboard == null ? null : scoreboard(scoreboard))
                 .put(SCOREBOARD_AVAILABLE, status.getScoreboardAvailableRaw());
+        String winner = status.getWinnerId();
+        return winner == null ? write.clear(WINNER_ID) : write.put(WINNER_ID, ApiValues.urn(winner));
     }
 
-    /** A live message's status. */
+    /** A summary's winner alone: what it fills while the feed owns the match. */
+    static LiveWrite winner(RASportEventStatus status) {
+        return LiveWrite.of().put(WINNER_ID, ApiValues.urn(status.getWinnerId()));
+    }
+
+    /**
+     * A live message's status. The feed sends the winner once the match has one, and not on every
+     * message, so a message without it, or with one that is not a URN, keeps the winner held.
+     */
     static LiveWrite live(OFSportEventStatus status) {
         OFPeriodscoresType periods = status.getPeriodScores();
         OFScoreboard scoreboard = status.getScoreboard();
@@ -105,7 +109,8 @@ final class MatchWrites {
                 .put(AWAY_SCORE, status.getAwayScore())
                 .put(PERIOD_SCORES, periods == null ? null : feedPeriods(periods))
                 .put(SCOREBOARD, scoreboard == null ? null : scoreboard(scoreboard))
-                .put(SCOREBOARD_AVAILABLE, status.getScoreboardAvailable());
+                .put(SCOREBOARD_AVAILABLE, status.getScoreboardAvailable())
+                .put(WINNER_ID, ApiValues.urn(status.getWinnerId()));
     }
 
     private static Write match(Write write, RASportEvent event) {
