@@ -5,13 +5,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.MatchStatus;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import com.oddin.oddsfeedsdk.mq.entities.BetSettlement;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
+import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
@@ -22,6 +25,45 @@ import org.junit.jupiter.api.Test;
 class MatchStatusScenarioIT {
 
     private static final String CLOSED = "feed/odds_change/odds_change_closed_with_winner.xml";
+    private static final URN MATCH = URN.parse("od:match:198314");
+    private static final String SUMMARY = "/v1/sports/en/sport_events/" + MATCH + "/summary";
+
+    /**
+     * The match is read before it ends, so its summary has no winner yet. The closing odds change
+     * names the winner, and the settlement follows: 0.0.x drops the feed's winner and keeps the
+     * summary's; 1.0 takes the feed's.
+     */
+    @Test
+    void aSettlementRightAfterTheClosingOddsChangeReadsTheFeedsWinner() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            rest.respond(
+                    SUMMARY,
+                    200,
+                    Fixtures.replace(
+                            Fixtures.read("rest/match_summary/match_summary.xml"),
+                            " winner_id=\"od:competitor:47214\"",
+                            ""));
+            Received received = sdk.open(MessageInterest.ALL);
+            MatchStatus before =
+                    sdk.oddsFeed().getSportsInfoManager().getMatch(MATCH).getStatus();
+            assertThat(before.getWinnerId()).as("before the match ends").isNull();
+
+            feed.publishFixture(CLOSED);
+            feed.publishFixture("feed/bet_settlement/bet_settlement.xml");
+            received.next(OddsChange.class);
+            Match match = (Match) received.next(BetSettlement.class).getEvent();
+            KnownDifference.FEED_WINNER_IS_DROPPED.expect(
+                    () -> assertThat(match.getStatus().getWinnerId())
+                            .as("the summary's")
+                            .isNull(),
+                    () -> assertThat(match.getStatus().getWinnerId())
+                            .as("the feed's")
+                            .isEqualTo(URN.parse("od:competitor:47214")));
+            rest.awaitQuiet();
+        }
+    }
 
     @Test
     void aMatchCancelledOnTheFeedReadsAsCancelled() throws InterruptedException {

@@ -271,3 +271,21 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
   away at all.
 - **Pinned by:** none; the fixtures the system tests use list home first, as a classic match.
 - **Found:** by reading the source (`MatchImpl.homeAwayCompetitor`).
+
+## KD-21 The feed's winner is dropped
+
+- **0.0.x:** The `winner_id` an `odds_change` carries in its `sport_event_status` is dropped: the
+  0.0.x binding of that element has no such attribute. `MatchStatus.getWinnerId()` is the match
+  summary's: taken from a summary loaded for any reason, and loaded for the status only once it
+  has gone 20 minutes without a write. A settlement right after the closing odds change reads no
+  winner for a match whose summary was loaded before it ended.
+- **1.0:** The winner is in the live state with the other feed-owned fields (NEXT.md section 4,
+  Caches and loaders, Ownership and ordering). A message that carries one writes it, and a message
+  without one keeps it. The summary retracts it once the feed has been quiet for the match status
+  age; while the feed is live, a summary's winner fills one the feed has not sent. The Go and .NET
+  SDKs take the feed's winner too.
+- **Why:** A client that settles bets on the winner gets it with the settlement, not 20 minutes
+  later.
+- **Pinned by:** `MatchStatusScenarioIT.aSettlementRightAfterTheClosingOddsChangeReadsTheFeedsWinner`
+- **Found:** by test against 0.0.57, and in the source (`MatchStatusCache.applyFeedSnapshot`,
+  `OFSportEventStatus`).
