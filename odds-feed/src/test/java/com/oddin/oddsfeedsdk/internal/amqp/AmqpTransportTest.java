@@ -543,6 +543,25 @@ class AmqpTransportTest {
     }
 
     @Test
+    void aResetBetweenTheClosesAbortAndTheChannelsCloseMovesNoEpochAndKeepsTheDeliveries() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        feed().publishFixture(ODDS_CHANGE);
+        feed().publishFixture(ODDS_CHANGE);
+        awaitSize(session, 2);
+        long before = session.epoch();
+        // the connection is cut, the channel not closed yet: a reset handed to a worker runs now
+        transport.afterAbort = session::reset;
+        transport.close();
+        assertThat(session.epoch()).as("nothing was replaced").isEqualTo(before);
+        assertThat(session.queue().size())
+                .as("what the session had taken stays for it")
+                .isEqualTo(2);
+        assertThat(session.channel()).isNull();
+    }
+
+    @Test
     void aResetThatCannotOpenTheChannelLeavesItToTheReopenLoop() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());
