@@ -18,10 +18,11 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.TimeValue;
 
 /**
- * Runs the benchmarks briefly and holds the SDK's decoder to its budget per message, from {@code
- * budgets.properties}: microseconds and bytes allocated. The allocation is the tight check - it
+ * Runs the benchmarks briefly and holds the SDK's decoder, and the warm path's cache write and entity
+ * build, to their budget per message, from {@code budgets.properties}: microseconds and bytes
+ * allocated. The allocation is the tight check - it
  * hardly moves from one machine or run to the next - and the time a coarse one, generous enough for a
- * shared CI runner, there to catch a decoder that became several times slower.
+ * shared CI runner, there to catch a step that became several times slower.
  *
  * <p>JMH forks a JVM of its own for the measurement, with its own options, so the coverage agent
  * the build gives the tests does not run inside it.
@@ -36,7 +37,9 @@ class BudgetTest {
     void theDecoderStaysWithinItsBudget() throws Exception {
         Properties budgets = budgets();
         Collection<RunResult> results = new Runner(new OptionsBuilder()
-                        .include(System.getProperty("benchmarks.include", DecodeBenchmark.class.getName() + ".jaxb$"))
+                        .include(System.getProperty(
+                                "benchmarks.include",
+                                DecodeBenchmark.class.getName() + ".jaxb$|" + WarmPathBenchmark.class.getName()))
                         .forks(1)
                         .warmupIterations(Integer.getInteger("benchmarks.warmups", 3))
                         .warmupTime(TimeValue.seconds(1))
