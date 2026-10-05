@@ -289,3 +289,15 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
 - **Pinned by:** `MatchStatusScenarioIT.aSettlementRightAfterTheClosingOddsChangeReadsTheFeedsWinner`
 - **Found:** by test against 0.0.57, and in the source (`MatchStatusCache.applyFeedSnapshot`,
   `OFSportEventStatus`).
+
+## KD-23 Closing the feed is reported as the connection down
+
+- **0.0.x:** `onConnectionDown` is called whenever the AMQP connection shuts down, also when the
+  client's own `close()` shuts it: the SDK's shutdown listener does not look at who closed it.
+- **1.0:** Called for a connection lost, not one the feed closed: "No duplicate 'down' on a normal
+  close" (NEXT.md section 4, Connection). The events dispatcher calls it when the transport reports
+  a loss, which it does not on `close()` (ticket 22).
+- **Why:** A client that alerts on a lost connection alerts on every shutdown and every deploy.
+- **Pinned by:** `ReconnectScenarioIT.closingTheFeedIsNotReportedAsTheConnectionDown`
+- **Found:** in the source (`AMQPConnectionProvider`, `addShutdownListener`), and by test against
+  0.0.57.
