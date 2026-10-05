@@ -339,9 +339,10 @@ final class RecoveryMachine {
             }
             queueLost(session, StatusCause.SAFETY_NET_RESET, now);
         } else {
-            // nothing was dropped, but the snapshot completes ignored meanwhile are gone
+            // nothing was dropped, but the snapshot completes ignored meanwhile are gone; the net waits
+            // as long as after the last reset made, and the backoff does not grow for one not made
             LOG.warn("The safety net's reset of session {} was not made", id);
-            session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size() + 1);
+            session.nextResetAt = now + backoff(settings.firstResetBackoff(), Math.max(1, session.resets.size()));
             notSeen(session, now);
         }
         releaseDeferred();

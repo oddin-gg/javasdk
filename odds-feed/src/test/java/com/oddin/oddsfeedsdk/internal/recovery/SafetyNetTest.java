@@ -848,6 +848,33 @@ class SafetyNetTest {
     }
 
     @Test
+    void aResetTheTransportCouldNotTakeAfterOneItMadeWaitsNoLongerThanTheOneItMade() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        feed.resetDone();
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+
+        int second = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > second))
+                .isEqualTo(61);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        feed.resetRefused();
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+
+        int third = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > third))
+                .as("seconds to the next try: the window, past the minute the reset made set, not two")
+                .isEqualTo(61);
+        assertThat(feed.counters.resets()).isEqualTo(1);
+    }
+
+    @Test
     void aRecoveryWhoseSessionTheTransportStillResetsDoesNotTimeOutAndIsAskedForAgainOnceItIsDone() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();
