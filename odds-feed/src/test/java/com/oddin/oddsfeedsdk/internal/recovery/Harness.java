@@ -114,6 +114,7 @@ final class Harness {
         return new RecoverySettings(
                 Duration.ofSeconds(20),
                 Duration.ofMinutes(360),
+                Duration.ofMinutes(5),
                 null,
                 NODE,
                 3,
@@ -134,6 +135,7 @@ final class Harness {
         return new RecoverySettings(
                 maxInactivity,
                 settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
                 settings.initialSnapshotInterval(),
                 settings.nodeId(),
                 settings.reissues(),

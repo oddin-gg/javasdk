@@ -36,6 +36,7 @@ class RecoverySettingsTest {
     @Test
     void theRestAreTheDesignsNumbers() {
         RecoverySettings settings = RecoverySettings.from(configuration(20, 360, null, null));
+        assertThat(settings.snapshotCompleteTimeout()).isEqualTo(Duration.ofMinutes(5));
         assertThat(settings.reissues()).isEqualTo(3);
         assertThat(settings.firstReissueBackoff()).isEqualTo(Duration.ofSeconds(5));
         assertThat(settings.cooldown()).isEqualTo(Duration.ofMinutes(10));
