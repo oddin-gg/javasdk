@@ -279,10 +279,17 @@ public final class AmqpTransport implements AutoCloseable {
     }
 
     private void connectAndOpenChannels() throws IOException, TimeoutException {
+        openChannels(connect());
+    }
+
+    private Connection connect() throws IOException, TimeoutException {
         // the host as configured, once: the client's own resolver tries every address of the host, and a
         // login refused on the first is then reported as whatever the last said - a network failure
         AddressResolver asConfigured = () -> List.of(new Address(settings.host(), settings.port()));
-        Connection made = factory().newConnection(consumers, asConfigured, settings.connectionName());
+        return factory().newConnection(consumers, asConfigured, settings.connectionName());
+    }
+
+    private void openChannels(Connection made) throws IOException {
         connection = made;
         made.addShutdownListener(signal -> connectionLost(made, signal));
         // a close that came while connecting found no connection to cut: cut it here, and between
@@ -437,13 +444,24 @@ public final class AmqpTransport implements AutoCloseable {
             if (pause(wait)) {
                 return;
             }
+            Connection made;
+            try {
+                // without the lock: close() does not wait out a TCP or TLS handshake, which can take the
+                // connect timeout, and the connection made after it is cut below
+                made = connect();
+            } catch (IOException | TimeoutException | RuntimeException e) {
+                failure = Failure.of(e);
+                cause = e;
+                continue;
+            }
             lock.lock();
             try {
                 if (closed) {
+                    made.abort(ABORT_MILLIS);
                     return;
                 }
                 closeConnectionQuietly();
-                connectAndOpenChannels();
+                openChannels(made);
                 afterChannelsOpen.run();
                 if (closed) {
                     // closed while connecting: close() waits for the lock, but no up is told after it
@@ -467,7 +485,7 @@ public final class AmqpTransport implements AutoCloseable {
                     return;
                 }
                 events.down(Failure.describe(cause, settings.accessToken()));
-            } catch (IOException | TimeoutException | RuntimeException e) {
+            } catch (IOException | RuntimeException e) {
                 failure = Failure.of(e);
                 cause = e;
                 closeConnectionQuietly();
