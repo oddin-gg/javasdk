@@ -43,14 +43,15 @@ import org.slf4j.LoggerFactory;
  * connection's state, producer status, fatal errors and event recovery completions. It holds {@value
  * #CONTROL_CAPACITY}; an event with no room is counted and logged, never waited for. Of those, each
  * producer's status, the connection's state and each kind of fatal error have one slot, which the
- * newest fills: such an event replaces one still queued rather than queueing behind it. So none of
- * them is ever dropped, a client that falls behind hears the state as it is now rather than one long
- * gone - the last word of a producer is never the one that found no room - and a flood of them
- * takes one queued entry each. A connection loss replaced that way is still told, by {@code
- * onConnectionDown}. The telemetry queue carries the API calls, the failed callbacks and the raw API
+ * newest fills: such an event replaces one still queued rather than queueing behind it, and is
+ * delivered where it was reported, after what was reported before it. So none of them is ever
+ * dropped, a client that falls behind hears the state as it is now rather than one long gone, in the
+ * order it changed - the last word of a producer is never the one that found no room, nor heard
+ * before a connection loss reported ahead of it - and a flood of them takes one queued entry each. A
+ * connection loss replaced that way is still told, by {@code onConnectionDown}. The telemetry queue carries the API calls, the failed callbacks and the raw API
  * data; it holds {@value #TELEMETRY_CAPACITY} and drops the oldest when full, counting them. The raw
- * API data it holds is bounded by bytes too, at {@link #TELEMETRY_BYTES}: a response with no room
- * under that is dropped and counted, since a thousand of the largest the API may answer would
+ * API data it holds, and the response being delivered, are bounded by bytes too, at {@link
+ * #TELEMETRY_BYTES}: a response with no room under that is dropped and counted, since a thousand of the largest the API may answer would
  * exhaust the heap while a callback lags.
  *
  * <p>The thread takes the control queue first, then up to {@value #TELEMETRY_PER_TURN} telemetry
@@ -92,8 +93,13 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private final Queue<Entry> control = new ConcurrentLinkedQueue<>();
     /** How many control events are queued, not counting the slots' markers. */
     private final AtomicInteger controlSize = new AtomicInteger();
-    /** What each slot holds that is not delivered yet; a slot with something in it has one marker queued. */
-    private final Map<Object, Pending> slots = new ConcurrentHashMap<>();
+    /**
+     * What each slot holds that is not delivered yet; a slot with something in it has one marker
+     * queued, where its newest report stands.
+     */
+    private final Map<Object, Held> slots = new ConcurrentHashMap<>();
+    /** The generation of each report a slot takes, increasing. */
+    private final AtomicLong generation = new AtomicLong();
 
     private final Queue<Event> telemetry;
 
@@ -267,6 +273,11 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         return telemetryDropped.get();
     }
 
+    /** Entries in the control queue, the slots' markers included; for a test. */
+    int controlQueued() {
+        return control.size();
+    }
+
     /** Callbacks that threw. */
     public long callbackFailures() {
         return callbackFailures.get();
@@ -308,23 +319,30 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         coalesce(Slot.CONNECTION, new Connection(change, state == ConnectionState.DOWN));
     }
 
-    /** Fills the slot, merged with what it holds; queues its marker only when it was empty. */
+    /**
+     * Fills the slot, merged with what it holds, and moves its marker to the end of the control queue:
+     * the slot's newest value is delivered where its newest report stands, so a connection loss
+     * reported after a producer's status, and before its newest, is heard before that newest. The
+     * marker of the report it replaces is taken out, so a slot never has more than one queued.
+     */
     private void coalesce(Object slot, Pending pending) {
         if (closed) {
             return;
         }
-        var empty = new boolean[1];
+        var generations = new long[] {0, -1};
         slots.compute(slot, (key, held) -> {
+            generations[0] = generation.incrementAndGet();
             if (held == null) {
-                empty[0] = true;
-                return pending;
+                return new Held(pending, generations[0]);
             }
-            return pending.after(held);
+            generations[1] = held.generation();
+            return new Held(pending.after(held.pending()), generations[0]);
         });
-        if (empty[0]) {
-            control.add(new Marker(slot));
-            LockSupport.unpark(thread);
+        control.add(new Marker(slot, generations[0]));
+        if (generations[1] >= 0) {
+            control.remove(new Marker(slot, generations[1]));
         }
+        LockSupport.unpark(thread);
     }
 
     /** Room for {@code bytes} of raw data under the budget, taken; false, counted, when there is none. */
@@ -399,8 +417,12 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
                 if (event == null) {
                     break;
                 }
-                release(event);
-                deliver(event);
+                try {
+                    deliver(event);
+                } finally {
+                    // the response in flight counts against the budget until its callbacks are done
+                    release(event);
+                }
                 worked = true;
             }
             if (!worked && !closed && control.isEmpty() && telemetry.isEmpty()) {
@@ -414,10 +436,11 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         Entry entry;
         while (!closed && (entry = control.poll()) != null) {
             switch (entry) {
-                case Marker(var slot) -> {
-                    Pending pending = slots.remove(slot);
-                    if (pending != null) {
-                        deliver(pending.event(this));
+                case Marker(var slot, var markedAt) -> {
+                    Held held = slots.get(slot);
+                    // a marker the slot's newest report replaced, before it was taken out, is skipped
+                    if (held != null && held.generation() == markedAt && slots.remove(slot, held)) {
+                        deliver(held.pending().event(this));
                     }
                 }
                 case Event event -> {
@@ -493,7 +516,11 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         }
     }
 
-    private record Marker(Object slot) implements Entry {}
+    /** A slot's place in the control queue, for the report of this generation. */
+    private record Marker(Object slot, long generation) implements Entry {}
+
+    /** What a slot holds, and the generation of its newest report, whose marker is queued. */
+    private record Held(Pending pending, long generation) {}
 
     /** The slots that are not a producer's. */
     private enum Slot {

@@ -321,17 +321,123 @@ class EventsDispatcherTest {
         assertThat(heard)
                 .containsExactly(
                         "onEventRecoveryCompleted od:match:0 0",
-                        "onProducerStatusChange " + "oddsfeed-events",
-                        "onConnectionDown",
-                        "onConnectionStateChange UP null 0 PT0S",
                         "onEventRecoveryCompleted od:match:1 1",
                         "onEventRecoveryCompleted od:match:2 2",
-                        "onEventRecoveryCompleted od:match:3 3");
+                        "onEventRecoveryCompleted od:match:3 3",
+                        "onProducerStatusChange " + "oddsfeed-events",
+                        "onConnectionDown",
+                        "onConnectionStateChange UP null 0 PT0S");
         ProducerStatus status = requireNonNull(listener.statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
         assertThat(status.isDown()).as("the newest status, up again").isFalse();
         assertThat(status.getProducerStatusReason()).isEqualTo(ProducerStatusReason.RETURNED_FROM_INACTIVITY);
         assertThat(listener.statuses).as("the replaced status").isEmpty();
         assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    /**
+     * The second design review's case: behind a wedge, a producer goes down, the connection is lost,
+     * the producer is down for the loss, the connection comes back and the producer up. Each slot's
+     * newest is heard where it was reported, so the client hears the connection lost before the
+     * producer up - a client that takes every producer down on a lost connection is left with it up.
+     */
+    @Test
+    void aSlotsNewestIsHeardWhereItWasReported() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:0"), 0);
+        listener.awaitWedged();
+        dispatcher.producerStatus(
+                new ProducerStatusChange(PRODUCER, true, false, StatusCause.ALIVE_INTERVAL_VIOLATION, 1));
+        dispatcher.down("lost");
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, true, false, StatusCause.CONNECTION_LOST, 2));
+        dispatcher.recovering(1, 100, "refused");
+        dispatcher.up();
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, false, false, StatusCause.RECOVERY_COMPLETED, 3));
+
+        listener.release();
+        assertThat(listener.take(4))
+                .containsExactly(
+                        "onEventRecoveryCompleted od:match:0 0",
+                        "onConnectionDown",
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onProducerStatusChange oddsfeed-events");
+        ProducerStatus status = requireNonNull(listener.statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(status.isDown()).as("up, last").isFalse();
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /** A slot keeps one marker however often it is filled, so a flood costs one entry. */
+    @Test
+    void aFloodOfReportsForOneSlotKeepsOneEntryQueued() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:0"), 0);
+        listener.awaitWedged();
+        for (int i = 0; i < 10_000; i++) {
+            dispatcher.producerStatus(
+                    new ProducerStatusChange(PRODUCER, i % 2 == 0, false, StatusCause.UNSUBSCRIBED, i));
+            dispatcher.connecting();
+        }
+        assertThat(dispatcher.controlQueued()).as("one marker per slot").isEqualTo(2);
+        listener.release();
+        assertThat(listener.take(3)).hasSize(3);
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    @Test
+    void aConnectionLossWhoseLegacyCallbackThrowsStillTellsTheState() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.throwOn = "onConnectionDown";
+        dispatcher.down("lost");
+        assertThat(listener.take(3))
+                .containsExactly(
+                        "onConnectionDown",
+                        "onConnectionStateChange DOWN lost 0 PT0S",
+                        "onCallbackFailure onConnectionDown true thrown by the client");
+    }
+
+    @Test
+    void rawApiDataWhoseFirstCallbackThrowsStillGetsItsBytes() throws InterruptedException {
+        var ext = new Ext();
+        ext.throwOnReceived = true;
+        EventsDispatcher dispatcher = started(ext);
+        dispatcher.received(URI_CALLED, "data", new byte[] {'<', 'x', '/', '>'});
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS)).startsWith("onRawApiDataReceived");
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .startsWith("onRawApiDataBytes " + URI_CALLED + " <x/>");
+        assertThat(listener.next()).startsWith("onCallbackFailure onRawApiDataReceived true");
+    }
+
+    @Test
+    void aCloseFromTheFirstCallbackOfAnEventLeavesTheSecondUnheard() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.onDown = dispatcher::close;
+        dispatcher.down("lost");
+        assertThat(listener.next()).isEqualTo("onConnectionDown");
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("the state, after the close")
+                .isNull();
+    }
+
+    /** The response whose callbacks run counts against the budget until they are done. */
+    @Test
+    void rawApiDataBeingDeliveredStillCountsAgainstTheBudget() throws InterruptedException {
+        var ext = new Ext();
+        ext.wedged = new CountDownLatch(1);
+        EventsDispatcher dispatcher = dispatcher(ext, 10, 10, 100);
+        dispatcher.start();
+        dispatcher.received(URI_CALLED, "first", new byte[60]);
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS)).startsWith("onRawApiDataReceived");
+        dispatcher.received(URI_CALLED, "second", new byte[60]);
+        assertThat(dispatcher.rawDataDropped())
+                .as("the first is still being delivered")
+                .isEqualTo(1);
+        requireNonNull(ext.wedged).countDown();
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS)).startsWith("onRawApiDataBytes");
     }
 
     @Test
@@ -580,6 +686,7 @@ class EventsDispatcherTest {
         volatile String errorOn = "";
         volatile String interruptOn = "";
         volatile Runnable onFatal = () -> {};
+        volatile Runnable onDown = () -> {};
         volatile boolean interruptedAfter;
         private volatile @Nullable CountDownLatch wedged;
         private final CountDownLatch entered = new CountDownLatch(1);
@@ -624,6 +731,7 @@ class EventsDispatcherTest {
         @Override
         public void onConnectionDown() {
             heard("onConnectionDown", "onConnectionDown");
+            onDown.run();
         }
 
         @Override
@@ -689,6 +797,9 @@ class EventsDispatcherTest {
     /** Records the raw callbacks, with the thread each ran on. */
     private static final class Ext implements OddsFeedExtListener {
         final BlockingQueue<String> events = new LinkedBlockingQueue<>();
+        volatile boolean throwOnReceived;
+        /** Holds each onRawApiDataReceived until counted down; null for none. */
+        volatile @Nullable CountDownLatch wedged;
 
         @Override
         public void onRawFeedMessageReceived(
@@ -701,6 +812,17 @@ class EventsDispatcherTest {
         public void onRawApiDataReceived(URI uri, Object data) {
             events.add("onRawApiDataReceived " + uri + " " + data + " "
                     + Thread.currentThread().getName());
+            CountDownLatch wedge = wedged;
+            if (wedge != null) {
+                try {
+                    wedge.await(WAIT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            if (throwOnReceived) {
+                throw new IllegalStateException("thrown by the client");
+            }
         }
 
         @Override
