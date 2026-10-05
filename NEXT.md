@@ -970,8 +970,8 @@ group by group.
     disable, pause during recovery, request-before-reset, its own cap and the lagging
     state, producer-status reasons. The state machine and the actor with the narrow
     interfaces the dispatchers, the alive dispatcher, the transport and the façade call;
-    tickets 22 and 26 connect them, and the transport has yet to report a session channel
-    it reopened on its own.
+    tickets 22 and 26 connect them. The transport reports a session channel it reopened on
+    its own (`ChannelEvents.reopened()`).
 25. Replay manager.
     Also `getReplayList`, built through ticket 20's factory.
 
