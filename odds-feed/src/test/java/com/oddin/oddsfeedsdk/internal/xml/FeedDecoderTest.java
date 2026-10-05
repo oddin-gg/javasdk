@@ -27,7 +27,6 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -135,13 +134,10 @@ class FeedDecoderTest {
         var body = new StringBuilder("<alive product=\"1\" timestamp=\"1\" subscribed=\"1\">");
         names.forEach(name -> body.append('<').append(name).append("/>"));
         body.append("</alive>");
-        long started = System.nanoTime();
+        // by the rule on one hash, at the ninth name, not by the limit on all names, past 512
         assertThatThrownBy(() -> lenient.decode(bytes(body.toString())))
                 .isInstanceOf(DecodeException.class)
-                .hasMessageContaining("distinct names");
-        assertThat(Duration.ofNanos(System.nanoTime() - started))
-                .as("refused before the colliding names add up")
-                .isLessThan(Duration.ofSeconds(1));
+                .hasMessageContaining("more than " + XmlReader.MAX_NAMES_PER_HASH + " distinct names with one hash");
     }
 
     @Test
@@ -170,11 +166,10 @@ class FeedDecoderTest {
                 prefixes.append("</alive>").toString(),
                 uris.append("</alive>").toString(),
                 declaredUris.append("</alive>").toString())) {
-            long started = System.nanoTime();
-            assertThatThrownBy(() -> lenient.decode(bytes(hostile))).isInstanceOf(DecodeException.class);
-            assertThat(Duration.ofNanos(System.nanoTime() - started))
-                    .as("refused before the colliding names add up")
-                    .isLessThan(Duration.ofSeconds(1));
+            assertThatThrownBy(() -> lenient.decode(bytes(hostile)))
+                    .isInstanceOf(DecodeException.class)
+                    .hasMessageContaining(
+                            "more than " + XmlReader.MAX_NAMES_PER_HASH + " distinct names with one hash");
         }
         // a single start tag is read whole before any limit on names sees it: 2^15 colliding declarations
         var many = new ArrayList<String>();
@@ -183,11 +178,10 @@ class FeedDecoderTest {
         many.forEach(name -> oneTag.append(" xmlns:").append(name).append("=\"u\""));
         String tag = oneTag.append("/>").toString();
         var rest = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES);
-        long started = System.nanoTime();
-        assertThatThrownBy(() -> rest.decode(bytes(tag))).isInstanceOf(DecodeException.class);
-        assertThat(Duration.ofNanos(System.nanoTime() - started))
-                .as("stopped by the attribute limit as the tag is read")
-                .isLessThan(Duration.ofSeconds(1));
+        // stopped by the parser's own attribute limit as the tag is read, before the reader's
+        assertThatThrownBy(() -> rest.decode(bytes(tag)))
+                .isInstanceOf(DecodeException.class)
+                .hasMessageContaining("Attribute limit (" + XmlReader.MAX_ATTRIBUTES + ") exceeded");
 
         assertThatThrownBy(() -> lenient.decode(bytes(ALIVE + "<?" + names.getFirst() + " x?>")))
                 .isInstanceOf(DecodeException.class)
