@@ -35,7 +35,7 @@ jobs:
 
       - name: Check the tag
         id: tag
-        # The tag's form, its commit the merge commit of a pull request merged into next or main
+        # The tag's form, its commit the merge commit of a pull request merged into main
         # and alone, the release notes, no other workflow reacting to tags, and the version not
         # on Central. release-check-test.sh, run by next.yml on every push, holds each of these
         # to its cases.

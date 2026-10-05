@@ -461,20 +461,23 @@ and REST workers post facts to it; it decides and posts work out.
 - What a recovery must cover is kept as gaps. A queue that loses what it held - the
   connection or its channel lost, a safety-net reset - and a session that opens miss
   everything after the session's checkpoint. A producer that stops sending - an alive
-  that says the feed is unsubscribed, or no alive for longer than the maximum
-  inactivity - leaves every session missing what came after its last subscribed alive
-  on the SDK's alive channel, which says everything before it was sent; the queues
-  still hold what they had, so a slow session does not drag that recovery back. A
-  recovery starts from the oldest open gap: after a lost connection, the oldest
-  checkpoint among the sessions that receive the producer. A gap keeps its start until
-  a recovery that covers it completes. A client-supplied recovery-from timestamp
-  (existing setter) seeds every session's checkpoint at `open()`. The point is clamped
-  to the producer's stateful recovery window, as today - counted back by the producer's
-  clock, as the gaps' starts are, with the offset measured on its alives - and a cold
-  start with no seed requests a full snapshot, or the configured initial snapshot
-  interval, counted back from when the gap opened, so asking again does not move it.
-  That start is also the session's checkpoint until it processes something, so a later
-  loss starts from it too, rather than from an interval counted back from the loss.
+  that says the feed is unsubscribed, or no alive for longer than the maximum inactivity
+  - leaves every session missing what came after its last subscribed alive on the SDK's
+  alive channel, which says everything before it was sent; the queues still hold what
+  they had, so a slow session does not drag that recovery back. A recovery starts from
+  the oldest open gap: after a lost connection, the oldest checkpoint among the sessions
+  that receive the producer. A gap keeps its start until a recovery that covers it
+  completes. A client-supplied recovery-from timestamp (existing setter) seeds every
+  session's checkpoint at `open()`. To resume after a restart, a client persists the
+  oldest checkpoint, which `Producer.getTimestampForRecovery()` reports, and passes it
+  back through `setProducerRecoveryFromTimestamp`; tickets 26 and 31 wire and document
+  it. The point is clamped to the producer's stateful recovery window, as today -
+  counted back by the producer's clock, as the gaps' starts are, with the offset
+  measured on its alives - and a cold start with no seed requests a full snapshot, or
+  the configured initial snapshot interval, counted back from when the gap opened, so
+  asking again does not move it. That start is also the session's checkpoint until it
+  processes something, so a later loss starts from it too, rather than from an interval
+  counted back from the loss.
 - A recovery is asked for only while an alive says the producer is there, as 0.0.x
   asks at the first alive: after `open()`, after a reconnect, after a gap in the
   alives. Nothing goes out while the connection is down.
@@ -1059,17 +1062,15 @@ Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 4
 ## 12. Open questions
 
 1. Which clients test the release candidates? Needs an answer from customer success.
-2. Do the priority-split session interests keep exactly today's semantics? Proposal:
-   yes, they are public API.
-3. Does the feed define `bet_stop` at all? If not, the type stays as legacy and is
-   documented as never sent.
 
-Resolved since the first draft: the generated XML classes are public and keep their
-old names (section 3, difference 4). JAXB or StAX for decoding (2026-10-01): JAXB, on
-Woodstox, for the feed and REST alike. A typical live odds change of 150 markets took
-0.9 ms with JAXB on the JDK's own parser and 0.3 ms with a hand-written StAX reader; on
-Woodstox, JAXB takes 0.32 ms, so there is no parsing code to keep in step with the
-schema. Woodstox is Apache 2.0, its one dependency BSD.
+Resolved since the first draft: the priority-split session interests keep today's
+semantics, since they are public API (section 3). The feed defines `bet_stop`
+(`bet_stop.xsd` in the schema), so the type is a message the feed sends. The generated
+XML classes are public and keep their old names (section 3, difference 4). JAXB or StAX
+for decoding (2026-10-01): JAXB, on Woodstox, for the feed and REST alike. A typical
+live odds change of 150 markets took 0.9 ms with JAXB on the JDK's own parser and 0.3 ms
+with a hand-written StAX reader; on Woodstox, JAXB takes 0.32 ms, so there is no parsing
+code to keep in step with the schema. Woodstox is Apache 2.0, its one dependency BSD.
 
 ---
 
