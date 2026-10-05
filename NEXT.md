@@ -469,10 +469,11 @@ and REST workers post facts to it; it decides and posts work out.
   checkpoint among the sessions that receive the producer. A gap keeps its start until
   a recovery that covers it completes. A client-supplied recovery-from timestamp
   (existing setter) seeds every session's checkpoint at `open()`. To resume after a
-  restart, a client persists the producer's oldest checkpoint and passes it back
-  through `setProducerRecoveryFromTimestamp`. `Producer.getTimestampForRecovery()`
-  reports the last alive today, which can be ahead of a slow session; ticket 26 makes
-  it report the oldest checkpoint, and ticket 31 documents resuming. The point is clamped
+  restart, a client persists the producer's resume point, the oldest of its open gaps'
+  starts and its sessions' checkpoints, and passes it back through
+  `setProducerRecoveryFromTimestamp`. `Producer.getTimestampForRecovery()` reports the
+  last alive today, which can be ahead of both; ticket 26 makes it report the resume
+  point, and ticket 31 documents resuming. The point is clamped
   to the producer's stateful recovery window, as today - counted back by the producer's
   clock, as the gaps' starts are, with the offset measured on its alives - and a cold
   start with no seed requests a full snapshot, or the configured initial snapshot
