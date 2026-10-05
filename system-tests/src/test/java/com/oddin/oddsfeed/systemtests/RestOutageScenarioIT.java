@@ -10,7 +10,8 @@ import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
-import com.oddin.oddsfeedsdk.exceptions.OddsFeedSdkException;
+import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
+import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import java.time.Duration;
@@ -28,8 +29,8 @@ class RestOutageScenarioIT {
 
     /**
      * Messages keep arriving through an outage, and a getter that needs REST fails - under the
-     * default exception strategy, with an SDK exception. The failure is not remembered: once the API
-     * is back, the same getter on the same match loads it.
+     * default exception strategy, with the {@link ItemNotFoundException} 0.0.x threw. The failure is
+     * not remembered: once the API is back, the same getter on the same match loads it.
      */
     @Test
     void messagesKeepArrivingThroughAnOutageAndEntitiesLoadOnceItEnds() throws InterruptedException {
@@ -44,12 +45,56 @@ class RestOutageScenarioIT {
             var match = (Match) oddsChange.getEvent();
             assertThatThrownBy(() -> match.getName(Locale.ENGLISH))
                     .as("the match name while the API is down")
-                    .isInstanceOf(OddsFeedSdkException.class);
+                    .isExactlyInstanceOf(ItemNotFoundException.class);
 
             rest.endOutage();
             assertThat(match.getName(Locale.ENGLISH))
                     .as("the match name once the API is back")
                     .isEqualTo("Team Alpha vs Team Beta");
+        }
+    }
+
+    /**
+     * The lists 0.0.x answered an outage with stay as they were, under either strategy: no market
+     * descriptions, no sports and no active tournaments, and no market description by id, rather
+     * than an exception or null.
+     */
+    @Test
+    void theListsAnOutageEmptiesAreEmptyUnderEitherStrategy() {
+        for (var strategy : ExceptionHandlingStrategy.values()) {
+            try (FakeRestServer rest = FakeRestServer.start();
+                    Sdk sdk = Sdk.withoutFeed(rest, builder -> builder.setExceptionHandlingStrategy(strategy))) {
+                // 0.0.x hands out its managers only once it has the bookmaker details
+                var markets = sdk.oddsFeed().getMarketDescriptionManager();
+                var sportsInfo = sdk.oddsFeed().getSportsInfoManager();
+                rest.startOutage(503);
+
+                assertThat(markets.getMarketDescriptions())
+                        .as(strategy + ": the market descriptions")
+                        .isNotNull()
+                        .isEmpty();
+                assertThat(markets.getMarketDescriptions(Locale.ENGLISH))
+                        .as(strategy + ": the market descriptions in English")
+                        .isNotNull()
+                        .isEmpty();
+                assertThat(markets.getMarketDescription(1, null, Locale.ENGLISH))
+                        .as(strategy + ": market 1")
+                        .isNull();
+                assertThat(sportsInfo.getSports())
+                        .as(strategy + ": the sports")
+                        .isNotNull()
+                        .isEmpty();
+                assertThat(sportsInfo.getActiveTournaments())
+                        .as(strategy + ": the active tournaments")
+                        .isNotNull()
+                        .isEmpty();
+                assertThat(sportsInfo.getActiveTournaments("Counter-Strike 2"))
+                        .as(strategy + ": the active tournaments of a sport")
+                        .isNotNull()
+                        .isEmpty();
+                rest.endOutage();
+                rest.awaitQuiet();
+            }
         }
     }
 
