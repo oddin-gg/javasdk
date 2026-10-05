@@ -312,6 +312,19 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Found:** in the source (`AMQPConnectionProvider`, `addShutdownListener`), and by test against
   0.0.57.
 
+## KD-24 American odds from 2 are the decimal odds less 100
+
+- **0.0.x:** `OutcomeOdds.getOdds(OddsDisplayType.AMERICAN)` gives the decimal odds less 100 for
+  odds of 2 and over: 2.5 reads -97.5. Under 2 it gives `-100 / (odds - 1)`, which is right; 1 reads
+  null, NaN reads NaN, and odds under 1 read as a positive number.
+- **1.0:** The moneyline odds, as the Go SDK gives them: `(odds - 1) * 100` from 2 (2.5 reads 150),
+  `-100 / (odds - 1)` under 2, and null for odds of 1 or less or not finite, which have no American
+  odds (ticket 22).
+- **Why:** Every American price of an underdog is wrong, and negative where it should be positive.
+- **Pinned by:** `OddsChangeScenarioIT.americanOddsAreMoneylineOdds`
+- **Found:** in the source (`OutcomeOddsImpl.convertOdds`, which subtracts `1.0 * 100`), and by test
+  against 0.0.57.
+
 ## KD-25 A lost snapshot complete keeps a producer down for six hours
 
 - **0.0.x:** A recovery whose `snapshot_complete` never arrives is asked for again only once the
