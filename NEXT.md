@@ -132,10 +132,27 @@ types in packages whose name contains `internal`.
   only. Clients who want zero latency in callbacks use the preload options in section 5.
   The same holds on the events dispatcher: a getter inside a producer-status callback
   delays other events, which the documentation of that listener says.
-- `ExceptionHandlingStrategy` keeps its meaning. `THROW` propagates failures from
-  getters to the caller, `CATCH` logs and returns null. Default stays `THROW`. A
-  collection getter never returns a partial list: under `THROW` the first failed part
-  fails the getter, under `CATCH` the whole collection is null.
+- `ExceptionHandlingStrategy` keeps its meaning, getter by getter as 0.0.57 has it.
+  Default stays `THROW`.
+  - Under `THROW` a failure reaches the caller as the exception 0.0.x threw there. An
+    entity or catalog getter that cannot load what it reads throws
+    `ItemNotFoundException`, with the API's `ApiException` as its cause. A manager
+    method that asks the API directly throws the `ApiException` itself: the schedules,
+    the live matches, the fixture changes, a sport's available tournaments, the void
+    reasons.
+  - Under `CATCH` the getter logs and returns null. A collection getter never returns a
+    partial list: under `THROW` the first failed part fails it, under `CATCH` the whole
+    collection is null.
+  - 0.0.x's exceptions to both rules stay. Under either strategy the sports, the active
+    tournaments and the market descriptions are an empty list when they cannot load,
+    and a market description by id is null. A match's competitors are none under
+    `CATCH`. A sport whose tournaments cannot load is left out of the active tournaments
+    under `CATCH`. An outcome's name and a match status description, which 0.0.x read
+    from what it held, are null when they cannot load, under `THROW` too.
+  - A member list is its entity's id list: a match's or a tournament's competitors, a
+    competitor's players. A member whose profile cannot load is still listed, and its
+    own getters fail.
+  - Every collection a getter returns is a new mutable one, the caller's own.
 - The cache is updated before the listener callback runs, so `match.getStatus()` inside
   `onOddsChange` sees the state the message carried. Same as today.
 - Multi-session with the priority-split interests and the interest-combination
@@ -307,7 +324,9 @@ wedge.
   that asks for longer than the time left fails the call at once. The Go SDK ignores
   `Retry-After`. Replay control uses the data pool, so it cannot hold up recovery.
 - Partial failure in a parallel fan-out: `THROW` fails the getter with the first error;
-  `CATCH` returns null for the whole collection. Never a short list.
+  `CATCH` returns null for the whole collection. Never a short list. A member list's
+  warm-up of its members' profiles is the exception: it is best effort, and fails
+  nothing (section 3).
 - Startup: `open()` needs whoami and the producer list. It retries them inside a
   startup deadline (default three times the HTTP timeout), then fails with a clear
   exception. It never blocks indefinitely and never starts half-configured.
