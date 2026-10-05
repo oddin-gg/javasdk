@@ -143,6 +143,19 @@ class OddsFeedConfigurationBuilderTest {
     }
 
     @Test
+    void theMaximumRecoveryTimeIsCarriedFromTheBuilderToTheConfiguration() {
+        OddsFeedConfiguration configuration = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setMaxRecoveryExecutionMinutes(30)
+                .build();
+        assertThat(configuration.getMaxRecoveryExecutionMinutes()).isEqualTo(30);
+        assertThatThrownBy(() -> builder().setMaxRecoveryExecutionMinutes(0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at least 1 minute");
+    }
+
+    @Test
     void anAccessTokenAndAnEnvironmentAreRequired() {
         assertThatThrownBy(() -> builder().selectProduction().build())
                 .isInstanceOf(IllegalArgumentException.class)
