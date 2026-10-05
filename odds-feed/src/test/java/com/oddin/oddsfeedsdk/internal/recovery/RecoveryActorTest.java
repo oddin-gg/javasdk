@@ -71,6 +71,7 @@ class RecoveryActorTest {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
 
@@ -87,12 +88,31 @@ class RecoveryActorTest {
     }
 
     @Test
+    void nothingIsAskedForBeforeTheTransportsFirstUp() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        assertThat(api.requests.poll(200, TimeUnit.MILLISECONDS))
+                .as("with the sessions' channels not bound yet")
+                .isNull();
+
+        actor.up();
+        Request request = api.next();
+        assertThat(request.producer()).isEqualTo("pre");
+        session.snapshotComplete(PRE, request.requestId());
+        awaitUp(PRE);
+    }
+
+    @Test
     void aRequestTheApiRefusedIsAskedForAgain() throws InterruptedException {
         RecoveryActor actor =
                 actor(settings(Duration.ofMillis(50), Harness.settings().staleWindow()));
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         api.refuse.set(true);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         Request first = api.next();
@@ -107,6 +127,7 @@ class RecoveryActorTest {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         Long requestId = actor.recoverEvent(LIVE, MATCH, true).get(WAIT_SECONDS, TimeUnit.SECONDS);
         Request request = api.next();
         assertThat(request.path()).isEqualTo("stateful " + MATCH);
@@ -120,6 +141,7 @@ class RecoveryActorTest {
         RecoveryActor actor = actor(settings(Harness.settings().firstReissueBackoff(), Duration.ZERO));
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -161,6 +183,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -235,6 +258,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         CompletableFuture<@Nullable Long> reply = actor.recoverEvent(LIVE, MATCH, false);
         Runnable request = held.next();
         long now = System.currentTimeMillis();
@@ -267,6 +291,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         // a caller that waits, in what it chains to its reply, for the actor to handle a later fact
         var sawUp = new CompletableFuture<Boolean>();
         CompletableFuture<Void> chained = actor.recoverEvent(LIVE, MATCH, false).thenRun(() -> {
@@ -305,6 +330,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         // its request shows the actor's first tick is past, and the next is an hour away
         actor.alive(LIVE, now, now, true);
@@ -333,6 +359,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         broken.set(true);
         assertThat(ended.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
@@ -376,6 +403,7 @@ class RecoveryActorTest {
         transport.failAfterMoving = failure;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -416,6 +444,7 @@ class RecoveryActorTest {
         transport.failWith = failure;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -455,6 +484,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -503,6 +533,7 @@ class RecoveryActorTest {
         actor.alive(PRE, now, now, false);
         assertThat(actor.counters().factsDropped()).isEqualTo(1);
         actor.start();
+        actor.up();
         ProducerStatusChange status = requireNonNull(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
         assertThat(status.cause()).isEqualTo(StatusCause.UNSUBSCRIBED);
     }
@@ -515,6 +546,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -546,6 +578,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -562,6 +595,7 @@ class RecoveryActorTest {
         // the channel is lost, and the new one delivers at once
         long newer = System.currentTimeMillis() + 60_000;
         session.channelLost();
+        session.channelReopened();
         session.processed(PRE, newer, newer, false);
         gate.release.countDown();
 
@@ -581,6 +615,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -597,6 +632,7 @@ class RecoveryActorTest {
         actor.beforeSamplePoll = () -> {
             if (once.compareAndSet(false, true)) {
                 session.channelLost();
+                session.channelReopened();
                 session.processed(PRE, newer, newer, false);
             }
         };
@@ -621,6 +657,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         assertThat(api.next().producer())
@@ -638,6 +675,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         Request first = api.next();
@@ -652,6 +690,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         // each request taken posts the next, so the requests' queue is never empty
         var turnsSeen = new java.util.concurrent.ConcurrentSkipListSet<Long>();
         var left = new AtomicInteger(2_500);
@@ -678,6 +717,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         var once = new AtomicBoolean(true);
         actor.beforeHandle = () -> {
             if (once.compareAndSet(true, false)) {
@@ -710,6 +750,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         assertThat(api.next().producer())
@@ -727,6 +768,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         bothUp(actor, session);
         var held = new CountDownLatch(1);
         api.hold.set(held);
@@ -750,6 +792,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         bothUp(actor, session);
         // the new channel cannot be opened at once: the transport opens it later
         transport.reopenLater = true;
@@ -789,6 +832,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         bothUp(actor, session);
 
         // the actor held in a status change of the live producer, and a flood of prematch alives
@@ -845,6 +889,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         assertThat(api.next().producer())
@@ -873,6 +918,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, false);
         assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
@@ -892,6 +938,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         actor.alive(LIVE, now, now, true);
@@ -929,6 +976,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         // each sample taken posts the next, so the samples' queue is never empty
         var turnsSeen = new java.util.concurrent.ConcurrentSkipListSet<Long>();
         var left = new AtomicInteger(2_500);
@@ -972,9 +1020,11 @@ class RecoveryActorTest {
         actor.down("lost");
         session.snapshotComplete(PRE, 1);
         session.channelLost();
+        session.channelReopened();
         actor.openSession(new SessionInfo(2, MessageInterest.ALL, true), transport);
         assertThat(actor.counters().factsDropped()).isEqualTo(2);
         actor.start();
+        actor.up();
         ProducerStatusChange first = requireNonNull(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
         assertThat(first.cause()).as("the lost connection, first").isEqualTo(StatusCause.CONNECTION_LOST);
     }
@@ -993,6 +1043,7 @@ class RecoveryActorTest {
         RecoveryActor started = actor(settings());
         started.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         started.start();
+        started.up();
         var held = new CountDownLatch(1);
         api.hold.set(held);
         var inFlight = started.recoverEvent(LIVE, MATCH, false);
@@ -1016,6 +1067,7 @@ class RecoveryActorTest {
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         session.snapshotComplete(PRE, api.next().requestId());
@@ -1039,6 +1091,7 @@ class RecoveryActorTest {
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
+        actor.up();
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, false);
         assertThat(seen.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();

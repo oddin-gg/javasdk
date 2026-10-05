@@ -44,7 +44,8 @@ import org.slf4j.LoggerFactory;
  * opened later asks for one more. A loss that takes the recovery's own snapshot with it - the
  * connection, or the channel of a session that has not seen the snapshot complete yet - gives it up,
  * and a new one is asked for. A recovery is asked for only while an alive says the producer is
- * there. One that fails or times out is asked for again with backoff, at most {@link
+ * there, the transport has reported the connection up, and every session that receives the producer
+ * has a bound queue. One that fails or times out is asked for again with backoff, at most {@link
  * RecoverySettings#reissues()} times in a row; then the producer stays down for a cool-down, or until
  * an alive arrives after a gap.
  *
@@ -89,7 +90,11 @@ final class RecoveryMachine {
 
     private boolean started;
     private long startedAt;
-    private boolean connected = true;
+    /**
+     * Whether the transport has reported its connection up, with every session's channel bound: not
+     * before its first up, so the first recovery cannot go out to queues that do not exist yet.
+     */
+    private boolean connected;
     /** The number of the last gap opened; a recovery covers the gaps up to the number at its start. */
     private long gapSeq;
     /** The number of the last reset the safety net set out to make. */
@@ -192,7 +197,7 @@ final class RecoveryMachine {
     /**
      * The feed is open: every session misses everything before now, from the recovery point the
      * client set, or from nothing - a full snapshot. Each producer asks at its first alive, as in
-     * 0.0.x.
+     * 0.0.x, once the transport has reported its first {@link #connectionUp}.
      */
     void start() {
         if (started) {
@@ -253,7 +258,10 @@ final class RecoveryMachine {
         }
     }
 
-    /** The connection is back with every channel open; recoveries go out at the next alives. */
+    /**
+     * The connection is up with every channel open, the first time or back after a loss: recoveries
+     * go out now to producers whose last alive is recent, else at their next alives.
+     */
     void connectionUp() {
         connected = true;
         long now = now();
@@ -264,8 +272,10 @@ final class RecoveryMachine {
     }
 
     /**
-     * A session's channel was lost and opened again, outside the safety net: its queue lost what it
-     * held. A recovery that waited for this session's snapshot complete loses it too.
+     * A session's channel was lost, outside the safety net: its queue lost what it held. A recovery
+     * that waited for this session's snapshot complete loses it too. Nothing is asked for the
+     * session's producers until {@link #channelReopened} says a new queue is bound: what the feed
+     * sends before then reaches no queue, snapshot complete included.
      */
     void channelLost(int id) {
         SessionState session = sessions.get(id);
@@ -273,7 +283,25 @@ final class RecoveryMachine {
             return;
         }
         session.pending = null;
+        session.lost = true;
         queueLost(session, StatusCause.CHANNEL_LOST, now());
+    }
+
+    /**
+     * A new channel replaced the one lost, by the transport's reopen, a reconnect or a reset: its
+     * queue is bound, and what the session misses is asked for now, or at the next alives.
+     */
+    void channelReopened(int id) {
+        SessionState session = sessions.get(id);
+        if (session == null || !session.lost) {
+            return;
+        }
+        session.lost = false;
+        long now = now();
+        for (Long producerId : session.lanes.keySet()) {
+            maybeRequest(track(producerId), now);
+        }
+        releaseDeferred();
     }
 
     /**
@@ -542,9 +570,10 @@ final class RecoveryMachine {
             return;
         }
         if (!connected) {
-            // its snapshot would go to queues that are gone, and nothing would give it up
+            // its snapshot would go to queues that are gone, or not bound yet, and nothing would give
+            // it up
             counters.eventRefused.incrementAndGet();
-            LOG.warn("Event recovery of {} refused: the connection is down", eventId);
+            LOG.warn("Event recovery of {} refused: the connection is not up", eventId);
             outbox.reply(reply, null);
             return;
         }
@@ -560,9 +589,10 @@ final class RecoveryMachine {
             outbox.reply(reply, null);
             return;
         }
-        if (underway(track)) {
-            // a session that receives it is being reset: its snapshot could go to either channel
-            LOG.info("Event recovery of {} waits for a session's reset to be done", eventId);
+        if (awaitsChannel(track)) {
+            // a session that receives it is being reset, or has lost its channel: its snapshot could
+            // go to either channel, or to none
+            LOG.info("Event recovery of {} waits for a session's channel", eventId);
             deferred.add(new DeferredEvent(producerId, eventId, stateful, reply, now()));
             return;
         }
@@ -647,7 +677,8 @@ final class RecoveryMachine {
 
     /**
      * Whether a recovery may go out now: none in flight, a session to receive it, the connection up,
-     * an alive that says the producer is there, its backoff and its cap's cool-down over.
+     * every channel that receives it bound, an alive that says the producer is there, its backoff and
+     * its cap's cool-down over.
      */
     private boolean canRequest(Track track, long now) {
         return started
@@ -656,7 +687,7 @@ final class RecoveryMachine {
                 && enabled(track)
                 && receivers(track) > 0
                 && aliveRecent(track, now)
-                && !underway(track)
+                && !awaitsChannel(track)
                 && now >= track.retryAt
                 && (track.capSpentAt == 0
                         || now - track.capSpentAt >= settings.cooldown().toMillis());
@@ -1196,6 +1227,19 @@ final class RecoveryMachine {
     }
 
     /**
+     * Whether a session that receives the producer has no bound queue to send to yet: its reset is
+     * with the transport, or its lost channel has not been opened again.
+     */
+    private boolean awaitsChannel(Track track) {
+        for (SessionState session : sessions.values()) {
+            if ((session.underway != 0 || session.lost) && session.lanes.containsKey(track.id)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Gives up the event recoveries whose snapshot complete went with a lost queue: every one, for
      * {@code session} null, else those waiting for that session. Whoever still waits for the API's
      * answer hears null.
@@ -1381,6 +1425,8 @@ final class RecoveryMachine {
         PendingReset pending;
         /** The number of the reset the transport is making, 0 for none. */
         long underway;
+        /** Whether its channel was lost and no new one is bound yet. */
+        boolean lost;
         /** The producer whose messages were too old, and how old, for the reset underway. */
         long underwayProducer;
 

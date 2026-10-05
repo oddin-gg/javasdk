@@ -89,7 +89,7 @@ class SafetyNetTest {
         Harness feed = new Harness();
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1, 2);
         int before = feed.calls.size();
         stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
@@ -198,7 +198,7 @@ class SafetyNetTest {
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         // next to a high-priority session the low-priority one takes no snapshot completes
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         int before = feed.calls.size();
         stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
@@ -254,7 +254,7 @@ class SafetyNetTest {
         Harness feed = new Harness();
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1, 2);
         int before = feed.calls.size();
         stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
@@ -293,11 +293,12 @@ class SafetyNetTest {
         Harness feed = new Harness();
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.LIVE_ONLY);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1, 2);
         // the live producer's cap spent, for a gap of session 2 that starts far ahead
         feed.machine.processed(2, LIVE, feed.now() + Duration.ofHours(1).toMillis(), feed.now(), false);
         feed.machine.channelLost(2);
+        feed.machine.channelReopened(2);
         for (int attempt = 0; attempt < 4; attempt++) {
             feed.refuse(feed.lastSnapshot(LIVE));
             feed.runWithAlives(Duration.ofSeconds(20));
@@ -327,7 +328,7 @@ class SafetyNetTest {
         Harness feed = new Harness();
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         feed.close(1);
         int before = feed.calls.size();
@@ -379,6 +380,8 @@ class SafetyNetTest {
         feed.machine.channelLost(1);
         feed.alive(PRE);
         feed.alive(LIVE);
+        // the reset opens the new channel, and then reports itself done
+        feed.machine.channelReopened(1);
         assertThat(feed.calls)
                 .as("nothing asked for while the reset may still drop the new channel's queue")
                 .hasSize(before + 2);
@@ -417,7 +420,7 @@ class SafetyNetTest {
         Harness feed = new Harness();
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         int before = feed.calls.size();
         stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
@@ -445,7 +448,7 @@ class SafetyNetTest {
         Harness feed = new Harness();
         feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
         feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         int before = feed.calls.size();
         stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
@@ -643,7 +646,7 @@ class SafetyNetTest {
         liveSkew = -Duration.ofMinutes(30).toMillis();
         Harness feed = new Harness();
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         aliveBoth(feed);
         feed.complete(feed.lastSnapshot(PRE), 1);
         feed.complete(feed.lastSnapshot(LIVE), 1);
@@ -661,7 +664,7 @@ class SafetyNetTest {
     void theNetIsOffForAProducerWhoseLastAliveIsOlderThanTwoIntervals() {
         Harness feed = new Harness(Harness.settings(Duration.ofMinutes(5)));
         feed.open(1, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1);
         int before = feed.calls.size();
         alives = false;
@@ -719,7 +722,7 @@ class SafetyNetTest {
     private static Outbox.Call.Snapshot recoveringWithTwoSessions(Harness feed) {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
-        feed.machine.start();
+        feed.start();
         feed.bothUp(1, 2);
         feed.unsubscribed(PRE);
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
@@ -829,7 +832,7 @@ class SafetyNetTest {
     void aSnapshotCompleteBeforeTheApisAnswerLetsTheNetActAgainOnASessionOfOneProducer() {
         Harness feed = new Harness();
         feed.open(1, MessageInterest.PREMATCH_ONLY);
-        feed.machine.start();
+        feed.start();
         feed.alive(PRE);
         feed.complete(feed.lastSnapshot(PRE), 1);
         int before = feed.calls.size();
