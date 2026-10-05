@@ -266,7 +266,9 @@ itself would queue behind the wedge.
 - The SDK always runs its own alive consumer on its own channel, whatever sessions the
   client created. Its consumer callback hands the raw alive to the alive dispatcher and
   acks. A client's `SYSTEM_ALIVE_ONLY` session, if any, is an ordinary session and does
-  not carry producer liveness.
+  not carry producer liveness: its dispatcher posts no facts, and the recovery actor gives
+  it no lanes, so its channel's loss or its pace takes no producer down and no recovery
+  waits for its `snapshot_complete`.
 - The consumer callback for a session channel does one thing: it puts the raw delivery
   (body bytes, envelope, delivery tag, channel epoch) into that session's queue. The
   queue holds at most `prefetch` entries per epoch and is drained of old epochs before
@@ -278,9 +280,11 @@ itself would queue behind the wedge.
   decoded. It is counted, reported as unparsable, and acked. The per-session memory
   budget is therefore `prefetch` times the maximum message size, and the configuration
   documentation says so.
-- The session dispatcher takes a raw delivery, decodes it, builds the message object,
-  writes the feed data into the caches, runs the client callback, then acks. Order is
-  preserved per session. A slow callback lets unacked messages pile up to `prefetch`
+- The session dispatcher takes a raw delivery, decodes it, writes the feed data into the
+  caches, builds the message object, runs the client callback, then acks. The cache write
+  comes before the build, as in 0.0.x: it does not need the message object, so a message
+  the SDK cannot build still invalidates on a fixture change and still writes its live
+  state. Order is preserved per session. A slow callback lets unacked messages pile up to `prefetch`
   on the broker, which then stops delivering to that queue and only that queue.
 - Failures inside the dispatcher pipeline have one policy for every step: the
   exception is caught, counted, reported through the listener-exception hook on the
@@ -449,6 +453,10 @@ Ownership and ordering:
   - A feed message whose corrected age (section on the safety net) exceeds the same
     20 minutes does not write feed-owned fields either. A message that old is a
     delayed backlog message, and REST has since taken over. It is still delivered.
+    The offset that corrects it is the producer's, which the alive dispatcher measures
+    on the SDK's alive channel and keeps for the session dispatchers to read without
+    asking the recovery actor; before the producer's first alive it is taken as none.
+    A replay session's messages are old by design and write as current.
 - Within a feed message, a missing optional scalar means "keep what you have", never
   "reset to zero". Both schemas mark scores optional.
 - Fixture-change deduplication is one shared, concurrent map per `OddsFeed`, keyed by
