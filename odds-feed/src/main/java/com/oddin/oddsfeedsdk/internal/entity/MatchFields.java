@@ -32,27 +32,15 @@ final class MatchFields {
     static final Field<List<CompetitorRef>> COMPETITORS = Field.shared("competitors");
     static final Field<URN> TOURNAMENT_ID = Field.shared("tournament id");
     static final Field<Map<String, String>> EXTRA_INFO = Field.shared("extra info");
-    /** REST's, though it travels with the live status: a retracted winner goes with the summary. */
-    static final Field<URN> WINNER_ID = Field.shared("winner id");
 
     /**
-     * The match summary: the authoritative source of every match field. Only the winner is sent
-     * whenever it exists; every other field is optional in the schema, so a summary that leaves
-     * one out keeps it.
+     * The match summary: the authoritative source of every match field but the live state. Every
+     * one is optional in the schema, so a summary that leaves one out keeps it.
      */
     static final Endpoint SUMMARY = new Endpoint(
             "match summary",
-            Set.of(
-                    NAME,
-                    SPORT_ID,
-                    SCHEDULED,
-                    SCHEDULED_END,
-                    LIVE_ODDS,
-                    COMPETITORS,
-                    TOURNAMENT_ID,
-                    EXTRA_INFO,
-                    WINNER_ID),
-            Set.of(WINNER_ID));
+            Set.of(NAME, SPORT_ID, SCHEDULED, SCHEDULED_END, LIVE_ODDS, COMPETITORS, TOURNAMENT_ID, EXTRA_INFO),
+            Set.of());
 
     /** The fixture and the schedules describe the match too, and only fill what the summary has not. */
     static final Endpoint FIXTURE_OF_MATCH = new Endpoint("fixture", Set.of(), Set.of());
@@ -78,6 +66,12 @@ final class MatchFields {
     static final Field<List<PeriodScore>> PERIOD_SCORES = Field.shared("period scores");
     static final Field<Scoreboard> SCOREBOARD = Field.shared("scoreboard");
     static final Field<Boolean> SCOREBOARD_AVAILABLE = Field.shared("scoreboard available");
+    /**
+     * With the live status, as both the feed and the summary send it: the feed's is taken when it
+     * has one, and never cleared by a message without; a summary retracts it once the feed is
+     * quiet, and while it is not, fills one the feed has not sent.
+     */
+    static final Field<URN> WINNER_ID = Field.shared("winner id");
 
     private MatchFields() {}
 

@@ -266,7 +266,31 @@ class MatchViewTest {
             assertThat(status.getStatus()).as("read anew: the feed's").isEqualTo(EventStatus.Live);
             assertThat(status.getHomeScore()).isEqualTo(4.0);
             assertThat(status.getAwayScore()).as("left out: kept").isEqualTo(2.0);
-            assertThat(status.getWinnerId()).as("the summary's").isEqualTo(HOME);
+            assertThat(status.getWinnerId())
+                    .as("the summary's: the message has none")
+                    .isEqualTo(HOME);
+        }
+    }
+
+    @Test
+    void aSettlementRightAfterTheClosingOddsChangeReadsTheFeedsWinner() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(SUMMARY_EN, 200, Fixtures.replace(SUMMARY, " winner_id=\"od:competitor:47214\"", ""));
+            var status = requireNonNull(world.entities.match(MATCH, List.of(EN)).getStatus());
+            assertThat(status.getWinnerId()).as("loaded before the match ended").isNull();
+
+            var closing = new OFSportEventStatus();
+            closing.setStatus(OFEventStatus.FINALIZED);
+            closing.setWinnerId(AWAY.toString());
+            world.matches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, world.time.instant(), closing);
+            // a settlement carries no status: its callback reads what the odds change wrote
+            var settled =
+                    requireNonNull(world.entities.match(MATCH, List.of(EN)).getStatus());
+            assertThat(settled.getWinnerId()).isEqualTo(AWAY);
+            assertThat(settled.getStatus()).isEqualTo(EventStatus.Finished);
+            assertThat(world.api.requests("GET", SUMMARY_EN))
+                    .as("the summary is not asked again for it")
+                    .hasSize(1);
         }
     }
 

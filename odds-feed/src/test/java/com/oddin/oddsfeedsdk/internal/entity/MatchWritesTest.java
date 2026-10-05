@@ -44,12 +44,9 @@ class MatchWritesTest {
     private final LiveState<URN> live = new LiveState<>(100);
 
     @Test
-    void aSummaryWritesTheMatchItsWinnerAndItsLiveStatus() throws DecodeException {
+    void aSummaryWritesTheMatchAndItsLiveStatusWithItsWinner() throws DecodeException {
         var summary = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class);
-        matches.writeAuthoritative(
-                MATCH,
-                MatchWrites.summary(summary.getSportEvent(), summary.getSportEventStatus(), EN),
-                matches.stamp(MATCH));
+        matches.writeAuthoritative(MATCH, MatchWrites.summary(summary.getSportEvent(), EN), matches.stamp(MATCH));
         Entry match = requireNonNull(matches.get(MATCH));
         assertThat(match.get(NAME, EN)).isEqualTo("Team Alpha vs Team Beta");
         assertThat(match.get(SPORT_ID, null)).isEqualTo(URN.parse("od:sport:23"));
@@ -62,7 +59,6 @@ class MatchWritesTest {
                 .containsExactly(
                         new CompetitorRef(URN.parse("od:competitor:47214"), "home"),
                         new CompetitorRef(URN.parse("od:competitor:47215"), "away"));
-        assertThat(match.get(WINNER_ID, null)).isEqualTo(URN.parse("od:competitor:47214"));
         assertThat(match.get(LIVE_ODDS, null)).as("as sent: not at all").isNull();
 
         live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(summary.getSportEventStatus()), () -> false);
@@ -73,6 +69,7 @@ class MatchWritesTest {
         assertThat(values.get(AWAY_SCORE)).isEqualTo(2.0);
         assertThat(values.get(SCOREBOARD_AVAILABLE)).isTrue();
         assertThat(values.get(SCOREBOARD)).as("not in this summary").isNull();
+        assertThat(values.get(WINNER_ID)).isEqualTo(URN.parse("od:competitor:47214"));
         List<PeriodScore> periods = requireNonNull(values.get(PERIOD_SCORES));
         assertThat(periods).hasSize(5);
         assertThat(periods.getFirst().getPeriodType()).isEqualTo("round");
@@ -82,39 +79,68 @@ class MatchWritesTest {
 
     @Test
     void aRetractedWinnerGoesWithTheNextSummary() throws DecodeException {
-        var summary = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class);
-        matches.writeAuthoritative(
-                MATCH,
-                MatchWrites.summary(summary.getSportEvent(), summary.getSportEventStatus(), EN),
-                matches.stamp(MATCH));
-        summary.getSportEventStatus().setWinnerId(null);
-        summary.getSportEvent().setName(null);
-        matches.writeAuthoritative(
-                MATCH,
-                MatchWrites.summary(summary.getSportEvent(), summary.getSportEventStatus(), EN),
-                matches.stamp(MATCH));
-        Entry match = requireNonNull(matches.get(MATCH));
-        assertThat(match.get(WINNER_ID, null))
-                .as("always sent when there is one")
-                .isNull();
-        assertThat(match.get(NAME, EN)).as("optional: left out, kept").isEqualTo("Team Alpha vs Team Beta");
+        var status = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class)
+                .getSportEventStatus();
+        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        status.setWinnerId(null);
+        status.setHomeScore(null);
+        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        LiveValues values = requireNonNull(live.get(MATCH));
+        assertThat(values.get(WINNER_ID)).as("always sent when there is one").isNull();
+        assertThat(values.get(HOME_SCORE)).as("optional: left out, kept").isEqualTo(3.0);
     }
 
     @Test
     void aWinnerThatIsNotAUrnKeepsTheWinnerHeld() throws DecodeException {
-        var summary = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class);
-        matches.writeAuthoritative(
-                MATCH,
-                MatchWrites.summary(summary.getSportEvent(), summary.getSportEventStatus(), EN),
-                matches.stamp(MATCH));
-        summary.getSportEventStatus().setWinnerId("not a urn");
-        matches.writeAuthoritative(
-                MATCH,
-                MatchWrites.summary(summary.getSportEvent(), summary.getSportEventStatus(), EN),
-                matches.stamp(MATCH));
-        assertThat(requireNonNull(matches.get(MATCH)).get(WINNER_ID, null))
+        var status = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class)
+                .getSportEventStatus();
+        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        status.setWinnerId("not a urn");
+        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        assertThat(requireNonNull(live.get(MATCH)).get(WINNER_ID))
                 .as("an id that is not a URN is left out, not a retraction")
                 .isEqualTo(URN.parse("od:competitor:47214"));
+    }
+
+    @Test
+    void aLiveMessageWritesItsWinnerAndOneWithoutKeepsIt() throws DecodeException {
+        var closing = (OFOddsChange) FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES)
+                .decode(Fixtures.read("feed/odds_change/odds_change_closed_with_winner.xml")
+                        .getBytes(UTF_8));
+        live.feedWriteIfNewer(
+                MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(closing.getSportEventStatus()));
+        assertThat(requireNonNull(live.get(MATCH)).get(WINNER_ID)).isEqualTo(URN.parse("od:competitor:47214"));
+
+        var without = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
+        without.setStatus(com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus.FINALIZED);
+        live.feedWriteIfNewer(MATCH, 1, 2, Duration.ZERO, Instant.now(), MatchWrites.live(without));
+        without.setWinnerId("not a urn");
+        live.feedWriteIfNewer(MATCH, 1, 3, Duration.ZERO, Instant.now(), MatchWrites.live(without));
+        assertThat(requireNonNull(live.get(MATCH)).get(WINNER_ID))
+                .as("the feed never retracts: left out, or not a URN, it is kept")
+                .isEqualTo(URN.parse("od:competitor:47214"));
+    }
+
+    @Test
+    void aSummarysWinnerAloneIsWhatItFills() throws DecodeException {
+        var status = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class)
+                .getSportEventStatus();
+        var kickOff = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
+        kickOff.setStatus(com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus.LIVE);
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(kickOff));
+        assertThat(live.restFill(MATCH, MatchWrites.winner(status), () -> false))
+                .isTrue();
+        LiveValues values = requireNonNull(live.get(MATCH));
+        assertThat(values.get(WINNER_ID)).isEqualTo(URN.parse("od:competitor:47214"));
+        assertThat(values.get(STATUS)).as("the feed's, untouched").isEqualTo(EventStatus.Live);
+        assertThat(values.get(HOME_SCORE))
+                .as("the summary's score is not filled")
+                .isNull();
+
+        status.setWinnerId(null);
+        assertThat(live.restFill(MATCH, MatchWrites.winner(status), () -> false))
+                .as("a fill retracts nothing")
+                .isFalse();
     }
 
     @Test

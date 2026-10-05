@@ -12,6 +12,7 @@ import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
+import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
 import com.oddin.oddsfeedsdk.internal.loader.SideLoads;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
@@ -43,6 +44,7 @@ class MatchCachesTest {
     private static final String SUMMARY_DE = "/v1/sports/de/sport_events/od:match:198314/summary";
     private static final String FIXTURE_EN = "/v1/sports/en/sport_events/od:match:198314/fixture";
     private static final String SUMMARY = Fixtures.read("rest/match_summary/match_summary.xml");
+    private static final String WITHOUT_WINNER = Fixtures.replace(SUMMARY, " winner_id=\"od:competitor:47214\"", "");
 
     private final FakeTime time = new FakeTime();
     private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
@@ -164,9 +166,43 @@ class MatchCachesTest {
         caches.match(MATCH, Locale.ENGLISH);
         assertThat(api.requests("GET", SUMMARY_EN)).hasSize(1);
         assertThat(statusOf(caches.live(MATCH))).isEqualTo(EventStatus.Live);
-        assertThat(caches.match(MATCH, Locale.ENGLISH).get(WINNER_ID, null))
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
                 .as("the summary's own fields are written")
+                .isEqualTo("Team Alpha vs Team Beta");
+        assertThat(requireNonNull(caches.cachedLive(MATCH)).get(WINNER_ID))
+                .as("and its winner, which the feed has not sent, fills")
                 .isEqualTo(URN.parse("od:competitor:47214"));
+    }
+
+    @Test
+    void theFeedsWinnerIsTakenAtOnceAndTheSummaryRetractsItOnceTheFeedIsQuiet() {
+        api.respond(SUMMARY_EN, 200, WITHOUT_WINNER);
+        api.respond(SUMMARY_DE, 200, WITHOUT_WINNER);
+        assertThat(requireNonNull(caches.live(MATCH)).get(WINNER_ID))
+                .as("before the match ends")
+                .isNull();
+
+        var closed = new OFSportEventStatus();
+        closed.setStatus(OFEventStatus.FINALIZED);
+        closed.setWinnerId("od:competitor:47214");
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), closed);
+        assertThat(requireNonNull(caches.live(MATCH)).get(WINNER_ID))
+                .as("the feed's, at once")
+                .isEqualTo(URN.parse("od:competitor:47214"));
+        var later = new OFSportEventStatus();
+        later.setStatus(OFEventStatus.FINALIZED);
+        caches.oddsChange(MATCH, 1, 2_000, Duration.ZERO, time.instant(), later);
+        caches.match(MATCH, Locale.GERMAN);
+        assertThat(requireNonNull(caches.live(MATCH)).get(WINNER_ID))
+                .as("kept by a message without one, and by a summary without one while the feed is live")
+                .isEqualTo(URN.parse("od:competitor:47214"));
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(1);
+
+        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
+        assertThat(requireNonNull(caches.live(MATCH)).get(WINNER_ID))
+                .as("the feed quiet: the summary says there is none")
+                .isNull();
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(2);
     }
 
     @Test
@@ -273,11 +309,12 @@ class MatchCachesTest {
         String withoutStatus = SUMMARY.substring(0, SUMMARY.indexOf("    <sport_event_status")) + "</match_summary>\n";
         api.respond(SUMMARY_EN, 200, SUMMARY);
         api.respond(SUMMARY_DE, 200, withoutStatus);
-        assertThat(caches.match(MATCH, Locale.ENGLISH).get(WINNER_ID, null)).isNotNull();
+        caches.match(MATCH, Locale.ENGLISH);
+        assertThat(requireNonNull(caches.cachedLive(MATCH)).get(WINNER_ID)).isNotNull();
         // the newer summary, in another locale, has no status at all
         Entry match = caches.match(MATCH, Locale.GERMAN);
         assertThat(match.get(NAME, Locale.GERMAN)).isEqualTo("Team Alpha vs Team Beta");
-        assertThat(match.get(WINNER_ID, null))
+        assertThat(requireNonNull(caches.cachedLive(MATCH)).get(WINNER_ID))
                 .as("no status: nothing said of the winner")
                 .isNotNull();
 

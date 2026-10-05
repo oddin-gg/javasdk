@@ -44,7 +44,9 @@ import org.jspecify.annotations.Nullable;
  *   <li>A fixture is loaded once, in the default locale, as 0.0.x did; it fills what the match has
  *       not had from a summary.
  *   <li>The live state is loaded again, from the summary, once the feed and REST have both left it
- *       alone for the match status age.
+ *       alone for the match status age. The winner is in it: the feed's when a message carries one,
+ *       the summary's once the feed is quiet, and while it is not, the summary's when the feed has
+ *       sent none.
  *   <li>A fixture change invalidates the match and its fixture; a load under way then writes nothing.
  *   <li>What a summary or a fixture says of the match's competitors, tournament and sport fills the
  *       profile caches. After a summary, the competitors' profiles in its locale are side-loaded, as
@@ -167,9 +169,9 @@ public final class MatchCaches {
     }
 
     /**
-     * A live message's status for the match: written unless older than the last one from its
-     * producer, or too old to be live; written before the message reaches the client, so its
-     * callback reads what the message carried.
+     * A live message's status for the match, its winner included when it carries one: written unless
+     * older than the last one from its producer, or too old to be live; written before the message
+     * reaches the client, so its callback reads what the message carried.
      *
      * @return whether it was written
      */
@@ -264,19 +266,20 @@ public final class MatchCaches {
         if (event == null) {
             return false;
         }
-        boolean written =
-                matches.writeAuthoritative(key.id(), MatchWrites.summary(event, status, key.locale()), started);
+        boolean written = matches.writeAuthoritative(key.id(), MatchWrites.summary(event, key.locale()), started);
         fillProfiles(event, key.locale(), listed);
         if (written) {
             warmCompetitors(event, key.locale());
         }
         // the live state too gives way to a fixture change, or to a summary of another locale fetched
         // since; a summary without a status still says REST was asked, so it is not asked again
-        live.restWriteIfQuiet(
-                key.id(),
-                clock.instant(),
-                status == null ? LiveWrite.of() : MatchWrites.live(status),
-                () -> abandoned.getAsBoolean() || !matches.isNewest(key.id(), SUMMARY, started));
+        BooleanSupplier outdated = () -> abandoned.getAsBoolean() || !matches.isNewest(key.id(), SUMMARY, started);
+        boolean taken = live.restWriteIfQuiet(
+                key.id(), clock.instant(), status == null ? LiveWrite.of() : MatchWrites.live(status), outdated);
+        // while the feed owns the match, a winner the summary has and the feed has not sent still fills
+        if (!taken && status != null) {
+            live.restFill(key.id(), MatchWrites.winner(status), outdated);
+        }
         return written;
     }
 

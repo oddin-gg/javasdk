@@ -7,7 +7,6 @@ import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.PERIOD_SCORES;
 import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.SCOREBOARD;
 import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.SCOREBOARD_AVAILABLE;
 import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.STATUS;
-import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.SUMMARY;
 import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.WINNER_ID;
 
 import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
@@ -24,9 +23,9 @@ import java.util.Map;
 import org.jspecify.annotations.Nullable;
 
 /**
- * A match's status as the client holds it. The live getters read the match's live state - the
- * feed's while it is live, the summary's once it is quiet - and the winner the summary; each read
- * anew, so a getter inside a callback sees what the message wrote.
+ * A match's status as the client holds it. The getters read the match's live state - the feed's
+ * while it is live, the summary's once it is quiet - each anew, so a getter inside a callback sees
+ * what the message wrote.
  *
  * <p>What the feed and the summary never sent reads as 0.0.x read it: no scores are 0, no period
  * scores an empty list, no scoreboard availability false.
@@ -89,14 +88,13 @@ final class MatchStatusView implements MatchStatus {
         return entities.guard(this, () -> live().get(SCOREBOARD));
     }
 
-    /** The summary's, which is the one to retract it: the feed's winner is not taken. */
+    /**
+     * The feed's as soon as a message carries it, so a settlement right after the match closed
+     * reads it; the summary's once the feed is quiet, which is how a retracted winner goes.
+     */
     @Override
     public @Nullable URN getWinnerId() {
-        return entities.guard(this, () -> {
-            Locale locale = locales.getFirst();
-            return Entities.found(entities.matches.match(id, locale), SUMMARY, locale, this)
-                    .get(WINNER_ID, null);
-        });
+        return entities.guard(this, () -> live().get(WINNER_ID));
     }
 
     @Override
