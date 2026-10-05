@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.internal.recovery.ProducerStatusChange;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
 import com.oddin.oddsfeedsdk.internal.rest.ApiCall;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
+import com.oddin.oddsfeedsdk.internal.xml.RestDecoder;
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.ApiCallEvent;
@@ -47,7 +48,10 @@ import org.slf4j.LoggerFactory;
  * gone - the last word of a producer is never the one that found no room - and a flood of them
  * takes one queued entry each. A connection loss replaced that way is still told, by {@code
  * onConnectionDown}. The telemetry queue carries the API calls, the failed callbacks and the raw API
- * data; it holds {@value #TELEMETRY_CAPACITY} and drops the oldest when full, counting them.
+ * data; it holds {@value #TELEMETRY_CAPACITY} and drops the oldest when full, counting them. The raw
+ * API data it holds is bounded by bytes too, at {@link #TELEMETRY_BYTES}: a response with no room
+ * under that is dropped and counted, since a thousand of the largest the API may answer would
+ * exhaust the heap while a callback lags.
  *
  * <p>The thread takes the control queue first, then up to {@value #TELEMETRY_PER_TURN} telemetry
  * events, each only while no control event waits. A callback that throws, even an error, is
@@ -62,6 +66,13 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
 
     static final int CONTROL_CAPACITY = 10_000;
     static final int TELEMETRY_CAPACITY = 1_000;
+    /**
+     * The most bytes of raw API responses the telemetry queue holds: the largest response the
+     * decoder takes, so one of those always fits when nothing else waits, while entity responses of
+     * a few kilobytes fill the queue's thousand entries long before. The decoded object each one
+     * holds as well is a few times its size, so the whole stays around a hundred megabytes at most.
+     */
+    static final long TELEMETRY_BYTES = RestDecoder.DEFAULT_MAX_BYTES;
     /** How many telemetry events the thread delivers before it looks at the control queue again. */
     private static final int TELEMETRY_PER_TURN = 100;
     /** How long the thread waits for an event before it looks again, should a wake-up be missed. */
@@ -88,6 +99,11 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
 
     private final AtomicLong controlDropped = new AtomicLong();
     private final AtomicLong telemetryDropped = new AtomicLong();
+    /** The bytes of raw API responses the telemetry queue holds now. */
+    private final AtomicLong telemetryBytes = new AtomicLong();
+
+    private final long telemetryByteBudget;
+    private final AtomicLong rawDataDropped = new AtomicLong();
     private final AtomicLong callbackFailures = new AtomicLong();
 
     private final Thread thread;
@@ -101,7 +117,14 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
      */
     public EventsDispatcher(
             GlobalEventsListener listener, @Nullable OddsFeedExtListener extListener, ProducerManager producers) {
-        this(listener, extListener, producers, InstantSource.system(), CONTROL_CAPACITY, TELEMETRY_CAPACITY);
+        this(
+                listener,
+                extListener,
+                producers,
+                InstantSource.system(),
+                CONTROL_CAPACITY,
+                TELEMETRY_CAPACITY,
+                TELEMETRY_BYTES);
     }
 
     /** With the clock and the queue sizes a test sets. */
@@ -111,13 +134,15 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
             ProducerManager producers,
             InstantSource clock,
             int controlCapacity,
-            int telemetryCapacity) {
+            int telemetryCapacity,
+            long telemetryByteBudget) {
         this.listener = listener;
         this.extListener = extListener;
         this.producers = producers;
         this.clock = clock;
         this.controlCapacity = controlCapacity;
         this.telemetry = new ArrayBlockingQueue<>(telemetryCapacity);
+        this.telemetryByteBudget = telemetryByteBudget;
         this.thread = Thread.ofPlatform().daemon().name("oddsfeed-events").unstarted(this::run);
     }
 
@@ -196,9 +221,14 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         if (ext == null) {
             return;
         }
-        telemetry(new Event(List.of(
-                new Call("onRawApiDataReceived", () -> ext.onRawApiDataReceived(uri, decoded)),
-                new Call("onRawApiDataBytes", () -> ext.onRawApiDataBytes(uri, body)))));
+        if (closed || !reserve(body.length)) {
+            return;
+        }
+        telemetry(new Event(
+                List.of(
+                        new Call("onRawApiDataReceived", () -> ext.onRawApiDataReceived(uri, decoded)),
+                        new Call("onRawApiDataBytes", () -> ext.onRawApiDataBytes(uri, body))),
+                body.length));
     }
 
     // ------------------------------------------------------------------ the sessions
@@ -227,6 +257,11 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         return controlDropped.get();
     }
 
+    /** Raw API responses dropped because the telemetry queue held its budget of bytes already. */
+    public long rawDataDropped() {
+        return rawDataDropped.get();
+    }
+
     /** Telemetry events dropped, the oldest first, for want of room. */
     public long telemetryDropped() {
         return telemetryDropped.get();
@@ -241,6 +276,11 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     @Override
     public void close() {
         closed = true;
+        if (Thread.currentThread().equals(thread)) {
+            // a callback closing the feed: its own thread ends once the callback returns
+            clearQueues();
+            return;
+        }
         if (thread.isAlive()) {
             LockSupport.unpark(thread);
             try {
@@ -251,9 +291,14 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
                 Thread.currentThread().interrupt();
             }
         }
+        clearQueues();
+    }
+
+    private void clearQueues() {
         control.clear();
         slots.clear();
         telemetry.clear();
+        telemetryBytes.set(0);
     }
 
     // ------------------------------------------------------------------ queues
@@ -282,6 +327,33 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         }
     }
 
+    /** Room for {@code bytes} of raw data under the budget, taken; false, counted, when there is none. */
+    private boolean reserve(long bytes) {
+        long held;
+        do {
+            held = telemetryBytes.get();
+            if (held + bytes > telemetryByteBudget) {
+                long dropped = rawDataDropped.incrementAndGet();
+                if (dropped == 1 || dropped % 1_000 == 0) {
+                    LOG.warn(
+                            "The events telemetry queue holds {} bytes of raw API data; a response of {} is dropped,"
+                                    + " {} so far",
+                            held,
+                            bytes,
+                            dropped);
+                }
+                return false;
+            }
+        } while (!telemetryBytes.compareAndSet(held, held + bytes));
+        return true;
+    }
+
+    private void release(Event event) {
+        if (event.bytes() > 0) {
+            telemetryBytes.addAndGet(-event.bytes());
+        }
+    }
+
     private void control(Event event) {
         if (closed) {
             return;
@@ -307,6 +379,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         while (!telemetry.offer(event)) {
             Event oldest = telemetry.poll();
             if (oldest != null) {
+                release(oldest);
                 long dropped = telemetryDropped.incrementAndGet();
                 if (dropped == 1 || dropped % 1_000 == 0) {
                     LOG.warn("The events telemetry queue is full; {} dropped, {} so far", oldest.name(), dropped);
@@ -326,6 +399,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
                 if (event == null) {
                     break;
                 }
+                release(event);
                 deliver(event);
                 worked = true;
             }
@@ -409,7 +483,11 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private sealed interface Entry {}
 
     /** Callbacks delivered together, each guarded on its own. */
-    private record Event(List<Call> calls) implements Entry {
+    private record Event(List<Call> calls, long bytes) implements Entry {
+        Event(List<Call> calls) {
+            this(calls, 0);
+        }
+
         String name() {
             return calls.getFirst().callback();
         }

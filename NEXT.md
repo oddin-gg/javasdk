@@ -226,7 +226,11 @@ queue drops, a client that falls behind hears the state as it is now, and a floo
 them costs one queued entry each. A connection loss replaced that way is still told by
 `onConnectionDown`. The telemetry queue carries API call events, listener-exception
 reports and the raw API data; it is bounded at 1 000 and drops the oldest with a
-counter. A wedged events dispatcher is reported by the watchdog through
+counter. The raw API data it holds is bounded by bytes too, at the largest response the
+REST decoder takes (32 MiB): a response with no room under that is dropped and counted,
+since a thousand large responses behind a slow callback would exhaust the heap. The raw
+feed messages are not queued there: their callbacks run on the session's own thread,
+bounded by the session's queue. A wedged events dispatcher is reported by the watchdog through
 `getHealth()` and the log, because the health event itself would queue behind the
 wedge.
 
