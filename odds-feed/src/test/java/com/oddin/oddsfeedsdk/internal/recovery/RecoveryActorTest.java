@@ -718,6 +718,8 @@ class RecoveryActorTest {
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
         actor.up();
+        // the session, the start and the connection handled first: the bad fact is the alive
+        awaitIdle(actor);
         var once = new AtomicBoolean(true);
         actor.beforeHandle = () -> {
             if (once.compareAndSet(true, false)) {
@@ -1181,6 +1183,20 @@ class RecoveryActorTest {
         assertThat(producers.isProducerDown(producer))
                 .as("producer " + producer + " down")
                 .isFalse();
+    }
+
+    /** Waits until the actor has handled every essential fact posted so far. */
+    private static void awaitIdle(RecoveryActor actor) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.queued() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        // a turn begun after the queue was empty: the one that took the last fact has ended
+        long turns = actor.turns();
+        while (actor.turns() < turns + 2 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.queued()).as("essential facts waiting").isZero();
     }
 
     private static long producerOf(Request request) {
