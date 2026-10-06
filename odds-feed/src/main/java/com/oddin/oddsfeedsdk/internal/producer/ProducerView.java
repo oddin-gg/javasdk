@@ -83,12 +83,14 @@ final class ProducerView implements Producer {
         return clock.millis() - state.get().lastProcessedMessageGenTimestamp();
     }
 
-    /** The last alive's generation time once there has been one, before that the client's recovery start. */
+    /**
+     * The resume point once the recovery actor has published one, before that the client's
+     * recovery start; null for a full snapshot.
+     */
     @Override
     public @Nullable Instant getTimestampForRecovery() {
         ProducerState now = state.get();
-        long millis =
-                now.lastAliveReceivedGenTimestamp() == 0 ? now.recoveryFrom() : now.lastAliveReceivedGenTimestamp();
+        long millis = now.resumePoint() == ProducerState.NO_RESUME_POINT ? now.recoveryFrom() : now.resumePoint();
         return millis > 0 ? Instant.ofEpochMilli(millis) : null;
     }
 

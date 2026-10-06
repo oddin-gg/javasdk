@@ -187,9 +187,7 @@ class ProducersTest {
                 .as("a rejected start leaves the saved one")
                 .isEqualTo(Instant.ofEpochMilli(insideTheWindow));
 
-        // an alive's generation time takes over once there is one; 0 clears the start
-        producers.setLastAliveReceivedGenTimestamp(1L, NOW.toEpochMilli());
-        assertThat(producer(producers, 1L).getTimestampForRecovery()).isEqualTo(NOW);
+        // 0 clears the start
         long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
         producers.setProducerRecoveryFromTimestamp(2L, saved);
         assertThat(producer(producers, 2L).getTimestampForRecovery()).isEqualTo(Instant.ofEpochMilli(saved));
@@ -205,12 +203,52 @@ class ProducersTest {
         assertThat(producers.recoveryFrom(1L)).as("none set").isZero();
         long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
         producers.setProducerRecoveryFromTimestamp(1L, saved);
-        producers.setLastAliveReceivedGenTimestamp(1L, NOW.toEpochMilli());
+        producers.setResumePoint(1L, NOW.toEpochMilli());
         assertThat(producer(producers, 1L).getTimestampForRecovery()).isEqualTo(NOW);
         assertThat(producers.recoveryFrom(1L)).isEqualTo(saved);
         assertThat(producers.recoveryFrom(99L))
                 .as("a producer the list does not have")
                 .isZero();
+    }
+
+    @Test
+    void theRecoveryTimestampIsTheClientsStartUntilTheFeedHasAResumePointThenThatPoint() {
+        Producers producers = producers();
+        Producer held = producer(producers, 1L);
+        assertThat(held.getTimestampForRecovery()).as("nothing set").isNull();
+        long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
+        producers.setProducerRecoveryFromTimestamp(1L, saved);
+        assertThat(held.getTimestampForRecovery()).as("the client's start").isEqualTo(Instant.ofEpochMilli(saved));
+
+        // older than the client's start, and older than the window: the point is reported as it is
+        long older = NOW.minus(Duration.ofDays(4)).toEpochMilli();
+        producers.setResumePoint(1L, older);
+        assertThat(held.getTimestampForRecovery())
+                .as("a producer held from before reads the resume point")
+                .isEqualTo(Instant.ofEpochMilli(older));
+        assertThatThrownBy(() -> producers.setProducerRecoveryFromTimestamp(1L, older))
+                .as("passed back, a point outside the window is refused, as in 0.0.x")
+                .isInstanceOf(IllegalArgumentException.class);
+        producers.setProducerRecoveryFromTimestamp(1L, NOW.toEpochMilli());
+        assertThat(held.getTimestampForRecovery())
+                .as("the client's start no longer counts")
+                .isEqualTo(Instant.ofEpochMilli(older));
+        assertThat(producers.recoveryFrom(1L)).isEqualTo(NOW.toEpochMilli());
+
+        producers.setResumePoint(1L, 0);
+        assertThat(held.getTimestampForRecovery()).as("0: a full snapshot").isNull();
+        assertThat(producer(producers, 2L).getTimestampForRecovery())
+                .as("another producer")
+                .isNull();
+    }
+
+    @Test
+    void aResumePointIsNotNegativeAndOneOfAProducerTheListDoesNotHaveChangesNothing() {
+        Producers producers = producers();
+        assertThatThrownBy(() -> producers.setResumePoint(1L, -1)).isInstanceOf(IllegalArgumentException.class);
+        assertThat(producer(producers, 1L).getTimestampForRecovery()).isNull();
+        producers.setResumePoint(99L, NOW.toEpochMilli());
+        assertThat(producers.getProducer(99L)).isNull();
     }
 
     @Test

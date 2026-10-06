@@ -59,7 +59,7 @@ public final class Producers implements ProducerManager {
                             true,
                             0,
                             0,
-                            0,
+                            ProducerState.NO_RESUME_POINT,
                             0,
                             null)));
         }
@@ -155,7 +155,8 @@ public final class Producers implements ProducerManager {
     /**
      * Where the client asked recovery of the producer to start, epoch millis, 0 for a full snapshot
      * or a producer the list does not have: what {@link #setProducerRecoveryFromTimestamp} last
-     * took, whatever {@link Producer#getTimestampForRecovery()} reports since.
+     * took, whatever {@link Producer#getTimestampForRecovery()} reports since: the resume point,
+     * once the feed has one.
      */
     public long recoveryFrom(long id) {
         AtomicReference<ProducerState> state = producers.get(id);
@@ -201,8 +202,19 @@ public final class Producers implements ProducerManager {
         update(id, state -> state.withLastProcessedMessageGenTimestamp(timestamp));
     }
 
-    public void setLastAliveReceivedGenTimestamp(long id, long timestamp) {
-        update(id, state -> state.withLastAliveReceivedGenTimestamp(timestamp));
+    /**
+     * Where a recovery of the producer would have to start now for no session to miss anything,
+     * epoch millis by the producer's clock, 0 for a full snapshot: what {@link
+     * Producer#getTimestampForRecovery()} reports from now on. The recovery actor publishes it as
+     * it changes.
+     *
+     * @throws IllegalArgumentException for a negative timestamp
+     */
+    public void setResumePoint(long id, long timestamp) {
+        if (timestamp < 0) {
+            throw new IllegalArgumentException("a resume point is 0 or more, was " + timestamp);
+        }
+        update(id, state -> state.withResumePoint(timestamp));
     }
 
     public void setRecoveryInfo(long id, RecoveryInfo recovery) {

@@ -455,8 +455,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     }
 
     /**
-     * One fact, to the end. A fact the machine fails on, even with an error, is counted, and the
-     * actor goes on: one bad fact must not end the recovery of every producer.
+     * One fact, to the end, and the resume points it moved published. A fact the machine fails on,
+     * even with an error, is counted, and the actor goes on: one bad fact must not end the
+     * recovery of every producer.
      */
     private void handle(Fact fact) {
         try {
@@ -501,6 +502,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     machine.recoverEvent(producer, event, stateful, reply);
                 case Fact.Tick() -> machine.tick();
             }
+            // whatever the fact moved, the client reads it from the producer at once
+            machine.publishResumePoints();
         } catch (Throwable e) {
             counters.factsFailed.incrementAndGet();
             LOG.error("The recovery actor failed on {}; it goes on with the next", fact, e);
