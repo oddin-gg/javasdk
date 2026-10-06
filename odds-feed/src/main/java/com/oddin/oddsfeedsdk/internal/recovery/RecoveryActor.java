@@ -383,9 +383,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     }
 
     private void run() {
+        // whether the loop ran: a close that came before it did not wait for this thread
+        boolean ran = false;
         try {
             long nextTick = clock.millis();
             while (!closed) {
+                ran = true;
                 turnedAt = clock.millis();
                 turns.incrementAndGet();
                 boolean worked = drainEssential();
@@ -406,8 +409,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         } finally {
             // however the loop ended: nothing posts to a queue nobody takes from
             closed = true;
-            machine.closing();
-            finishEssential();
+            if (ran) {
+                // a close() that waits for this thread: what is queued is handled before it returns,
+                // never after
+                machine.closing();
+                finishEssential();
+            }
             closeMachine();
         }
     }
