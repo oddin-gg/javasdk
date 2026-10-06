@@ -36,12 +36,13 @@ import org.slf4j.LoggerFactory;
 
 /**
  * What a feed is made of before it opens: who the bookmaker is, the producers, the REST client, the
- * caches and catalogs, the managers over them, the message factory, and an events dispatcher that is
- * not started yet. One per {@code OddsFeed}, built on the first call that needs it and closed with
- * the feed.
+ * caches and catalogs, the managers over them, the message factory, and the events dispatcher,
+ * started first, so the client hears of every API call as it is made, the start's own included, as
+ * the Go SDK tells them. One per {@code OddsFeed}, built on the first call that needs it and closed
+ * with the feed.
  *
  * @param fetches where the loads and the fan-outs run: virtual threads
- * @param events the client's events, queued until the feed opens and starts it
+ * @param events the client's events, delivered from the start on
  */
 public record FeedCore(
         ApiClient api,
@@ -99,6 +100,7 @@ public record FeedCore(
         @Nullable ExecutorService fetches = null;
         @Nullable SideLoads sideLoads = null;
         try {
+            events.start();
             starting.accept(api);
             var startup = Startup.fetch(api, configuration.getStartupTimeout());
             var bookmaker = Bookmaker.from(startup.bookmaker());
