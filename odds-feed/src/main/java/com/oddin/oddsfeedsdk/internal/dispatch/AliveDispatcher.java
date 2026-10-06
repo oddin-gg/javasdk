@@ -125,18 +125,37 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
 
     @Override
     public void close() {
+        stop();
+        awaitStop(System.nanoTime() + CLOSE_WAIT.toNanos());
+    }
+
+    /** Tells the thread to stop, and returns at once; nothing is queued from now on. */
+    public void stop() {
         closed = true;
-        if (thread.isAlive()) {
-            LockSupport.unpark(thread);
-            try {
-                if (!thread.join(CLOSE_WAIT)) {
-                    LOG.warn("The alive dispatcher did not stop within {}", CLOSE_WAIT);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        LockSupport.unpark(thread);
+    }
+
+    /**
+     * Waits for the thread to end after a {@link #stop}, until {@code deadline}, by {@link
+     * System#nanoTime}, then drops the alives still queued; says so in the log when it does not end.
+     *
+     * @return whether the thread has ended
+     */
+    public boolean awaitStop(long deadline) {
+        try {
+            if (!thread.isAlive() || thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())))) {
+                return true;
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            alives.clear();
         }
-        alives.clear();
+        if (!thread.isAlive()) {
+            return true;
+        }
+        LOG.warn("The alive dispatcher did not stop in time");
+        return false;
     }
 
     private void run() {
