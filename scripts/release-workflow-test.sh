@@ -940,32 +940,59 @@ breaks next.yml replace '      - name: Check the checkout left no credentials be
         shell: pwsh' \
   "./.github/workflows/next.yml > wrapper-windows must check once that its checkout left no credentials behind"
 
-# The credential guard after each checkout in next.yml, run as it is written: it must fail on a
-# config that kept the job token, and pass on one that did not.
-# (the Windows job's guard is PowerShell, run by its own job, so only the bash ones run here)
-guards=$(yq -o=json '[.jobs[] | select(.["runs-on"] | test("ubuntu")) | .steps[]
-  | select(.name == "Check the checkout left no credentials behind") | .run]' \
-  "$root/.github/workflows/next.yml")
+# The credential guard after each checkout in next.yml, run as it is written and as GitHub runs
+# it (bash -e for a step that names no shell; pwsh as GitHub calls it, with its exit code handed
+# on), in a scratch repository: it must pass on a clean config and fail on one that kept the job
+# token. GitHub's Ubuntu runners have pwsh, so in CI every guard runs; locally a missing pwsh is
+# said, not hidden.
+guards=$(yq -o=json '[.jobs[].steps[] | select(.name == "Check the checkout left no credentials behind")
+  | {"shell": (.shell // "bash"), "run": .run}]' "$root/.github/workflows/next.yml")
 count=$(python3 -c 'import json, sys; print(len(json.loads(sys.argv[1])))' "$guards")
 if [ "$count" -lt 1 ]; then
   echo "FAIL next.yml has no credential guard to test" >&2
   failures=$((failures + 1))
 fi
+guard() {  # guard <shell> <file>: runs the guard in the current directory as GitHub would
+  case $1 in
+    bash) bash -e "$2" ;;
+    pwsh) pwsh -NoProfile -NonInteractive -Command "\$ErrorActionPreference = 'Stop'; . '$2'; if ((Test-Path -LiteralPath variable:\LASTEXITCODE)) { exit \$LASTEXITCODE }" ;;
+    *) echo "a guard in shell $1 cannot be run here" >&2; return 2 ;;
+  esac
+}
 for i in $(seq 0 $((count - 1))); do
-  python3 -c 'import json, sys; print(json.loads(sys.argv[1])[int(sys.argv[2])])' "$guards" "$i" > "$work/guard.sh"
+  shell=$(python3 -c 'import json, sys; print(json.loads(sys.argv[1])[int(sys.argv[2])]["shell"])' "$guards" "$i")
+  if [ "$shell" = pwsh ] && ! command -v pwsh > /dev/null; then
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+      echo "FAIL credential guard $i is PowerShell and this runner has no pwsh to test it" >&2
+      failures=$((failures + 1))
+    else
+      echo "skip credential guard $i: PowerShell, and no pwsh here (CI runs it)"
+    fi
+    continue
+  fi
+  # pwsh runs a script file only as .ps1, so each guard gets the extension its shell needs
+  file=$work/guard.sh; [ "$shell" = pwsh ] && file=$work/guard.ps1
+  python3 -c 'import json, sys; print(json.loads(sys.argv[1])[int(sys.argv[2])]["run"])' "$guards" "$i" > "$file"
   rm -rf "$work/repo" && git init -q "$work/repo"
-  if ! (cd "$work/repo" && bash -e "$work/guard.sh") 2> "$work/err"; then
-    echo "FAIL credential guard $i refused a clean checkout: $(cat "$work/err")" >&2
+  if ! (cd "$work/repo" && guard "$shell" "$file") > /dev/null 2> "$work/err"; then
+    echo "FAIL credential guard $i ($shell) refused a clean checkout: $(cat "$work/err")" >&2
     failures=$((failures + 1))
   fi
   git -C "$work/repo" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic x"
-  if (cd "$work/repo" && bash -e "$work/guard.sh") 2> /dev/null; then
-    echo "FAIL credential guard $i accepted a checkout that kept the job token" >&2
+  if (cd "$work/repo" && guard "$shell" "$file") > /dev/null 2>&1; then
+    echo "FAIL credential guard $i ($shell) accepted a checkout that kept the job token" >&2
     failures=$((failures + 1))
   else
-    echo "ok   credential guard $i refused a checkout that kept the job token"
+    echo "ok   credential guard $i ($shell) refused a checkout that kept the job token"
   fi
 done
+
+breaks next.yml replace '      - name: Check the release checks refuse what they should
+' '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit }}
+      - name: Check the release checks refuse what they should
+' "./.github/workflows/next.yml > build must check its checkout for credentials in the step right after it"
 
 breaks next.yml replace '      - name: Check the checkout left no credentials behind
         # persist-credentials: false is only a setting until something notices it stopped' '      - name: Check the checkout
