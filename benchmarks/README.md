@@ -29,8 +29,9 @@ JMH benchmarks of the SDK's hot path, with a budget per message that `./mvnw ver
   `XmlReaderTest` in `odds-feed` holds the decoder to Woodstox. JMH forks its own JVM, so the build's coverage agent
   does not run inside the measurement.
 
-Only the SDK's decoder and the warm path's steps have a budget, so the build runs only them. For
-the comparison:
+Only the SDK's decoder and the warm path's steps have a budget, so the build runs only them, and
+fails when one of the budgets went unmeasured. A run narrowed with `-Dbenchmarks.include` holds
+what it ran to its budget and skips that check. For the comparison:
 
 ```
 ./mvnw -pl odds-feed,benchmarks -am test -Dtest=BudgetTest -Dsurefire.failIfNoSpecifiedTests=false \

@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Map;
 import java.util.Properties;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.openjdk.jmh.profile.GCProfiler;
 import org.openjdk.jmh.results.Result;
@@ -51,10 +52,14 @@ class BudgetTest {
     @Test
     void theDecoderStaysWithinItsBudget() throws Exception {
         Properties budgets = budgets();
+        // a run narrowed to some benchmarks, as for the comparison, holds only those to their budgets
+        @Nullable String narrowed = System.getProperty("benchmarks.include");
         Collection<RunResult> results = new Runner(new OptionsBuilder()
-                        .include(System.getProperty(
-                                "benchmarks.include",
-                                DecodeBenchmark.class.getName() + ".jaxb$|" + WarmPathBenchmark.class.getName()))
+                        .include(
+                                narrowed != null
+                                        ? narrowed
+                                        : DecodeBenchmark.class.getName() + ".jaxb$|"
+                                                + WarmPathBenchmark.class.getName())
                         .forks(1)
                         .warmupIterations(Integer.getInteger("benchmarks.warmups", 3))
                         .warmupTime(TimeValue.seconds(1))
@@ -86,11 +91,15 @@ class BudgetTest {
         var measured = new ArrayList<String>();
         results.forEach(result -> measured.add(result.getParams().getBenchmark().replaceAll(".*\\.", "") + "."
                 + result.getParams().getParam("markets")));
-        // a budget whose benchmark did not run would pass without a word
-        assertThat(budgets.stringPropertyNames())
-                .as("budgeted benchmarks")
-                .isNotEmpty()
-                .allSatisfy(key -> assertThat(measured).contains(key.substring(0, key.lastIndexOf('.'))));
+        // in the build's run, a budget whose benchmark did not run would pass without a word
+        if (narrowed == null) {
+            assertThat(budgets.stringPropertyNames())
+                    .as("budgeted benchmarks")
+                    .isNotEmpty()
+                    .allSatisfy(key -> assertThat(measured).contains(key.substring(0, key.lastIndexOf('.'))));
+        } else {
+            assertThat(results).as("benchmarks matching " + narrowed).isNotEmpty();
+        }
         assertThat(overBudget).as("benchmarks over budget").isEmpty();
     }
 
