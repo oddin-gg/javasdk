@@ -546,6 +546,46 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void factsLeftUnhandledAtTheCloseTakeThePointBackToTheLastSubscribedAliveOrAFullSnapshot() {
+        long from = feed.now() - Duration.ofHours(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(LIVE, from);
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        long lastSubscribed = feed.now();
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.live(1, PRE, Duration.ZERO);
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(feed.now()));
+
+        feed.machine.closing();
+        feed.machine.unhandledAtClose();
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+        assertThat(feed.timestampForRecovery(LIVE))
+                .as("no session receives it: the client's start")
+                .isEqualTo(Instant.ofEpochMilli(from));
+
+        // no subscribed alive yet: nothing says where a gap would start
+        var cold = new Harness();
+        long seed = cold.now() - Duration.ofHours(1).toMillis();
+        cold.producers.setProducerRecoveryFromTimestamp(PRE, seed);
+        cold.open(1, MessageInterest.ALL);
+        cold.start();
+        assertThat(cold.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(seed));
+        cold.machine.closing();
+        cold.machine.unhandledAtClose();
+        assertThat(cold.timestampForRecovery(PRE)).as("a full snapshot").isNull();
+
+        var notStarted = new Harness();
+        notStarted.producers.setProducerRecoveryFromTimestamp(PRE, seed);
+        notStarted.open(1, MessageInterest.ALL);
+        notStarted.machine.unhandledAtClose();
+        assertThat(notStarted.timestampForRecovery(PRE))
+                .as("never started: the client's start")
+                .isEqualTo(Instant.ofEpochMilli(seed));
+    }
+
+    @Test
     void aGapOlderThanTheCheckpointHoldsTheResumePointUntilItsRecoveryCompletes() {
         var feed = Harness.upWith(MessageInterest.ALL);
         feed.clock.advance(Duration.ofMinutes(1));

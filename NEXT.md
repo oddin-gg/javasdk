@@ -560,9 +560,12 @@ and REST workers post facts to it; it decides and posts work out.
   the feed runs no longer counts. Once the feed begins to close, the point only goes
   back, so what the client reads at shutdown does not depend on the order the sessions
   close in. The façade tells the actor `closing()` before it closes any session, and the
-  actor's own close does the same, then handles the essential facts already queued
-  before its machine closes: an unsubscribed alive among them still takes the point
-  back. The resume point is not
+  actor's own close does the same, then handles the essential facts already queued,
+  for two seconds at most, before its machine closes: an unsubscribed alive among them
+  still takes the point back. Facts it has no time for take each point back to the
+  producer's last subscribed alive, where such an alive's gap would start, or to a full
+  snapshot without one. A close that comes before the actor's thread has run handles
+  nothing, so nothing is published after it returns. The resume point is not
   clamped: passed back after a downtime longer than the stateful recovery window, the
   setter throws `IllegalArgumentException`, as in 0.0.x, and the getter's documentation
   tells the client to catch it and pass 0 for a full recovery. Ticket 31 documents
