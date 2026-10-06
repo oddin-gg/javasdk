@@ -9,7 +9,6 @@ import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlement;
 import java.util.List;
 import java.util.function.Supplier;
-import org.jspecify.annotations.Nullable;
 
 /**
  * A bet settlement. Its markets are built when first asked for and kept; an outcome whose result
@@ -18,8 +17,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class BetSettlementMessage extends FeedEventMessage implements BetSettlement<SportEvent> {
 
-    private final Supplier<List<MarketWithSettlement>> build;
-    private volatile @Nullable List<MarketWithSettlement> markets;
+    private final Built<List<MarketWithSettlement>> markets;
 
     BetSettlementMessage(
             SportEvent event,
@@ -29,7 +27,7 @@ final class BetSettlementMessage extends FeedEventMessage implements BetSettleme
             MessageTimestamp timestamp,
             Supplier<List<MarketWithSettlement>> markets) {
         super(event, message.getRequestId(), raw, producer, timestamp);
-        this.build = markets;
+        this.markets = new Built<>(markets);
     }
 
     /**
@@ -46,11 +44,6 @@ final class BetSettlementMessage extends FeedEventMessage implements BetSettleme
 
     @Override
     public List<MarketWithSettlement> getMarkets() {
-        List<MarketWithSettlement> built = markets;
-        if (built == null) {
-            built = build.get();
-            markets = built;
-        }
-        return built;
+        return markets.get();
     }
 }

@@ -70,9 +70,14 @@ final class MarketNames {
                 marketId);
     }
 
+    /**
+     * The outcome's name. The strategy answers for a name the description and the profiles do not
+     * give; {@code home} or {@code away} then becomes the competitor's name, null when the event has
+     * none, as 0.0.x checked before it mapped them.
+     */
     @Nullable
     String outcome(String id, Locale locale) {
-        return naming.name(
+        String name = naming.name(
                 () -> {
                     LocalizedMarket market = described(locale);
                     if (market == null) {
@@ -80,7 +85,7 @@ final class MarketNames {
                     }
                     LocalizedMarket.Outcome outcome = market.outcome(id);
                     if (outcome != null) {
-                        return competitorNamed(outcome.name(), locale);
+                        return outcome.name();
                     }
                     OutcomeType type = market.type();
                     if (type == null) {
@@ -99,6 +104,7 @@ final class MarketNames {
                 },
                 "outcome name",
                 marketId + " " + id);
+        return name == null ? null : competitorNamed(name, locale);
     }
 
     private @Nullable LocalizedMarket described(Locale locale) {
