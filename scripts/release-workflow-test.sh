@@ -940,6 +940,10 @@ breaks next.yml replace '      - name: Check the checkout left no credentials be
         shell: pwsh' \
   "./.github/workflows/next.yml > wrapper-windows must check once that its checkout left no credentials behind"
 
+breaks next.yml replace '    name: Build & Test
+' '    name: Build and test
+' "next.yml differs from its pinned form"
+
 # The credential guard after each checkout in next.yml, run as it is written and as GitHub runs
 # it (bash -e for a step that names no shell; pwsh as GitHub calls it, with its exit code handed
 # on), in a scratch repository: it must pass on a clean config and fail on one that kept the job
@@ -1004,6 +1008,12 @@ breaks next.yml replace '      - name: Check the checkout left no credentials be
 # against reports it must accept and reports it must refuse.
 check_run=$(yq '.jobs["system-tests-next"].steps[] | select(.name == "Check the integration tests ran, against 1.0") | .run' \
   "$root/.github/workflows/next.yml")
+check_shell=$(yq '.jobs["system-tests-next"].steps[] | select(.name == "Check the integration tests ran, against 1.0") | .shell // "bash"' \
+  "$root/.github/workflows/next.yml")
+if [ "$check_shell" != bash ]; then
+  echo "FAIL next.yml > system-tests-next's report check runs in $check_shell, which this test does not run" >&2
+  failures=$((failures + 1))
+fi
 if [ -z "$check_run" ]; then
   echo "FAIL next.yml > system-tests-next has no report check to test" >&2
   failures=$((failures + 1))
