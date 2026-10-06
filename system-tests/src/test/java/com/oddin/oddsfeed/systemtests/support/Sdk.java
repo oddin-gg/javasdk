@@ -6,6 +6,7 @@ import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
 import java.util.function.UnaryOperator;
 
 /**
@@ -35,13 +36,19 @@ public final class Sdk implements AutoCloseable {
     private boolean closed;
 
     private Sdk(
-            FakeRestServer rest, String feedHost, int feedPort, UnaryOperator<OddsFeedConfigurationBuilder> configure) {
+            FakeRestServer rest,
+            String feedHost,
+            int feedPort,
+            UnaryOperator<OddsFeedConfigurationBuilder> configure,
+            OddsFeedExtListener extListener) { // null for none
         OddsFeedConfiguration configuration = configure
                 .apply(OddsFeed.getOddsFeedConfigurationBuilder()
                         .selectEnvironment(feedHost, rest.apiHost(), feedPort)
                         .setAccessToken(TOKEN))
                 .build();
-        this.oddsFeed = new OddsFeed(events, configuration);
+        this.oddsFeed = extListener == null
+                ? new OddsFeed(events, configuration)
+                : new OddsFeed(events, configuration, extListener);
         this.rest = rest;
     }
 
@@ -52,7 +59,7 @@ public final class Sdk implements AutoCloseable {
     /** With configuration on top of the fakes' addresses and the token, e.g. an exception strategy. */
     public static Sdk against(
             FakeRestServer rest, FakeFeed feed, UnaryOperator<OddsFeedConfigurationBuilder> configure) {
-        return new Sdk(rest, feed.host(), feed.port(), configure);
+        return new Sdk(rest, feed.host(), feed.port(), configure, null);
     }
 
     /**
@@ -60,7 +67,12 @@ public final class Sdk implements AutoCloseable {
      * needs to start.
      */
     public static Sdk withoutFeed(FakeRestServer rest, UnaryOperator<OddsFeedConfigurationBuilder> configure) {
-        return new Sdk(rest, "127.0.0.1", NO_FEED_PORT, configure);
+        return new Sdk(rest, "127.0.0.1", NO_FEED_PORT, configure, null);
+    }
+
+    /** The same, with the SDK's extended listener, which hears the raw API data. */
+    public static Sdk withoutFeed(FakeRestServer rest, OddsFeedExtListener extListener) {
+        return new Sdk(rest, "127.0.0.1", NO_FEED_PORT, UnaryOperator.identity(), extListener);
     }
 
     public OddsFeed oddsFeed() {
