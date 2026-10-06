@@ -1,0 +1,202 @@
+{
+  "jobs": {
+    "build": {
+      "name": "Build & Test",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Checkout",
+          "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "with": {
+            "persist-credentials": false,
+            "ref": "${{ inputs.commit }}"
+          }
+        },
+        {
+          "name": "Check the checkout left no credentials behind",
+          "run": "if git config --local --get-regexp 'http\\..*\\.extraheader' >/dev/null 2>&1; then\n  echo \"the checkout persisted a credential in .git/config\" >&2\n  exit 1\nfi\n"
+        },
+        {
+          "name": "Check the release checks refuse what they should",
+          "run": "./scripts/release-check-test.sh"
+        },
+        {
+          "name": "Check the GitHub Release is a draft until its files are on it",
+          "run": "./scripts/release-github-test.sh"
+        },
+        {
+          "name": "Check release.yml keeps its release policy",
+          "run": "./scripts/release-workflow-test.sh"
+        },
+        {
+          "name": "Set up JDK 25",
+          "uses": "actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3",
+          "with": {
+            "cache": "maven",
+            "distribution": "corretto",
+            "java-version": "25",
+            "server-id": "oddin-github",
+            "server-password": "GITHUB_TOKEN",
+            "server-username": "GITHUB_ACTOR"
+          }
+        },
+        {
+          "name": "Check the wrapper refuses a tampered distribution",
+          "run": "props=.mvn/wrapper/maven-wrapper.properties\n# mvnw reads the file line by line and keeps the last value of each key, while a\n# pattern check is happy with any line. Appending a second pair would have passed\n# every check below while the wrapper fetched from somewhere else entirely.\nfor key in distributionUrl distributionSha256Sum; do\n  if [ \"$(grep -c \"^$key=\" \"$props\")\" != \"1\" ]; then\n    echo \"$props must set $key exactly once\" >&2\n    exit 1\n  fi\ndone\ngrep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' \"$props\"\n# a digest proves only that the download was not altered in flight; this says whose\n# download it is, so repointing the URL cannot pass by carrying its own matching digest\ngrep -Eq '^distributionUrl=https://repo\\.maven\\.apache\\.org/maven2/org/apache/maven/apache-maven/[0-9.]+/apache-maven-[0-9.]+-bin\\.zip$' \"$props\"\nsed -i 's/^distributionSha256Sum=.*/distributionSha256Sum=0000000000000000000000000000000000000000000000000000000000000000/' \\\n  \"$props\"\nset +e\nMAVEN_USER_HOME=\"$(mktemp -d)\" ./mvnw -v >wrapper.log 2>&1\nstatus=$?\nset -e\ncat wrapper.log\ngit checkout -- \"$props\"\nif [ \"$status\" -eq 0 ]; then\n  echo \"the wrapper ran Maven from a distribution that failed its checksum\" >&2\n  exit 1\nfi\nif ! grep -q 'Failed to validate Maven distribution SHA-256' wrapper.log; then\n  echo \"the wrapper failed, but not on the checksum - this check proved nothing\" >&2\n  exit 1\nfi\nrm -f wrapper.log\ngrep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' \"$props\"\n"
+        },
+        {
+          "env": {
+            "GITHUB_ACTOR": "${{ github.actor }}",
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
+          },
+          "name": "Fetch the SDK and check it, before Maven resolves anything",
+          "run": "./scripts/fetch-sdk.sh"
+        },
+        {
+          "env": {
+            "GITHUB_ACTOR": "${{ github.actor }}",
+            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+            "REVISION": "${{ inputs.revision }}"
+          },
+          "name": "Build and test",
+          "run": "./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION} verify"
+        },
+        {
+          "name": "Check the integration tests ran",
+          "run": "summary=system-tests/target/failsafe-reports/failsafe-summary.xml\nif [ ! -f \"$summary\" ]; then\n  echo \"no failsafe summary: the integration tests did not run\" >&2\n  exit 1\nfi\nif grep -q '<completed>0</completed>' \"$summary\"; then\n  echo \"failsafe ran zero integration tests\" >&2\n  exit 1\nfi\n"
+        },
+        {
+          "name": "Check a release build installs a resolved version",
+          "run": "version=0.0.0-installed-pom-check\ninstalled=~/.m2/repository/gg/oddin/oddsfeed/odds-feed-parent/$version/odds-feed-parent-$version.pom\nrm -rf \"$(dirname \"$installed\")\"\n./mvnw --batch-mode --no-transfer-progress --non-recursive -Drevision=$version install\nif [ ! -f \"$installed\" ]; then\n  echo \"the parent POM was not installed, so this check proved nothing\" >&2\n  exit 1\nfi\nif ! grep -q \"<version>$version</version>\" \"$installed\"; then\n  echo \"the installed POM does not carry the version it was built with:\" >&2\n  grep -m1 '<version>' \"$installed\" >&2\n  exit 1\nfi\nrm -rf \"$(dirname \"$installed\")\"\n"
+        },
+        {
+          "name": "Check the release build signs and bundles what Central needs",
+          "run": "./scripts/release-bundle-test.sh"
+        },
+        {
+          "if": "always()",
+          "name": "Upload test reports",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "if-no-files-found": "ignore",
+            "name": "test-reports",
+            "path": "**/target/surefire-reports/*.xml\n**/target/failsafe-reports/*.xml\n"
+          }
+        }
+      ]
+    },
+    "system-tests-next": {
+      "name": "System tests against 1.0",
+      "permissions": {
+        "contents": "read"
+      },
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Checkout",
+          "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "with": {
+            "persist-credentials": false,
+            "ref": "${{ inputs.commit }}"
+          }
+        },
+        {
+          "name": "Check the checkout left no credentials behind",
+          "run": "if git config --local --get-regexp 'http\\..*\\.extraheader' >/dev/null 2>&1; then\n  echo \"the checkout persisted a credential in .git/config\" >&2\n  exit 1\nfi\n"
+        },
+        {
+          "name": "Set up JDK 25",
+          "uses": "actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3",
+          "with": {
+            "distribution": "corretto",
+            "java-version": "25"
+          }
+        },
+        {
+          "env": {
+            "REVISION": "${{ inputs.revision }}"
+          },
+          "name": "Build the SDK and run the system tests against it",
+          "run": "./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION} -Dsdk.next -pl system-tests -am verify '-Dtest=com/oddin/oddsfeed/systemtests/**/*Test' -Dsurefire.failIfNoSpecifiedTests=false -Djacoco.skip=true"
+        },
+        {
+          "name": "Check the integration tests ran, against 1.0",
+          "run": "summary=system-tests/target/failsafe-reports/failsafe-summary.xml\nif [ ! -f \"$summary\" ]; then\n  echo \"no failsafe summary: the integration tests did not run\" >&2\n  exit 1\nfi\nif grep -q '<completed>0</completed>' \"$summary\"; then\n  echo \"failsafe ran zero integration tests\" >&2\n  exit 1\nfi\npython3 - <<'PY'\nimport sys, xml.etree.ElementTree as ET\nreport = \"system-tests/target/failsafe-reports/TEST-com.oddin.oddsfeed.systemtests.BuildWiringIT.xml\"\ncases = {c.get(\"name\"): c for c in ET.parse(report).getroot().iter(\"testcase\")}\ncase = cases.get(\"theSdkIsTheOneThisReactorBuilt\")\nif case is None:\n    sys.exit(\"BuildWiringIT did not check the 1.0 SDK's version: no such test in the report\")\noutcome = [child.tag for child in case if child.tag in (\"skipped\", \"failure\", \"error\")]\nif outcome:\n    sys.exit(\"BuildWiringIT did not check the 1.0 SDK's version: \" + outcome[0])\nPY\nskipped=$(sed -n 's:.*<skipped>\\([0-9]*\\)</skipped>.*:\\1:p' \"$summary\")\necho \"integration tests skipped, most of them pending on 1.0: ${skipped:-0}\"\n"
+        },
+        {
+          "if": "always()",
+          "name": "Upload test reports",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+          "with": {
+            "if-no-files-found": "ignore",
+            "name": "test-reports-next",
+            "path": "**/target/surefire-reports/*.xml\n**/target/failsafe-reports/*.xml\n"
+          }
+        }
+      ]
+    },
+    "wrapper-windows": {
+      "name": "Wrapper checksum (Windows)",
+      "runs-on": "windows-latest",
+      "steps": [
+        {
+          "name": "Checkout",
+          "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "with": {
+            "persist-credentials": false,
+            "ref": "${{ inputs.commit }}"
+          }
+        },
+        {
+          "name": "Check the checkout left no credentials behind",
+          "run": "git config --local --get-regexp 'http\\..*\\.extraheader' *> $null\n$persisted = $LASTEXITCODE -eq 0\nif ($persisted) {\n  Write-Host \"the checkout persisted a credential in .git/config\"\n  exit 1\n}\n# git exits 1 when it finds nothing, and pwsh hands the step that exit code\nexit 0\n",
+          "shell": "pwsh"
+        },
+        {
+          "name": "Set up JDK 25",
+          "uses": "actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3",
+          "with": {
+            "distribution": "corretto",
+            "java-version": "25"
+          }
+        },
+        {
+          "name": "Check mvnw.cmd refuses a tampered distribution",
+          "run": "$props = '.mvn/wrapper/maven-wrapper.properties'\n# as on Linux: the wrapper keeps the last value of each key, a pattern check any line\nforeach ($key in 'distributionUrl', 'distributionSha256Sum') {\n  if ((Select-String -Path $props -Pattern \"^$key=\").Count -ne 1) {\n    Write-Host \"$props must set $key exactly once\"\n    exit 1\n  }\n}\nif (-not (Select-String -Path $props -Pattern '^distributionSha256Sum=[0-9a-f]{64}$' -Quiet)) {\n  Write-Host \"the distribution checksum is not pinned\"\n  exit 1\n}\n# as on Linux: pin the source of the distribution, not only its digest\nif (-not (Select-String -Path $props -Pattern '^distributionUrl=https://repo\\.maven\\.apache\\.org/maven2/org/apache/maven/apache-maven/[0-9.]+/apache-maven-[0-9.]+-bin\\.zip$' -Quiet)) {\n  Write-Host \"the distribution does not come from repo.maven.apache.org\"\n  exit 1\n}\n(Get-Content $props) -replace '^distributionSha256Sum=.*', ('distributionSha256Sum=' + ('0' * 64)) |\n  Set-Content $props\n$env:MAVEN_USER_HOME = (New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP ([guid]::NewGuid()))).FullName\n$output = & cmd /c \"mvnw.cmd -v 2>&1\"\n$status = $LASTEXITCODE\n$output | Write-Host\ngit checkout -- $props\n# One string, single-spaced: PowerShell hands back an array of lines and wraps the\n# error text across them, and -notmatch on an array filters instead of testing.\n$joined = ($output | Out-String) -replace '\\s+', ' '\nif ($status -eq 0) {\n  Write-Host \"the wrapper ran Maven from a distribution that failed its checksum\"\n  exit 1\n}\nif (-not $joined.Contains('Failed to validate Maven distribution SHA-256')) {\n  Write-Host \"the wrapper failed, but not on the checksum - this check proved nothing\"\n  exit 1\n}\nWrite-Host \"the wrapper refused the tampered distribution on its checksum\"\n",
+          "shell": "pwsh"
+        }
+      ]
+    }
+  },
+  "name": "Java SDK 1.0 CI",
+  "on": {
+    "pull_request": {
+      "branches": [
+        "next"
+      ]
+    },
+    "push": {
+      "branches": [
+        "next"
+      ]
+    },
+    "workflow_call": {
+      "inputs": {
+        "commit": {
+          "description": "The commit to build, the one the release check accepted",
+          "required": true,
+          "type": "string"
+        },
+        "revision": {
+          "description": "The version to build as, from the release tag",
+          "required": true,
+          "type": "string"
+        }
+      }
+    }
+  },
+  "permissions": {
+    "contents": "read",
+    "packages": "read"
+  }
+}
