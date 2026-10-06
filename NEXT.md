@@ -579,9 +579,9 @@ and REST workers post facts to it; it decides and posts work out.
   `snapshot_complete` - the Go SDK saw one on the test environment, on a bound and
   consuming queue - costs minutes, not the maximum recovery time. Five minutes is the
   Go SDK's deadline (recoveries completed there in 83 to 139 s); 0.0.x and the .NET SDK
-  have none and wait out the maximum recovery time (KD-25). That time, 0.0.x's six
-  hours, stays the bound on a recovery that keeps coming, and on event recoveries; the
-  configuration carries it, and ticket 28 makes it settable.
+  have none and wait out the maximum recovery time (KD-25). That time stays the bound on
+  a recovery that keeps coming, and on event recoveries. Ticket 28 makes it a public
+  option; its default stays 0.0.x's 360 minutes.
 - Recovery that the API does not accept, or that times out (either deadline), is
   re-issued with backoff from five seconds, doubling, at most three times in a row.
   After that the producer stays down and the client gets a producer-status event with
@@ -1084,7 +1084,7 @@ group by group.
 27. Field parity with the Go SDK, in small groups.
 28. Option and method parity. Includes the safety-net, inactivity, recovery-time and
     shutdown-timeout options, the locale preload, and the 1.0-only test that pins
-    KD-17.
+    KD-17. The maximum recovery time keeps 0.0.x's default of 360 minutes.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
@@ -1097,10 +1097,16 @@ group by group.
 ### Phase 4 – Release
 
 33. Maven Central pipeline: claim the `gg.oddin` namespace, signing, registry check
-    step, tag-driven publish from `main` with manual approval. Also publish a last
-    0.0.x version whose POM only relocates to the new coordinates, so a client who
-    forgets to change the dependency is told by their own build. Also the GitHub
-    Release, a coverage threshold, and the pre-release registry check on both lines.
+    step, tag-driven publish from `main` with manual approval. Also a last 0.0.x
+    version whose POM only relocates to the new coordinates, so a Maven build still on
+    the old ones is told by a warning; Gradle follows a relocation without showing its
+    message. It is published after ticket 36's notice, once the remaining Java 8
+    clients have pinned a version: a Java 8 build on `0.0.+`, or one that Renovate or
+    Dependabot bumps, takes it as a patch and gets the Java 25 jar. The POM names a
+    fixed target version, so the publish job refuses it unless that version is on Maven
+    Central and is a final release. A 0.0.x fix released after it undoes it for the
+    clients it moved. Also the GitHub Release, a coverage threshold, and the
+    pre-release registry check on both lines.
 
     43. Performance validation before the release candidate: the warm and cold
         benchmarks and a sustained-load run on the test environment, against the
@@ -1110,7 +1116,9 @@ group by group.
         candidate.
 34. First release candidate, soak on the test environment, candidates to clients.
 35. Fix round.
-36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released.
+36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released. The notice asks
+    Java 8 clients to pin a 0.0.x version; the relocation of ticket 33 follows once
+    they have.
 
 Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 43 and
 44, then 34; 37 before any tag. The benchmark, the Central pipeline and the
@@ -1135,8 +1143,10 @@ Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 4
   same packages, so a client who adds the new dependency without removing the old one
   gets two jars carrying the same classes. Maven sees two unrelated artifacts and says
   nothing; which one wins is classpath order. The relocation POM on the old line, the
-  release notes and a ready-made dependency ban in the upgrade guide are the answer.
-  The upside of the split: nothing offers 1.0.0 to a Java 8 client as a version bump.
+  release notes and a ready-made dependency ban in the upgrade guide are the answer;
+  Gradle follows the relocation too, but shows no message. The upside of the split:
+  nothing offers 1.0.0 to a Java 8 client as a version bump, except the relocation,
+  which is why it waits for the end-of-life notice (ticket 33).
 - **Shared node ids.** Two instances configured with the same node id can confuse each
   other's recoveries. The SDK cannot detect it. Documentation and the onboarding
   checklist carry the rule.
@@ -1163,6 +1173,12 @@ Woodstox, for the feed and REST alike. A typical live odds change of 150 markets
 0.9 ms with JAXB on the JDK's own parser and 0.3 ms with a hand-written StAX reader; on
 Woodstox, JAXB takes 0.32 ms, so there is no parsing code to keep in step with the
 schema. Woodstox is Apache 2.0, its one dependency BSD.
+The maximum recovery time's default (2026-10-06): it stays 0.0.x's 360 minutes, and
+ticket 28 makes it settable. With the five-minute deadline it bounds only a recovery
+that keeps coming, and event recoveries.
+The relocation of the old coordinates (2026-10-06): published after the end-of-life
+notice, once the remaining Java 8 clients have pinned a version, and only to a final
+release that is on Maven Central (ticket 33).
 
 ---
 
@@ -1257,3 +1273,8 @@ schema. Woodstox is Apache 2.0, its one dependency BSD.
   transport's first up, nor for a session's producers between its lost channel and the
   new one. The remaining findings on the approved pull requests of tickets 21 and 24
   are each fixed or answered in the pull request.
+- 2026-10-06, two decisions: the relocation POM on the old line is published after the
+  end-of-life notice, once the remaining Java 8 clients have pinned a version, and only
+  when its target is a final release on Maven Central; Gradle shows no relocation
+  message. The maximum recovery time becomes a public option with 0.0.x's default of 360
+  minutes; it does not drop below six hours.
