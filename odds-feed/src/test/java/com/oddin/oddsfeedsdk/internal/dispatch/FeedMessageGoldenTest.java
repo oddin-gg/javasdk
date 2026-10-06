@@ -201,6 +201,7 @@ class FeedMessageGoldenTest {
     void oddsChangeCricketScoreboard() {
         var change = (OddsChange<?>) deliver("odds_change/odds_change_cricket_scoreboard.xml");
         assertMessage(change, null);
+        assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
         MatchStatus status = status(EventStatus.Live, 0, 0.0, 0.0, true);
         assertPeriods(
                 status,
@@ -243,6 +244,7 @@ class FeedMessageGoldenTest {
         assertMessage(change, null);
         assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
         MatchStatus status = status(EventStatus.Live, 0, 0.0, 0.0, true);
+        assertPeriods(status);
         assertScoreboard(
                 status,
                 Map.of(
