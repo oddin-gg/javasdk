@@ -33,6 +33,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -423,21 +424,112 @@ class EventsDispatcherTest {
                 .isNull();
     }
 
-    /** The response whose callbacks run counts against the budget until they are done. */
+    /** The response whose callbacks run counts against the budget until both are done. */
     @Test
     void rawApiDataBeingDeliveredStillCountsAgainstTheBudget() throws InterruptedException {
         var ext = new Ext();
-        ext.wedged = new CountDownLatch(1);
+        var received = new CountDownLatch(1);
+        var bytes = new CountDownLatch(1);
+        ext.wedged = received;
+        ext.wedgedBytes = bytes;
         EventsDispatcher dispatcher = dispatcher(ext, 10, 10, 100);
         dispatcher.start();
         dispatcher.received(URI_CALLED, "first", new byte[60]);
-        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS)).startsWith("onRawApiDataReceived");
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .startsWith("onRawApiDataReceived " + URI_CALLED + " first");
         dispatcher.received(URI_CALLED, "second", new byte[60]);
         assertThat(dispatcher.rawDataDropped())
-                .as("the first is still being delivered")
+                .as("the first's first callback runs")
                 .isEqualTo(1);
-        requireNonNull(ext.wedged).countDown();
+
+        received.countDown();
         assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS)).startsWith("onRawApiDataBytes");
+        dispatcher.received(URI_CALLED, "third", new byte[60]);
+        assertThat(dispatcher.rawDataDropped())
+                .as("the first's second callback runs")
+                .isEqualTo(2);
+
+        // heard once the first's callbacks are done and its bytes released
+        dispatcher.called(call(200, null));
+        bytes.countDown();
+        assertThat(listener.next()).isEqualTo("onApiCall");
+        dispatcher.received(URI_CALLED, "fourth", new byte[60]);
+        assertThat(dispatcher.rawDataDropped()).as("both callbacks done").isEqualTo(2);
+        assertThat(ext.events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .startsWith("onRawApiDataReceived " + URI_CALLED + " fourth");
+    }
+
+    /**
+     * Two reports for one slot at once, the first held after it fills the slot and before it queues
+     * its marker: the second waits for it, then takes that marker out rather than leaving it queued.
+     * However often that happens, the slot keeps one entry, and its newest is heard once.
+     */
+    @Test
+    void reportsForOneSlotAtOnceKeepOneEntryQueued() throws InterruptedException {
+        // not started: every entry stays queued
+        EventsDispatcher dispatcher = dispatcher(null, 10, 10);
+        for (int round = 0; round < 5; round++) {
+            var filled = new CountDownLatch(1);
+            var resume = new CountDownLatch(1);
+            holdTheFirstFill(dispatcher, filled, resume);
+            var first = Thread.ofPlatform().start(() -> dispatcher.refused(call(401, null)));
+            assertThat(filled.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                    .as("the first report filled its slot")
+                    .isTrue();
+            var second = Thread.ofPlatform().start(() -> dispatcher.refused(call(403, null)));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+            // until the second is done, as it is when nothing holds it behind the first, or waits
+            while (second.isAlive() && second.getState() != Thread.State.WAITING && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+            resume.countDown();
+            first.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+            second.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        }
+        assertThat(dispatcher.controlQueued()).as("one marker for the slot").isEqualTo(1);
+
+        dispatcher.start();
+        assertThat(listener.next())
+                .isEqualTo("onFatalError The API refused the access token: GET " + URI_CALLED + " answered 403 null");
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /**
+     * A marker the events thread takes while a newer report fills its slot is skipped: the newer one
+     * is heard where its own marker goes, after what was reported before it.
+     */
+    @Test
+    void aMarkerTakenWhileItsSlotIsFilledAgainIsSkipped() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:0"), 0);
+        listener.awaitWedged();
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, true, false, StatusCause.CONNECTION_LOST, 1));
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:1"), 1);
+        var filled = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        holdTheFirstFill(dispatcher, filled, resume);
+        var newer = Thread.ofPlatform()
+                .start(() -> dispatcher.producerStatus(
+                        new ProducerStatusChange(PRODUCER, false, false, StatusCause.RECOVERY_COMPLETED, 2)));
+        assertThat(filled.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the newer report filled the slot")
+                .isTrue();
+
+        listener.release();
+        assertThat(listener.take(2))
+                .as("the older marker skipped")
+                .containsExactly("onEventRecoveryCompleted od:match:0 0", "onEventRecoveryCompleted od:match:1 1");
+        resume.countDown();
+        newer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(listener.next()).isEqualTo("onProducerStatusChange oddsfeed-events");
+        ProducerStatus status = requireNonNull(listener.statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(status.isDown()).as("the newer status").isFalse();
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
     }
 
     @Test
@@ -651,6 +743,21 @@ class EventsDispatcherTest {
         return made;
     }
 
+    /** Holds the next report that fills a slot until {@code resume}, once {@code filled} is told. */
+    private static void holdTheFirstFill(EventsDispatcher dispatcher, CountDownLatch filled, CountDownLatch resume) {
+        var hold = new AtomicBoolean(true);
+        dispatcher.afterFill = () -> {
+            if (hold.getAndSet(false)) {
+                filled.countDown();
+                try {
+                    resume.await(WAIT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+    }
+
     private static void awaitIdle(EventsDispatcher dispatcher) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (dispatcher.busySince() != 0 && System.nanoTime() < deadline) {
@@ -800,6 +907,8 @@ class EventsDispatcherTest {
         volatile boolean throwOnReceived;
         /** Holds each onRawApiDataReceived until counted down; null for none. */
         volatile @Nullable CountDownLatch wedged;
+        /** Holds each onRawApiDataBytes until counted down; null for none. */
+        volatile @Nullable CountDownLatch wedgedBytes;
 
         @Override
         public void onRawFeedMessageReceived(
@@ -812,14 +921,7 @@ class EventsDispatcherTest {
         public void onRawApiDataReceived(URI uri, Object data) {
             events.add("onRawApiDataReceived " + uri + " " + data + " "
                     + Thread.currentThread().getName());
-            CountDownLatch wedge = wedged;
-            if (wedge != null) {
-                try {
-                    wedge.await(WAIT_SECONDS, TimeUnit.SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }
+            await(wedged);
             if (throwOnReceived) {
                 throw new IllegalStateException("thrown by the client");
             }
@@ -829,6 +931,17 @@ class EventsDispatcherTest {
         public void onRawApiDataBytes(URI uri, byte[] body) {
             events.add("onRawApiDataBytes " + uri + " " + new String(body, StandardCharsets.UTF_8) + " "
                     + Thread.currentThread().getName());
+            await(wedgedBytes);
+        }
+
+        private static void await(@Nullable CountDownLatch wedge) {
+            if (wedge != null) {
+                try {
+                    wedge.await(WAIT_SECONDS, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         }
     }
 }
