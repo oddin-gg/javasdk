@@ -963,6 +963,63 @@ class RecoveryMachineTest {
         assertThat(feed.counters.timedOut())
                 .as("five minutes after the request")
                 .isEqualTo(1);
+
+        // the timed-out one is remembered now, and the third of the nine is the oldest that counts
+        feed.runWithAlives(Duration.ofSeconds(5));
+        Outbox.Call.Snapshot third = feed.lastSnapshot(PRE);
+        assertThat(third.requestId()).isNotEqualTo(again.requestId());
+        feed.accept(third);
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), ended.get(2));
+        }
+        assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isEqualTo(1);
+        feed.runWithAlives(Duration.ofMinutes(5));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the last of it")
+                .isEqualTo(1);
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(2);
+    }
+
+    @Test
+    void whatTwoRecoveriesGivenUpStillSendBothPutOffTheDeadlineOfTheNextOne() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        var lost = new ArrayList<Long>();
+        // the producer restarts twice, each time after it took the recovery
+        for (int restart = 1; restart <= 2; restart++) {
+            feed.clock.advance(Duration.ofSeconds(10));
+            feed.unsubscribed(PRE);
+            Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+            feed.accept(recovery);
+            feed.clock.advance(Duration.ofSeconds(10));
+            feed.unsubscribed(PRE);
+            lost.add(recovery.requestId());
+        }
+        assertThat(feed.counters.abandoned()).isEqualTo(2);
+        feed.alive(PRE);
+        Outbox.Call.Snapshot next = feed.lastSnapshot(PRE);
+        assertThat(lost).doesNotContain(next.requestId());
+        feed.accept(next);
+        // a slow session takes what the first sent, then what the second sent, then the next one's
+        for (long requestId : lost) {
+            for (int minute = 1; minute <= 6; minute++) {
+                feed.runWithAlives(Duration.ofMinutes(1));
+                feed.machine.processed(1, PRE, feed.now(), feed.now(), requestId);
+            }
+        }
+        assertThat(feed.counters.timedOut())
+                .as("twelve minutes in, still coming")
+                .isZero();
+        feed.runWithAlives(Duration.ofMinutes(5));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
     }
 
     @Test
