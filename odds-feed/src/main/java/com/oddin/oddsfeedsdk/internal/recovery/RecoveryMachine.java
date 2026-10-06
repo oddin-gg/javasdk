@@ -38,6 +38,9 @@ import org.slf4j.LoggerFactory;
  * gap in every session from its last subscribed alive, which says everything before it was sent;
  * the queues still hold whatever they had. A recovery starts from the oldest open gap. Snapshot messages never move a checkpoint, and a gap keeps its start until a
  * recovery that covers it completes, so asking again starts from the same point as the first time.
+ * The oldest of the open gaps' starts and the sessions' checkpoints is the producer's resume point:
+ * where a client that restarts resumes to miss nothing, published through {@link
+ * #publishResumePoints}.
  *
  * <p><b>Recoveries.</b> A producer has at most one recovery in flight; whatever happens meanwhile
  * joins it. A recovery covers the gaps open when it was asked for. It completes once every session
@@ -74,6 +77,9 @@ final class RecoveryMachine {
 
     /** A sample's age when the producer's clock offset is not known. */
     private static final long UNKNOWN_AGE = Long.MIN_VALUE;
+
+    /** No resume point: no session receives the producer, or none was published yet. */
+    private static final long NO_POINT = -1;
 
     /**
      * How many of a producer's recoveries that ended without completing are remembered: each sends
@@ -455,9 +461,6 @@ final class RecoveryMachine {
         }
         if (subscribed) {
             track.safePoint = Math.max(track.safePoint, generatedAt);
-            if (!track.down) {
-                producers.setLastAliveReceivedGenTimestamp(producerId, generatedAt);
-            }
         } else {
             openProducerGap(track, generatedAt);
             Active active = track.active;
@@ -1040,10 +1043,25 @@ final class RecoveryMachine {
     }
 
     /**
-     * Where the producer's recovery would start now, for a session that opens: the oldest point
-     * among the sessions there are, else the last subscribed alive, else the client's start.
+     * Where the producer's recovery would start now, for a session that opens: its resume point,
+     * else, with no session to have one, the last subscribed alive, else the client's start.
      */
     private long recoveryPoint(Track track) {
+        long point = resumePoint(track);
+        if (point != NO_POINT) {
+            return point;
+        }
+        return track.safePoint > 0 ? track.safePoint : seed(track);
+    }
+
+    /**
+     * Where a recovery of the producer would have to start now for no session to miss anything:
+     * the oldest of the open gaps' starts, the producer's and the sessions', and of the checkpoints
+     * of the sessions that receive it - a session with no gap still has what it has not processed
+     * only in its queue. Unclamped, so a client that resumes from it misses nothing; {@link
+     * #NO_POINT} when no session receives the producer.
+     */
+    private long resumePoint(Track track) {
         long point = track.gap == null ? Long.MAX_VALUE : track.gap.from;
         boolean any = false;
         for (SessionState session : sessions.values()) {
@@ -1053,10 +1071,25 @@ final class RecoveryMachine {
                 point = Math.min(point, lane.gap == null ? lane.checkpoint : Math.min(lane.gap.from, lane.checkpoint));
             }
         }
-        if (any) {
-            return point;
+        return any ? point : NO_POINT;
+    }
+
+    /**
+     * Publishes each producer's resume point that moved, for {@link
+     * Producer#getTimestampForRecovery()}: the actor calls it after every fact. Nothing before the
+     * start, when the client's own start stands; a producer no session receives keeps what it had.
+     */
+    void publishResumePoints() {
+        if (!started) {
+            return;
         }
-        return track.safePoint > 0 ? track.safePoint : seed(track);
+        for (Track track : tracks.values()) {
+            long point = resumePoint(track);
+            if (point != NO_POINT && point != track.published) {
+                track.published = point;
+                producers.setResumePoint(track.id, point);
+            }
+        }
     }
 
     /**
@@ -1515,6 +1548,8 @@ final class RecoveryMachine {
         /** What every session misses because the producer stopped sending; null for nothing. */
         @Nullable
         Gap gap;
+        /** The resume point last published, or {@link #NO_POINT}. */
+        long published = NO_POINT;
 
         @Nullable
         Active active;

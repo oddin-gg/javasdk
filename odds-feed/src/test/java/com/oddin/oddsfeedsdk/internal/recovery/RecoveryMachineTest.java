@@ -5,6 +5,7 @@ import static com.oddin.oddsfeedsdk.internal.recovery.Harness.MATCH;
 import static com.oddin.oddsfeedsdk.internal.recovery.Harness.PRE;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.api.entities.RecoveryInfo;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -78,7 +79,7 @@ class RecoveryMachineTest {
         long from = feed.now() - Duration.ofHours(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
         // what the producer reports for recovery follows the feed; the seed is the client's own
-        feed.producers.setLastAliveReceivedGenTimestamp(PRE, feed.now());
+        feed.producers.setResumePoint(PRE, feed.now());
         feed.open(1, MessageInterest.ALL);
         feed.start();
         feed.alive(PRE);
@@ -453,6 +454,152 @@ class RecoveryMachineTest {
         assertThat(again.requestId()).isNotEqualTo(first.requestId());
         assertThat(feed.counters.timedOut()).isEqualTo(1);
         assertThat(again.after()).isEqualTo(first.after()).isEqualTo(Instant.ofEpochMilli(from));
+    }
+
+    // ---- the resume point
+
+    @Test
+    void theRecoveryTimestampIsTheClientsStartUntilTheStartThenTheFeedsOwn() {
+        long from = feed.now() - Duration.ofHours(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        assertThat(feed.timestampForRecovery(PRE)).as("before the start").isEqualTo(Instant.ofEpochMilli(from));
+        assertThat(feed.timestampForRecovery(LIVE))
+                .as("nothing set, before the start")
+                .isNull();
+
+        feed.start();
+        assertThat(feed.timestampForRecovery(PRE)).as("seeded").isEqualTo(Instant.ofEpochMilli(from));
+        assertThat(feed.timestampForRecovery(LIVE))
+                .as("a session that misses everything")
+                .isNull();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, feed.now());
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("a start the client sets once the feed is open")
+                .isEqualTo(Instant.ofEpochMilli(from));
+
+        feed.clock.advance(Duration.ofSeconds(5));
+        feed.alive(PRE);
+        long requestedAt = feed.now();
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("the completed recovery's request")
+                .isEqualTo(Instant.ofEpochMilli(requestedAt));
+    }
+
+    @Test
+    void theResumePointIsTheOldestCheckpointAmongTheSessions() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1, 2);
+        feed.clock.advance(Duration.ofMinutes(1));
+        feed.live(1, PRE, Duration.ZERO);
+        // session 2 is half a minute behind: what it has not processed is only in its queue
+        feed.live(2, PRE, Duration.ofSeconds(30));
+        assertThat(feed.timestampForRecovery(PRE))
+                .isEqualTo(
+                        Instant.ofEpochMilli(feed.now() - Duration.ofSeconds(30).toMillis()));
+
+        feed.close(2);
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("with the session behind closed")
+                .isEqualTo(Instant.ofEpochMilli(feed.now()));
+    }
+
+    @Test
+    void aGapOlderThanTheCheckpointHoldsTheResumePointUntilItsRecoveryCompletes() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofMinutes(1));
+        feed.live(1, PRE, Duration.ZERO);
+        long lost = feed.now();
+        feed.machine.connectionDown();
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(lost));
+
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.machine.connectionUp();
+        feed.live(1, PRE, Duration.ZERO);
+        assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(feed.now());
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("the gap's start, older than the checkpoint")
+                .isEqualTo(Instant.ofEpochMilli(lost));
+
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.alive(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        assertThat(recovery.after()).isEqualTo(Instant.ofEpochMilli(lost));
+        long requestedAt = feed.now();
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("while the recovery is in flight")
+                .isEqualTo(Instant.ofEpochMilli(lost));
+        feed.complete(recovery, 1);
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("the recovery's request, past the checkpoint")
+                .isEqualTo(Instant.ofEpochMilli(requestedAt));
+    }
+
+    @Test
+    void aProducerThatStopsSendingHoldsTheResumePointAtItsLastSubscribedAlive() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        long lastSubscribed = feed.now();
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.live(1, PRE, Duration.ZERO);
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(feed.now()));
+        feed.unsubscribed(PRE);
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("the producer's gap, older than the session's checkpoint")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
+    void aProducerNoSessionReceivesReportsTheClientsStartAndOneWhoseSessionClosedItsLastPoint() {
+        long from = feed.now() - Duration.ofHours(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.producers.setProducerRecoveryFromTimestamp(LIVE, from);
+        feed.open(1, MessageInterest.LIVE_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.SYSTEM_ALIVE_ONLY, true));
+        feed.start();
+        feed.runWithAlives(Duration.ofSeconds(30));
+        assertThat(feed.timestampForRecovery(PRE)).as("no session receives it").isEqualTo(Instant.ofEpochMilli(from));
+
+        // the session's last alive is its checkpoint once the recovery has closed its gap
+        long checkpoint = feed.now();
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        assertThat(feed.timestampForRecovery(LIVE)).isEqualTo(Instant.ofEpochMilli(checkpoint));
+        feed.close(1);
+        feed.runWithAlives(Duration.ofSeconds(30));
+        assertThat(feed.timestampForRecovery(LIVE))
+                .as("its only session closed")
+                .isEqualTo(Instant.ofEpochMilli(checkpoint));
+    }
+
+    @Test
+    void theResumePointIsNotClampedToTheStatefulRecoveryWindow() {
+        long from = feed.now()
+                - Duration.ofDays(3).toMillis()
+                + Duration.ofMinutes(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.clock.advance(Duration.ofHours(1));
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("the request is clamped")
+                .isEqualTo(Instant.ofEpochMilli(feed.now() - Duration.ofDays(3).toMillis()));
+        assertThat(feed.timestampForRecovery(PRE)).as("the resume point is not").isEqualTo(Instant.ofEpochMilli(from));
+        assertThatThrownBy(() -> feed.producers.setProducerRecoveryFromTimestamp(PRE, from))
+                .as("passed back, it is refused, as in 0.0.x")
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aColdStartWithAnInitialSnapshotIntervalResumesFromThatInterval() {
+        var feed = new Harness(Harness.withInitialSnapshotInterval(Duration.ofMinutes(30)));
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        long boundary = feed.now() - Duration.ofMinutes(30).toMillis();
+        feed.clock.advance(Duration.ofMinutes(5));
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(boundary));
     }
 
     // ---- a producer that stops sending

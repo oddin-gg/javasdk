@@ -8,6 +8,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
+import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.amqp.Queues;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
@@ -39,6 +40,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -87,6 +89,33 @@ class RecoveryActorTest {
         assertThat(up.cause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
         assertThat(producers.isProducerDown(PRE)).isFalse();
         assertThat(actor.turnedAt()).isPositive();
+    }
+
+    @Test
+    void theActorPublishesTheResumePointAsTheFactsMoveIt() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        Instant from = Instant.ofEpochMilli(System.currentTimeMillis()).minus(Duration.ofHours(1));
+        producers.setProducerRecoveryFromTimestamp(PRE, from.toEpochMilli());
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        actor.start();
+        actor.up();
+        bothUp(actor, session);
+        awaitTimestampForRecovery(held, at -> at != null && at.isAfter(from), "past the client's start");
+
+        Instant processed = Instant.ofEpochMilli(System.currentTimeMillis() + 1_000);
+        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        awaitTimestampForRecovery(held, processed::equals, "the message processed");
+    }
+
+    /** Waits until what the producer reports for recovery is as {@code expected} says. */
+    private static void awaitTimestampForRecovery(
+            Producer producer, Predicate<@Nullable Instant> expected, String description) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (!expected.test(producer.getTimestampForRecovery()) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(producer.getTimestampForRecovery()).as(description).matches(expected);
     }
 
     @Test

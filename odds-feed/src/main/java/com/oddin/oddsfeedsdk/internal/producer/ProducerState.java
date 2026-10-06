@@ -12,6 +12,9 @@ import org.jspecify.annotations.Nullable;
  * @param available whether the API lists it as active
  * @param enabled whether the client takes its messages; at first, whether it is available
  * @param down whether the feed has it down; every producer starts down, as in 0.0.x
+ * @param resumePoint where a recovery would have to start for the sessions to miss nothing, epoch
+ *     millis by the producer's clock, 0 for a full snapshot, {@link #NO_RESUME_POINT} until the
+ *     recovery actor has one
  * @param recoveryFrom the client's recovery start, epoch millis, 0 for none
  */
 record ProducerState(
@@ -26,9 +29,12 @@ record ProducerState(
         boolean down,
         long lastMessageTimestamp,
         long lastProcessedMessageGenTimestamp,
-        long lastAliveReceivedGenTimestamp,
+        long resumePoint,
         long recoveryFrom,
         @Nullable RecoveryInfo recoveryInfo) {
+
+    /** The resume point before the recovery actor has published one. */
+    static final long NO_RESUME_POINT = -1;
 
     ProducerState {
         scopes = Set.copyOf(scopes);
@@ -47,7 +53,7 @@ record ProducerState(
                 down,
                 lastMessageTimestamp,
                 lastProcessedMessageGenTimestamp,
-                lastAliveReceivedGenTimestamp,
+                resumePoint,
                 recoveryFrom,
                 recoveryInfo);
     }
@@ -65,7 +71,7 @@ record ProducerState(
                 value,
                 lastMessageTimestamp,
                 lastProcessedMessageGenTimestamp,
-                lastAliveReceivedGenTimestamp,
+                resumePoint,
                 recoveryFrom,
                 recoveryInfo);
     }
@@ -83,7 +89,7 @@ record ProducerState(
                 down,
                 value,
                 lastProcessedMessageGenTimestamp,
-                lastAliveReceivedGenTimestamp,
+                resumePoint,
                 recoveryFrom,
                 recoveryInfo);
     }
@@ -101,12 +107,12 @@ record ProducerState(
                 down,
                 lastMessageTimestamp,
                 value,
-                lastAliveReceivedGenTimestamp,
+                resumePoint,
                 recoveryFrom,
                 recoveryInfo);
     }
 
-    ProducerState withLastAliveReceivedGenTimestamp(long value) {
+    ProducerState withResumePoint(long value) {
         return new ProducerState(
                 id,
                 name,
@@ -137,7 +143,7 @@ record ProducerState(
                 down,
                 lastMessageTimestamp,
                 lastProcessedMessageGenTimestamp,
-                lastAliveReceivedGenTimestamp,
+                resumePoint,
                 value,
                 recoveryInfo);
     }
@@ -155,7 +161,7 @@ record ProducerState(
                 down,
                 lastMessageTimestamp,
                 lastProcessedMessageGenTimestamp,
-                lastAliveReceivedGenTimestamp,
+                resumePoint,
                 recoveryFrom,
                 value);
     }

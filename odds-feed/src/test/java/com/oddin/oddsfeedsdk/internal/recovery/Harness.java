@@ -1,5 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
+import static java.util.Objects.requireNonNull;
+
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -257,6 +259,16 @@ final class Harness {
 
     void sessionAlive(int session, long producer) {
         machine.sessionAlive(session, producer, now(), now(), true);
+    }
+
+    /**
+     * What the producer reports for recovery, once the facts so far have been published, as the
+     * actor publishes them after each.
+     */
+    @Nullable
+    Instant timestampForRecovery(long producer) {
+        machine.publishResumePoints();
+        return requireNonNull(producers.getProducer(producer)).getTimestampForRecovery();
     }
 
     /** The producer's snapshot requests so far. */
