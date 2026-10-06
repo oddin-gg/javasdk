@@ -18,8 +18,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class OddsChangeMessage extends FeedEventMessage implements OddsChange<SportEvent> {
 
-    private final Supplier<List<MarketWithOdds>> build;
-    private volatile @Nullable List<MarketWithOdds> markets;
+    private final Built<List<MarketWithOdds>> markets;
 
     OddsChangeMessage(
             SportEvent event,
@@ -29,17 +28,12 @@ final class OddsChangeMessage extends FeedEventMessage implements OddsChange<Spo
             MessageTimestamp timestamp,
             Supplier<List<MarketWithOdds>> markets) {
         super(event, message.getRequestId(), raw, producer, timestamp);
-        this.build = markets;
+        this.markets = new Built<>(markets);
     }
 
     @Override
     public List<MarketWithOdds> getMarkets() {
-        List<MarketWithOdds> built = markets;
-        if (built == null) {
-            built = build.get();
-            markets = built;
-        }
-        return built;
+        return markets.get();
     }
 
     /** @deprecated the feed never sends this value. */

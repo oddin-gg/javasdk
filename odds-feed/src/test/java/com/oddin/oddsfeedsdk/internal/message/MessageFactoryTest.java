@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.message;
 
 import static com.oddin.oddsfeedsdk.internal.message.MessageWorld.MATCH;
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
@@ -27,10 +28,15 @@ import com.oddin.oddsfeedsdk.mq.entities.OutcomeOdds;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
 import com.oddin.oddsfeedsdk.mq.entities.UnparsableMessage;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -342,6 +348,53 @@ class MessageFactoryTest {
         assertThat(later.getMarkets().getFirst().getName())
                 .as("a later message's")
                 .isEqualTo("Match Winner");
+    }
+
+    @Test
+    void anOutcomeNamedHomeOfAnEventWithoutCompetitorsIsNullUnderThrowAsIn0x() throws Exception {
+        world.api.respond(MARKETS, 200, markets("""
+                <market id="1" name="Winner" groups="all"><outcomes><outcome id="1" name="home"/>\
+                <outcome id="2" name="away"/><outcome id="3" name="draw"/></outcomes></market>
+                """));
+        String xml = oddsChange(
+                        "<market id=\"1\" status=\"1\"><outcome id=\"1\" odds=\"2\"/><outcome id=\"3\" odds=\"2\"/></market>")
+                .replace("od:match:198314", "od:tournament:1042");
+        var message = world.decode(xml);
+        var change = (OddsChange<?>) world.messages.build(
+                message,
+                world.messages.event(MessageWorld.route("hi.-.live.odds_change.5.od:tournament.1042.-")),
+                requireNonNull(world.producers.getProducer(2)),
+                xml.getBytes(StandardCharsets.UTF_8),
+                new MessageTimestamp(1, 1, 1, 1));
+        assertThat(requireNonNull(change).getMarkets().getFirst().getOutcomeOdds())
+                .extracting(Outcome::getName)
+                .as("a tournament has no home competitor; the description has the outcome")
+                .containsExactly(null, "draw");
+    }
+
+    @Test
+    void aMessagesMarketsAreOneListForEveryReader() throws Exception {
+        var calls = new AtomicInteger();
+        var nested = new AtomicReference<List<MarketWithOdds>>();
+        var holder = new AtomicReference<OddsChangeMessage>();
+        // the first build is overtaken by a second reader, which builds and stores first
+        var change = new OddsChangeMessage(
+                world.messages.event(MessageWorld.route("hi.-.live.odds_change.5.od:match.198314.-")),
+                (OFOddsChange) world.decode(Fixtures.read(ODDS_CHANGE)),
+                new byte[0],
+                requireNonNull(world.producers.getProducer(2)),
+                new MessageTimestamp(1, 1, 1, 1),
+                () -> {
+                    if (calls.incrementAndGet() == 1) {
+                        nested.set(holder.get().getMarkets());
+                    }
+                    return new ArrayList<>();
+                });
+        holder.set(change);
+        List<MarketWithOdds> first = change.getMarkets();
+        assertThat(first).as("the list the other reader stored").isSameAs(nested.get());
+        assertThat(change.getMarkets()).isSameAs(first);
+        assertThat(calls).hasValue(2);
     }
 
     @Test
