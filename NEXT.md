@@ -151,9 +151,10 @@ types in packages whose name contains `internal`.
     from what it held, are null when they cannot load, under `THROW` too.
   - A member list is its entity's id list: a match's or a tournament's competitors, a
     competitor's players. It returns at once, as 0.0.x's lazy members did: the members'
-    profiles start loading in the background, on the side-load queue, and a reader of a
-    member joins its load. A member whose profile cannot load is still listed, and its
-    own getters fail.
+    profiles start loading in the background, on the side-loads a message's preload
+    leaves idle, so a long list never crowds the preload out, and a reader of a member
+    joins its load. A member whose profile cannot load is still listed, and its own
+    getters fail.
   - Every collection a getter returns is a new mutable one, the caller's own.
 - The cache is updated before the listener callback runs, so `match.getStatus()` inside
   `onOddsChange` sees the state the message carried. Same as today.

@@ -35,6 +35,15 @@ final class EntityWorld implements AutoCloseable {
 
     private EntityWorld(
             FakeRestServer api, ExceptionHandlingStrategy strategy, boolean warm, ExecutorService threads, int fanOut) {
+        this(api, strategy, warm ? new SideLoads(1_000, 4, TIMEOUT) : new SideLoads(1, 0, TIMEOUT), threads, fanOut);
+    }
+
+    private EntityWorld(
+            FakeRestServer api,
+            ExceptionHandlingStrategy strategy,
+            SideLoads sideLoads,
+            ExecutorService threads,
+            int fanOut) {
         this.api = api;
         this.threads = threads;
         var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
@@ -45,7 +54,7 @@ final class EntityWorld implements AutoCloseable {
         client = new ApiClient(configuration, ApiEvents.NONE);
         profiles = new ProfileCaches(client, TIMEOUT, threads, time, time);
         // without workers, a side-load waits in the queue for good: the test sees only its own loads
-        sideLoads = warm ? new SideLoads(1_000, 4, TIMEOUT) : new SideLoads(1, 0, TIMEOUT);
+        this.sideLoads = sideLoads;
         matches = new MatchCaches(client, profiles, sideLoads, TIMEOUT, Locale.ENGLISH, threads, time, time);
         entities = new Entities(matches, profiles, EntityWorld::describe, strategy, TIMEOUT, threads, fanOut);
         sportsInfo = new SportsInfo(entities, client, Locale.ENGLISH);
@@ -55,6 +64,16 @@ final class EntityWorld implements AutoCloseable {
     static EntityWorld start(ExceptionHandlingStrategy strategy) {
         return new EntityWorld(
                 FakeRestServer.start(), strategy, false, Executors.newVirtualThreadPerTaskExecutor(), 16);
+    }
+
+    /** With side-loads of this capacity and these workers, for a test of what they take and drop. */
+    static EntityWorld withSideLoads(int capacity, int workers) {
+        return new EntityWorld(
+                FakeRestServer.start(),
+                ExceptionHandlingStrategy.THROW,
+                new SideLoads(capacity, workers, TIMEOUT),
+                Executors.newVirtualThreadPerTaskExecutor(),
+                16);
     }
 
     /** With the side-loads a summary starts. */

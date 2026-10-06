@@ -228,11 +228,12 @@ public final class MatchCaches {
     }
 
     /**
-     * Queues a best-effort load in the background, as the competitors of a summary are: never waits,
-     * and a full queue drops it, for a reader to load what it needs itself.
+     * Queues a load that only warms what a reader may want later, such as the members of a list, to
+     * run on the side-loads the others leave idle: it never takes the room, or every worker, that a
+     * summary's competitors and a message's preload need. Never waits; a full queue drops it.
      */
-    public boolean sideLoad(SideLoads.Load load) {
-        return sideLoads.offer(load);
+    public boolean warmUp(SideLoads.Load load) {
+        return sideLoads.offerWhenIdle(load);
     }
 
     /** The locale the fixtures are loaded in. */
