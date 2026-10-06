@@ -1086,9 +1086,10 @@ class RecoveryActorTest {
         RecoveryActor closed = actor(settings());
         closed.beforeMachineClose = closes::incrementAndGet;
         closed.close();
+        closed.close();
         closed.start();
         assertThat(closed.threadStarted()).as("the closed actor's thread").isFalse();
-        assertThat(closes).hasValue(1);
+        assertThat(closes).as("machine closes, closed twice").hasValue(1);
 
         RecoveryActor started = actor(settings());
         started.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
@@ -1211,7 +1212,8 @@ class RecoveryActorTest {
         long later = System.currentTimeMillis();
         session.processed(PRE, later, later + 3, 0);
         assertThat(told.next()).isEqualTo("session 1 caught up");
-        assertThat(producers.isProducerDown(PRE)).as("for a lagging session").isFalse();
+        // the stale samples may trip the processing delay until the next tick, so wait for it
+        awaitUp(PRE);
         assertThat(api.requests).as("nothing asked for").isEmpty();
     }
 
@@ -1233,7 +1235,7 @@ class RecoveryActorTest {
         stale(session);
         api.next();
         assertThat(told.next()).startsWith("session 1 not reset for producer 1: ");
-        assertThat(transport.resets.getCount()).as("resets made").isEqualTo(1);
+        assertThat(transport.resets.getCount()).as("no channel replaced").isEqualTo(1);
         assertThat(actor.counters().resetRequestsFailed()).isEqualTo(1);
     }
 
