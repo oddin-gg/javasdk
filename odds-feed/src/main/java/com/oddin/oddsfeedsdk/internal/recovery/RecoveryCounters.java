@@ -20,6 +20,7 @@ public final class RecoveryCounters {
     final AtomicLong eventRefused = new AtomicLong();
     final AtomicLong eventExpired = new AtomicLong();
     final AtomicLong eventAbandoned = new AtomicLong();
+    final AtomicLong eventStatusesDropped = new AtomicLong();
     final AtomicLong resets = new AtomicLong();
     final AtomicLong resetDropped = new AtomicLong();
     final AtomicLong resetRequestsFailed = new AtomicLong();
@@ -82,6 +83,14 @@ public final class RecoveryCounters {
     /** Event recoveries given up because their snapshot complete went with a lost queue. */
     public long eventAbandoned() {
         return eventAbandoned.get();
+    }
+
+    /**
+     * Ended event recoveries whose status was forgotten before its five minutes, to keep at most
+     * {@link EventRecoveryStatuses#ENDED_KEPT}.
+     */
+    public long eventStatusesDropped() {
+        return eventStatusesDropped.get();
     }
 
     /** Channels the safety net replaced. */

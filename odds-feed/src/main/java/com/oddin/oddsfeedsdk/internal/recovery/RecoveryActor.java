@@ -69,6 +69,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
     private final RecoveryMachine machine;
     private final RecoveryCounters counters;
+    /** The event recoveries' statuses: the machine writes them, on the actor's thread. */
+    private final EventRecoveryStatuses statuses;
+
     private final Queue<Fact> essential = new ConcurrentLinkedQueue<>();
     private final Queue<Fact> control;
     private final Queue<Fact> samples;
@@ -149,8 +152,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         this.workers = workers;
         this.clock = clock;
         this.tickMillis = Math.max(1, settings.tick().toMillis());
-        this.machine =
-                new RecoveryMachine(producers, settings, new Work(), new Guarded(events), clock, counters, random);
+        this.statuses = new EventRecoveryStatuses(clock, counters);
+        this.machine = new RecoveryMachine(
+                producers, settings, new Work(), new Guarded(events), clock, counters, statuses, random);
         this.thread = Thread.ofPlatform().daemon().name("oddsfeed-recovery").unstarted(this::run);
     }
 
@@ -273,6 +277,15 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
     public RecoveryCounters counters() {
         return counters;
+    }
+
+    /**
+     * Where the event recovery with this request id is - pending, completed, failed or timed out -
+     * or null for an id the actor never asked for, or one that ended more than five minutes ago.
+     * Producer recoveries have none. Never waits for the actor.
+     */
+    public @Nullable EventRecoveryStatus recoveryStatus(long requestId) {
+        return statuses.get(requestId);
     }
 
     /** Whether the actor's thread runs, for a test. */
