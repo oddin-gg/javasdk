@@ -6,11 +6,14 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.api.factories.OutcomeType;
 import com.oddin.oddsfeedsdk.internal.catalog.LocalizedMarket;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -33,6 +36,8 @@ import org.jspecify.annotations.Nullable;
 final class MarketNames {
 
     private static final String PLAYER_PROPS = "player_props";
+    /** A {@code {specifier}} in a name's template; the innermost, when braces nest. */
+    private static final Pattern PLACEHOLDER = Pattern.compile("\\{([^{}]*)}");
 
     private final Naming naming;
     private final int marketId;
@@ -101,7 +106,11 @@ final class MarketNames {
         if (held == null) {
             // read outside the map, so a fetch holds up no other locale's reader
             held = Optional.ofNullable(naming.catalog().market(marketId, variant, locale));
-            described.putIfAbsent(locale, held);
+            // of two first readers, both keep the one stored, so every name reads the same description
+            Optional<LocalizedMarket> first = described.putIfAbsent(locale, held);
+            if (first != null) {
+                held = first;
+            }
         }
         return held.orElse(null);
     }
@@ -115,32 +124,39 @@ final class MarketNames {
         };
     }
 
+    /**
+     * The template with each {@code {specifier}} it names filled in, in one pass over the template:
+     * what a value brings in is not filled in again. 0.0.x filled in one specifier after another, so a
+     * value naming another specifier was filled in too, and a chain of them, each naming the next
+     * twice, doubled the name at each link.
+     */
     private String filledIn(String template, List<String> groups, Locale locale) {
         if (specifiers.isEmpty()) {
             return template;
         }
-        String name = template;
         boolean props = groups.contains(PLAYER_PROPS);
-        for (Map.Entry<String, String> specifier : specifiers.entrySet()) {
-            String key = "{" + specifier.getKey() + "}";
-            if (!name.contains(key)) {
-                continue;
+        var values = new HashMap<String, String>();
+        return PLACEHOLDER.matcher(template).replaceAll(placeholder -> {
+            String key = placeholder.group(1);
+            String value = specifiers.get(key);
+            if (value == null) {
+                return Matcher.quoteReplacement(placeholder.group());
             }
-            String value = specifier.getValue();
-            String filled = switch (value) {
-                case "home" -> competitorName(true, locale);
-                case "away" -> competitorName(false, locale);
-                default -> value;
-            };
-            if (filled == null) {
-                filled = value;
-            }
-            if (props) {
-                filled = playerName(filled, locale);
-            }
-            name = name.replace(key, filled);
+            return Matcher.quoteReplacement(values.computeIfAbsent(key, _ -> filled(value, props, locale)));
+        });
+    }
+
+    /** A specifier's value as a name shows it. */
+    private String filled(String value, boolean props, Locale locale) {
+        String filled = switch (value) {
+            case "home" -> competitorName(true, locale);
+            case "away" -> competitorName(false, locale);
+            default -> value;
+        };
+        if (filled == null) {
+            filled = value;
         }
-        return name;
+        return props ? playerName(filled, locale) : filled;
     }
 
     private @Nullable String competitorName(boolean home, Locale locale) {
