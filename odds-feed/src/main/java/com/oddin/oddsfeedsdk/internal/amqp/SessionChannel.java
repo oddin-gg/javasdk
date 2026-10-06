@@ -185,13 +185,13 @@ final class SessionChannel implements SessionTransport {
                 // closed for good: neither the epoch nor the queue is the reset's any more
                 return true;
             }
+            if (closing.getAsBoolean()) {
+                // the transport closes, and closes this channel next, its connection cut or about to
+                // be: nothing is replaced, and the deliveries taken already stay for the session
+                return true;
+            }
             Connection now = connection.get();
             if (now == null || !now.isOpen()) {
-                if (closing.getAsBoolean()) {
-                    // the transport aborted the connection to close, and closes this channel next:
-                    // nothing is replaced, and the deliveries taken already stay for the session
-                    return true;
-                }
                 // no connection to open one on: move the epoch on, and the reconnect opens the channel;
                 // a loss told stays told, for that open to tell the new channel
                 closeChannel();

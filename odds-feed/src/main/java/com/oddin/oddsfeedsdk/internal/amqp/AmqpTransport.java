@@ -85,6 +85,8 @@ public final class AmqpTransport implements AutoCloseable {
     private volatile boolean failed;
     /** A test's hook: runs under the lock once a connect has opened every channel, before up is told. */
     volatile Runnable afterChannelsOpen = () -> {};
+    /** A test's hook: runs in close() once it is marked closing, before the connection is aborted. */
+    volatile Runnable beforeAbort = () -> {};
     /** A test's hook: runs in close() once the connection is aborted, before the channels close. */
     volatile Runnable afterAbort = () -> {};
 
@@ -262,6 +264,7 @@ public final class AmqpTransport implements AutoCloseable {
     public void close() {
         closed = true;
         closing.countDown();
+        beforeAbort.run();
         // a declare or bind the broker does not answer holds the lock; cut the connection under it
         // first, so it fails at once instead of at its timeout
         Connection now = connection;
