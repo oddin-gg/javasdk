@@ -28,11 +28,13 @@ import com.oddin.oddsfeedsdk.mq.entities.OutcomeOdds;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
 import com.oddin.oddsfeedsdk.mq.entities.UnparsableMessage;
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFChangeType;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -489,8 +491,25 @@ class MessageFactoryTest {
         assertThat(MarketStatus.Companion.fromFeedValue(
                         com.oddin.oddsfeedsdk.schema.feed.v1.OFMarketStatus.HANDED_OVER))
                 .isEqualTo(MarketStatus.HANDED_OVER);
-        assertThat(FixtureChangeType.Companion.fromFeedType(com.oddin.oddsfeedsdk.schema.feed.v1.OFChangeType.DATETIME))
+        assertThat(FixtureChangeType.Companion.fromFeedType(OFChangeType.DATETIME))
                 .isEqualTo(FixtureChangeType.TIME_UPDATE);
+    }
+
+    @Test
+    @SuppressWarnings("deprecation") // FORMAT is no longer sent, and still maps as in 0.0.x
+    void everyChangeTypeOfTheFeedMapsAsIn0x() {
+        var expected = new EnumMap<OFChangeType, FixtureChangeType>(Map.of(
+                OFChangeType.NEW, FixtureChangeType.NEW,
+                OFChangeType.DATETIME, FixtureChangeType.TIME_UPDATE,
+                OFChangeType.CANCELLED, FixtureChangeType.CANCELLED,
+                OFChangeType.FORMAT, FixtureChangeType.OTHER_CHANGE,
+                OFChangeType.COVERAGE, FixtureChangeType.COVERAGE,
+                OFChangeType.STREAM_URL, FixtureChangeType.STREAM_URL,
+                OFChangeType.UNKNOWN, FixtureChangeType.OTHER_CHANGE));
+        assertThat(expected.keySet()).as("every type the feed has").containsExactly(OFChangeType.values());
+        expected.forEach((type, mapped) ->
+                assertThat(FixtureChangeType.fromFeedType(type)).as("%s", type).isEqualTo(mapped));
+        assertThat(FixtureChangeType.fromFeedType(null)).as("none sent").isEqualTo(FixtureChangeType.OTHER_CHANGE);
     }
 
     private static String oddsChange(String markets) {
