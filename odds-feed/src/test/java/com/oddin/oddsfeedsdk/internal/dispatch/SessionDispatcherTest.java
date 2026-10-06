@@ -75,7 +75,7 @@ class SessionDispatcherTest {
 
     private final MessageWorld world = MessageWorld.start();
     private final Failures failures = new Failures();
-    private final EventsDispatcher events = new EventsDispatcher(failures, null, world.producers);
+    private final EventsDispatcher events = new EventsDispatcher(failures, null, world.producers::getProducer);
     private final ClockOffsets offsets = new ClockOffsets(world.producers);
     private final FixtureChanges fixtureChanges = new FixtureChanges();
     private final Transport transport = new Transport();

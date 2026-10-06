@@ -84,7 +84,7 @@ class FeedMessageGoldenTest {
     private static final List<String> NOT_DELIVERED = List.of("alive", "snapshot_complete");
 
     private final MessageWorld world = MessageWorld.start();
-    private final EventsDispatcher events = new EventsDispatcher(new Quiet(), null, world.producers);
+    private final EventsDispatcher events = new EventsDispatcher(new Quiet(), null, world.producers::getProducer);
     private final List<EventMessage<?>> delivered = new ArrayList<>();
     private final List<@Nullable MatchStatus> statuses = new ArrayList<>();
     private long now;

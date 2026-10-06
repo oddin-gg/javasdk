@@ -1,7 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.events;
 
 import com.oddin.oddsfeedsdk.OddsFeedSession;
-import com.oddin.oddsfeedsdk.ProducerManager;
+import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.recovery.ProducerStatusChange;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongFunction;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -87,7 +88,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
 
     private final GlobalEventsListener listener;
     private final @Nullable OddsFeedExtListener extListener;
-    private final ProducerManager producers;
+    private final LongFunction<@Nullable Producer> producers;
     private final InstantSource clock;
     private final int controlCapacity;
 
@@ -130,10 +131,14 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
 
     /**
      * @param extListener the client's extended listener, null for none
-     * @param producers what a producer status message names its producer from
+     * @param producers what a producer status message names its producer from, by id: asked only
+     *     when a status is delivered, so the feed binds it once the producer list has come, through a
+     *     REST client that already reports here
      */
     public EventsDispatcher(
-            GlobalEventsListener listener, @Nullable OddsFeedExtListener extListener, ProducerManager producers) {
+            GlobalEventsListener listener,
+            @Nullable OddsFeedExtListener extListener,
+            LongFunction<@Nullable Producer> producers) {
         this(
                 listener,
                 extListener,
@@ -148,7 +153,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     EventsDispatcher(
             GlobalEventsListener listener,
             @Nullable OddsFeedExtListener extListener,
-            ProducerManager producers,
+            LongFunction<@Nullable Producer> producers,
             InstantSource clock,
             int controlCapacity,
             int telemetryCapacity,
@@ -506,7 +511,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private ProducerStatusMessage message(ProducerStatusChange change) {
         long at = change.timestamp();
         return new ProducerStatusMessage(
-                producers.getProducer(change.producerId()),
+                producers.apply(change.producerId()),
                 new MessageTimestamp(at, at, at, at),
                 change.down(),
                 change.delayed(),

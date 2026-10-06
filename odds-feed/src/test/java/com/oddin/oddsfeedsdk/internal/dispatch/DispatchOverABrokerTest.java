@@ -51,7 +51,7 @@ class DispatchOverABrokerTest {
 
     private final MessageWorld world = MessageWorld.start();
     private static @Nullable FakeFeed feed;
-    private final EventsDispatcher events = new EventsDispatcher(new Quiet(), null, world.producers);
+    private final EventsDispatcher events = new EventsDispatcher(new Quiet(), null, world.producers::getProducer);
     private final ClockOffsets offsets = new ClockOffsets(world.producers);
     private final BlockingQueue<String> heard = new LinkedBlockingQueue<>();
     private final BlockingQueue<String> alives = new LinkedBlockingQueue<>();

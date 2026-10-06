@@ -776,7 +776,8 @@ class EventsDispatcherTest {
     }
 
     private EventsDispatcher dispatcher(@Nullable OddsFeedExtListener ext, int control, int telemetry, long bytes) {
-        var made = new EventsDispatcher(listener, ext, producers, InstantSource.system(), control, telemetry, bytes);
+        var made = new EventsDispatcher(
+                listener, ext, producers::getProducer, InstantSource.system(), control, telemetry, bytes);
         dispatcher = made;
         return made;
     }
