@@ -150,9 +150,18 @@ class MatchCachesTest {
     void theMatchesAndFixturesHeldAreWhatTheirOptionsSetAndTheLiveStateFollowsTheMatches() {
         assertThat(caches.bounds()).as("0.0.x's defaults").containsExactly(10_000L, 10_000L, 10_000L);
         assertThat(sized(11, 22).bounds()).containsExactly(11L, 22L, 11L);
-        assertThat(sized(0, 22).bounds())
-                .as("a match cache of none still keeps one live state")
-                .containsExactly(0L, 22L, 1L);
+    }
+
+    @Test
+    void aMatchAndAFixtureStillReadWhenTheirCachesAreSetToHoldNone() {
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        var none = sized(0, 0);
+        assertThat(none.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
+                .as("what the read loaded stays for it to take")
+                .isEqualTo("Team Alpha vs Team Beta");
+        assertThat(none.fixture(MATCH).get(START_TIME, null)).isEqualTo(Instant.parse("2026-08-26T18:00:00Z"));
+        assertThat(none.bounds()).as("one each").containsExactly(1L, 1L, 1L);
     }
 
     @Test

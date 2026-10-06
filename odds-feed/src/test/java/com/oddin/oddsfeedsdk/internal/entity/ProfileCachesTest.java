@@ -80,6 +80,8 @@ class ProfileCachesTest {
         var sized =
                 new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.from(configuration), threads, time, time);
         assertThat(sized.bounds()).containsExactly(33L, 44L, 10_000L, 10_000L);
+        var none = new ProfileCaches(client, Duration.ofSeconds(10), new CacheSizes(0, 0, 0, -1), threads, time, time);
+        assertThat(none.bounds()).as("one each at least").containsExactly(1L, 1L, 10_000L, 10_000L);
     }
 
     @Test

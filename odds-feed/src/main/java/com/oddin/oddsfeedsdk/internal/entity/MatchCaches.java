@@ -79,8 +79,7 @@ public final class MatchCaches {
      * @param profiles what a match's responses fill, and where its competitors are side-loaded
      * @param sideLoads where the competitors' profiles are loaded after a summary
      * @param timeout the HTTP client timeout, each load's deadline
-     * @param sizes how many matches and fixtures are cached; the live state holds as many matches,
-     *     one at least
+     * @param sizes how many matches and fixtures are cached; the live state holds as many matches
      * @param fetches where the loads run: virtual threads
      */
     public MatchCaches(
@@ -122,8 +121,8 @@ public final class MatchCaches {
         Duration longestFetch = timeout.plus(MARGIN);
         this.matches = new EntityCache<>("match", sizes.matches(), AGE, longestFetch, clock, ticker);
         this.fixtures = new EntityCache<>("fixture", sizes.fixtures(), AGE, longestFetch, clock, ticker);
-        // one record per match, read with it; a match cache of none still keeps the live state's one
-        this.live = new LiveState<>(Math.max(1, sizes.matches()), ticker);
+        // one record per match, read with it
+        this.live = new LiveState<>(sizes.matches(), ticker);
         this.summaries = new Loader<>("match", this::fetchSummary, timeout, MARGIN, fetches);
         this.fixtureLoads = new Loader<>("fixture", this::fetchFixture, timeout, MARGIN, fetches);
     }
