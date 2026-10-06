@@ -85,6 +85,23 @@ added | subscribe/ApiCallEvent | one HTTP attempt of an API call
 added | subscribe/CallbackFailure | a callback that threw, or a step of the SDK's own that failed
 added | subscribe/OddsFeedExtListener.onRawFeedMessageBytes ([BLcom/oddin/oddsfeedsdk/mq/MessageInterest;Lcom/oddin/oddsfeedsdk/mq/RoutingKeyInfo;Lcom/oddin/oddsfeedsdk/mq/entities/MessageTimestamp;)V | a feed message as the bytes the broker delivered
 added | subscribe/OddsFeedExtListener.onRawApiDataBytes (Ljava/net/URI;[B)V | an API response as the bytes the API answered
+added | subscribe/GlobalEventsListener.onProducerCauseChange (Lcom/oddin/oddsfeedsdk/subscribe/ProducerCauseChange;)V | every change of a producer's status, its cause included, a change of the cause alone too
+added | subscribe/GlobalEventsListener.onSafetyNetEvent (Lcom/oddin/oddsfeedsdk/subscribe/SafetyNetEvent;)V | the safety net reset a session too far behind, or could not
+added | subscribe/GlobalEventsListener.onSessionLagChange (Lcom/oddin/oddsfeedsdk/subscribe/SessionLagChange;)V | a session fell behind with the safety net's resets spent, or caught up
+added | subscribe/GlobalEventsListener.onHealthEvent (Lcom/oddin/oddsfeedsdk/subscribe/HealthEvent;)V | a part of the feed changed its health, as the SDK's own watch found
+added | subscribe/ProducerStatusCause | why a producer is down or up, in more detail than the 0.0.x reason
+added | subscribe/ProducerCauseChange | a change of a producer's status, with its cause
+added | subscribe/SafetyNetEvent | what the safety net did about a session too far behind
+added | subscribe/SafetyNetEvent$Kind | a reset made, or a recovery request the API refused
+added | subscribe/SessionLagChange | a session lagging, or caught up again
+added | subscribe/HealthEvent | a change of a part of the feed's health
+added | subscribe/HealthState | healthy, degraded or unhealthy
+added | subscribe/HealthComponent | the parts of the feed whose health the SDK watches
+
+# An event recovery's status by its request id, as the Go SDK keeps it.
+added | RecoveryManager.getEventRecoveryStatus (J)Lcom/oddin/oddsfeedsdk/api/entities/EventRecoveryStatus; | an event recovery's status by its request id, kept five minutes after it ends
+added | api/entities/EventRecoveryStatus | an event recovery's status: pending, completed, failed or timed out
+added | api/entities/EventRecoveryStatus$State | the four states of an event recovery
 
 # ---- feed XML classes, generated from the vendored schema
 # The schema describes what the producers send. What it dropped as legacy, the classes do not have.

@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatusReason;
+import com.oddin.oddsfeedsdk.subscribe.ProducerStatusCause;
 
 /**
  * Why a producer went down or came back, more precisely than the public reason, which keeps 0.0.x's
@@ -55,5 +56,23 @@ public enum StatusCause {
     /** The cause in a few words, for the log and the client. */
     public String description() {
         return description;
+    }
+
+    /** The cause as the client hears it. */
+    public ProducerStatusCause toPublic() {
+        return switch (this) {
+            case STARTING -> ProducerStatusCause.STARTING;
+            case FIRST_RECOVERY_COMPLETED -> ProducerStatusCause.FIRST_RECOVERY_COMPLETED;
+            case RECOVERY_COMPLETED -> ProducerStatusCause.RECOVERY_COMPLETED;
+            case DELAY_STABILIZED -> ProducerStatusCause.PROCESSING_QUEUE_DELAY_STABILIZED;
+            case UNSUBSCRIBED -> ProducerStatusCause.UNSUBSCRIBED;
+            case ALIVE_INTERVAL_VIOLATION -> ProducerStatusCause.ALIVE_INTERVAL_VIOLATION;
+            case PROCESSING_DELAY -> ProducerStatusCause.PROCESSING_QUEUE_DELAY_VIOLATION;
+            case CONNECTION_LOST -> ProducerStatusCause.CONNECTION_LOST;
+            case CHANNEL_LOST -> ProducerStatusCause.CHANNEL_LOST;
+            case SESSION_OPENED -> ProducerStatusCause.SESSION_OPENED;
+            case SAFETY_NET_RESET -> ProducerStatusCause.SAFETY_NET_RESET;
+            case RECOVERY_FAILED -> ProducerStatusCause.RECOVERY_FAILED;
+        };
     }
 }
