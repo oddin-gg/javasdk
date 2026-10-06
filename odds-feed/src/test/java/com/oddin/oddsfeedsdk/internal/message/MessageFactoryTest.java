@@ -267,6 +267,40 @@ class MessageFactoryTest {
                 .isEqualTo("{s0}{s0} to win map 2, {s0}{s0} again, {unknown} as it is");
     }
 
+    /** What a replacement reads as a group or an escape is text in a name, as 0.0.x's plain replace kept it. */
+    @Test
+    void aFilledInValueIsTakenAsItIsDollarsAndBackslashesIncluded() throws Exception {
+        String odd = "$1 ${x} \\";
+        world.api.respond(MARKETS, 200, markets("""
+                <market id="2" name="{team} to win map {mapnr}" groups="all"/>
+                <market id="3" name="{player} to score" groups="all|player_props"/>
+                """));
+        world.api.respond(
+                "/v1/sports/en/competitors/od:competitor:47215/profile",
+                200,
+                Fixtures.read("rest/competitor/competitor_profile_no_players.xml")
+                        .replace("od:competitor:47214", "od:competitor:47215")
+                        .replace("Team Alpha", "Team " + odd));
+        // a player no competitor profile lists, so only its own profile names it
+        world.api.respond(
+                "/v1/sports/en/players/od:player:9002/profile",
+                200,
+                Fixtures.read("rest/player/player_profile.xml")
+                        .replace("od:player:9001", "od:player:9002")
+                        .replace("Player One", "Player " + odd));
+        var change = (OddsChange<?>) world.build(oddsChange("""
+                <market id="2" specifiers="team=away|mapnr=%s" status="1"/>
+                <market id="2" specifiers="team=%s|mapnr=1" status="1"/>
+                <market id="3" specifiers="player=od:player:9002" status="1"/>
+                """.formatted(odd, odd)));
+        assertThat(change.getMarkets())
+                .extracting(Market::getName)
+                .containsExactly(
+                        "Team $1 ${x} \\ to win map $1 ${x} \\",
+                        "$1 ${x} \\ to win map 1",
+                        "Player $1 ${x} \\ to score");
+    }
+
     @Test
     void anOutcomeTheDescriptionDoesNotListIsThePlayerOrCompetitorOfAMarketOfThem() throws Exception {
         world.api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:770", 200, markets("""
