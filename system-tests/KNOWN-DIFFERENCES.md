@@ -395,3 +395,32 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Pinned by:** `SessionScenarioIT.aSessionBuiltAfterOpenIsRefused`
 - **Found:** by reading the source (`OddsFeedSessionBuilderImpl.build`, `OddsFeed.open`), and by
   test against 0.0.57.
+
+## KD-30 An event recovery asked for before open() is sent, and what it recovers is lost
+
+- **0.0.x:** `initiateEventOddsMessagesRecovery` and `initiateEventStatefulMessagesRecovery`
+  before `open()` send the request at once, after the feed's lazy start, and return its request
+  id. No session's queue exists yet, so the messages the recovery sends reach no queue and are
+  lost, and nothing says so.
+- **1.0:** Before `open()` both return null and log a warning; nothing is sent (section 3,
+  Behaviour that stays: "an event recovery asked for before it is not accepted (null), since no
+  queue exists yet for its messages"). The Go SDK refuses too, with an error saying the manager is
+  not open, which a caller may retry.
+- **Why:** A request id the client keeps for a recovery whose messages can never arrive is a
+  recovery it waits for in vain.
+- **Pinned by:** `BeforeOpenScenarioIT.anEventRecoveryAskedForBeforeOpenIsNotSent`
+- **Found:** by reading the source (`SDKRecoveryManagerImpl.makeEventRecovery`, `OddsFeed.open`).
+
+## KD-31 Raw API data before open() does not reach the extended listener
+
+- **0.0.x:** The extended listener's `onRawApiDataReceived` is subscribed only inside `open()`
+  (`ApiClient.subscribeForData`), so the responses of the calls a client makes through the
+  managers before it, and of the feed's own start, are not handed to it.
+- **1.0:** The events dispatcher starts with the feed, on the first call that starts it, so the
+  extended listener gets the raw data of every response from then on, before and after `open()`,
+  and the global listener's `onApiCall` hears every call as it is made, as the Go SDK reports its
+  API events from the start. Additive: a client gets more, never less.
+- **Why:** A client that logs or audits the raw API data misses what came before `open()`, the
+  start's own whoami and producer list among it.
+- **Pinned by:** `BeforeOpenScenarioIT.rawApiDataBeforeOpenReachesTheExtendedListener`
+- **Found:** by reading the source (`OddsFeed.open`, `ApiClientImpl.subscribeForData`).
