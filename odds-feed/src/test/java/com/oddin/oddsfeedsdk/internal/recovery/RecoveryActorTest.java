@@ -117,6 +117,29 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aTickThatFindsTheProducerSilentTakesThePointBackToItsLastSubscribedAlive() throws InterruptedException {
+        RecoveryActor actor = actor(withInactivity(Duration.ofSeconds(2), null));
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        Request first = api.next();
+        session.snapshotComplete(PRE, first.requestId());
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        Instant processed = Instant.ofEpochMilli(lastSubscribed + 1_000);
+        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        awaitTimestampForRecovery(held, processed::equals, "the message processed");
+
+        // nothing more is posted: only the actor's ticks see the producer silent
+        awaitTimestampForRecovery(
+                held,
+                Instant.ofEpochMilli(lastSubscribed)::equals,
+                "the producer's gap from its last subscribed alive");
+    }
+
+    @Test
     void aGapQueuedWhenTheCloseComesTakesThePointBackBeforeTheActorEnds() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
@@ -1499,6 +1522,27 @@ class RecoveryActorTest {
                 settings.firstResetBackoff(),
                 settings.eventRecoveries(),
                 tick);
+    }
+
+    /** The design's numbers, with another maximum inactivity and initial snapshot interval. */
+    private static RecoverySettings withInactivity(Duration maxInactivity, @Nullable Duration initialSnapshotInterval) {
+        RecoverySettings settings = settings();
+        return new RecoverySettings(
+                maxInactivity,
+                settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
+                initialSnapshotInterval,
+                settings.nodeId(),
+                settings.reissues(),
+                settings.firstReissueBackoff(),
+                settings.cooldown(),
+                settings.aliveInterval(),
+                settings.staleLimit(),
+                settings.staleWindow(),
+                settings.resets(),
+                settings.firstResetBackoff(),
+                settings.eventRecoveries(),
+                settings.tick());
     }
 
     private RecoveryActor actor(RecoverySettings settings) {
