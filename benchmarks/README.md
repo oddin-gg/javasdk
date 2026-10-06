@@ -22,7 +22,8 @@ JMH benchmarks of the SDK's hot path, with a budget per message that `./mvnw ver
   same work.
 - `BudgetTest` runs the SDK's decoder and the warm path's steps, and fails when one goes over
   `budgets.properties`:
-  allocation per message within 1.5 times the measurement, time within 5 times. Allocation
+  allocation per message within 1.5 times the measurement, time within 5 times and never under
+  10 µs, where a runner's noise weighs as much as a step of a microsecond or two. Allocation
   is the tight check, since it hardly moves between machines; time only catches a decoder
   that became several times slower. A slip back to the JDK's parser stays within both, so
   `XmlReaderTest` in `odds-feed` holds the decoder to Woodstox. JMH forks its own JVM, so the build's coverage agent
