@@ -139,6 +139,31 @@ class RecoveryActorTest {
     }
 
     @Test
+    void anEventRecoverysStatusIsReadFromAnotherThreadAsTheActorMovesIt()
+            throws InterruptedException, ExecutionException, TimeoutException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        Long requestId = requireNonNull(actor.recoverEvent(LIVE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS));
+        EventRecoveryStatus pending = requireNonNull(actor.recoveryStatus(requestId));
+        assertThat(pending.state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        assertThat(pending.eventId()).isEqualTo(MATCH);
+        assertThat(actor.recoveryStatus(requestId + 1))
+                .as("an id never asked for")
+                .isNull();
+
+        session.snapshotComplete(LIVE, requestId);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (requireNonNull(actor.recoveryStatus(requestId)).state() == EventRecoveryStatus.State.PENDING
+                && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(requireNonNull(actor.recoveryStatus(requestId)).state())
+                .isEqualTo(EventRecoveryStatus.State.COMPLETED);
+    }
+
+    @Test
     void theSafetyNetsResetRunsOnAWorkerAndCountsWhatTheQueueHeld() throws InterruptedException {
         RecoveryActor actor = actor(settings(Harness.settings().firstReissueBackoff(), Duration.ZERO));
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);

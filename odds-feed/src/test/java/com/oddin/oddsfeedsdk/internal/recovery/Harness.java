@@ -32,6 +32,7 @@ final class Harness {
     final RecoverySettings settings;
     final Producers producers;
     final RecoveryCounters counters = new RecoveryCounters();
+    final EventRecoveryStatuses recoveryStatuses = new EventRecoveryStatuses(clock, counters);
     final List<Outbox.Call> calls = new ArrayList<>();
     final List<Integer> resets = new ArrayList<>();
     final List<Long> resetNumbers = new ArrayList<>();
@@ -106,7 +107,8 @@ final class Harness {
                 events.add("session " + session + (lagging ? " lagging" : " caught up"));
             }
         };
-        this.machine = new RecoveryMachine(producers, settings, outbox, recorded, clock, counters, new Random(42));
+        this.machine = new RecoveryMachine(
+                producers, settings, outbox, recorded, clock, counters, recoveryStatuses, new Random(42));
     }
 
     /** The design's numbers, with 0.0.x's defaults for what the configuration sets. */

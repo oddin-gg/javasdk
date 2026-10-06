@@ -87,6 +87,9 @@ final class RecoveryMachine {
     private final RecoveryEvents events;
     private final InstantSource clock;
     private final RecoveryCounters counters;
+    /** Every event recovery's status, which any thread reads; written here only. */
+    private final EventRecoveryStatuses statuses;
+
     private final RequestIds ids;
 
     /** Every producer of the producer list, in its order. */
@@ -118,6 +121,7 @@ final class RecoveryMachine {
             RecoveryEvents events,
             InstantSource clock,
             RecoveryCounters counters,
+            EventRecoveryStatuses statuses,
             RandomGenerator random) {
         this.producers = producers;
         this.settings = settings;
@@ -125,6 +129,7 @@ final class RecoveryMachine {
         this.events = events;
         this.clock = clock;
         this.counters = counters;
+        this.statuses = statuses;
         this.ids = new RequestIds(random);
         for (Producer producer : producers.getAvailableProducers().values()) {
             tracks.put(
@@ -236,8 +241,15 @@ final class RecoveryMachine {
         }
     }
 
-    /** The feed is closing: whoever waits for an event recovery hears it was not accepted. */
+    /**
+     * The feed is closing: whoever waits for an event recovery hears it was not accepted, and the
+     * event recoveries still in flight have failed.
+     */
     void close() {
+        for (EventRecovery recovery : eventRecoveries.values()) {
+            ended(recovery, EventRecoveryStatus.State.FAILED, "the feed closed");
+        }
+        eventRecoveries.clear();
         for (CompletableFuture<@Nullable Long> reply : replies.values()) {
             outbox.reply(reply, null);
         }
@@ -593,7 +605,13 @@ final class RecoveryMachine {
                     eventCompleted(event);
                 }
             } else {
-                eventRecoveries.remove(requestId);
+                EventRecovery refused = eventRecoveries.remove(requestId);
+                if (refused != null) {
+                    ended(
+                            refused,
+                            EventRecoveryStatus.State.FAILED,
+                            "the API did not accept it: " + failure.getMessage());
+                }
                 counters.eventRefused.incrementAndGet();
                 LOG.warn("Event recovery request {} failed: {}", requestId, failure.getMessage());
                 outbox.reply(reply, null);
@@ -657,7 +675,9 @@ final class RecoveryMachine {
             return;
         }
         long requestId = ids.next(this::inFlight);
-        eventRecoveries.put(requestId, new EventRecovery(requestId, producerId, eventId, now(), awaited(track)));
+        var recovery = new EventRecovery(requestId, producerId, eventId, now(), awaited(track));
+        eventRecoveries.put(requestId, recovery);
+        statuses.pending(requestId, producerId, eventId, Instant.ofEpochMilli(recovery.issuedAt));
         replies.put(requestId, reply);
         counters.eventRequested.incrementAndGet();
         outbox.request(new Outbox.Call.Event(producerId, track.producer.getName(), requestId, eventId, stateful));
@@ -710,6 +730,10 @@ final class RecoveryMachine {
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
             if (now - recovery.issuedAt > settings.maxRecoveryTime().toMillis()) {
                 eventRecoveries.remove(recovery.requestId);
+                ended(
+                        recovery,
+                        EventRecoveryStatus.State.TIMED_OUT,
+                        "no snapshot complete within " + settings.maxRecoveryTime());
                 counters.eventExpired.incrementAndGet();
                 CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
                 if (reply != null) {
@@ -734,6 +758,7 @@ final class RecoveryMachine {
                         settings.maxRecoveryTime());
             }
         }
+        statuses.expire(Instant.ofEpochMilli(now));
     }
 
     // ---- recoveries
@@ -967,6 +992,7 @@ final class RecoveryMachine {
 
     private void eventCompleted(EventRecovery recovery) {
         eventRecoveries.remove(recovery.requestId);
+        ended(recovery, EventRecoveryStatus.State.COMPLETED, null);
         CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
         if (reply != null) {
             // its snapshot complete came before the API's answer, and says the API took it
@@ -974,6 +1000,11 @@ final class RecoveryMachine {
         }
         LOG.info("Event recovery {} of {} completed", recovery.requestId, recovery.eventId);
         events.eventRecoveryCompleted(recovery.producerId, recovery.eventId, recovery.requestId);
+    }
+
+    /** The event recovery's status says it ended, now, in {@code state}. */
+    private void ended(EventRecovery recovery, EventRecoveryStatus.State state, @Nullable String reason) {
+        statuses.ended(recovery.requestId, state, Instant.ofEpochMilli(now()), reason);
     }
 
     // ---- gaps and checkpoints
@@ -1338,6 +1369,7 @@ final class RecoveryMachine {
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
             if (session == null || (recovery.awaited.contains(session) && !recovery.seen.contains(session))) {
                 eventRecoveries.remove(recovery.requestId);
+                ended(recovery, EventRecoveryStatus.State.FAILED, "its snapshot went with a lost queue");
                 counters.eventAbandoned.incrementAndGet();
                 CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
                 if (reply != null) {
