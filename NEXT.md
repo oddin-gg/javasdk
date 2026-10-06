@@ -553,9 +553,14 @@ and REST workers post facts to it; it decides and posts work out.
   (existing setter) seeds every session's checkpoint at `open()`. To resume after a
   restart, a client persists the producer's resume point, the oldest of its open gaps'
   starts and its sessions' checkpoints, and passes it back through
-  `setProducerRecoveryFromTimestamp`. `Producer.getTimestampForRecovery()` reports the
-  last alive today, which can be ahead of both; ticket 26 makes it report the resume
-  point, and ticket 31 documents resuming. The point is clamped
+  `setProducerRecoveryFromTimestamp`. `Producer.getTimestampForRecovery()` reports it
+  once the feed is open, as the actor publishes it after each fact, and the client's own
+  value before; 0.0.x reported the last alive, which can be ahead of both (KD-28).
+  `getLastProcessedMessageGenTimestamp()` keeps its meaning. The resume point is not
+  clamped: passed back after a downtime longer than the stateful recovery window, the
+  setter throws `IllegalArgumentException`, as in 0.0.x, and the getter's documentation
+  tells the client to catch it and pass 0 for a full recovery. Ticket 31 documents
+  resuming. A recovery's start is clamped
   to the producer's stateful recovery window, as today - counted back by the producer's
   clock, as the gaps' starts are, with the offset measured on its alives - and a cold
   start with no seed requests a full snapshot, or the configured initial snapshot

@@ -383,6 +383,29 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   client's documentation of automatic recovery, which a channel-level error does not start;
   confirmed by test against 0.0.57, the watchdog's part in a run of two minutes.
 
+## KD-28 A producer's recovery timestamp runs ahead of what was processed
+
+- **0.0.x:** `Producer.getTimestampForRecovery()` reports the generation time of the last alive
+  on the SDK's alive channel while the producer is up, and the client's recovery-from timestamp
+  before the first. That alive is newer than the messages still queued, or in a callback, when
+  the client stops: a client that persists the value and passes it back after a restart never
+  gets those messages again.
+- **1.0:** The client's value until the feed opens; then the producer's resume point, the oldest
+  point any session that receives the producer still needs: the oldest start of a gap no
+  recovery has covered yet, or the oldest point up to which a session has processed the
+  producer's messages. It is not clamped to the stateful recovery window, so after a long
+  downtime `setProducerRecoveryFromTimestamp` refuses it, as 0.0.x refuses any timestamp that
+  old; the getter's documentation says to pass 0 then (NEXT.md section 4, Recovery and
+  producers).
+- **Why:** Resuming from 0.0.x's value can miss messages without a word; resuming from 1.0's can
+  repeat some, and misses none. A client that reads the value to see whether the producer is
+  alive sees it fall behind, or stand still while a gap is open.
+- **Pinned by:** none in the system tests yet: a scenario on both lines needs the 1.0 feed's
+  recovery, which the feed does not run yet. The recovery machine's and the producers' unit
+  tests pin it.
+- **Found:** in the source (`ProducerImpl.timestampForRecovery`,
+  `ProducerRecoveryData.systemAliveReceived`).
+
 ## KD-29 A session built after open() never receives anything
 
 - **0.0.x:** The session builder's `build()` and `buildReplay()` return a session after `open()`
