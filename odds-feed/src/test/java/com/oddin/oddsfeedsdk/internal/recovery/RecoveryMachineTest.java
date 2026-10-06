@@ -509,6 +509,27 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void anUnsubscribedAliveReceivedBeforeTheApisAnswerAndHandledAfterItJoinsTheRecovery() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        feed.unsubscribed(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        long receivedEarlier = feed.now() + 1_000;
+        feed.clock.advance(Duration.ofSeconds(2));
+        feed.accept(recovery);
+        // alives reach the actor apart from the answers: this one was received before the answer
+        feed.machine.alive(PRE, receivedEarlier, receivedEarlier, false);
+        assertThat(feed.machine.inFlightRecovery(PRE))
+                .as("joined, not given up")
+                .isEqualTo(recovery.requestId());
+        assertThat(feed.counters.abandoned()).isZero();
+        feed.machine.snapshotComplete(1, PRE, recovery.requestId());
+        assertThat(feed.snapshots(PRE)).as("one more").hasSize(3);
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+    }
+
+    @Test
     void aProducerThatRestartsDuringARecoveryGivesItUpAndIsAskedAgainAtTheNextAlive() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
@@ -855,6 +876,27 @@ class RecoveryMachineTest {
         }
         feed.runWithAlives(Duration.ofSeconds(1));
         assertThat(feed.counters.timedOut()).isEqualTo(2);
+    }
+
+    @Test
+    void anAliveSentBeforeTheRequestPutsOffTheDeadlineForItsSnapshotComplete() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.accept(feed.lastSnapshot(PRE));
+        long requestedAt = feed.now();
+        // a slow session takes nothing but alives from before the request
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.sessionAlive(1, PRE, requestedAt - 1_000, feed.now(), true);
+        }
+        assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
+        feed.runWithAlives(Duration.ofMinutes(5));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
     }
 
     @Test
