@@ -172,6 +172,15 @@ types in packages whose name contains `internal`.
   session whose interest matches, as today.
 - Recovery methods keep returning the request id as a `Long`. A new status lookup by
   request id is added next to them, not instead of them.
+- The feed starts lazily, as today: the first call of a manager getter or of
+  `getSessionBuilder()` fetches whoami and the producer list (section 4, REST) and builds
+  the caches, catalogs and managers. One start runs at a time, and callers that come
+  meanwhile wait for it. A failed start throws `InitException` ("Failed to init odds
+  feed", the reason as its cause), keeps nothing, and the next call starts again. The
+  managers work before `open()`; an event recovery asked for before it is not accepted
+  (null), since no queue exists yet for its messages. `close()` releases what the start
+  built and cuts a start under way short; after a failed start it has nothing to release
+  and logs nothing (KD-15). A closed feed does not start again.
 - `open()` is one-shot. After a fatal error the client closes the feed and creates a
   new one. Same as today.
 - Delivery is at most once, as today. Exclusive queues die with the connection, so an
@@ -347,9 +356,9 @@ itself would queue behind the wedge.
   `CATCH` returns null for the whole collection. Never a short list. A member list
   does not fan out: its members' profiles load in the background, and the list waits
   for none of them (section 3).
-- Startup: `open()` needs whoami and the producer list. It retries them inside a
-  startup deadline (default three times the HTTP timeout), then fails with a clear
-  exception. It never blocks indefinitely and never starts half-configured.
+- Startup: the feed's start (section 3) needs whoami and the producer list. It retries
+  them inside a startup deadline (default three times the HTTP timeout), then fails with
+  a clear exception. It never blocks indefinitely and never starts half-configured.
 
 ### Caches and loaders
 
