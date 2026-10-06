@@ -10,10 +10,15 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.internal.feed.FeedCore;
+import com.oddin.oddsfeedsdk.internal.feed.OpenFeed;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
+import com.oddin.oddsfeedsdk.internal.session.SessionRegistry;
+import com.oddin.oddsfeedsdk.internal.session.SessionSpec;
+import com.oddin.oddsfeedsdk.internal.session.Sessions;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
+import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -29,17 +34,17 @@ import org.slf4j.LoggerFactory;
  * with the reason as its cause, and the next call tries again. The managers work before the feed
  * opens; {@link #close} releases what the start built.
  *
- * <p>Sessions and opening the feed arrive with a later part of the rewrite; until then {@link
- * #open} throws {@link UnsupportedOperationException}, and so does {@link #getSessionBuilder} once
- * the feed has started.
+ * <p>Sessions are built before {@link #open}, which connects to the broker and starts delivering to
+ * them, once: see {@link #open} and {@link #close}.
  */
-// open() throws only until the feed is implemented, so it is not one to forbid calling
-@SuppressWarnings("DoNotCallSuggester")
 public final class OddsFeed {
 
     private static final Logger LOG = LoggerFactory.getLogger(OddsFeed.class);
 
     private static final String INIT_FAILED = "Failed to init odds feed";
+
+    /** What a second {@link #open} throws, word for word as 0.0.x threw it. */
+    static final String OPENED_ALREADY = "feed cannot already opened";
 
     /**
      * Before the feed opens there is no queue a recovery's messages could reach, so no request is
@@ -72,11 +77,12 @@ public final class OddsFeed {
     private final GlobalEventsListener listener;
     private final OddsFeedConfiguration configuration;
     private final @Nullable OddsFeedExtListener extListener;
+    private final SessionRegistry sessions;
 
     /** Held by the one start under way, so callers that come meanwhile wait for it, not start again. */
     private final ReentrantLock starting = new ReentrantLock();
 
-    /** Guards the three fields below, briefly: {@link #close} never waits for a start. */
+    /** Guards the fields below, briefly: {@link #close} never waits for a start, nor for an open. */
     private final ReentrantLock state = new ReentrantLock();
 
     /** What the start built; null until it succeeds. Read without the lock once set. */
@@ -85,12 +91,19 @@ public final class OddsFeed {
     /** The REST client of the start under way, which closing the feed closes to end the start. */
     private @Nullable ApiClient startingWith;
 
+    /** What {@link #open} added, once it has built it; null before and after an open that failed. */
+    private @Nullable OpenFeed running;
+
+    /** Whether {@link #open} has taken the sessions: it is one-shot from then on, whatever comes of it. */
+    private boolean opened;
+
     private boolean closed;
 
     public OddsFeed(GlobalEventsListener listener, OddsFeedConfiguration configuration) {
         this.listener = requireNonNull(listener, "listener");
         this.configuration = requireNonNull(configuration, "configuration");
         this.extListener = null;
+        this.sessions = new SessionRegistry(null);
     }
 
     public OddsFeed(
@@ -98,6 +111,7 @@ public final class OddsFeed {
         this.listener = requireNonNull(listener, "listener");
         this.configuration = requireNonNull(configuration, "configuration");
         this.extListener = requireNonNull(extListener, "extListener");
+        this.sessions = new SessionRegistry(extListener);
     }
 
     public static OddsFeedConfigurationBuilder getOddsFeedConfigurationBuilder() {
@@ -113,13 +127,14 @@ public final class OddsFeed {
         return SdkVersion.version();
     }
 
+    /**
+     * A builder of this feed's sessions, starting the feed as every manager getter does. Sessions
+     * are built before {@link #open}; once it has run, {@code build()} and {@code buildReplay()}
+     * throw {@link IllegalStateException}.
+     */
     public OddsFeedSessionBuilder getSessionBuilder() {
-        return sessionBuilder(core());
-    }
-
-    /** The builder of this feed's sessions, over what the start built. */
-    OddsFeedSessionBuilder sessionBuilder(FeedCore core) {
-        throw notYet();
+        core();
+        return sessions.builder();
     }
 
     public MarketDescriptionManager getMarketDescriptionManager() {
@@ -151,18 +166,69 @@ public final class OddsFeed {
         return NOT_OPEN;
     }
 
+    /**
+     * Opens the feed for the sessions built so far: starts the feed if it has not started, checks
+     * the sessions' interests combine, disables the producers no session asks for, then connects to
+     * the broker and starts delivering. All or nothing: when a step fails, what it started is
+     * closed again, nothing is left running or connected, and this throws; the managers stay, until
+     * {@link #close}. One-shot, as in 0.0.x: once the sessions are taken, a second call throws,
+     * whatever came of the first; the client closes the feed and makes a new one.
+     *
+     * @throws IllegalStateException without a session, with 0.0.x's message; the feed can then still
+     *     be opened once one is built
+     * @throws com.oddin.oddsfeedsdk.exceptions.UnsupportedMessageInterestCombination when the
+     *     sessions' interests do not combine, with 0.0.x's messages
+     * @throws InitException when the feed cannot start or reach the broker, when it was opened
+     *     already ("feed cannot already opened", as in 0.0.x), or when it is closed
+     */
     public void open() {
-        throw notYet();
+        var core = core();
+        List<SessionSpec> specs;
+        state.lock();
+        try {
+            if (closed) {
+                throw closedBeforeOpen();
+            }
+            if (opened) {
+                throw new InitException(OPENED_ALREADY, null);
+            }
+            specs = sessions.open();
+            opened = true;
+        } finally {
+            state.unlock();
+        }
+        var producers = core.producers();
+        var plan = Sessions.plan(specs, producers.getAvailableProducers(), configuration.getSdkNodeId());
+        plan.disabledProducers().forEach(id -> producers.setProducerState(id, false));
+        var run = OpenFeed.build(core, plan, configuration);
+        state.lock();
+        try {
+            if (closed) {
+                // close() saw nothing to close, and nothing has started
+                throw closedBeforeOpen();
+            }
+            running = run;
+        } finally {
+            state.unlock();
+        }
+        run.start();
+        LOG.info("Odds feed opened with {} session(s)", specs.size());
     }
 
     /**
-     * Releases what the start built, and ends a start under way, which then fails. Closing twice
-     * does nothing more, and closing a feed whose start failed has nothing to release. Once closed,
-     * the feed does not start again; the managers it had already handed out stay, closed.
+     * Stops delivering and releases everything the feed has: the broker connection, the sessions'
+     * threads once their callbacks return, and what the start built. Ends a start or an open under
+     * way, which then fails. Waits for the feed's threads within one shutdown timeout, five seconds,
+     * for all of them together; a callback still running then is left to end on its own and said so
+     * in the log. From one of the feed's own callbacks it does not wait for that callback. Closing
+     * twice does nothing more, and closing a feed whose start failed has nothing to release. Once
+     * closed, the feed does not start or open again; the managers it had already handed out stay,
+     * closed.
      */
     public void close() {
         @Nullable FeedCore built;
         @Nullable ApiClient calling;
+        @Nullable OpenFeed run;
         state.lock();
         try {
             if (closed) {
@@ -171,14 +237,25 @@ public final class OddsFeed {
             closed = true;
             built = core;
             calling = startingWith;
+            run = running;
         } finally {
             state.unlock();
         }
+        var deadline = System.nanoTime() + OpenFeed.SHUTDOWN_TIMEOUT.toNanos();
         if (calling != null) {
             calling.close();
         }
+        // every thread is told before any is waited for, so they stop together, within one deadline
+        if (run != null) {
+            run.stop();
+        }
         if (built != null) {
+            // the REST client first, so a callback waiting on a call returns at once; the events
+            // dispatcher last, which waits for its own thread
             built.close();
+        }
+        if (run != null) {
+            run.awaitStop(deadline);
         }
         LOG.debug("Odds feed closed");
     }
@@ -263,8 +340,8 @@ public final class OddsFeed {
         return new InitException(INIT_FAILED + ": the feed was closed", null);
     }
 
-    private static UnsupportedOperationException notYet() {
-        return new UnsupportedOperationException("the feed is not implemented in this build yet");
+    private static InitException closedBeforeOpen() {
+        return new InitException("Failed to open the feed: the feed was closed", null);
     }
 
     /** Holds what 0.0.x's companion object had. */
