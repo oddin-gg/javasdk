@@ -393,7 +393,7 @@ class MessageFactoryTest {
                     if (call == 1) {
                         nested.set(holder.get().getMarkets());
                     }
-                    // the first build one market, the second two: which was kept shows
+                    // the first build two markets, the second - the other reader's - one: which was kept shows
                     return Collections.nCopies(3 - call, market);
                 });
         holder.set(change);
@@ -419,6 +419,11 @@ class MessageFactoryTest {
         Map<String, String> before = Map.copyOf(specifiers);
         specifiers.clear();
         assertThat(specified.getSpecifiers()).isEqualTo(before);
+        // in the feed's order, which a hash map's would not keep: theirs is u to z
+        var ordered = (OddsChange<?>)
+                world.build(oddsChange("<market id=\"1\" specifiers=\"z=1|y=2|x=3|w=4|v=5|u=6\" status=\"1\"/>"));
+        assertThat(ordered.getMarkets().getFirst().getSpecifiers().keySet())
+                .containsExactly("z", "y", "x", "w", "v", "u");
 
         var settlement = (BetSettlement<?>) world.fixture("feed/bet_settlement/bet_settlement.xml");
         assertChangeable(settlement::getMarkets);
