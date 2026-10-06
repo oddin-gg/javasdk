@@ -222,6 +222,55 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aLossToldBeforeStartLeavesTheFirstRecoveryAtTheClientsRecoveryPoint() {
+        for (RecoverySettings settings :
+                List.of(Harness.settings(), Harness.withInitialSnapshotInterval(Duration.ofMinutes(30)))) {
+            for (String loss : List.of("connection", "channel")) {
+                var feed = new Harness(settings);
+                // more recent than the interval, so neither a full snapshot nor the interval hides it
+                long from = feed.now() - Duration.ofMinutes(10).toMillis();
+                feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+                feed.open(1, MessageInterest.ALL);
+                lose(feed, loss);
+                feed.clock.advance(Duration.ofSeconds(3));
+                feed.start();
+                feed.alive(PRE);
+                assertThat(feed.lastSnapshot(PRE).after())
+                        .as("the " + loss + " lost before start, with an initial interval of "
+                                + settings.initialSnapshotInterval())
+                        .isEqualTo(Instant.ofEpochMilli(from));
+                assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(from);
+            }
+        }
+    }
+
+    @Test
+    void aLossToldBeforeAColdStartLeavesTheFirstRecoveryAtTheIntervalBeforeTheStart() {
+        for (String loss : List.of("connection", "channel")) {
+            var feed = new Harness(Harness.withInitialSnapshotInterval(Duration.ofMinutes(30)));
+            feed.open(1, MessageInterest.ALL);
+            lose(feed, loss);
+            feed.clock.advance(Duration.ofMinutes(1));
+            feed.start();
+            long boundary = feed.now() - Duration.ofMinutes(30).toMillis();
+            feed.alive(PRE);
+            assertThat(feed.lastSnapshot(PRE).after())
+                    .as("the " + loss + " lost a minute before start")
+                    .isEqualTo(Instant.ofEpochMilli(boundary));
+        }
+    }
+
+    /** The connection, or session 1's channel, lost and back, before the feed starts. */
+    private static void lose(Harness feed, String loss) {
+        if (loss.equals("connection")) {
+            feed.machine.connectionDown();
+        } else {
+            feed.machine.channelLost(1);
+            feed.machine.channelReopened(1);
+        }
+    }
+
+    @Test
     void nothingIsAskedForBeforeStartOrWithoutASessionToReceiveIt() {
         feed.open(1, MessageInterest.PREMATCH_ONLY);
         feed.alive(PRE);
