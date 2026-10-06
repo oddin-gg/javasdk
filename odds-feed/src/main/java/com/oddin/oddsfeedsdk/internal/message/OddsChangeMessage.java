@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.mq.entities.MarketWithOdds;
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
@@ -31,9 +32,10 @@ final class OddsChangeMessage extends FeedEventMessage implements OddsChange<Spo
         this.markets = new Built<>(markets);
     }
 
+    /** A new list on each call, which the client may change: the message keeps its own. */
     @Override
     public List<MarketWithOdds> getMarkets() {
-        return markets.get();
+        return new ArrayList<>(markets.get());
     }
 
     /** @deprecated the feed never sends this value. */

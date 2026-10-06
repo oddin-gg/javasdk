@@ -6,6 +6,8 @@ import com.oddin.oddsfeedsdk.mq.entities.BetStop;
 import com.oddin.oddsfeedsdk.mq.entities.MarketStatus;
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetStop;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
 
@@ -22,13 +24,13 @@ final class BetStopMessage extends FeedEventMessage implements BetStop<SportEven
     /**
      * The market groups, split on the pipe the feed separates them with: {@code winner|handicap} is
      * {@code winner} and {@code handicap}. 0.0.x split on the two characters {@code \|} and gave one
-     * group (KD-6).
+     * group (KD-6). A new list on each call, which the client may change.
      */
     @Override
     public @Nullable List<String> getGroups() {
         String groups = message.getGroups();
         // -1 keeps an empty last group, as Kotlin's split, which 0.0.x used, keeps it
-        return groups == null ? null : List.of(groups.split("\\|", -1));
+        return groups == null ? null : new ArrayList<>(Arrays.asList(groups.split("\\|", -1)));
     }
 
     /**

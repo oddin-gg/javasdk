@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.message;
 
 import com.oddin.oddsfeedsdk.mq.entities.Market;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
@@ -31,9 +32,10 @@ class FeedMarket implements Market {
         return null;
     }
 
+    /** A new map on each call, in the feed's order, which the client may change: the market keeps its own. */
     @Override
     public Map<String, String> getSpecifiers() {
-        return specifiers;
+        return new LinkedHashMap<>(specifiers);
     }
 
     /** The name in the default locale. */

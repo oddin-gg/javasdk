@@ -6,6 +6,7 @@ import com.oddin.oddsfeedsdk.mq.entities.Market;
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFRollbackBetCancel;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
@@ -40,8 +41,9 @@ final class RollbackBetCancelMessage extends FeedEventMessage implements Rollbac
         return date(endTime);
     }
 
+    /** A new list on each call, which the client may change: the message keeps its own. */
     @Override
     public List<Market> getMarkets() {
-        return markets;
+        return new ArrayList<>(markets);
     }
 }
