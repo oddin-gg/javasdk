@@ -439,10 +439,11 @@ Ownership and ordering:
   an entity cache or its clear. The feed writes there; a match summary offers its
   values there, and they are taken only while the feed is quiet (below). The match
   façade reads the live getters from it and everything else from the entity caches.
-  Over its bound, the least recently written record the feed does not own goes, and
-  the next read loads the summary again; records the feed owns stay, so REST does not
-  take over a live match for want of room, up to twice the bound, past which the
-  oldest are dropped and counted. Clearing the caches does not clear the live state.
+  Its bound follows the match cache size. Over it, the least recently written record
+  the feed does not own goes, and the next read loads the summary again; records the
+  feed owns stay, so REST does not take over a live match for want of room, up to
+  twice the bound, past which the oldest are dropped and counted. Clearing the caches
+  does not clear the live state.
 - The feed watermark is the `timestamp` of the last live feed message that wrote
   feed-owned fields, kept per entity and producer in the live state, which lives 24
   hours after its last write. A message from the same producer with an older
@@ -462,7 +463,9 @@ Ownership and ordering:
     The offset that corrects it is the producer's, which the alive dispatcher measures
     on the SDK's alive channel and keeps for the session dispatchers to read without
     asking the recovery actor; before the producer's first alive it is taken as none.
-    A replay session's messages are old by design and write as current.
+    A replay session's messages are old by design and write as current, in the order
+    they come: the watermark does not hold them back, so a replay played again writes
+    each run; the watermark itself never moves back.
 - Within a feed message, a missing optional scalar means "keep what you have", never
   "reset to zero". Both schemas mark scores optional.
 - Fixture-change deduplication is one shared, concurrent map per `OddsFeed`, keyed by
