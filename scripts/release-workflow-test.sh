@@ -329,7 +329,7 @@ for path in sorted(seen):
           "%s > system-tests-next must hold contents: read and nothing else, not %r" % (where, nested.get("permissions")))
     for step in nested.get("steps", []):
         uses, with_ = str(step.get("uses", "")), step.get("with") or {}
-        check(not uses.startswith("actions/cache"), "%s > system-tests-next must restore no cache: %s" % (where, uses))
+        check(not re.match(r"actions/cache([/@]|$)", uses), "%s > system-tests-next must restore no cache: %s" % (where, uses))
         keys = [k for k in with_ if k == "cache" or k.startswith("cache-") or k.startswith("server-")]
         check(not keys, "%s > system-tests-next must restore no cache and name no registry server: %s"
               % (where, ", ".join(keys)))
@@ -885,6 +885,41 @@ breaks next.yml replace "          distribution: 'corretto'
 breaks next.yml replace "          outcome = [child.tag for child in case if child.tag in (\"skipped\", \"failure\", \"error\")]
 " "          outcome = [child.tag for child in case if child.tag in (\"failure\", \"error\")]
 " "next.yml > system-tests-next differs from its pinned form"
+
+breaks next.yml replace '      - name: Build the SDK and run the system tests against it
+' '      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository
+          key: m2
+      - name: Build the SDK and run the system tests against it
+' "./.github/workflows/next.yml > system-tests-next must restore no cache: actions/cache/restore@v4"
+
+# The credential guard after each checkout in next.yml, run as it is written: it must fail on a
+# config that kept the job token, and pass on one that did not.
+# (the Windows job's guard is PowerShell, run by its own job, so only the bash ones run here)
+guards=$(yq -o=json '[.jobs[] | select(.["runs-on"] | test("ubuntu")) | .steps[]
+  | select(.name == "Check the checkout left no credentials behind") | .run]' \
+  "$root/.github/workflows/next.yml")
+count=$(python3 -c 'import json, sys; print(len(json.loads(sys.argv[1])))' "$guards")
+if [ "$count" -lt 1 ]; then
+  echo "FAIL next.yml has no credential guard to test" >&2
+  failures=$((failures + 1))
+fi
+for i in $(seq 0 $((count - 1))); do
+  python3 -c 'import json, sys; print(json.loads(sys.argv[1])[int(sys.argv[2])])' "$guards" "$i" > "$work/guard.sh"
+  rm -rf "$work/repo" && git init -q "$work/repo"
+  if ! (cd "$work/repo" && bash "$work/guard.sh") 2> "$work/err"; then
+    echo "FAIL credential guard $i refused a clean checkout: $(cat "$work/err")" >&2
+    failures=$((failures + 1))
+  fi
+  git -C "$work/repo" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic x"
+  if (cd "$work/repo" && bash "$work/guard.sh") 2> /dev/null; then
+    echo "FAIL credential guard $i accepted a checkout that kept the job token" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   credential guard $i refused a checkout that kept the job token"
+  fi
+done
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures broken copies were not refused as they should be" >&2
