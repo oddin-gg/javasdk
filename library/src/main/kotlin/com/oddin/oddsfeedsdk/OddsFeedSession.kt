@@ -11,7 +11,11 @@ import com.oddin.oddsfeedsdk.mq.FeedMessageFactory
 import com.oddin.oddsfeedsdk.mq.MessageInterest
 import com.oddin.oddsfeedsdk.mq.entities.*
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFAlive
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetCancel
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlement
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetStop
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFFixtureChange
+import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFSnapshotComplete
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
@@ -49,6 +53,10 @@ open class OddsFeedSessionImpl @Inject constructor(
 
     private val sessionId: UUID = UUID.randomUUID()
     private val subscriptions = mutableListOf<Disposable>()
+
+    // The recovery manager hears of every message, so a recovery whose snapshot is still coming
+    // is not given up; a replay session has none
+    private val recoveryManager = recoveryMessageProcessor as? RecoveryManagerImpl
 
     override fun open(
         routingKeys: List<String>,
@@ -170,6 +178,7 @@ open class OddsFeedSessionImpl @Inject constructor(
 
         val producerId = feedMessage.message?.getProduct()?.toLong() ?: return
         recoveryMessageProcessor.onMessageProcessingStarted(sessionId, producerId, System.currentTimeMillis())
+        recoveryManager?.onRecoveryTraffic(producerId, requestIdOf(feedMessage.message), feedMessage.message.getTimestamp())
 
         cacheManager.onFeedMessageReceived(sessionId, feedMessage)
 
@@ -230,6 +239,18 @@ open class OddsFeedSessionImpl @Inject constructor(
         }
 
         recoveryMessageProcessor.onMessageProcessingEnded(sessionId, producerId, timestamp)
+    }
+
+    private fun requestIdOf(message: BasicMessage): Long? {
+        return when (message) {
+            is OFOddsChange -> message.requestId
+            is OFBetStop -> message.requestId
+            is OFBetSettlement -> message.requestId
+            is OFBetCancel -> message.requestId
+            is OFFixtureChange -> message.requestId
+            is OFSnapshotComplete -> message.requestId
+            else -> null
+        }
     }
 
     private fun publishUnparsableMessage(feedMessage: FeedMessage) {
