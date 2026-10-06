@@ -380,6 +380,31 @@ class SessionDispatcherTest {
     }
 
     @Test
+    void aRawCallbackThatThrowsIsReportedAndTheMessageGoesOn() throws InterruptedException {
+        for (String callback : List.of("onRawFeedMessageReceived", "onRawFeedMessageBytes")) {
+            SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+            ext.calls.clear();
+            facts.facts.clear();
+            ext.throwing = callback;
+            handle(dispatcher, Fixtures.read(ODDS_CHANGE));
+            assertThat(ext.calls)
+                    .as(callback + " throwing")
+                    .containsExactly(
+                            "onRawFeedMessageReceived OFOddsChange ALL hi.-.live.odds_change.-.od:match.198314.-",
+                            "onRawFeedMessageBytes odds_change ALL",
+                            "onOddsChange");
+            CallbackFailure failure = failures.next();
+            assertThat(failure.callback()).isEqualTo(callback);
+            assertThat(failure.clientCode()).isTrue();
+            assertThat(failure.exception()).hasMessage("the client's bug in " + callback);
+            assertThat(facts.facts).as("finished all the same").hasSize(1);
+            assertThat(dispatcher.callbackFailures()).isEqualTo(1);
+        }
+        assertThat(transport.acked).hasSize(2);
+        assertThat(listener.unparsable).as("KD-9").isEmpty();
+    }
+
+    @Test
     void anErrorFromACallbackDoesNotStopTheSession() {
         SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
         listener.onOdds = message -> {
@@ -592,6 +617,8 @@ class SessionDispatcherTest {
         final List<String> calls = new CopyOnWriteArrayList<>();
 
         final List<Long> created = new CopyOnWriteArrayList<>();
+        /** The raw callback that throws, if one does. */
+        volatile @Nullable String throwing;
 
         @Override
         public void onRawFeedMessageReceived(
@@ -604,6 +631,7 @@ class SessionDispatcherTest {
             timestamp.setCreated(-1);
             calls.add("onRawFeedMessageReceived " + message.getClass().getSimpleName() + " " + messageInterest + " "
                     + routingKey.getFullRoutingKey());
+            throwIf("onRawFeedMessageReceived");
         }
 
         @Override
@@ -612,6 +640,13 @@ class SessionDispatcherTest {
             created.add(timestamp.getCreated());
             String xml = new String(body, StandardCharsets.UTF_8);
             calls.add("onRawFeedMessageBytes " + xml.substring(1, xml.indexOf(' ')) + " " + messageInterest);
+            throwIf("onRawFeedMessageBytes");
+        }
+
+        private void throwIf(String callback) {
+            if (callback.equals(throwing)) {
+                throw new IllegalStateException("the client's bug in " + callback);
+            }
         }
 
         @Override
