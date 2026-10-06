@@ -473,6 +473,11 @@ class RecoveryMachineTest {
         assertThat(feed.timestampForRecovery(LIVE))
                 .as("a session that misses everything")
                 .isNull();
+        // a full snapshot is a point of its own: what the client sets now does not show through
+        feed.producers.setProducerRecoveryFromTimestamp(LIVE, feed.now());
+        assertThat(feed.timestampForRecovery(LIVE))
+                .as("a full snapshot, whatever the client sets once the feed is open")
+                .isNull();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, feed.now());
         assertThat(feed.timestampForRecovery(PRE))
                 .as("a start the client sets once the feed is open")
