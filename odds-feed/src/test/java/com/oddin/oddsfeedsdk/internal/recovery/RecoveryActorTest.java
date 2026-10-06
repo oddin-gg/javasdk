@@ -140,6 +140,53 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aGapLeftQueuedWhenTheTimeToFinishRunsOutStillTakesThePointBack() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        long later = lastSubscribed + 10_000;
+
+        // no time at all for what is queued when the close comes: the unsubscribed alive is left
+        actor.finishWait = Duration.ZERO;
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        session.processed(PRE, later, later, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        actor.alive(PRE, later, later, false);
+        Thread closer = Thread.ofPlatform().start(actor::close);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (!actor.closeBegun() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        release.countDown();
+        closer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+
+        assertThat(actor.running()).isFalse();
+        assertThat(held.getTimestampForRecovery())
+                .as("the last subscribed alive, where the gap left queued would start")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
     void aGapQueuedWhenTheCloseComesTakesThePointBackBeforeTheActorEnds() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);

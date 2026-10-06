@@ -112,6 +112,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     volatile Runnable beforeRequestPoll = () -> {};
     /** A test's hook, run in start() once it has the start, before the thread starts. */
     volatile Runnable beforeThreadStart = () -> {};
+    /** How long the actor spends on the facts queued when it closes; a test shortens it. */
+    volatile Duration finishWait = FINISH_WAIT;
     /** A test's hook, run as the machine closes, on the thread that closes it. */
     volatile Runnable beforeMachineClose = () -> {};
     /** The turns the actor has taken; for the watchdog and a test. */
@@ -413,7 +415,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 // a close() that waits for this thread: what is queued is handled before it returns,
                 // never after
                 machine.closing();
-                finishEssential();
+                if (!finishEssential()) {
+                    machine.unhandledAtClose();
+                }
             }
             closeMachine();
         }
@@ -427,13 +431,17 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * from. Within {@link #FINISH_WAIT}; nothing goes out to the workers any more, and nothing posted
      * after the close is taken, since posting is refused once closed. The samples are dropped: one
      * could only move a point forward.
+     *
+     * @return whether every one was handled; when not, the machine takes the points back to where
+     *     those left could have taken them, at the furthest
      */
-    private void finishEssential() {
-        long deadline = System.nanoTime() + FINISH_WAIT.toNanos();
+    private boolean finishEssential() {
+        long deadline = System.nanoTime() + finishWait.toNanos();
         Fact fact;
         while (System.nanoTime() - deadline < 0 && (fact = essential.poll()) != null) {
             handle(fact);
         }
+        return essential.isEmpty();
     }
 
     /** Whether close() has begun, for a test. */

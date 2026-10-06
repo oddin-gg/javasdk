@@ -264,6 +264,31 @@ final class RecoveryMachine {
     }
 
     /**
+     * The actor closed with facts still queued, not handled: each published resume point goes back
+     * to its producer's last subscribed alive, or to 0, a full snapshot, without one. Of those facts
+     * only an unsubscribed alive could have taken a point further back, with the gap it opens from
+     * that alive - or, with none, from a time only the fact has. A session opened among them starts
+     * from the point there is or that alive, a lost queue from a checkpoint; the rest move nothing
+     * back. So the point is never ahead of what a fact left could have needed; and it only goes
+     * back, as every point does once the feed is closing.
+     */
+    void unhandledAtClose() {
+        for (Track track : tracks.values()) {
+            // NO_POINT is below any point, so a producer with nothing published - the feed never
+            // started, or no session received it, and nothing was processed - keeps the client's start
+            long floor = Math.min(track.published, track.safePoint);
+            if (floor != track.published) {
+                LOG.warn(
+                        "The recovery actor closed with facts it could not handle: producer {} resumes from {}",
+                        track.id,
+                        floor == 0 ? "a full snapshot" : Instant.ofEpochMilli(floor));
+                track.published = floor;
+                producers.setResumePoint(track.id, floor);
+            }
+        }
+    }
+
+    /**
      * The feed is closing: whoever waits for an event recovery hears it was not accepted, and the
      * event recoveries still in flight have failed.
      */
