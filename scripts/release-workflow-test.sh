@@ -298,6 +298,31 @@ for path in sorted(seen):
         check((step.get("env") or {}).get("REVISION") == "${{ inputs.revision }}",
               "./%s: the build's REVISION must be ${{ inputs.revision }}, not %r"
               % (os.path.relpath(path, root), (step.get("env") or {}).get("REVISION")))
+# and next.yml tests the 1.0 SDK it builds, on every run, and checks that it did
+NEXT_RUN = ("./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION} -Dsdk.next -pl system-tests -am"
+            " verify '-Dtest=com/oddin/oddsfeed/systemtests/**/*Test' -Dsurefire.failIfNoSpecifiedTests=false"
+            " -Djacoco.skip=true")
+for path in sorted(seen):
+    if os.path.basename(path) != "next.yml":
+        continue
+    where = "./%s" % os.path.relpath(path, root)
+    nested = load(path).get("jobs", {}).get("system-tests-next")
+    check(nested is not None, "%s must have the job system-tests-next" % where)
+    if nested is None:
+        continue
+    check("if" not in nested, "%s > system-tests-next must not be conditional" % where)
+    check(not nested.get("continue-on-error"), "%s > system-tests-next must not continue on error" % where)
+    runs = [step for step in nested.get("steps", []) if " ".join(str(step.get("run", "")).split()) == NEXT_RUN]
+    check(len(runs) == 1, "%s > system-tests-next must test 1.0 once with: %s" % (where, NEXT_RUN))
+    for step in runs:
+        unconditional("system-tests-next", step, "the 1.0 run")
+        check((step.get("env") or {}).get("REVISION") == "${{ inputs.revision }}",
+              "%s > system-tests-next: REVISION must be ${{ inputs.revision }}" % where)
+    loaded = [step for step in nested.get("steps", []) if "theSdkIsTheOneThisReactorBuilt" in str(step.get("run", ""))]
+    check(len(loaded) == 1, "%s > system-tests-next must check that the 1.0 version test ran" % where)
+    for step in loaded:
+        unconditional("system-tests-next", step, "the version test check")
+
 # and next.yml builds that commit: every checkout there takes it
 for path in sorted(seen):
     for name, nested in load(path).get("jobs", {}).items():
@@ -764,6 +789,28 @@ for read in 'secrets.MAVEN_GPG_KEY' "secrets['MAVEN_GPG_KEY']" "secrets[format('
           LEAK: \${{ $read }}
 " "./.github/workflows/next.yml > build must not read secrets: $read"
 done
+
+# next.yml's 1.0 job: there, on every run, testing 1.0, and checking it did
+breaks next.yml replace '  system-tests-next:
+' '  system-tests-legacy:
+' "./.github/workflows/next.yml must have the job system-tests-next"
+breaks next.yml replace '    name: System tests against 1.0
+' '    name: System tests against 1.0
+    if: false
+' "./.github/workflows/next.yml > system-tests-next must not be conditional"
+breaks next.yml replace '    name: System tests against 1.0
+' '    name: System tests against 1.0
+    continue-on-error: true
+' "./.github/workflows/next.yml > system-tests-next must not continue on error"
+breaks next.yml replace ' -Dsdk.next -pl system-tests -am verify
+' ' -pl system-tests -am verify
+' "./.github/workflows/next.yml > system-tests-next must test 1.0 once with"
+breaks next.yml replace '          REVISION: "${{ inputs.revision }}"
+' '          REVISION: "${{ github.ref_name }}"
+' "./.github/workflows/next.yml > system-tests-next: REVISION must be"
+breaks next.yml replace '          case = cases.get("theSdkIsTheOneThisReactorBuilt")
+' '          case = cases.get("anyTest")
+' "./.github/workflows/next.yml > system-tests-next must check that the 1.0 version test ran"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures broken copies were not refused as they should be" >&2

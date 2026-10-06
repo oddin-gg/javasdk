@@ -181,6 +181,9 @@ jobs:
     # skipped, and one that passes fails this job until its line is removed.
     name: System tests against 1.0
     runs-on: ubuntu-latest
+    # checkout is all it needs: the 1.0 run reads nothing from the packages registry
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -202,9 +205,9 @@ jobs:
         with:
           java-version: '25'
           distribution: 'corretto'
-          cache: 'maven'
-          # no server for the packages registry: the 1.0 run needs nothing from it, and without a
-          # token a dependency that tried to come from there fails here instead of passing
+          # No server for the packages registry, and no Maven cache: the build job fills the shared
+          # cache from the registry with its token, so a restored cache would hide a 1.0
+          # dependency that came from there. Without either, such a dependency fails here.
 
       - name: Build the SDK and run the system tests against it
         # The SDK as the reactor packages it (-am), shaded jar and all. Its unit tests and their
