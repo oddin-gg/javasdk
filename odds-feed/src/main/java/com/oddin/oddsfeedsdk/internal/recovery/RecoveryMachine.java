@@ -74,6 +74,12 @@ final class RecoveryMachine {
     /** A sample's age when the producer's clock offset is not known. */
     private static final long UNKNOWN_AGE = Long.MIN_VALUE;
 
+    /**
+     * How many of a producer's recoveries that ended without completing are remembered: each sends
+     * a snapshot of its own at most, so the traffic that puts off a deadline stays bounded.
+     */
+    private static final int ENDED_REMEMBERED = 8;
+
     private final Producers producers;
     private final RecoverySettings settings;
     private final Outbox outbox;
@@ -492,10 +498,11 @@ final class RecoveryMachine {
     /**
      * Whether what a session took says the recovery in flight is still on its way to it: a message
      * of its snapshot, or one the snapshot and its snapshot complete queue behind - a live message or
-     * an alive sent before the request, or a snapshot message of an event recovery asked for before
-     * it. Any of them puts off the deadline for its snapshot complete. An event recovery asked for
-     * since does not: one after another, they would hold a recovery whose snapshot complete is lost
-     * for the maximum recovery time.
+     * an alive sent before the request, or a snapshot message of an earlier recovery of the producer
+     * that failed or was given up, or of an event recovery asked for before it. Any of them puts off
+     * the deadline for its snapshot complete. An event recovery asked for since does not: one after
+     * another, they would hold a recovery whose snapshot complete is lost for the maximum recovery
+     * time.
      */
     private void heard(Track track, int id, long generatedAt, long requestId) {
         Active active = track.active;
@@ -509,7 +516,7 @@ final class RecoveryMachine {
 
     /** Whether a snapshot message of {@code requestId} is the recovery's own, or queued ahead of it. */
     private boolean ahead(Track track, Active active, long requestId) {
-        if (requestId == active.requestId) {
+        if (requestId == active.requestId || track.ended.contains(requestId)) {
             return true;
         }
         EventRecovery event = eventRecoveries.get(requestId);
@@ -864,8 +871,7 @@ final class RecoveryMachine {
      * with the cap spent, not before the cool-down.
      */
     private void failed(Track track, Active active, long now, String reason) {
-        track.active = null;
-        track.pausedUntil = now;
+        ended(track, active, now);
         producers.setRecoveryInfo(
                 track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), false));
         counters.failed.incrementAndGet();
@@ -920,8 +926,7 @@ final class RecoveryMachine {
         if (active == null) {
             return;
         }
-        track.active = null;
-        track.pausedUntil = now;
+        ended(track, active, now);
         counters.abandoned.incrementAndGet();
         LOG.info("Recovery {} of producer {} given up: {}", active.requestId, track.id, reason);
         for (SessionState session : sessions.values()) {
@@ -929,6 +934,19 @@ final class RecoveryMachine {
             if (pending != null && pending.unaccepted.contains(track.id)) {
                 cancelReset(session, now);
             }
+        }
+    }
+
+    /**
+     * The recovery is no longer waited for, without completing: what it sent may still be on its
+     * way, ahead of the snapshot of the next one asked for.
+     */
+    private void ended(Track track, Active active, long now) {
+        track.active = null;
+        track.pausedUntil = now;
+        track.ended.addFirst(active.requestId);
+        if (track.ended.size() > ENDED_REMEMBERED) {
+            track.ended.removeLast();
         }
     }
 
@@ -1458,6 +1476,11 @@ final class RecoveryMachine {
 
         @Nullable
         Active active;
+        /**
+         * The request ids of its last recoveries that failed or were given up, newest first, at most
+         * {@code ENDED_REMEMBERED}: what they sent may still be ahead of the one in flight.
+         */
+        final ArrayDeque<Long> ended = new ArrayDeque<>();
         /** Samples taken up to this time are not the safety net's: a recovery was in flight. */
         long pausedUntil;
         /** Recoveries failed in a row. */
