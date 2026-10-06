@@ -95,6 +95,44 @@ class AliveDispatcherTest {
         assertThat(next()).startsWith("2 ");
     }
 
+    @Test
+    void aFullQueueDropsTheAlivesWithNoRoomAndCountsThem() throws InterruptedException {
+        var waiting = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
+        dispatcher = waiting;
+        for (int i = 0; i < AliveDispatcher.CAPACITY; i++) {
+            waiting.accept(alive(FeedMessages.alive(2, true), i));
+        }
+        waiting.accept(alive(FeedMessages.alive(1, false), 1));
+        assertThat(waiting.queued()).isEqualTo(AliveDispatcher.CAPACITY);
+        assertThat(waiting.dropped()).isEqualTo(1);
+
+        waiting.start();
+        for (int i = 0; i < AliveDispatcher.CAPACITY; i++) {
+            assertThat(next()).startsWith("2 ");
+        }
+        assertThat(waiting.queued()).as("the room given back").isZero();
+        waiting.accept(alive(FeedMessages.alive(1, false), 2));
+        assertThat(next()).as("room again").startsWith("1 ");
+        assertThat(posted).isEmpty();
+    }
+
+    @Test
+    void largeBodiesFillTheQueueByTheirBytes() throws InterruptedException {
+        var waiting = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
+        dispatcher = waiting;
+        byte[] large = new byte[(int) (AliveDispatcher.BYTES / 2) + 1];
+        waiting.accept(new RawDelivery(large, large.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, null));
+        waiting.accept(new RawDelivery(large, large.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, null));
+        assertThat(waiting.queued()).isEqualTo(1);
+        assertThat(waiting.dropped()).isEqualTo(1);
+        waiting.accept(alive(FeedMessages.alive(2, true), 1));
+        assertThat(waiting.queued()).as("a small alive still fits").isEqualTo(2);
+
+        waiting.start();
+        assertThat(next()).startsWith("2 ");
+        assertThat(waiting.unreadable()).isEqualTo(1);
+    }
+
     private AliveDispatcher started() {
         var started = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
         dispatcher = started;

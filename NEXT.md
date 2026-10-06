@@ -265,7 +265,10 @@ itself would queue behind the wedge.
   1 to 10 000, default 200. Zero is rejected, because the broker reads it as unlimited.
 - The SDK always runs its own alive consumer on its own channel, whatever sessions the
   client created. Its consumer callback hands the raw alive to the alive dispatcher and
-  acks. A client's `SYSTEM_ALIVE_ONLY` session, if any, is an ordinary session and does
+  acks. That hand-off holds at most a thousand alives and a megabyte of them; one with no
+  room is dropped and counted. The producers' pace keeps it near empty, and a dropped
+  alive costs the recovery actor a beat, not a wrong state: an unsubscribed producer says
+  so in every alive, and silence takes a producer down. A client's `SYSTEM_ALIVE_ONLY` session, if any, is an ordinary session and does
   not carry producer liveness: its dispatcher posts no facts, and the recovery actor gives
   it no lanes, so its channel's loss or its pace takes no producer down and no recovery
   waits for its `snapshot_complete`.

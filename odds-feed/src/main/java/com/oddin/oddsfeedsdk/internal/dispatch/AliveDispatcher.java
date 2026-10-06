@@ -10,6 +10,7 @@ import java.time.Duration;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
@@ -22,10 +23,15 @@ import org.slf4j.LoggerFactory;
  * liveness is made of. It runs no client code and calls no REST.
  *
  * <p>The transport's consumer thread hands each alive over with {@link #accept} and returns; the
- * hand-off never waits, and drops nothing: an unsubscribed alive may be the only word of a gap, and
- * what fills the queue is bounded by the producers' own pace, an alive each every few seconds. The
- * actor keeps one slot per producer of them in turn. An alive that does not decode, or a message on
- * the channel that is no alive, is counted and logged.
+ * hand-off never waits. The producers' own pace, an alive each every few seconds, keeps the queue
+ * near empty, and the actor keeps one slot per producer of them in turn. The queue is bounded all the
+ * same, at {@value #CAPACITY} alives and {@value #BYTES} bytes of them, since the channel acknowledges
+ * on delivery and what is on it is not the SDK's to pace: a wedged thread, or a flood of what is no
+ * alive, would otherwise fill the heap. An alive with no room is dropped and counted. That costs the
+ * actor a beat, not a wrong state: a producer that stays unsubscribed says so in every alive until a
+ * recovery is asked for, and one whose alives stop for longer than the maximum inactivity is taken
+ * down, never kept up. An alive that does not decode, or a message on the channel that is no alive,
+ * is counted and logged.
  *
  * <p>Safe for concurrent use.
  */
@@ -37,11 +43,24 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
     private static final long IDLE_NANOS = TimeUnit.SECONDS.toNanos(1);
     /** How long close() waits for the thread to end. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
+    /** The most alives queued: many minutes of every producer's alives, so a thread that far behind is wedged. */
+    static final int CAPACITY = 1_000;
+    /**
+     * The most bytes of alives queued. An alive is a couple of hundred bytes, so {@link #CAPACITY} of
+     * them fit; what the bound stops is a flood of large bodies, each within the maximum message size.
+     */
+    static final long BYTES = 1 << 20;
 
     private final FeedDecoder decoder;
     private final ClockOffsets offsets;
     private final AliveFacts actor;
     private final Queue<RawDelivery> alives = new ConcurrentLinkedQueue<>();
+    /** How many alives are queued. */
+    private final AtomicInteger size = new AtomicInteger();
+    /** The bytes of the bodies of the alives queued. */
+    private final AtomicLong bytes = new AtomicLong();
+
+    private final AtomicLong dropped = new AtomicLong();
     private final AtomicLong unreadable = new AtomicLong();
     private final AtomicLong handled = new AtomicLong();
     private final Thread thread;
@@ -62,10 +81,22 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
         thread.start();
     }
 
-    /** An alive from the transport's consumer thread: queued, never waited for. */
+    /** An alive from the transport's consumer thread: queued, never waited for; dropped when there is no room. */
     @Override
     public void accept(RawDelivery alive) {
         if (closed) {
+            return;
+        }
+        long length = length(alive);
+        int queued = size.incrementAndGet();
+        long held = bytes.addAndGet(length);
+        if (queued > CAPACITY || held > BYTES) {
+            release(length);
+            long count = dropped.incrementAndGet();
+            // the first, then one in a thousand: a full queue is a wedged thread, and the watchdog says so
+            if (count == 1 || count % 1_000 == 0) {
+                LOG.warn("The alive queue is full; an alive on {} is dropped, {} so far", alive.routingKey(), count);
+            }
             return;
         }
         alives.add(alive);
@@ -74,7 +105,12 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
 
     /** Alives queued and not handled yet; for the watchdog. */
     public int queued() {
-        return alives.size();
+        return size.get();
+    }
+
+    /** Alives dropped for want of room in the queue. */
+    public long dropped() {
+        return dropped.get();
     }
 
     /** Alives handled, for the watchdog: a queue that does not move while this does not either is wedged. */
@@ -110,6 +146,7 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
                 LockSupport.parkNanos(this, IDLE_NANOS);
                 continue;
             }
+            release(length(alive));
             try {
                 handle(alive);
             } catch (RuntimeException | Error e) {
@@ -118,6 +155,17 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
             }
             handled.incrementAndGet();
         }
+    }
+
+    /** Gives back the room of an alive no longer queued, or one that found none. */
+    private void release(long length) {
+        size.decrementAndGet();
+        bytes.addAndGet(-length);
+    }
+
+    private static long length(RawDelivery delivery) {
+        byte[] body = delivery.body();
+        return body == null ? 0 : body.length;
     }
 
     private void handle(RawDelivery delivery) {
