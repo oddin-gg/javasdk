@@ -6,6 +6,7 @@ import static com.oddin.oddsfeedsdk.internal.recovery.Harness.PRE;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.amqp.Queues;
@@ -1142,6 +1143,100 @@ class RecoveryActorTest {
         assertThat(thread).isTrue();
     }
 
+    // ---- what the actor tells
+
+    @Test
+    void theStatusEventIsToldWhenTheDownFlagOrPublicReasonChangesAndTheCauseEventOnEveryChange()
+            throws InterruptedException {
+        // KD-2: an alive saying a producer still down is unsubscribed changes the cause only
+        var told = new Told();
+        var actor = new RecoveryActor(producers, settings(), api, told, workers);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.PREMATCH_ONLY, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, false);
+        assertThat(told.nextCause()).isEqualTo(StatusCause.UNSUBSCRIBED);
+        session.snapshotComplete(PRE, api.next().requestId());
+        assertThat(told.nextCause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
+
+        // down for the connection, a public change; then for the channel too, the same public reason
+        actor.down("lost");
+        assertThat(told.nextCause()).isEqualTo(StatusCause.CONNECTION_LOST);
+        session.channelLost();
+        assertThat(told.nextCause()).isEqualTo(StatusCause.CHANNEL_LOST);
+
+        // the status event of a change is told before its cause event, so every one is in by now
+        assertThat(told.statuses)
+                .filteredOn(change -> change.producerId() == PRE)
+                .extracting(ProducerStatusChange::cause, ProducerStatusChange::down)
+                .containsExactly(
+                        tuple(StatusCause.FIRST_RECOVERY_COMPLETED, false), tuple(StatusCause.CONNECTION_LOST, true));
+    }
+
+    @Test
+    void aSessionThatLagsWithTheResetsSpentAndCatchesUpIsTold() throws InterruptedException {
+        // no resets at all, and a window of nothing: the first stale sample lags the session
+        RecoverySettings design = settings(Harness.settings().firstReissueBackoff(), Duration.ZERO);
+        var noResets = new RecoverySettings(
+                design.maxInactivity(),
+                design.maxRecoveryTime(),
+                design.snapshotCompleteTimeout(),
+                design.initialSnapshotInterval(),
+                design.nodeId(),
+                design.reissues(),
+                design.firstReissueBackoff(),
+                design.cooldown(),
+                design.aliveInterval(),
+                design.staleLimit(),
+                design.staleWindow(),
+                0,
+                design.firstResetBackoff(),
+                design.eventRecoveries(),
+                design.tick());
+        var told = new Told();
+        var actor = new RecoveryActor(producers, noResets, api, told, workers);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.PREMATCH_ONLY, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        session.snapshotComplete(PRE, api.next().requestId());
+        assertThat(told.nextCause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
+
+        stale(session);
+        assertThat(told.next()).isEqualTo("session 1 lagging");
+        long later = System.currentTimeMillis();
+        session.processed(PRE, later, later + 3, 0);
+        assertThat(told.next()).isEqualTo("session 1 caught up");
+        assertThat(producers.isProducerDown(PRE)).as("for a lagging session").isFalse();
+        assertThat(api.requests).as("nothing asked for").isEmpty();
+    }
+
+    @Test
+    void aSafetyNetRequestTheApiRefusedIsToldAndResetsNothing() throws InterruptedException {
+        var told = new Told();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, told, workers);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.PREMATCH_ONLY, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        session.snapshotComplete(PRE, api.next().requestId());
+        assertThat(told.nextCause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
+
+        api.refuse.set(true);
+        stale(session);
+        api.next();
+        assertThat(told.next()).startsWith("session 1 not reset for producer 1: ");
+        assertThat(transport.resets.getCount()).as("resets made").isEqualTo(1);
+        assertThat(actor.counters().resetRequestsFailed()).isEqualTo(1);
+    }
+
     // ---- the doubles
 
     private final Producers producers = new Producers(list());
@@ -1243,6 +1338,59 @@ class RecoveryActorTest {
 
     private static long producerOf(Request request) {
         return request.producer().equals("pre") ? PRE : LIVE;
+    }
+
+    /** Every event the actor tells, as it tells it: the status changes by kind, the rest as text. */
+    private static final class Told implements RecoveryEvents {
+        final BlockingQueue<ProducerStatusChange> statuses = new LinkedBlockingQueue<>();
+        final BlockingQueue<ProducerStatusChange> causes = new LinkedBlockingQueue<>();
+        final BlockingQueue<String> others = new LinkedBlockingQueue<>();
+
+        @Override
+        public void producerStatus(ProducerStatusChange change) {
+            statuses.add(change);
+        }
+
+        @Override
+        public void producerCause(ProducerStatusChange change) {
+            causes.add(change);
+        }
+
+        @Override
+        public void eventRecoveryCompleted(long producerId, URN eventId, long requestId) {
+            others.add("event recovery " + requestId + " completed");
+        }
+
+        @Override
+        public void safetyNetReset(int session, long producerId, long ageMillis) {
+            others.add("session " + session + " reset for producer " + producerId);
+        }
+
+        @Override
+        public void safetyNetRequestFailed(int session, long producerId, String reason) {
+            others.add("session " + session + " not reset for producer " + producerId + ": " + reason);
+        }
+
+        @Override
+        public void lagging(int session, boolean lagging) {
+            others.add("session " + session + (lagging ? " lagging" : " caught up"));
+        }
+
+        /** The next cause of the prematch producer, within the wait. */
+        StatusCause nextCause() throws InterruptedException {
+            while (true) {
+                ProducerStatusChange change =
+                        requireNonNull(causes.poll(WAIT_SECONDS, TimeUnit.SECONDS), "a cause within the wait");
+                if (change.producerId() == PRE) {
+                    return change.cause();
+                }
+            }
+        }
+
+        /** The next event other than a status change, within the wait. */
+        String next() throws InterruptedException {
+            return requireNonNull(others.poll(WAIT_SECONDS, TimeUnit.SECONDS), "an event within the wait");
+        }
     }
 
     /** Workers that run each task on a thread of its own, unless told to hold or to turn one away. */
