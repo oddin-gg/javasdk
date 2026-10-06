@@ -216,8 +216,15 @@ class LiveStateTest {
     @Test
     void aReplayedMessageWritesInTheOrderItComesAndTheWatermarkKeepsTheNewest() {
         live.feedWriteReplayed("m1", LIVE, 2_000, now(), status("ended"));
+        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
         live.feedWriteReplayed("m1", LIVE, 1_000, now(), status("live"));
         assertThat(statusOf("m1")).as("the same match played again").isEqualTo("live");
+        assertThat(requireNonNull(live.get("m1")).isFresh(now()))
+                .as("the feed owns it again from the second run")
+                .isTrue();
+        assertThat(live.restWriteIfQuiet("m1", now(), status("not started")))
+                .as("so a summary does not take it over")
+                .isFalse();
         assertThat(live.feedWriteIfNewer("m1", LIVE, 1_500, FRESH, now(), status("ended")))
                 .as("a message in order, older than the newest that wrote")
                 .isFalse();
