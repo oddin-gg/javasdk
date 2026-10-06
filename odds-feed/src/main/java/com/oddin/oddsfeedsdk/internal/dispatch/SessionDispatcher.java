@@ -327,10 +327,19 @@ public final class SessionDispatcher implements AutoCloseable {
             MessageTimestamp timestamp,
             long takenAt,
             RawDelivery delivery) {
-        if (message instanceof OFFixtureChange change
-                && !pipeline.fixtureChanges().first(producer.getId(), change.getEventId(), change.getTimestamp())) {
-            repeatedFixtureChanges.incrementAndGet();
-            return;
+        if (message instanceof OFFixtureChange change) {
+            URN id;
+            try {
+                id = URN.parse(change.getEventId());
+            } catch (RuntimeException e) {
+                // checked before it is remembered: an id that is no URN keeps nothing for an hour
+                sdkFailed("cache write", e);
+                return;
+            }
+            if (!pipeline.fixtureChanges().first(producer.getId(), id, change.getTimestamp())) {
+                repeatedFixtureChanges.incrementAndGet();
+                return;
+            }
         }
         try {
             write(message, producer.getId(), takenAt, delivery.receivedAt());
