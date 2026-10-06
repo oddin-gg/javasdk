@@ -852,7 +852,8 @@ Things the Java SDK has and Go does not stay: multi-session with priority intere
 What the old line gets until its end date: critical fixes, additive wire fields (a new
 XML attribute the producers start sending), and one retrofit in ticket 7: the vendored
 schema fixtures and a small golden decode test over them, so the old line has a pin and
-a test like the new one.
+a test like the new one. Its last release, when support ends, is the relocation POM of
+ticket 33.
 
 How the two lines stay in sync on the wire: each line vendors the schema at a pinned
 commit and decodes its fixtures in its own tests. A scheduled CI job in this repo reads
@@ -1100,13 +1101,14 @@ group by group.
     step, tag-driven publish from `main` with manual approval. Also a last 0.0.x
     version whose POM only relocates to the new coordinates, so a Maven build still on
     the old ones is told by a warning; Gradle follows a relocation without showing its
-    message. It is published after ticket 36's notice, once the remaining Java 8
-    clients have pinned a version: a Java 8 build on `0.0.+`, or one that Renovate or
+    message. It is published when 0.0.x support ends on 31 March 2027, after the last
+    0.0.x fix, since a fix released after it would undo it for the clients it moved.
+    Before its tag, someone confirms by hand that the remaining Java 8 clients have
+    pinned a 0.0.x version: a Java 8 build on `0.0.+`, or one that Renovate or
     Dependabot bumps, takes it as a patch and gets the Java 25 jar. The POM names a
     fixed target version, so the publish job refuses it unless that version is on Maven
-    Central and is a final release. A 0.0.x fix released after it undoes it for the
-    clients it moved. Also the GitHub Release, a coverage threshold, and the
-    pre-release registry check on both lines.
+    Central and is a final release. Also the GitHub Release, a coverage threshold, and
+    the pre-release registry check on both lines.
 
     43. Performance validation before the release candidate: the warm and cold
         benchmarks and a sustained-load run on the test environment, against the
@@ -1117,8 +1119,8 @@ group by group.
 34. First release candidate, soak on the test environment, candidates to clients.
 35. Fix round.
 36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released. The notice asks
-    Java 8 clients to pin a 0.0.x version; the relocation of ticket 33 follows once
-    they have.
+    Java 8 clients to pin a 0.0.x version. Until 0.0.x support ends, the notice and the
+    README tell clients about the move; the relocation of ticket 33 follows then.
 
 Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 43 and
 44, then 34; 37 before any tag. The benchmark, the Central pipeline and the
@@ -1146,7 +1148,7 @@ Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 4
   release notes and a ready-made dependency ban in the upgrade guide are the answer;
   Gradle follows the relocation too, but shows no message. The upside of the split:
   nothing offers 1.0.0 to a Java 8 client as a version bump, except the relocation,
-  which is why it waits for the end-of-life notice (ticket 33).
+  which is why it waits until 0.0.x support ends (ticket 33).
 - **Shared node ids.** Two instances configured with the same node id can confuse each
   other's recoveries. The SDK cannot detect it. Documentation and the onboarding
   checklist carry the rule.
@@ -1176,9 +1178,10 @@ schema. Woodstox is Apache 2.0, its one dependency BSD.
 The maximum recovery time's default (2026-10-06): it stays 0.0.x's 360 minutes, and
 ticket 28 makes it settable. With the five-minute deadline it bounds only a recovery
 that keeps coming, and event recoveries.
-The relocation of the old coordinates (2026-10-06): published after the end-of-life
-notice, once the remaining Java 8 clients have pinned a version, and only to a final
-release that is on Maven Central (ticket 33).
+The relocation of the old coordinates (2026-10-06): published when 0.0.x support ends,
+after the last 0.0.x fix, once someone has confirmed by hand that the remaining Java 8
+clients have pinned a version, and only to a final release that is on Maven Central
+(ticket 33).
 
 ---
 
@@ -1278,3 +1281,7 @@ release that is on Maven Central (ticket 33).
   when its target is a final release on Maven Central; Gradle shows no relocation
   message. The maximum recovery time becomes a public option with 0.0.x's default of 360
   minutes; it does not drop below six hours.
+- 2026-10-06, the relocation moved later: it is the old line's last act, published when
+  0.0.x support ends, after the last 0.0.x fix, so no fix can undo it; until then the
+  end-of-life notice and the README tell clients. Before its tag, someone confirms by
+  hand that the remaining Java 8 clients have pinned a 0.0.x version.
