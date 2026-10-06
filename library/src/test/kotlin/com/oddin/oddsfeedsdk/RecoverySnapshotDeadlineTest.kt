@@ -112,6 +112,20 @@ class RecoverySnapshotDeadlineTest {
     }
 
     @Test
+    fun anEventRecoverysTrafficDoesNotKeepTheProducerRecoveryWaiting() {
+        alive()
+        assertEquals(1, requests.size)
+        val eventRequestId = manager.initiateEventOddsMessagesRecovery(producerId, URN.parse("od:match:7"))!!
+
+        // only the event recovery's snapshot keeps coming
+        runFor(5) { manager.onRecoveryTraffic(producerId, eventRequestId, now) }
+        assertEquals("asked again before the deadline", 1, requests.size)
+
+        runFor(1) { manager.onRecoveryTraffic(producerId, eventRequestId, now) }
+        assertEquals("not asked again after the deadline", 2, requests.size)
+    }
+
+    @Test
     fun aSnapshotQueuedBehindOlderMessagesIsNotCut() {
         val backlogGeneratedAt = now - 60 * 60 * 1000L
         alive()
