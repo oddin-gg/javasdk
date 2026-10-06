@@ -54,6 +54,7 @@ import org.jspecify.annotations.Nullable;
  */
 public final class ProfileCaches {
 
+    /** Tournaments and sports each, which no option sizes. */
     static final long SIZE = 10_000;
 
     /** How long a competitor, a player or a sport is fresh, as in 0.0.x. */
@@ -78,19 +79,27 @@ public final class ProfileCaches {
 
     /**
      * @param timeout the HTTP client timeout, each load's deadline
+     * @param sizes how many competitors and players are cached
      * @param fetches where the loads run: virtual threads
      */
-    public ProfileCaches(ApiClient client, Duration timeout, Executor fetches) {
-        this(client, timeout, fetches, InstantSource.system(), Ticker.systemTicker());
+    public ProfileCaches(ApiClient client, Duration timeout, CacheSizes sizes, Executor fetches) {
+        this(client, timeout, sizes, fetches, InstantSource.system(), Ticker.systemTicker());
     }
 
     /** With the clocks a test drives. */
-    ProfileCaches(ApiClient client, Duration timeout, Executor fetches, InstantSource clock, Ticker ticker) {
+    ProfileCaches(
+            ApiClient client,
+            Duration timeout,
+            CacheSizes sizes,
+            Executor fetches,
+            InstantSource clock,
+            Ticker ticker) {
         this.client = client;
         this.clock = clock;
         Duration longestFetch = timeout.plus(MatchCaches.MARGIN);
-        this.competitors = new EntityCache<>("competitor", SIZE, PROFILE_AGE, longestFetch, clock, ticker);
-        this.players = new EntityCache<>("player", SIZE, PROFILE_AGE, longestFetch, clock, ticker);
+        this.competitors =
+                new EntityCache<>("competitor", sizes.competitors(), PROFILE_AGE, longestFetch, clock, ticker);
+        this.players = new EntityCache<>("player", sizes.players(), PROFILE_AGE, longestFetch, clock, ticker);
         this.tournaments = new EntityCache<>("tournament", SIZE, TOURNAMENT_AGE, longestFetch, clock, ticker);
         this.sports = new EntityCache<>("sport", SIZE, PROFILE_AGE, longestFetch, clock, ticker);
         Duration margin = MatchCaches.MARGIN;
@@ -209,6 +218,15 @@ public final class ProfileCaches {
         tournaments.clear();
         sports.clear();
         sportLists.clear();
+    }
+
+    /**
+     * How many competitors, players, tournaments and sports are held at most, in that order; for a
+     * test.
+     */
+    List<Long> bounds() {
+        return List.of(
+                competitors.maximumSize(), players.maximumSize(), tournaments.maximumSize(), sports.maximumSize());
     }
 
     /** What is cached of the competitor, loading nothing; for a test. */

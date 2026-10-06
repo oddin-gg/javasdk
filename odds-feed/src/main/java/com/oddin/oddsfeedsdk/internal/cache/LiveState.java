@@ -210,6 +210,11 @@ public final class LiveState<K> {
         return dropped.get();
     }
 
+    /** How many records it holds before the oldest of those the feed does not own go. */
+    public long maximumSize() {
+        return maximumSize;
+    }
+
     /** How many entities it holds a record for. */
     public long size() {
         lock.lock();

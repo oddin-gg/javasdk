@@ -54,7 +54,7 @@ class ProfileCachesTest {
                 .setHttpClientTimeout(Duration.ofSeconds(10))
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        caches = new ProfileCaches(client, Duration.ofSeconds(10), threads, time, time);
+        caches = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time, time);
     }
 
     @AfterEach
@@ -62,6 +62,24 @@ class ProfileCachesTest {
         threads.shutdownNow();
         client.close();
         api.close();
+    }
+
+    @Test
+    void theCompetitorsAndPlayersHeldAreWhatTheirOptionsSet() {
+        assertThat(caches.bounds())
+                .as("0.0.x's defaults, and the fixed bound of tournaments and sports")
+                .containsExactly(20_000L, 50_000L, 10_000L, 10_000L);
+        var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.invalid", api.apiHost())
+                .setAccessToken("token")
+                .setMaxMatchCacheSize(11)
+                .setMaxFixtureCacheSize(22)
+                .setMaxCompetitorCacheSize(33)
+                .setMaxPlayerCacheSize(44)
+                .build();
+        var sized =
+                new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.from(configuration), threads, time, time);
+        assertThat(sized.bounds()).containsExactly(33L, 44L, 10_000L, 10_000L);
     }
 
     @Test
@@ -381,7 +399,7 @@ class ProfileCachesTest {
         // the wall clock stands while the entries age: a step back of the wall clock, or a sport the
         // size bound dropped, leaves a list that is fresh over a sport that is gone
         var ages = new FakeTime();
-        var caches = new ProfileCaches(client, Duration.ofSeconds(10), threads, time, ages);
+        var caches = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time, ages);
         api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
         caches.sports(EN, null);
         ages.advance(ProfileCaches.PROFILE_AGE.plusMinutes(1));

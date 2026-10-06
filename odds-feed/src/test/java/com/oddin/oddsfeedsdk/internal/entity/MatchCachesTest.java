@@ -63,10 +63,40 @@ class MatchCachesTest {
                 .setHttpClientTimeout(Duration.ofSeconds(10))
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        profiles = new ProfileCaches(client, Duration.ofSeconds(10), threads, time, time);
+        profiles = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time, time);
         sideLoads = new SideLoads(100, 2, Duration.ofSeconds(10));
         caches = new MatchCaches(
-                client, profiles, sideLoads, Duration.ofSeconds(10), Locale.ENGLISH, threads, time, time);
+                client,
+                profiles,
+                sideLoads,
+                Duration.ofSeconds(10),
+                CacheSizes.DEFAULTS,
+                Locale.ENGLISH,
+                threads,
+                time,
+                time);
+    }
+
+    /** Caches of the sizes the four options set; competitors and players are the profiles' to hold. */
+    private MatchCaches sized(long matches, long fixtures) {
+        var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.invalid", api.apiHost())
+                .setAccessToken("token")
+                .setMaxMatchCacheSize(matches)
+                .setMaxFixtureCacheSize(fixtures)
+                .setMaxCompetitorCacheSize(33)
+                .setMaxPlayerCacheSize(44)
+                .build();
+        return new MatchCaches(
+                client,
+                profiles,
+                sideLoads,
+                Duration.ofSeconds(10),
+                CacheSizes.from(configuration),
+                Locale.ENGLISH,
+                threads,
+                time,
+                time);
     }
 
     @AfterEach
@@ -114,6 +144,15 @@ class MatchCachesTest {
                     .isEqualTo("Team Alpha vs Team Beta");
         }
         assertThat(api.requests("GET", SUMMARY_EN)).hasSize(1);
+    }
+
+    @Test
+    void theMatchesAndFixturesHeldAreWhatTheirOptionsSetAndTheLiveStateFollowsTheMatches() {
+        assertThat(caches.bounds()).as("0.0.x's defaults").containsExactly(10_000L, 10_000L, 10_000L);
+        assertThat(sized(11, 22).bounds()).containsExactly(11L, 22L, 11L);
+        assertThat(sized(0, 22).bounds())
+                .as("a match cache of none still keeps one live state")
+                .containsExactly(0L, 22L, 1L);
     }
 
     @Test
