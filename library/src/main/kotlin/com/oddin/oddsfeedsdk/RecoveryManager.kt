@@ -99,6 +99,9 @@ class RecoveryManagerImpl @Inject constructor(
     private val lock = Any()
     private val sequence = generateSequence(Random.nextLong(20000)) { it + 1L }
 
+    // Tests move it to cross the recovery deadlines without waiting
+    internal var clock: () -> Long = System::currentTimeMillis
+
     override fun open(replayOnly: Boolean) {
         if (replayOnly) {
             return
@@ -137,7 +140,7 @@ class RecoveryManagerImpl @Inject constructor(
             when (val start = messageProcessingTimes[sessionId] ?: 0) {
                 0L -> logger.warn { "Message processing ended, but was not started" }
                 else -> {
-                    val processTime = System.currentTimeMillis() - start
+                    val processTime = clock() - start
                     if (processTime > 1000L) {
                         logger.warn { "Processing message took more than 1s" }
                     }
@@ -210,7 +213,7 @@ class RecoveryManagerImpl @Inject constructor(
             "Inconsistent recovery state",
             null
         )
-        val finished = System.currentTimeMillis()
+        val finished = clock()
         logger.info { "Recovery finished for request $requestId in ${finished - started} ms" }
 
         if (producerRecoveryData.recoveryState == RecoveryState.INTERRUPTED) {
@@ -239,7 +242,7 @@ class RecoveryManagerImpl @Inject constructor(
         val eventRecovery = producerRecoveryData.getEventRecovery(requestId)
             ?: throw GenericOdsFeedException("Inconsistent event recovery state", null)
         val started = eventRecovery.recoveryStartedAt
-        val finished = System.currentTimeMillis()
+        val finished = clock()
         logger.info { "Event ${eventRecovery.eventId} recovery finished for request $requestId in ${finished - started} ms" }
 
         GlobalScope.launch {
@@ -255,7 +258,7 @@ class RecoveryManagerImpl @Inject constructor(
         callable: suspend (String, URN, Long, Int?) -> Boolean
     ): Long? {
         return synchronized(lock) {
-            val now = System.currentTimeMillis()
+            val now = clock()
 
             val producerRecoveryData = findOrMakeProducerRecoveryData(producerId)
             val producerName = producerRecoveryData.producerName
@@ -298,7 +301,7 @@ class RecoveryManagerImpl @Inject constructor(
             return
         }
 
-        val now = System.currentTimeMillis()
+        val now = clock()
         val isBackFromInactivity = producerRecoveryData.isFlaggedDown &&
                 !producerRecoveryData.isPerformingRecovery &&
                 producerRecoveryData.producerDownReason == ProducerDownReason.PROCESSING_QUEUE_DELAY_VIOLATION &&
@@ -344,7 +347,7 @@ class RecoveryManagerImpl @Inject constructor(
             return
         }
 
-        val now = System.currentTimeMillis()
+        val now = clock()
         val recoverFrom: Instant? = (from ?: oddsFeedConfiguration.initialSnapshotRecoveryInterval?.let {
             Instant.ofEpochMilli(now - it.toMillis())
         })?.let { recoverFrom ->
@@ -391,7 +394,7 @@ class RecoveryManagerImpl @Inject constructor(
 
     private fun timerTick() {
         synchronized(lock) {
-            val now = System.currentTimeMillis()
+            val now = clock()
 
             producerRecoveryData.forEach {
                 val producerRecoveryData = it.value
@@ -441,7 +444,7 @@ class RecoveryManagerImpl @Inject constructor(
         }
 
         producerRecoveryData.producerStatusReason = reason
-        val now = System.currentTimeMillis()
+        val now = clock()
         val delayed = !calculateTiming(producerRecoveryData, now)
         val message = feedMessageFactory.buildProducerStatus(
             producerRecoveryData.producerId,
