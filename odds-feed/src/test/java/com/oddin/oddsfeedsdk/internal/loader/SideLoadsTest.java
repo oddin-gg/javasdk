@@ -64,6 +64,66 @@ class SideLoadsTest {
     }
 
     @Test
+    void loadsForIdleWorkersTakeNeitherTheQueuesRoomNorEveryWorker() throws InterruptedException {
+        var busy = new CountDownLatch(1);
+        var idleRunning = new AtomicInteger();
+        var mainRan = new CountDownLatch(3);
+        try (var sideLoads = new SideLoads(3, 4, BUDGET)) {
+            int accepted = 0;
+            for (int i = 0; i < 10; i++) {
+                if (sideLoads.offerWhenIdle(_ -> {
+                    idleRunning.incrementAndGet();
+                    await(busy);
+                })) {
+                    accepted++;
+                }
+            }
+            assertThat(accepted).as("their own queue's capacity").isEqualTo(3);
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (idleRunning.get() < 2 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            Thread.sleep(100);
+            assertThat(idleRunning).as("half the workers at most").hasValue(2);
+
+            for (int i = 0; i < 3; i++) {
+                assertThat(sideLoads.offer(_ -> mainRan.countDown()))
+                        .as("the main queue's room is all there")
+                        .isTrue();
+            }
+            assertThat(mainRan.await(5, TimeUnit.SECONDS))
+                    .as("run on the workers the idle loads leave free")
+                    .isTrue();
+            busy.countDown();
+        }
+    }
+
+    @Test
+    void aLoadForIdleWorkersWaitsForTheMainQueueToEmpty() throws InterruptedException {
+        var order = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var gate = new CountDownLatch(1);
+        var done = new CountDownLatch(3);
+        try (var sideLoads = new SideLoads(10, 1, BUDGET)) {
+            sideLoads.offer(_ -> {
+                await(gate);
+                order.add("first");
+                done.countDown();
+            });
+            sideLoads.offerWhenIdle(_ -> {
+                order.add("idle");
+                done.countDown();
+            });
+            sideLoads.offer(_ -> {
+                order.add("second");
+                done.countDown();
+            });
+            gate.countDown();
+            assertThat(done.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(order).containsExactly("first", "second", "idle");
+        }
+    }
+
+    @Test
     void aLoadThatThrowsIsCountedAndTheWorkerCarriesOn() throws InterruptedException {
         var ran = new CountDownLatch(1);
         try (var sideLoads = new SideLoads(10, 1, BUDGET)) {

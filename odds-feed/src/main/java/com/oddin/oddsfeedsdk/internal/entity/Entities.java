@@ -159,9 +159,10 @@ public final class Entities {
      * Starts loading each of {@code members} in each of {@code locales} in the background, and waits
      * for none of them: what a list of members does so that its reader finds them loaded, or joins
      * their loads, rather than loading one after another. Best effort: a member that is fresh, whose
-     * load is under way, or that a list queued already, is not queued again; a full side-load queue
-     * drops the rest; a load that fails fails nothing, and the member's own getters load it when
-     * they are called.
+     * load is under way, or that a list queued already, is not queued again. They run on the
+     * side-loads a summary's competitors and a message's preload leave idle, and a full queue of
+     * them drops the rest, so a long list never crowds those out. A load that fails fails nothing,
+     * and the member's own getters load it when they are called.
      *
      * @param warm whether the member needs no load in the locale
      * @param load the member's load in the locale, within the side-load's deadline
@@ -173,7 +174,7 @@ public final class Entities {
                 if (warm.test(member, locale) || !warming.add(key)) {
                     continue;
                 }
-                boolean queued = matches.sideLoad(deadline -> {
+                boolean queued = matches.warmUp(deadline -> {
                     try {
                         load.load(member, locale, deadline);
                     } finally {

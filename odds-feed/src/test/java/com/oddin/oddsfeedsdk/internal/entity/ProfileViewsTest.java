@@ -69,8 +69,17 @@ class ProfileViewsTest {
     @Test
     void aCompetitorsPlayersLoadInTheBackground() throws Exception {
         try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
-            List<@Nullable Player> players = requireNonNull(
-                    world.entities.competitor(COMPETITOR, List.of(EN)).getPlayers());
+            world.api.respond(
+                    PLAYER_EN,
+                    Reply.of(200, Fixtures.read("rest/player/player_profile.xml"))
+                            .after(Duration.ofSeconds(2)));
+            Competitor competitor = world.entities.competitor(COMPETITOR, List.of(EN));
+            competitor.getName(EN);
+            long started = System.nanoTime();
+            List<@Nullable Player> players = requireNonNull(competitor.getPlayers());
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .as("returned while the player's profile is still loading")
+                    .isLessThan(Duration.ofSeconds(1));
             assertThat(players).extracting(Player::getId).containsExactly(PLAYER);
             world.api.awaitRequest("GET", PLAYER_EN);
             world.api.awaitQuiet();
@@ -315,6 +324,77 @@ class ProfileViewsTest {
                 Thread.sleep(10);
             }
             assertThat(loads.get()).as("queued again once it ended").isEqualTo(2);
+        }
+    }
+
+    @Test
+    void thePerLocaleMapsAreANewOneTheCallerCanChange() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            Competitor competitor = world.entities.competitor(COMPETITOR, List.of(EN));
+            requireNonNull(competitor.getNames()).put(DE, "added by the client");
+            requireNonNull(competitor.getCountries()).clear();
+            assertThat(competitor.getNames()).as("its own copy").containsExactly(entry(EN, "Team Alpha"));
+            assertThat(competitor.getCountries()).containsExactly(entry(EN, "Czechia"));
+        }
+    }
+
+    @Test
+    void aMemberAFullQueueDroppedIsQueuedByALaterList() throws Exception {
+        // one warm-up runs at a time with two workers, and the idle queue holds one more
+        try (var world = EntityWorld.withSideLoads(1, 2)) {
+            var release = new java.util.concurrent.CountDownLatch(1);
+            var running = new java.util.concurrent.CountDownLatch(1);
+            var ran = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+            Entities.WarmLoad<String> load = (member, locale, deadline) -> {
+                ran.add(member);
+                running.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            };
+            world.entities.warmEach(List.of("running"), List.of(EN), (member, locale) -> false, load);
+            assertThat(running.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            world.entities.warmEach(List.of("queued", "dropped"), List.of(EN), (member, locale) -> false, load);
+            assertThat(world.sideLoads.dropped()).as("no room for the third").isEqualTo(1);
+
+            release.countDown();
+            waitFor(() -> ran.contains("queued"));
+            Thread.sleep(100);
+            world.entities.warmEach(List.of("dropped"), List.of(EN), (member, locale) -> false, load);
+            waitFor(() -> ran.contains("dropped"));
+            assertThat(ran).as("not left marked as queued").contains("dropped");
+        }
+    }
+
+    @Test
+    void aBurstOfMemberWarmUpsLeavesRoomForAMessagesPreload() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
+            int many = 40;
+            world.api.respond(TOURNAMENT_EN, 200, tournamentListing(many));
+            for (int i = 1; i <= many; i++) {
+                world.api.respond(competitorProfile(i), Reply.of(200, PROFILE).after(Duration.ofSeconds(3)));
+            }
+            Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN));
+            assertThat(tournament.getCompetitors()).hasSize(many);
+            world.api.awaitRequest("GET", competitorProfile(1));
+
+            String summary = "/v1/sports/en/sport_events/od:match:198314/summary";
+            long started = System.nanoTime();
+            world.matches.preload(URN.parse("od:match:198314"), List.of(EN));
+            world.api.awaitRequest("GET", summary);
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .as("the preload ran on a worker the warm-ups left free, not behind them")
+                    .isLessThan(Duration.ofSeconds(2));
+            assertThat(world.sideLoads.dropped()).as("nor was it dropped").isZero();
+        }
+    }
+
+    private static void waitFor(java.util.function.BooleanSupplier condition) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
         }
     }
 
