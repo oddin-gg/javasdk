@@ -357,6 +357,18 @@ class SessionDispatcherTest {
         assertThat(listener.read).containsExactly(EventStatus.Cancelled);
     }
 
+    @Test
+    void aReplayPlayedAgainWritesTheStatusOfEachRun() {
+        SessionDispatcher replay = dispatcher(MessageInterest.ALL, true);
+        listener.onOdds = message -> listener.read.add(status(message));
+        long dayAgo = System.currentTimeMillis() - Duration.ofDays(1).toMillis();
+        handle(replay, withStatus("1", dayAgo));
+        handle(replay, withStatus("5", dayAgo + 60_000));
+        // the same match again, with the timestamps it had the first time
+        handle(replay, withStatus("1", dayAgo));
+        assertThat(listener.read).containsExactly(EventStatus.Live, EventStatus.Cancelled, EventStatus.Live);
+    }
+
     // ---- the failure policy
 
     @Test

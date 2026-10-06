@@ -75,8 +75,8 @@ import org.slf4j.LoggerFactory;
  * is cleared.
  *
  * <p>A replay session posts no facts, as a replay feed runs no recovery, and writes the live state
- * of its old messages as current. A client's {@code SYSTEM_ALIVE_ONLY} session carries no producer
- * liveness and posts no facts either.
+ * of its old messages as current, in the order they come. A client's {@code SYSTEM_ALIVE_ONLY}
+ * session carries no producer liveness and posts no facts either.
  *
  * <p>Safe for concurrent use; {@link #start} and {@link #close} are the only calls from outside.
  */
@@ -367,11 +367,20 @@ public final class SessionDispatcher implements AutoCloseable {
                 OFSportEventStatus status = odds.getSportEventStatus();
                 URN id = URN.parse(odds.getEventId());
                 if (status != null && URN.TypeMatch.equals(id.getType())) {
-                    // a replay's messages are old by design, and written as current
-                    long age = replay ? 0 : pipeline.offsets().age(producerId, odds.getTimestamp(), takenAt);
-                    pipeline.matches()
-                            .oddsChange(
-                                    id, producerId, odds.getTimestamp(), Duration.ofMillis(age), receivedAt, status);
+                    if (replay) {
+                        // old by design, and a run played again repeats the last one's timestamps
+                        pipeline.matches().replayed(id, producerId, odds.getTimestamp(), receivedAt, status);
+                    } else {
+                        long age = pipeline.offsets().age(producerId, odds.getTimestamp(), takenAt);
+                        pipeline.matches()
+                                .oddsChange(
+                                        id,
+                                        producerId,
+                                        odds.getTimestamp(),
+                                        Duration.ofMillis(age),
+                                        receivedAt,
+                                        status);
+                    }
                 }
             }
             case OFFixtureChange change -> {

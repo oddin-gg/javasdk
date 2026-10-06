@@ -188,6 +188,14 @@ public final class MatchCaches {
         return live.feedWriteIfNewer(id, producer, timestamp, correctedAge, receivedAt, MatchWrites.live(status));
     }
 
+    /**
+     * A replayed message's status for the match, written whatever its timestamp and its age, in the
+     * order the replay sends them: a run played again repeats the timestamps of the one before.
+     */
+    public void replayed(URN id, long producer, long timestamp, Instant receivedAt, OFSportEventStatus status) {
+        live.feedWriteReplayed(id, producer, timestamp, receivedAt, MatchWrites.live(status));
+    }
+
     /** The match changed: what is cached of it and of its fixture is out of date. */
     public void fixtureChange(URN id) {
         clear(id);
