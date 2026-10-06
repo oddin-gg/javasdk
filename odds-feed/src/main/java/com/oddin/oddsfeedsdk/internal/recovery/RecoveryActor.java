@@ -19,6 +19,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import java.util.function.Consumer;
 import java.util.random.RandomGenerator;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -90,8 +91,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private volatile long turnedAt;
     /** A test's hook, run before each take from the samples, after the look at the essential facts. */
     volatile Runnable beforeSamplePoll = () -> {};
-    /** A test's hook, run inside the handling of each fact. */
-    volatile Runnable beforeHandle = () -> {};
+    /** A test's hook, run inside the handling of each fact, with the fact. */
+    volatile Consumer<Fact> beforeHandle = fact -> {};
     /** A test's hook, run before each take from the event recovery requests. */
     volatile Runnable beforeRequestPoll = () -> {};
     /** The turns the actor has taken; for the watchdog and a test. */
@@ -419,7 +420,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      */
     private void handle(Fact fact) {
         try {
-            beforeHandle.run();
+            beforeHandle.accept(fact);
             switch (fact) {
                 case Fact.Opened(var info, var transport) -> {
                     transports.put(info.id(), transport);
@@ -678,8 +679,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
     }
 
-    /** What the actor's queues carry. */
-    private sealed interface Fact {
+    /** What the actor's queues carry; package-private for a test's hook. */
+    sealed interface Fact {
         record Opened(SessionInfo info, SessionTransport transport) implements Fact {}
 
         record Closed(int session) implements Fact {}
