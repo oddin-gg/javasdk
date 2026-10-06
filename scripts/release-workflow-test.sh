@@ -17,7 +17,9 @@
 # The jobs' if: conditions are evaluated over every combination of results, not compared as
 # text. On top of the rules, the whole of release.yml is compared with its pinned form,
 # scripts/release-workflow.json: any change to it has to update that file too, in the same
-# reviewed change (scripts/release-workflow-test.sh --update writes it). The rules stay for what
+# reviewed change (scripts/release-workflow-test.sh --update writes it). next.yml's 1.0 job,
+# system-tests-next, is pinned the same way, in scripts/next-system-tests-job.json, since a
+# release waits on it. The rules stay for what
 # they say when they fail. Then each rule is broken in a copy of the workflows, and the policy
 # must refuse every copy for that rule, so a rule that stopped checking anything shows up too.
 # next.yml runs it on every push. Needs python3 and yq.
@@ -30,7 +32,7 @@ trap 'rm -rf "$work"' EXIT
 cat > "$work/policy.py" <<'EOF'
 import difflib, itertools, json, os, re, subprocess, sys
 
-root, pinned_path = sys.argv[1], sys.argv[2]
+root, pinned_path, pinned_next_path = sys.argv[1], sys.argv[2], sys.argv[3]
 problems = []
 
 def load(path):
@@ -322,6 +324,24 @@ for path in sorted(seen):
     check(len(loaded) == 1, "%s > system-tests-next must check that the 1.0 version test ran" % where)
     for step in loaded:
         unconditional("system-tests-next", step, "the version test check")
+    # the order of its steps, and the version check's own text, are held by the pin below
+    check(nested.get("permissions") == {"contents": "read"},
+          "%s > system-tests-next must hold contents: read and nothing else, not %r" % (where, nested.get("permissions")))
+    for step in nested.get("steps", []):
+        uses, with_ = str(step.get("uses", "")), step.get("with") or {}
+        check(not uses.startswith("actions/cache"), "%s > system-tests-next must restore no cache: %s" % (where, uses))
+        keys = [k for k in with_ if k == "cache" or k.startswith("cache-") or k.startswith("server-")]
+        check(not keys, "%s > system-tests-next must restore no cache and name no registry server: %s"
+              % (where, ", ".join(keys)))
+    # and the whole job against its pinned form, as release.yml below
+    actual_next = json.dumps(nested, indent=2, sort_keys=True) + "\n"
+    pinned_next = open(pinned_next_path).read()
+    if actual_next != pinned_next:
+        diff = "".join(difflib.unified_diff(pinned_next.splitlines(True), actual_next.splitlines(True),
+                                             "scripts/next-system-tests-job.json", "next.yml > system-tests-next"))
+        problems.append("next.yml > system-tests-next differs from its pinned form in "
+                        "scripts/next-system-tests-job.json; if the change is meant, update it with "
+                        "scripts/release-workflow-test.sh --update:\n" + diff)
 
 # and next.yml builds that commit: every checkout there takes it
 for path in sorted(seen):
@@ -382,8 +402,9 @@ sys.exit(1 if problems else 0)
 EOF
 
 pinned=$root/scripts/release-workflow.json
+pinned_next=$root/scripts/next-system-tests-job.json
 policy() {
-  python3 "$work/policy.py" "$1" "$pinned"
+  python3 "$work/policy.py" "$1" "$pinned" "$pinned_next"
 }
 
 # --update writes release.yml's current form as the pinned one, for a deliberate change to it.
@@ -398,6 +419,16 @@ if [ "${1:-}" = "--update" ]; then
   else
     rm -f "$pinned.part"
     echo "could not read release.yml; $pinned is unchanged" >&2
+    exit 1
+  fi
+  if yq -o=json '.jobs["system-tests-next"]' "$root/.github/workflows/next.yml" \
+    | python3 -c 'import json, sys; job = json.load(sys.stdin); assert job; print(json.dumps(job, indent=2, sort_keys=True))' \
+      > "$pinned_next.part"; then
+    mv "$pinned_next.part" "$pinned_next"
+    echo "wrote $pinned_next; review the diff"
+  else
+    rm -f "$pinned_next.part"
+    echo "could not read next.yml's system-tests-next; $pinned_next is unchanged" >&2
     exit 1
   fi
 fi
@@ -811,6 +842,49 @@ breaks next.yml replace '          REVISION: "${{ inputs.revision }}"
 breaks next.yml replace '          case = cases.get("theSdkIsTheOneThisReactorBuilt")
 ' '          case = cases.get("anyTest")
 ' "./.github/workflows/next.yml > system-tests-next must check that the 1.0 version test ran"
+
+for step in '      - name: Build the SDK and run the system tests against it
+' '      - name: Check the integration tests ran, against 1.0
+'; do
+  what="the 1.0 run"; case $step in *Check*) what="the version test check" ;; esac
+  breaks next.yml replace "$step" "$step        if: false
+" "system-tests-next: $what must not be conditional"
+  breaks next.yml replace "$step" "$step        continue-on-error: true
+" "system-tests-next: $what must not continue on error"
+done
+breaks next.yml replace '    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # a release builds the commit its check accepted; otherwise the event'"'"'s own commit
+          ref: ${{ inputs.commit }}
+          # do not leave the job token in .git/config for the build to find
+          persist-credentials: false
+
+      - name: Check the checkout left no credentials behind' '    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # a release builds the commit its check accepted; otherwise the event'"'"'s own commit
+          ref: ${{ inputs.commit }}
+          # do not leave the job token in .git/config for the build to find
+          persist-credentials: false
+
+      - name: Check the checkout left no credentials behind' \
+  "./.github/workflows/next.yml > system-tests-next must hold contents: read and nothing else"
+breaks next.yml replace "          distribution: 'corretto'
+          # No server" "          distribution: 'corretto'
+          cache: 'maven'
+          # No server" "./.github/workflows/next.yml > system-tests-next must restore no cache and name no registry server: cache"
+breaks next.yml replace "          distribution: 'corretto'
+          # No server" "          distribution: 'corretto'
+          server-id: oddin-github
+          # No server" "./.github/workflows/next.yml > system-tests-next must restore no cache and name no registry server: server-id"
+breaks next.yml replace "          outcome = [child.tag for child in case if child.tag in (\"skipped\", \"failure\", \"error\")]
+" "          outcome = [child.tag for child in case if child.tag in (\"failure\", \"error\")]
+" "next.yml > system-tests-next differs from its pinned form"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures broken copies were not refused as they should be" >&2
