@@ -2,7 +2,10 @@ package com.oddin.oddsfeed.systemtests;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
+import com.oddin.oddsfeed.systemtests.support.KnownDifference;
+import com.oddin.oddsfeed.systemtests.support.KnownDifference.Line;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
@@ -16,10 +19,10 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Properties;
 import javax.xml.XMLConstants;
-import javax.xml.bind.JAXBContext;
-import javax.xml.bind.annotation.XmlRootElement;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.transform.Source;
+import javax.xml.transform.stream.StreamSource;
 import org.junit.jupiter.api.Test;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -31,6 +34,11 @@ import org.xml.sax.InputSource;
  * Checks the build itself, not the SDK: that the classpath the scenarios will use is sane, that
  * the repository setup which keeps public coordinates coming from Central is intact, and that a
  * published POM would carry a real version.
+ *
+ * <p>Against 0.0.x it pins the published jar by its digests and checks the javax runtime the old
+ * jar needs; against 1.0 it checks that the SDK is the one this reactor packaged, by the version
+ * it reports, and that its Jakarta runtime is there. Both SDKs compile against this class, so
+ * whatever one of them lacks is reached by reflection.
  *
  * <p>It cannot prove that integration tests run at all - it is an *IT, so removing the failsafe
  * binding would simply stop it being executed. The CI job checks the failsafe summary for that.
@@ -47,6 +55,9 @@ class BuildWiringIT {
 
     @Test
     void theSdkArtifactsAreTheOnesWeKnow() throws Exception {
+        assumeTrue(
+                KnownDifference.lineUnderTest() == Line.LEGACY,
+                "1.0 is built in this reactor: there is no published jar to compare it with");
         Path jar = resolvedSdkJar();
         // the POM sits beside the jar in the local repository and is read first: it decides the
         // transitive dependencies, so pinning only the jar would leave the graph open
@@ -93,24 +104,83 @@ class BuildWiringIT {
     }
 
     @Test
+    void theSdkIsTheOneThisReactorBuilt() throws Exception {
+        assumeTrue(
+                KnownDifference.lineUnderTest() == Line.NEXT,
+                "0.0.x is the published jar, and theSdkArtifactsAreTheOnesWeKnow pins it");
+        Path jar = resolvedSdkJar();
+        String version = property("sdk.version");
+
+        // the packaged jar, not target/classes: only the jar has the parser relocated into it
+        assertThat(jar)
+                .as("the SDK the tests loaded")
+                .isEqualTo(basedir("root.basedir")
+                        .resolve("odds-feed/target/odds-feed-" + version + ".jar")
+                        .toAbsolutePath()
+                        .normalize());
+        // by reflection: 0.0.x has no such method, and this class compiles against both
+        Object reported = sdkEntryPoint().getMethod("getSdkVersion").invoke(null);
+        assertThat(reported)
+                .as("the version the SDK reports to the API and the broker, against the one Maven resolved")
+                .isEqualTo(version.endsWith("-SNAPSHOT") ? version.replaceFirst("-SNAPSHOT$", "-dev") : version);
+    }
+
+    @Test
+    void theNewSdkCarriesItsOwnParser() {
+        assumeTrue(KnownDifference.lineUnderTest() == Line.NEXT, "0.0.x reads XML with the JDK's parser");
+        ClassLoader loader = getClass().getClassLoader();
+
+        assertThat(loader.getResource("com/oddin/oddsfeedsdk/internal/woodstox/wstx/stax/WstxInputFactory.class"))
+                .as("Woodstox, relocated into the SDK jar by the shade plugin")
+                .isNotNull();
+        // a plain copy would register itself as every StAX parser in the JVM, which no client of
+        // 1.0 has unless it brings one itself
+        assertThat(loader.getResource("com/ctc/wstx/stax/WstxInputFactory.class"))
+                .as("an unrelocated Woodstox on the classpath")
+                .isNull();
+    }
+
+    @Test
     void onlyOneArtifactProvidesTheJaxbApi() throws IOException {
-        List<?> providers =
-                Collections.list(getClass().getClassLoader().getResources("javax/xml/bind/JAXBContext.class"));
+        List<?> providers = Collections.list(
+                getClass().getClassLoader().getResources(jaxbPackage().replace('.', '/') + "/JAXBContext.class"));
 
         assertThat(providers)
-                .as("two copies of javax.xml.bind leave the winner to classpath order")
+                .as("two copies of %s leave the winner to classpath order", jaxbPackage())
                 .hasSize(1);
+        if (KnownDifference.lineUnderTest() == Line.NEXT) {
+            assertThat(getClass().getClassLoader().getResource("javax/xml/bind/JAXBContext.class"))
+                    .as("javax.xml.bind in a 1.0 run: the legacy-sdk profile is active, and its jaxb-runtime 2.3.9 "
+                            + "replaces the 4.0 runtime 1.0 needs; run with -Dsdk.next rather than setting "
+                            + "sdk.version alone")
+                    .isNull();
+        }
     }
 
     @Test
     void aJaxbImplementationIsPresentAndCanUnmarshal() {
         assertThatCode(() -> {
-                    JAXBContext context = JAXBContext.newInstance(Ping.class);
-                    Object read = context.createUnmarshaller().unmarshal(new StringReader("<ping/>"));
+                    // by reflection: each SDK brings one of the two packages, never both
+                    ClassLoader loader = getClass().getClassLoader();
+                    Class<?> context = Class.forName(jaxbPackage() + ".JAXBContext", true, loader);
+                    Object unmarshaller = context.getMethod("createUnmarshaller")
+                            .invoke(context.getMethod("newInstance", Class[].class)
+                                    .invoke(null, (Object) new Class<?>[] {Ping.class}));
+                    Object element = Class.forName(jaxbPackage() + ".Unmarshaller", true, loader)
+                            .getMethod("unmarshal", Source.class, Class.class)
+                            .invoke(unmarshaller, new StreamSource(new StringReader("<ping/>")), Ping.class);
+                    Object read = Class.forName(jaxbPackage() + ".JAXBElement", true, loader)
+                            .getMethod("getValue")
+                            .invoke(element);
                     assertThat(read).isInstanceOf(Ping.class);
                 })
-                .as("the old SDK needs a JAXB runtime, not just the API, to read feed and REST payloads")
+                .as("the SDK needs a JAXB runtime, not just the API, to read feed and REST payloads")
                 .doesNotThrowAnyException();
+    }
+
+    /** The XML binding API the SDK under test reads with: javax for 0.0.x, Jakarta for 1.0. */
+    private static String jaxbPackage() {
+        return KnownDifference.lineUnderTest() == Line.LEGACY ? "javax.xml.bind" : "jakarta.xml.bind";
     }
 
     @Test
@@ -196,8 +266,8 @@ class BuildWiringIT {
                 .toURI());
 
         assertThat(location)
-                .as("once odds-feed is built in this reactor the SDK is a directory of classes, "
-                        + "and a digest of the published jar no longer says anything")
+                .as("the SDK is a directory of classes, not a jar: Maven takes a reactor module's "
+                        + "classes when the build stops before package, and they lack the relocated parser")
                 .isRegularFile();
         return location;
     }
@@ -369,6 +439,6 @@ class BuildWiringIT {
                 .getFirst();
     }
 
-    @XmlRootElement(name = "ping")
+    /** Read with an expected type, so it needs no binding annotation from either package. */
     static class Ping {}
 }

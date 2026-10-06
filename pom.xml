@@ -345,6 +345,26 @@
   <profiles>
     <profile>
       <!--
+        The system tests against the 1.0 SDK this reactor builds, instead of the published 0.0.x:
+        ./mvnw verify -Dsdk.next. Both properties move together, so the coordinate is the reactor's
+        odds-feed and Maven takes the module's own jar. system-tests switches on the same property,
+        and that is why it is a property and not a profile id: a profile in a module cannot test
+        whether the parent's profile is active. The tests 1.0 does not pass yet are listed in
+        system-tests/src/test/resources/pending-on-1.0.txt.
+      -->
+      <id>sdk-next</id>
+      <activation>
+        <property>
+          <name>sdk.next</name>
+        </property>
+      </activation>
+      <properties>
+        <sdk.groupId>gg.oddin.oddsfeed</sdk.groupId>
+        <sdk.version>${revision}</sdk.version>
+      </properties>
+    </profile>
+    <profile>
+      <!--
         The release build: sources and javadoc jars, signatures, and the upload to Central, for every
         module whose maven.deploy.skip is false. .github/workflows/release.yml runs it from a tag;
         RELEASING.md has the rest.

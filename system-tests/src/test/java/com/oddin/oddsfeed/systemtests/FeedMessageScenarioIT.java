@@ -204,6 +204,7 @@ class FeedMessageScenarioIT {
     }
 
     @Test
+    @SuppressWarnings("deprecation") // 1.0 deprecates the two times the feed never sends
     void aFixtureChangeReachesOnFixtureChange() throws InterruptedException {
         try (FakeRestServer rest = FakeRestServer.start();
                 FakeFeed feed = FakeFeed.start();
