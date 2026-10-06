@@ -772,6 +772,85 @@ class EventsDispatcherTest {
         assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS)).isNull();
     }
 
+    // ------------------------------------------------------------------ told to stop, then waited for
+
+    @Test
+    void afterAStopNothingIsDeliveredAndTheThreadIsWaitedFor() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.up();
+        assertThat(listener.next()).startsWith("onConnectionStateChange UP");
+        dispatcher.stop();
+        dispatcher.down("late");
+        dispatcher.lagging(1, true);
+        assertThat(dispatcher.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                .as("the thread ended")
+                .isTrue();
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS)).isNull();
+    }
+
+    /**
+     * A wedged callback holds the wait only until the deadline the feed gives it, not the five
+     * seconds close() waits; the events queued behind it are dropped then all the same.
+     */
+    @Test
+    void theWaitForAWedgedCallbackEndsAtTheDeadline() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, true, false, StatusCause.CONNECTION_LOST, 1));
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:1"), 1);
+        dispatcher.stop();
+        long started = System.nanoTime();
+        assertThat(dispatcher.awaitStop(started + TimeUnit.MILLISECONDS.toNanos(200)))
+                .as("ended in time")
+                .isFalse();
+        assertThat(Duration.ofNanos(System.nanoTime() - started))
+                .isGreaterThanOrEqualTo(Duration.ofMillis(150))
+                .isLessThan(Duration.ofSeconds(2));
+        assertThat(dispatcher.controlQueued()).as("what was queued, dropped").isZero();
+
+        listener.release();
+        assertThat(dispatcher.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                .as("ended once the callback returned")
+                .isTrue();
+        assertThat(listener.take(1)).containsExactly("onConnectionStateChange UP null 0 PT0S");
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing after the stop")
+                .isNull();
+    }
+
+    /** A callback that stops the dispatcher and waits for it, as the feed's close() does: no wait for itself. */
+    @Test
+    void aWaitFromTheEventsThreadItselfReturnsAtOnce() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        var waited = new java.util.concurrent.atomic.AtomicLong(-1);
+        var ended = new AtomicBoolean();
+        listener.onFatal = () -> {
+            long started = System.nanoTime();
+            dispatcher.stop();
+            ended.set(dispatcher.awaitStop(started + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)));
+            waited.set(System.nanoTime() - started);
+        };
+        dispatcher.fatal("refused", null);
+        assertThat(listener.next()).isEqualTo("onFatalError refused null");
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (waited.get() < 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(Duration.ofNanos(waited.get())).isLessThan(Duration.ofSeconds(1));
+        assertThat(ended).as("the caller's own thread, which ends next").isTrue();
+    }
+
+    @Test
+    void aDispatcherNeverStartedIsWaitedForAtOnce() {
+        EventsDispatcher dispatcher = dispatcher(null, 10, 10);
+        dispatcher.up();
+        dispatcher.stop();
+        assertThat(dispatcher.awaitStop(System.nanoTime())).isTrue();
+        assertThat(dispatcher.controlQueued()).isZero();
+    }
+
     // ------------------------------------------------------------------ the 1.0 events of the recovery actor
 
     @Test
