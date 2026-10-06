@@ -212,6 +212,27 @@ class MatchViewTest {
     }
 
     @Test
+    void theExtraInfoIsANewMapTheCallerCanChange() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    SUMMARY_EN,
+                    200,
+                    Fixtures.replace(
+                            SUMMARY,
+                            "</competitors>",
+                            "</competitors><extra_info><info key=\"sport_format\" value=\"classic\"/></extra_info>"));
+            Match match = world.entities.match(MATCH, List.of(EN));
+            var info = requireNonNull(match.getExtraInfo());
+            assertThat(info).containsExactly(java.util.Map.entry("sport_format", "classic"));
+            info.put("added", "by the client");
+            info.remove("sport_format");
+            assertThat(match.getExtraInfo())
+                    .as("its own copy")
+                    .containsExactly(java.util.Map.entry("sport_format", "classic"));
+        }
+    }
+
+    @Test
     void theCompetitorsAreANewListTheCallerCanChange() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             Match match = world.entities.match(MATCH, List.of(EN));
