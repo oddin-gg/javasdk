@@ -296,6 +296,11 @@ public final class EntityCache<K> {
         return invalidated.policy().getIfPresentQuietly(key) != null;
     }
 
+    /** How many entries it holds at most. */
+    public long maximumSize() {
+        return entries.policy().eviction().orElseThrow().getMaximum();
+    }
+
     /** How many entries it holds, tombstones included. */
     public long size() {
         entries.cleanUp();

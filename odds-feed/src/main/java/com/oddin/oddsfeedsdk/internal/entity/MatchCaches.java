@@ -58,9 +58,6 @@ import org.jspecify.annotations.Nullable;
  */
 public final class MatchCaches {
 
-    /** Matches, fixtures and live states each cache: a match's worth of data is small. */
-    static final long SIZE = 10_000;
-
     /** How long a match or a fixture is fresh, as in 0.0.x. */
     static final Duration AGE = Duration.ofHours(12);
 
@@ -82,6 +79,8 @@ public final class MatchCaches {
      * @param profiles what a match's responses fill, and where its competitors are side-loaded
      * @param sideLoads where the competitors' profiles are loaded after a summary
      * @param timeout the HTTP client timeout, each load's deadline
+     * @param sizes how many matches and fixtures are cached; the live state holds as many matches,
+     *     one at least
      * @param fetches where the loads run: virtual threads
      */
     public MatchCaches(
@@ -89,6 +88,7 @@ public final class MatchCaches {
             ProfileCaches profiles,
             SideLoads sideLoads,
             Duration timeout,
+            CacheSizes sizes,
             Locale defaultLocale,
             Executor fetches) {
         this(
@@ -96,6 +96,7 @@ public final class MatchCaches {
                 profiles,
                 sideLoads,
                 timeout,
+                sizes,
                 defaultLocale,
                 fetches,
                 InstantSource.system(),
@@ -108,6 +109,7 @@ public final class MatchCaches {
             ProfileCaches profiles,
             SideLoads sideLoads,
             Duration timeout,
+            CacheSizes sizes,
             Locale defaultLocale,
             Executor fetches,
             InstantSource clock,
@@ -118,9 +120,10 @@ public final class MatchCaches {
         this.defaultLocale = defaultLocale;
         this.clock = clock;
         Duration longestFetch = timeout.plus(MARGIN);
-        this.matches = new EntityCache<>("match", SIZE, AGE, longestFetch, clock, ticker);
-        this.fixtures = new EntityCache<>("fixture", SIZE, AGE, longestFetch, clock, ticker);
-        this.live = new LiveState<>(SIZE, ticker);
+        this.matches = new EntityCache<>("match", sizes.matches(), AGE, longestFetch, clock, ticker);
+        this.fixtures = new EntityCache<>("fixture", sizes.fixtures(), AGE, longestFetch, clock, ticker);
+        // one record per match, read with it; a match cache of none still keeps the live state's one
+        this.live = new LiveState<>(Math.max(1, sizes.matches()), ticker);
         this.summaries = new Loader<>("match", this::fetchSummary, timeout, MARGIN, fetches);
         this.fixtureLoads = new Loader<>("fixture", this::fetchFixture, timeout, MARGIN, fetches);
     }
@@ -257,6 +260,11 @@ public final class MatchCaches {
     @Nullable
     Entry cachedFixture(URN id) {
         return fixtures.get(id);
+    }
+
+    /** How many matches, fixtures and live states are held at most, in that order; for a test. */
+    List<Long> bounds() {
+        return List.of(matches.maximumSize(), fixtures.maximumSize(), live.maximumSize());
     }
 
     /** What is cached of the match, loading nothing; for a test. */

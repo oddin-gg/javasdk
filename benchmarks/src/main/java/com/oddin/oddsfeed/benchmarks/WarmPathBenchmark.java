@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
+import com.oddin.oddsfeedsdk.internal.entity.CacheSizes;
 import com.oddin.oddsfeedsdk.internal.entity.Entities;
 import com.oddin.oddsfeedsdk.internal.entity.MatchCaches;
 import com.oddin.oddsfeedsdk.internal.entity.ProfileCaches;
@@ -94,8 +95,9 @@ public class WarmPathBenchmark {
         client = api;
         var loads = new SideLoads(1, 0, TIMEOUT);
         sideLoads = loads;
-        var profiles = new ProfileCaches(api, TIMEOUT, executor);
-        var caches = new MatchCaches(api, profiles, loads, TIMEOUT, Locale.ENGLISH, executor);
+        var sizes = CacheSizes.from(configuration);
+        var profiles = new ProfileCaches(api, TIMEOUT, sizes, executor);
+        var caches = new MatchCaches(api, profiles, loads, TIMEOUT, sizes, Locale.ENGLISH, executor);
         matches = caches;
         var entities = new Entities(
                 caches, profiles, (id, locales) -> null, ExceptionHandlingStrategy.THROW, TIMEOUT, executor, 16);

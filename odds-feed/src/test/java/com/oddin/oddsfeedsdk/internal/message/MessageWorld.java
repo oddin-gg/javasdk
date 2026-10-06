@@ -8,6 +8,7 @@ import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
+import com.oddin.oddsfeedsdk.internal.entity.CacheSizes;
 import com.oddin.oddsfeedsdk.internal.entity.Entities;
 import com.oddin.oddsfeedsdk.internal.entity.MatchCaches;
 import com.oddin.oddsfeedsdk.internal.entity.ProfileCaches;
@@ -58,8 +59,9 @@ public final class MessageWorld implements AutoCloseable {
                 .setHttpClientTimeout(TIMEOUT)
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        profiles = new ProfileCaches(client, TIMEOUT, threads);
-        matches = new MatchCaches(client, profiles, sideLoads, TIMEOUT, Locale.ENGLISH, threads);
+        profiles = new ProfileCaches(client, TIMEOUT, CacheSizes.from(configuration), threads);
+        matches = new MatchCaches(
+                client, profiles, sideLoads, TIMEOUT, CacheSizes.from(configuration), Locale.ENGLISH, threads);
         entities = new Entities(matches, profiles, (id, locales) -> null, strategy, TIMEOUT, threads, 16);
         catalog = new MarketDescriptions(client, TIMEOUT, threads);
         messages = new MessageFactory(entities, catalog, strategy, Locale.ENGLISH);
