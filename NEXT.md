@@ -1118,9 +1118,11 @@ group by group.
         candidate.
 34. First release candidate, soak on the test environment, candidates to clients.
 35. Fix round.
-36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released. The notice asks
-    Java 8 clients to pin a 0.0.x version. Until 0.0.x support ends, the notice and the
-    README tell clients about the move; the relocation of ticket 33 follows then.
+36. End-of-life notice for 0.0.x sent to all clients, 1.0.0 released. The notice tells
+    Java 8 clients that the old line gets critical fixes until 31 March 2027; until then,
+    the notice and the README tell clients about the move. Shortly before that date, a
+    reminder asks Java 8 clients to pin the last 0.0.x version, and the relocation of
+    ticket 33 follows once they have. Pinning earlier would cost them the fixes between.
 
 Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 43 and
 44, then 34; 37 before any tag. The benchmark, the Central pipeline and the
@@ -1285,3 +1287,6 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   0.0.x support ends, after the last 0.0.x fix, so no fix can undo it; until then the
   end-of-life notice and the README tell clients. Before its tag, someone confirms by
   hand that the remaining Java 8 clients have pinned a 0.0.x version.
+- 2026-10-06, when Java 8 clients pin: not at the end-of-life notice, which would cost
+  them the fixes until 31 March 2027, but on a reminder shortly before that date, to the
+  last 0.0.x version.
