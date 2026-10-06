@@ -621,6 +621,15 @@ and REST workers post facts to it; it decides and posts work out.
   for while the connection is down is refused at once, since its snapshot would have no
   queue to go to. The caller's future is completed on a thread of its own, never the
   actor's, so nothing the caller chains to it can hold the actor up.
+- Each event recovery has a status by its request id, as in the Go SDK: pending from
+  the request, then completed, failed or timed out. Failed means the API refused it, its
+  `snapshot_complete` went with a lost queue, or the feed closed first. Unlike the Go
+  SDK, a producer going down for another reason fails none, since its snapshot can still
+  arrive. A status is kept five minutes after it ends, then forgotten; an id never asked
+  for, or forgotten, has none, and producer recoveries have none. Pending ones are bounded
+  by the event recoveries in flight; of the ended ones at most 10,000 are kept, and past
+  that the first to end is forgotten early, and counted. The actor writes the statuses
+  and any thread reads them; ticket 26 makes them public.
 - The facts posted to the actor are of two kinds. Those whose loss would leave the
   state wrong for good - sessions opening and closing, the connection going and coming,
   the alives from the SDK's alive channel (an unsubscribed one is the only word of a
