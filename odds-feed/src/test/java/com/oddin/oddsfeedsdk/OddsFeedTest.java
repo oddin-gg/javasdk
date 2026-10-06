@@ -7,10 +7,12 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import com.oddin.oddsfeedsdk.subscribe.ApiCallEvent;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,12 +22,13 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
-/** The feed before it opens: its start on the first call that needs it, and its close. */
+/** The feed before it opens: its start on the first call that needs it, its events, and its close. */
 class OddsFeedTest {
 
     private static final String WHOAMI = "/v1/users/whoami";
@@ -71,6 +74,52 @@ class OddsFeedTest {
                 feed.close();
             }
             assertThat(api.requests("GET", WHOAMI)).as("one start").hasSize(1);
+        }
+    }
+
+    @Test
+    void anApiCallOfAManagerIsReportedAsItIsMadeLongBeforeTheFeedOpens() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var calls = new LinkedBlockingQueue<ApiCallEvent>();
+            var feed = new OddsFeed(
+                    new GlobalEventsListener() {
+                        @Override
+                        public void onProducerStatusChange(ProducerStatus producerStatus) {}
+
+                        @Override
+                        public void onConnectionDown() {}
+
+                        @Override
+                        public void onEventRecoveryCompleted(URN eventId, long requestId) {}
+
+                        @Override
+                        public void onApiCall(ApiCallEvent call) {
+                            calls.add(call);
+                        }
+                    },
+                    configurationAgainst(api));
+            Set<Thread> before = Thread.getAllStackTraces().keySet();
+            try {
+                requireNonNull(feed.getSportsInfoManager().getMatch(MATCH)).getName(Locale.ENGLISH);
+
+                var paths = new ArrayList<String>();
+                long until = System.nanoTime() + WAIT.toNanos();
+                while (paths.stream().noneMatch(path -> path.contains("198314")) && System.nanoTime() < until) {
+                    var call = calls.poll(100, TimeUnit.MILLISECONDS);
+                    if (call != null) {
+                        paths.add(call.uri().getPath());
+                    }
+                }
+                assertThat(paths)
+                        .as("the calls reported, the start's own first, and open() never called")
+                        .first()
+                        .isEqualTo(WHOAMI);
+                assertThat(paths).anySatisfy(path -> assertThat(path).contains("198314"));
+                api.awaitQuiet();
+            } finally {
+                feed.close();
+            }
+            awaitNoThreadsBut(before);
         }
     }
 
@@ -180,8 +229,8 @@ class OddsFeedTest {
             requireNonNull(started.getSportsInfoManager().getMatch(MATCH)).getName(Locale.ENGLISH);
             api.awaitQuiet();
             assertThat(feedThreads(before))
-                    .as("the REST client's, while the feed runs")
-                    .isNotEmpty();
+                    .as("the REST client's and the events dispatcher's, while the feed runs, never opened")
+                    .contains("oddsfeed-events");
             started.close();
 
             api.respond(WHOAMI, 403, FORBIDDEN);
@@ -195,11 +244,14 @@ class OddsFeedTest {
     }
 
     private static OddsFeed feedAgainst(FakeRestServer api) {
-        var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+        return new OddsFeed(NO_EVENTS, configurationAgainst(api));
+    }
+
+    private static OddsFeedConfiguration configurationAgainst(FakeRestServer api) {
+        return OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectEnvironment("mq.invalid", api.apiHost())
                 .setAccessToken("token")
                 .build();
-        return new OddsFeed(NO_EVENTS, configuration);
     }
 
     /** Waits for every thread of the feed's that {@code before} did not have to end. */
