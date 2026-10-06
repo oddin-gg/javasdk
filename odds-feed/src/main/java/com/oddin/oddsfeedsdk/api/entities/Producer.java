@@ -38,9 +38,10 @@ public interface Producer {
      * needs - the start of the oldest gap no recovery has covered yet, else the oldest point up to
      * which a session has processed the producer's messages. It never runs ahead of what the
      * sessions' callbacks have finished, so messages queued but not processed are not lost across
-     * a restart; it can lag a little behind them. It keeps its last value once the feed closes, so
-     * a client can read it at shutdown. 0.0.x reported the last alive while the producer was up,
-     * which can be ahead of what was processed.
+     * a restart; it can lag a little behind them. A session closed while the feed runs no longer
+     * counts. Once the feed begins to close, the point only goes back, whatever order its sessions
+     * close in, and it keeps its last value after, so a client reads it at shutdown. 0.0.x reported
+     * the last alive while the producer was up, which can be ahead of what was processed.
      *
      * <p>It is not clamped to the producer's stateful recovery window: after a long downtime the
      * setter throws {@link IllegalArgumentException} for it. Catch that and pass 0, for a full

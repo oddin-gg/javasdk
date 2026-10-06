@@ -255,6 +255,16 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
     }
 
+    /**
+     * The feed has begun to close: from now on the published resume points only go back, so the
+     * sessions it closes next cannot move a point the client persists at shutdown past what one of
+     * them had not processed. The feed tells this before it closes any session; {@link #close} does
+     * it too, before the facts still queued.
+     */
+    public void closing() {
+        post(essential, new Fact.Closing());
+    }
+
     @Override
     public void up() {
         post(essential, new Fact.Connection(true));
@@ -396,14 +406,16 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         } finally {
             // however the loop ended: nothing posts to a queue nobody takes from
             closed = true;
+            machine.closing();
             finishEssential();
             closeMachine();
         }
     }
 
     /**
-     * On the actor's thread as it ends: the essential facts queued when the close came are handled,
-     * and the resume points they move published. One of them can open a gap - an unsubscribed
+     * On the actor's thread as it ends, with the machine told the feed is closing: the essential
+     * facts queued when the close came are handled, and the resume points they move published - a
+     * session's close among them moves none forward. One of them can open a gap - an unsubscribed
      * alive, say - that takes the point back, and a client reads the point at shutdown to resume
      * from. Within {@link #FINISH_WAIT}; nothing goes out to the workers any more, and nothing posted
      * after the close is taken, since posting is refused once closed. The samples are dropped: one
@@ -529,6 +541,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 case Fact.RecoverEvent(var producer, var event, var stateful, var reply) ->
                     machine.recoverEvent(producer, event, stateful, reply);
                 case Fact.Tick() -> machine.tick();
+                case Fact.Closing() -> machine.closing();
             }
             // whatever the fact moved, the client reads it from the producer at once
             machine.publishResumePoints();
@@ -797,5 +810,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 implements Fact {}
 
         record Tick() implements Fact {}
+
+        /** The feed has begun to close. */
+        record Closing() implements Fact {}
     }
 }

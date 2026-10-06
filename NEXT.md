@@ -556,7 +556,13 @@ and REST workers post facts to it; it decides and posts work out.
   `setProducerRecoveryFromTimestamp`. `Producer.getTimestampForRecovery()` reports it
   once the feed is open, as the actor publishes it after each fact, and the client's own
   value before; 0.0.x reported the last alive, which can be ahead of both (KD-28).
-  `getLastProcessedMessageGenTimestamp()` keeps its meaning. The resume point is not
+  `getLastProcessedMessageGenTimestamp()` keeps its meaning. A session closed while
+  the feed runs no longer counts. Once the feed begins to close, the point only goes
+  back, so what the client reads at shutdown does not depend on the order the sessions
+  close in. The façade tells the actor `closing()` before it closes any session, and the
+  actor's own close does the same, then handles the essential facts already queued
+  before its machine closes: an unsubscribed alive among them still takes the point
+  back. The resume point is not
   clamped: passed back after a downtime longer than the stateful recovery window, the
   setter throws `IllegalArgumentException`, as in 0.0.x, and the getter's documentation
   tells the client to catch it and pass 0 for a full recovery. Ticket 31 documents
@@ -1137,6 +1143,7 @@ group by group.
     resuming from the oldest checkpoint, and the system tests against 1.0 in CI. The
     actor starts before `transport.open()`, and its `start()` replaces any gap opened
     before it, so a loss told before start cannot replace the client's recovery point.
+    At shutdown it tells the actor `closing()` before closing any session.
     Once the system tests run against 1.0, the KD-12 and KD-27 scenarios also check the
     second recovery's `after` and the producer going down and back up.
 

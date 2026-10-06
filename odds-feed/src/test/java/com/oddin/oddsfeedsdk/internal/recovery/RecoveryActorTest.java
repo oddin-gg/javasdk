@@ -169,6 +169,103 @@ class RecoveryActorTest {
                 .isNull();
     }
 
+    @Test
+    void theFeedClosingItsSessionsBeforeTheActorKeepsThePointOfTheOneBehind() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts ahead = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        SessionFacts behind = actor.openSession(new SessionInfo(2, MessageInterest.ALL, true), transport);
+        Instant behindAt = twoSessionsApart(actor, ahead, behind);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+
+        actor.closing();
+        behind.closed();
+        ahead.closed();
+        awaitIdle(actor);
+        actor.close();
+        assertThat(held.getTimestampForRecovery())
+                .as("the sessions closed first, the one behind among them")
+                .isEqualTo(behindAt);
+    }
+
+    @Test
+    void aSessionsCloseQueuedWhenTheActorClosesMovesThePointNoFurther() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts ahead = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        SessionFacts behind = actor.openSession(new SessionInfo(2, MessageInterest.ALL, true), transport);
+        Instant behindAt = twoSessionsApart(actor, ahead, behind);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        long later = System.currentTimeMillis() + 10_000;
+        ahead.processed(PRE, later, later, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        behind.closed();
+        Thread closer = Thread.ofPlatform().start(actor::close);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (!actor.closeBegun() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        release.countDown();
+        closer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        ahead.closed();
+        assertThat(actor.running()).isFalse();
+        assertThat(held.getTimestampForRecovery())
+                .as("the actor closed first, with the close of the one behind queued")
+                .isEqualTo(behindAt);
+    }
+
+    @Test
+    void aSessionClosedWhileTheFeedRunsNoLongerHoldsThePointBack() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts ahead = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        SessionFacts behind = actor.openSession(new SessionInfo(2, MessageInterest.ALL, true), transport);
+        twoSessionsApart(actor, ahead, behind);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        behind.closed();
+        awaitTimestampForRecovery(held, aheadAt::equals, "the session ahead's checkpoint");
+    }
+
+    private Instant aheadAt = Instant.EPOCH;
+
+    /**
+     * Both producers up on two sessions, then a message of the prematch producer processed on each,
+     * the second's ten seconds older: what the point is now, the second's.
+     */
+    private Instant twoSessionsApart(RecoveryActor actor, SessionFacts first, SessionFacts second)
+            throws InterruptedException {
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        for (Request request : List.of(api.next(), api.next())) {
+            first.snapshotComplete(producerOf(request), request.requestId());
+            second.snapshotComplete(producerOf(request), request.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+        long ahead = now + 20_000;
+        long behind = ahead - 10_000;
+        first.processed(PRE, ahead, ahead, 0);
+        second.processed(PRE, behind, behind, 0);
+        aheadAt = Instant.ofEpochMilli(ahead);
+        Instant behindAt = Instant.ofEpochMilli(behind);
+        awaitTimestampForRecovery(
+                requireNonNull(producers.getProducer(PRE)), behindAt::equals, "the session behind's checkpoint");
+        return behindAt;
+    }
+
     /** Waits until what the producer reports for recovery is as {@code expected} says. */
     private static void awaitTimestampForRecovery(
             Producer producer, Predicate<@Nullable Instant> expected, String description) throws InterruptedException {
