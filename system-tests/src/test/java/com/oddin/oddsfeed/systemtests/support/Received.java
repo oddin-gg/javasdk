@@ -96,9 +96,24 @@ public final class Received implements OddsFeedListener {
         }
     }
 
+    /** The kinds a message is named by: the public types, which the lines implement with classes of their own. */
+    private static final List<Class<?>> KINDS = List.of(
+            OddsChange.class,
+            BetStop.class,
+            BetSettlement.class,
+            RollbackBetSettlement.class,
+            BetCancel.class,
+            RollbackBetCancel.class,
+            FixtureChange.class,
+            UnparsableMessage.class);
+
     /** "BetStop for od:match:198314 from producer 2" - enough to tell messages apart in a failure. */
     static String describe(Message message) {
-        String kind = message.getClass().getSimpleName().replaceFirst("Impl$", "");
+        String kind = KINDS.stream()
+                .filter(type -> type.isInstance(message))
+                .findFirst()
+                .map(Class::getSimpleName)
+                .orElseGet(() -> message.getClass().getSimpleName());
         String event = message instanceof EventMessage<?> eventMessage && eventMessage.getEvent() != null
                 ? " for " + eventMessage.getEvent().getId()
                 : message instanceof UnparsableMessage<?> unparsable && unparsable.getEvent() != null
