@@ -48,8 +48,8 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
   The SDK does ask for a recovery.
 - **1.0:** As 0.0.x. Every producer starts down, and the status callback fires only when the
   down flag or the public reason changes, so it is not called here; the recovery is asked for.
-  The cause changes, to unsubscribed, and the cause-level event reports that to the listener
-  method 1.0 adds (NEXT.md section 4, Recovery and producers).
+  The cause changes, to unsubscribed, and `onProducerCauseChange`, which 1.0 adds, hears it
+  with the cause `UNSUBSCRIBED` (NEXT.md section 4, Recovery and producers).
 - **Why:** A client waiting for a first status event after `open()` sees none; the choice was
   made on purpose, to keep 0.0.x's callback as clients know it.
 - **Pinned by:** `ProducerRecoveryScenarioIT.anUnsubscribedAliveForAProducerStillDownIsNotReported`
