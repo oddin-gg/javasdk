@@ -66,6 +66,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private static final long REOPEN_POLL_MILLIS = 100;
     /** How long close() waits for the actor's thread to end. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
+    /**
+     * How long the actor, closing, spends at most on the essential facts already queued: well
+     * within {@link #CLOSE_WAIT}, so the machine still closes before close() stops waiting.
+     */
+    private static final Duration FINISH_WAIT = Duration.ofSeconds(2);
 
     private final RecoveryMachine machine;
     private final RecoveryCounters counters;
@@ -314,8 +319,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     }
 
     /**
-     * Stops the actor. Whoever waits for an event recovery hears it was not accepted; facts posted
-     * from now on are dropped.
+     * Stops the actor. The essential facts already queued are handled first, so the resume points
+     * are published as they stand; whoever waits for an event recovery hears it was not accepted;
+     * facts posted from now on are dropped.
      *
      * <p>Never started, the machine is closed here, and no start runs it later. Started, its thread
      * closes it as it ends, and this waits for that - unless the close came between the start and
@@ -390,8 +396,30 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         } finally {
             // however the loop ended: nothing posts to a queue nobody takes from
             closed = true;
+            finishEssential();
             closeMachine();
         }
+    }
+
+    /**
+     * On the actor's thread as it ends: the essential facts queued when the close came are handled,
+     * and the resume points they move published. One of them can open a gap - an unsubscribed
+     * alive, say - that takes the point back, and a client reads the point at shutdown to resume
+     * from. Within {@link #FINISH_WAIT}; nothing goes out to the workers any more, and nothing posted
+     * after the close is taken, since posting is refused once closed. The samples are dropped: one
+     * could only move a point forward.
+     */
+    private void finishEssential() {
+        long deadline = System.nanoTime() + FINISH_WAIT.toNanos();
+        Fact fact;
+        while (System.nanoTime() - deadline < 0 && (fact = essential.poll()) != null) {
+            handle(fact);
+        }
+    }
+
+    /** Whether close() has begun, for a test. */
+    boolean closeBegun() {
+        return closed;
     }
 
     /**
@@ -515,6 +543,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
         @Override
         public void request(Call call) {
+            if (closed) {
+                // the facts the actor finishes as it closes: no answer would be taken any more
+                return;
+            }
             try {
                 workers.execute(() -> send(call));
             } catch (RuntimeException e) {
@@ -534,6 +566,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
          */
         @Override
         public void reset(int session, long number) {
+            if (closed) {
+                return;
+            }
             SessionTransport transport = transports.get(session);
             try {
                 workers.execute(() -> {
