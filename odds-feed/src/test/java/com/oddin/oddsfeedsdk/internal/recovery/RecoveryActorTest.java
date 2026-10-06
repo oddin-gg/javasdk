@@ -116,6 +116,59 @@ class RecoveryActorTest {
                 .isEqualTo(processed);
     }
 
+    @Test
+    void aGapQueuedWhenTheCloseComesTakesThePointBackBeforeTheActorEnds() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        Instant processed = Instant.ofEpochMilli(lastSubscribed + 1_000);
+        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        awaitTimestampForRecovery(held, processed::equals, "the message processed");
+
+        // the actor held in a fact while an unsubscribed alive queues behind it and the close comes
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        long later = processed.toEpochMilli() + 1_000;
+        session.processed(PRE, later, later, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        actor.alive(PRE, later, later, false);
+        Thread closer = Thread.ofPlatform().start(actor::close);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (!actor.closeBegun() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.closeBegun()).isTrue();
+        release.countDown();
+        closer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+
+        assertThat(actor.running()).isFalse();
+        assertThat(held.getTimestampForRecovery())
+                .as("the producer's gap from its last subscribed alive, handled before the actor ended")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+        assertThat(api.requests.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing asked for while closing")
+                .isNull();
+    }
+
     /** Waits until what the producer reports for recovery is as {@code expected} says. */
     private static void awaitTimestampForRecovery(
             Producer producer, Predicate<@Nullable Instant> expected, String description) throws InterruptedException {
