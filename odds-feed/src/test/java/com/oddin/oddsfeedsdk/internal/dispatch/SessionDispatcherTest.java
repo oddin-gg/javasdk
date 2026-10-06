@@ -163,6 +163,13 @@ class SessionDispatcherTest {
                         "onRawFeedMessageReceived OFOddsChange LIVE_ONLY hi.-.live.odds_change.-.od:match.198314.-",
                         "onRawFeedMessageBytes odds_change LIVE_ONLY",
                         "onOddsChange");
+        assertThat(ext.created)
+                .as("each its own timestamp, which the one before cannot change")
+                .containsExactly(1777832981632L, 1777832981632L, 1777832981632L, 1777832981632L);
+        assertThat(((OddsChange<?>) listener.messages.getFirst().message())
+                        .getTimestamp()
+                        .getCreated())
+                .isEqualTo(1777832981632L);
     }
 
     // ---- the recovery actor's facts
@@ -524,12 +531,17 @@ class SessionDispatcherTest {
     private static final class Ext implements OddsFeedExtListener {
         final List<String> calls = new CopyOnWriteArrayList<>();
 
+        final List<Long> created = new CopyOnWriteArrayList<>();
+
         @Override
         public void onRawFeedMessageReceived(
                 UnparsedMessage message,
                 MessageInterest messageInterest,
                 RoutingKeyInfo routingKey,
                 MessageTimestamp timestamp) {
+            created.add(timestamp.getCreated());
+            // a client may change what it is given
+            timestamp.setCreated(-1);
             calls.add("onRawFeedMessageReceived " + message.getClass().getSimpleName() + " " + messageInterest + " "
                     + routingKey.getFullRoutingKey());
         }
@@ -537,6 +549,7 @@ class SessionDispatcherTest {
         @Override
         public void onRawFeedMessageBytes(
                 byte[] body, MessageInterest messageInterest, RoutingKeyInfo routingKey, MessageTimestamp timestamp) {
+            created.add(timestamp.getCreated());
             String xml = new String(body, StandardCharsets.UTF_8);
             calls.add("onRawFeedMessageBytes " + xml.substring(1, xml.indexOf(' ')) + " " + messageInterest);
         }

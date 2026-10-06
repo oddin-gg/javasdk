@@ -78,6 +78,7 @@ class DispatchOverABrokerTest {
             ConnectionEvents.NONE,
             aliveDispatcher);
     private final SessionDispatcher dispatcher;
+    private volatile Runnable onBetStop = () -> {};
 
     @BeforeAll
     static void startTheBroker() {
@@ -163,6 +164,28 @@ class DispatchOverABrokerTest {
         assertThat(next(heard)).as("from the session's own queue").startsWith("alive 2 ");
     }
 
+    @Test
+    void aCallbackThatClosesTheSessionDoesNotWaitForItself() throws InterruptedException {
+        var closedIn = new LinkedBlockingQueue<Long>();
+        onBetStop = () -> {
+            long start = System.nanoTime();
+            dispatcher.close();
+            closedIn.add(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
+        };
+        assertThat(feed().publishFixture("feed/bet_stop/bet_stop_all_groups.xml"))
+                .isTrue();
+        assertThat(requireNonNull(closedIn.poll(WAIT_SECONDS, TimeUnit.SECONDS), "closed"))
+                .as("millis, well within the wait for a callback to end")
+                .isLessThan(1_000);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (feed().unacknowledged() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertThat(feed().unacknowledged())
+                .as("the bet stop acknowledged all the same")
+                .isZero();
+    }
+
     private static FakeFeed feed() {
         return requireNonNull(feed);
     }
@@ -180,6 +203,7 @@ class DispatchOverABrokerTest {
         @Override
         public void onBetStop(OddsFeedSession session, BetStop<SportEvent> message) {
             heard("onBetStop");
+            onBetStop.run();
         }
 
         @Override
