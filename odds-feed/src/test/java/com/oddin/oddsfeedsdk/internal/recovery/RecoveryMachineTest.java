@@ -544,6 +544,21 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aLaterAliveDoesNotMoveTheResumePointPastWhatTheSessionProcessed() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.live(1, PRE, Duration.ZERO);
+        long checkpoint = feed.now();
+        // the alive channel is ahead of the session, whose queue still holds what came since
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.alive(PRE);
+        assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(checkpoint);
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("the session's checkpoint, not the later alive")
+                .isEqualTo(Instant.ofEpochMilli(checkpoint));
+    }
+
+    @Test
     void aProducerThatStopsSendingHoldsTheResumePointAtItsLastSubscribedAlive() {
         var feed = Harness.upWith(MessageInterest.ALL);
         long lastSubscribed = feed.now();

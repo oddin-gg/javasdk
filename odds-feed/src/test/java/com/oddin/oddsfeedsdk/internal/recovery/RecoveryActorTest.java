@@ -106,6 +106,14 @@ class RecoveryActorTest {
         Instant processed = Instant.ofEpochMilli(System.currentTimeMillis() + 1_000);
         session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
+
+        // an alive on the SDK's alive channel ahead of the session moves nothing
+        long later = processed.toEpochMilli() + 1_000;
+        actor.alive(PRE, later, later, true);
+        awaitIdle(actor);
+        assertThat(held.getTimestampForRecovery())
+                .as("the session's checkpoint, not the later alive")
+                .isEqualTo(processed);
     }
 
     /** Waits until what the producer reports for recovery is as {@code expected} says. */
