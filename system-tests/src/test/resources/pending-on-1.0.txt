@@ -7,15 +7,8 @@
 # com.oddin.oddsfeed.systemtests. A reason may follow, after whitespace and "#".
 # The list shrinks as the feed comes together, and goes once it is empty.
 
-ExceptionStrategyScenarioIT#aCompetitorWhoseProfileCannotLoadIsStillListed  # the feed is not assembled yet
-ExceptionStrategyScenarioIT#underCatchAGetterTheApiCannotServeReturnsNull  # the feed is not assembled yet
-ExceptionStrategyScenarioIT#underThrowAGetterTheApiCannotServeThrows  # the feed is not assembled yet
-
 FakeFeedIT#aPausedBrokerLooksLikeALostConnectionAndResumingRestoresIt  # the feed is not assembled yet
 FakeFeedIT#theSdkReceivesAnOddsChangeFromTheFake  # the feed is not assembled yet
-
-FakeRestServerIT#anOverrideReachesTheSdk  # the feed is not assembled yet
-FakeRestServerIT#theSdkReadsWhoamiProducersAndAMatchSummaryFromTheFake  # the feed is not assembled yet
 
 FeedMessageScenarioIT#aBetCancelReachesOnBetCancelWithItsWindowAndVoidReasons  # the feed is not assembled yet
 FeedMessageScenarioIT#aBetSettlementReachesOnBetSettlementWithEveryOutcomeResult  # the feed is not assembled yet
@@ -29,9 +22,7 @@ FeedMessageScenarioIT#aRollbackBetSettlementReachesOnRollbackBetSettlement  # th
 
 InvalidationScenarioIT#aFixtureChangeMakesTheNextReadFetchTheMatchAgain  # the feed is not assembled yet
 InvalidationScenarioIT#aRepeatedFixtureChangeIsDeliveredOnce  # the feed is not assembled yet
-InvalidationScenarioIT#clearingAMatchMakesTheNextReadFetchItAgain  # the feed is not assembled yet
 
-LocaleScenarioIT#aMatchAskedForInALocaleHasItsNameInThatLocale  # the feed is not assembled yet
 LocaleScenarioIT#theMatchOfAMessageHasItsNameInEveryLocaleAskedFor  # the feed is not assembled yet
 
 MatchStatusScenarioIT#aFeedStatusTheSdkDoesNotKnowReadsAsUnknown  # the feed is not assembled yet
@@ -45,7 +36,6 @@ OddsChangeScenarioIT#anOddsChangeWithAnUnknownMarketStatusIsDeliveredAndItsMarke
 OddsChangeScenarioIT#closingTheFeedLeavesNothingBehind  # the feed is not assembled yet
 
 ProducerRecoveryScenarioIT#aMessageFromAnUnknownProducerIsNotDelivered  # the feed is not assembled yet
-ProducerRecoveryScenarioIT#aProducerListedWithBothScopesHasBoth  # the feed is not assembled yet
 ProducerRecoveryScenarioIT#aProducerThatWentDownRecoversFromTheLastAliveItSawWhileUp  # the feed is not assembled yet
 ProducerRecoveryScenarioIT#anUnsubscribedAliveForAProducerStillDownIsNotReported  # the feed is not assembled yet
 
@@ -62,18 +52,13 @@ ReplayScenarioIT#aReplaySessionReceivesWhatTheReplayPlays  # the feed is not ass
 
 RestOutageScenarioIT#aRecoveryRequestTheApiRefusedIsAskedForAgain  # the feed is not assembled yet
 RestOutageScenarioIT#messagesKeepArrivingThroughAnOutageAndEntitiesLoadOnceItEnds  # the feed is not assembled yet
-RestOutageScenarioIT#theListsAnOutageEmptiesAreEmptyUnderEitherStrategy  # the feed is not assembled yet
-
-ReturnedListsScenarioIT#theListsTheGettersReturnCanBeChanged  # the feed is not assembled yet
 
 SessionScenarioIT#aSessionBuiltAfterOpenIsRefused  # the feed is not assembled yet
 
 StaleFeedScenarioIT#aMessageFromHalfAnHourAgoIsStillDelivered  # the feed is not assembled yet
 StaleFeedScenarioIT#anOlderMessageDoesNotReplaceTheStatusOfANewerOne  # the feed is not assembled yet
 
-StartupScenarioIT#aTokenTheApiRefusesStopsTheStart  # the feed is not assembled yet
 StartupScenarioIT#aTokenTheBrokerRefusesStopsTheStart  # the feed is not assembled yet
 StartupScenarioIT#withTheApiDownTheFeedDoesNotStart  # the feed is not assembled yet
-StartupScenarioIT#withoutTheProducerListTheFeedDoesNotStart  # the feed is not assembled yet
 
 ThrowingCallbackScenarioIT#aCallbackThatThrowsDoesNotStopTheSession  # the feed is not assembled yet
