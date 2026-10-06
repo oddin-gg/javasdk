@@ -13,7 +13,15 @@ Java SDK
 > Testcontainers (with colima, see Testcontainers' notes on `DOCKER_HOST` and
 > `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`). To run them against another published SDK, give
 > the script and Maven the same version: `MAVEN_ARGS=-Dsdk.version=0.0.54 ./scripts/fetch-sdk.sh`,
-> then `./mvnw verify -Dsdk.version=0.0.54`. The build fails on any compiler, Error Prone or
+> then `./mvnw verify -Dsdk.version=0.0.54`. To run them against the 1.0 SDK this build makes,
+> add `-Dsdk.next` (any value, it only has to be set): `./mvnw verify -Dsdk.next`, or
+> `./mvnw verify -Dsdk.next -pl system-tests -am` for just the system tests and what they need -
+> `-am` matters, as the tests need odds-feed packaged in the same run, not resolved from
+> elsewhere; nothing needs fetching. Setting `sdk.version` to the 1.0 version alone is not enough.
+> The scenarios 1.0 does not pass yet are listed in
+> `system-tests/src/test/resources/pending-on-1.0.txt`: against 1.0 a listed test that fails is
+> reported as skipped with the list's reason, and one that passes fails the build until its line
+> is removed; against 0.0.x the list is ignored. The build fails on any compiler, Error Prone or
 > NullAway warning and on unformatted code; `./mvnw spotless:apply` formats it (Palantir Java
 > Format). `git blame --ignore-revs-file .git-blame-ignore-revs` skips the one-time reformat,
 > as GitHub already does. The old 0.0.x SDK lives in `library/` and still
