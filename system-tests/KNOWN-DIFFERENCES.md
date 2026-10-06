@@ -168,7 +168,8 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   scores, status - over the newer one's.
 - **1.0:** "A message from the same producer with an older timestamp does not write feed-owned
   fields. It is still built and delivered" (section 4, Caches and loaders, Ownership and
-  ordering).
+  ordering). A replay session's messages write in the order they come, as on 0.0.x: a match
+  played again repeats the timestamps of its last run.
 - **Why:** Out-of-order delivery turns a score back.
 - **Pinned by:** `StaleFeedScenarioIT.anOlderMessageDoesNotReplaceTheStatusOfANewerOne`
 - **Found:** by test against 0.0.56.

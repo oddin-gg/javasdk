@@ -23,10 +23,10 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>The watermark is the timestamp of the last live message that wrote, per entity and producer,
  * with when the SDK received it. A message older than the watermark of its producer does not write;
- * it is still delivered. The feed's and the API's clocks are never compared: REST writes only when
- * the entity has no watermark younger than {@link #STATUS_AGE} by the SDK's own clock, and a message
- * whose corrected age is over the same limit writes nothing either, being a delayed backlog message
- * REST has since taken over from.
+ * it is still delivered. A replayed message writes in the order it comes. The feed's and the API's
+ * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
+ * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
+ * writes nothing either, being a delayed backlog message REST has since taken over from.
  *
  * <p>One lock guards it all; what it guards is a map lookup and a few small copies. A record lives 24
  * hours after its last write. Those the feed owns - wrote within the status age - are kept apart
@@ -85,16 +85,36 @@ public final class LiveState<K> {
         if (correctedAge.compareTo(STATUS_AGE) > 0) {
             return false;
         }
+        return feedWrite(entity, producer, timestamp, receivedAt, write, true);
+    }
+
+    /**
+     * Writes a replayed message's values for {@code entity} whatever its timestamp and its age: a
+     * replay's messages are old by design, and a run played again repeats the timestamps of the one
+     * before, so they write in the order they come, as 0.0.x wrote every message. The watermark
+     * keeps the newest timestamp that wrote.
+     *
+     * @param timestamp the message's timestamp, the feed's clock
+     * @param receivedAt when the SDK received it, the SDK's clock
+     */
+    public void feedWriteReplayed(K entity, long producer, long timestamp, Instant receivedAt, LiveWrite write) {
+        feedWrite(entity, producer, timestamp, receivedAt, write, false);
+    }
+
+    /** A feed write, refused when {@code inOrder} and older than its producer's watermark. */
+    private boolean feedWrite(
+            K entity, long producer, long timestamp, Instant receivedAt, LiveWrite write, boolean inOrder) {
         lock.lock();
         try {
             long now = ticker.read();
             Live current = current(entity, now);
             Mark last = current == null ? null : current.marks().get(producer);
-            if (last != null && last.timestamp() > timestamp) {
+            if (inOrder && last != null && last.timestamp() > timestamp) {
                 return false;
             }
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
-            marks.put(producer, new Mark(timestamp, receivedAt));
+            long newest = last == null ? timestamp : Math.max(last.timestamp(), timestamp);
+            marks.put(producer, new Mark(newest, receivedAt));
             put(
                     entity,
                     new Live(
