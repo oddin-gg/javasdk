@@ -67,12 +67,13 @@ class ProfileViewsTest {
     }
 
     @Test
-    void aCompetitorsPlayersAreLoadedBeforeTheyAreReturned() {
-        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+    void aCompetitorsPlayersLoadInTheBackground() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
             List<@Nullable Player> players = requireNonNull(
                     world.entities.competitor(COMPETITOR, List.of(EN)).getPlayers());
             assertThat(players).extracting(Player::getId).containsExactly(PLAYER);
-            assertThat(world.api.requests("GET", PLAYER_EN)).hasSize(1);
+            world.api.awaitRequest("GET", PLAYER_EN);
+            world.api.awaitQuiet();
             Player player = requireNonNull(players.getFirst());
             assertThat(player.getName(EN)).isEqualTo("Player One");
             assertThat(world.api.requests("GET", PLAYER_EN))
@@ -205,8 +206,8 @@ class ProfileViewsTest {
     }
 
     @Test
-    void aTournamentBuiltWithItsSportReadsItWithoutLoadingAndLoadsItsCompetitors() {
-        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+    void aTournamentBuiltWithItsSportReadsItWithoutLoadingAndLoadsItsCompetitorsInTheBackground() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(
                     TOURNAMENT_EN,
                     200,
@@ -231,9 +232,110 @@ class ProfileViewsTest {
             assertThat(competitors)
                     .extracting(Competitor::getId)
                     .containsExactly(URN.parse("od:competitor:2"), URN.parse("od:competitor:1"));
+            world.api.awaitRequest("GET", "/v1/sports/en/competitors/od:competitor:2/profile");
+            world.api.awaitRequest("GET", "/v1/sports/en/competitors/od:competitor:1/profile");
             assertThat(world.api.mostInFlight()).as("side by side").isEqualTo(2);
             assertThat(competitors.getFirst().getName(EN)).isEqualTo("Two");
         }
+    }
+
+    @Test
+    void aTournamentCompetitorWhoseProfileCannotLoadIsStillListedAndFailsOnItsOwn() {
+        for (var strategy : ExceptionHandlingStrategy.values()) {
+            try (var world = EntityWorld.start(strategy)) {
+                world.api.respond(TOURNAMENT_EN, 200, tournamentListing(2));
+                world.api.respond(competitorProfile(1), 200, PROFILE.replace("Team Alpha", "One"));
+                world.api.respond(competitorProfile(2), 500, "");
+                List<Competitor> competitors = requireNonNull(
+                        world.entities.tournament(TOURNAMENT, CS2, List.of(EN)).getCompetitors());
+                assertThat(competitors)
+                        .as(strategy + ": the info's ids, as 0.0.x listed them")
+                        .extracting(Competitor::getId)
+                        .containsExactly(URN.parse("od:competitor:1"), URN.parse("od:competitor:2"));
+                competitors.add(competitors.getFirst());
+                assertThat(competitors).as("the caller's own list").hasSize(3);
+                assertThat(competitors.getFirst().getName(EN)).isEqualTo("One");
+                Competitor failing = competitors.get(1);
+                if (strategy == ExceptionHandlingStrategy.THROW) {
+                    assertThatThrownBy(() -> failing.getName(EN))
+                            .isInstanceOf(ItemNotFoundException.class)
+                            .hasCauseInstanceOf(ApiException.class);
+                } else {
+                    assertThat(failing.getName(EN)).isNull();
+                }
+            }
+        }
+    }
+
+    @Test
+    void aTournamentListsManyCompetitorsWithoutWaitingForProfilesThatHang() {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
+            int many = 40;
+            world.api.respond(TOURNAMENT_EN, 200, tournamentListing(many));
+            for (int i = 1; i <= many; i++) {
+                world.api.respond(competitorProfile(i), Reply.of(200, PROFILE).after(Duration.ofSeconds(3)));
+            }
+            Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN));
+            tournament.getName(EN);
+            long started = System.nanoTime();
+            assertThat(tournament.getCompetitors()).hasSize(many);
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .as("returned without waiting for a profile")
+                    .isLessThan(Duration.ofSeconds(1));
+        }
+    }
+
+    @Test
+    void aMemberIsQueuedForItsWarmUpOnceAtATime() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
+            var loads = new java.util.concurrent.atomic.AtomicInteger();
+            var release = new java.util.concurrent.CountDownLatch(1);
+            Entities.WarmLoad<String> load = (member, locale, deadline) -> {
+                loads.incrementAndGet();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            };
+            world.entities.warmEach(List.of("one"), List.of(EN), (member, locale) -> false, load);
+            world.entities.warmEach(List.of("one"), List.of(EN), (member, locale) -> false, load);
+            release.countDown();
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (loads.get() == 0 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            Thread.sleep(200);
+            assertThat(loads.get())
+                    .as("queued once while the first was queued or running")
+                    .isEqualTo(1);
+            world.entities.warmEach(List.of("one"), List.of(EN), (member, locale) -> false, load);
+            deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (loads.get() == 1 && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+            assertThat(loads.get()).as("queued again once it ended").isEqualTo(2);
+        }
+    }
+
+    /** The tournament's info, listing competitors 1 to {@code count}. */
+    private static String tournamentListing(int count) {
+        var listed = new StringBuilder("<competitors>");
+        for (int i = 1; i <= count; i++) {
+            listed.append("<competitor id=\"od:competitor:")
+                    .append(i)
+                    .append("\" name=\"C")
+                    .append(i)
+                    .append("\" abbreviation=\"C")
+                    .append(i)
+                    .append("\" underage=\"0\"/>");
+        }
+        return Fixtures.read("rest/tournament_info/tournament_info.xml")
+                .replace("</tournament>", listed + "</competitors></tournament>");
+    }
+
+    private static String competitorProfile(int id) {
+        return "/v1/sports/en/competitors/od:competitor:" + id + "/profile";
     }
 
     @Test

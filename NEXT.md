@@ -150,7 +150,9 @@ types in packages whose name contains `internal`.
     under `CATCH`. An outcome's name and a match status description, which 0.0.x read
     from what it held, are null when they cannot load, under `THROW` too.
   - A member list is its entity's id list: a match's or a tournament's competitors, a
-    competitor's players. A member whose profile cannot load is still listed, and its
+    competitor's players. It returns at once, as 0.0.x's lazy members did: the members'
+    profiles start loading in the background, on the side-load queue, and a reader of a
+    member joins its load. A member whose profile cannot load is still listed, and its
     own getters fail.
   - Every collection a getter returns is a new mutable one, the caller's own.
 - The cache is updated before the listener callback runs, so `match.getStatus()` inside
@@ -324,9 +326,9 @@ wedge.
   that asks for longer than the time left fails the call at once. The Go SDK ignores
   `Retry-After`. Replay control uses the data pool, so it cannot hold up recovery.
 - Partial failure in a parallel fan-out: `THROW` fails the getter with the first error;
-  `CATCH` returns null for the whole collection. Never a short list. A member list's
-  warm-up of its members' profiles is the exception: it is best effort, and fails
-  nothing (section 3).
+  `CATCH` returns null for the whole collection. Never a short list. A member list
+  does not fan out: its members' profiles load in the background, and the list waits
+  for none of them (section 3).
 - Startup: `open()` needs whoami and the producer list. It retries them inside a
   startup deadline (default three times the HTTP timeout), then fails with a clear
   exception. It never blocks indefinitely and never starts half-configured.

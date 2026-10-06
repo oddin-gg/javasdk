@@ -227,6 +227,14 @@ public final class MatchCaches {
         }
     }
 
+    /**
+     * Queues a best-effort load in the background, as the competitors of a summary are: never waits,
+     * and a full queue drops it, for a reader to load what it needs itself.
+     */
+    public boolean sideLoad(SideLoads.Load load) {
+        return sideLoads.offer(load);
+    }
+
     /** The locale the fixtures are loaded in. */
     public Locale defaultLocale() {
         return defaultLocale;
