@@ -244,6 +244,22 @@ class MessageFactoryTest {
     }
 
     @Test
+    void aSpecifiersValueIsNotFilledInAgain() throws Exception {
+        world.api.respond(MARKETS, 200, markets("""
+                <market id="2" name="{team} to win map {mapnr}, {team} again, {unknown} as it is" groups="all"/>
+                """));
+        // each link names the next twice: filled in again, link after link, the name would double at each
+        var chain = new StringBuilder("team={s0}{s0}");
+        for (int i = 0; i < 40; i++) {
+            chain.append("|s%d={s%d}{s%d}".formatted(i, i + 1, i + 1));
+        }
+        var change = (OddsChange<?>)
+                world.build(oddsChange("<market id=\"2\" specifiers=\"" + chain + "|mapnr=2\" status=\"1\"/>"));
+        assertThat(change.getMarkets().getFirst().getName())
+                .isEqualTo("{s0}{s0} to win map 2, {s0}{s0} again, {unknown} as it is");
+    }
+
+    @Test
     void anOutcomeTheDescriptionDoesNotListIsThePlayerOrCompetitorOfAMarketOfThem() throws Exception {
         world.api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:770", 200, markets("""
                         <market id="768" name="Player to Score" variant="od:dynamic_outcomes:770" \
@@ -307,6 +323,25 @@ class MessageFactoryTest {
         assertThat(world.api.requests()).as("requests after the first name").hasSize(requests);
         assertThat(winner.getOutcomeOdds().getFirst().getOdds(OddsDisplayType.DECIMAL))
                 .isEqualTo(1.5);
+    }
+
+    @Test
+    void aMessagesNamesReadTheCatalogAsItWasWhenFirstAskedFor() throws Exception {
+        var change = (OddsChange<?>) world.fixture(ODDS_CHANGE);
+        MarketWithOdds winner = change.getMarkets().getFirst();
+        assertThat(winner.getName()).isEqualTo("Winner");
+        world.api.respond(
+                MARKETS,
+                200,
+                markets("<market id=\"1\" name=\"Match Winner\" groups=\"all\"><outcomes><outcome id=\"1\" "
+                        + "name=\"home\"/><outcome id=\"2\" name=\"away\"/></outcomes></market>"));
+        world.catalog.clear();
+
+        assertThat(winner.getName()).as("the message's").isEqualTo("Winner");
+        var later = (OddsChange<?>) world.fixture(ODDS_CHANGE);
+        assertThat(later.getMarkets().getFirst().getName())
+                .as("a later message's")
+                .isEqualTo("Match Winner");
     }
 
     @Test
