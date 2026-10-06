@@ -154,8 +154,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         int id = info.id();
         return new SessionFacts() {
             @Override
-            public void processed(long producerId, long generatedAt, long takenAt, boolean snapshot) {
-                post(samples, new Fact.Processed(id, producerId, generatedAt, takenAt, snapshot));
+            public void processed(long producerId, long generatedAt, long takenAt, long requestId) {
+                post(samples, new Fact.Processed(id, producerId, generatedAt, takenAt, requestId));
             }
 
             @Override
@@ -439,8 +439,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                         }
                     }
                 }
-                case Fact.Processed(var session, var producer, var generated, var taken, var snapshot) ->
-                    machine.processed(session, producer, generated, taken, snapshot);
+                case Fact.Processed(var session, var producer, var generated, var taken, var requestId) ->
+                    machine.processed(session, producer, generated, taken, requestId);
                 case Fact.SessionAlive(var session, var producer, var generated, var taken, var subscribed) ->
                     machine.sessionAlive(session, producer, generated, taken, subscribed);
                 case Fact.SnapshotComplete(var session, var producer, var requestId) ->
@@ -690,7 +690,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         /** A producer's alive slot has something in it. */
         record Alives(long producerId) implements Fact {}
 
-        record Processed(int session, long producerId, long generatedAt, long takenAt, boolean snapshot)
+        record Processed(int session, long producerId, long generatedAt, long takenAt, long requestId)
                 implements Fact {}
 
         record SessionAlive(int session, long producerId, long generatedAt, long takenAt, boolean subscribed)

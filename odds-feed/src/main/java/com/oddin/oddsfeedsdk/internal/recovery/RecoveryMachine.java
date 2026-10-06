@@ -450,8 +450,9 @@ final class RecoveryMachine {
      * and is the safety net's sample; a snapshot one, from a recovery, does neither.
      *
      * @param takenAt when the session's dispatcher took it, epoch millis by the SDK's clock
+     * @param requestId the recovery's request id a snapshot message carries, 0 for a live one
      */
-    void processed(int id, long producerId, long generatedAt, long takenAt, boolean snapshot) {
+    void processed(int id, long producerId, long generatedAt, long takenAt, long requestId) {
         Track track = known(producerId);
         SessionState session = sessions.get(id);
         Lane lane = session == null || track == null ? null : session.lanes.get(producerId);
@@ -461,8 +462,8 @@ final class RecoveryMachine {
         producers.setLastMessageTimestamp(producerId, Math.max(1, takenAt));
         producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
         lane.lastAt = takenAt;
-        heard(track, id, generatedAt, snapshot);
-        if (!snapshot) {
+        heard(track, id, generatedAt, requestId);
+        if (requestId == 0) {
             lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
             sample(session, lane, track, generatedAt, takenAt);
         }
@@ -481,7 +482,7 @@ final class RecoveryMachine {
         }
         producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
         lane.lastAt = takenAt;
-        heard(track, id, generatedAt, false);
+        heard(track, id, generatedAt, 0);
         if (subscribed) {
             lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
         }
@@ -489,18 +490,30 @@ final class RecoveryMachine {
     }
 
     /**
-     * Whether what a session took says the recovery in flight is still on its way to it: a snapshot
-     * message, or one sent before the request, which the snapshot and its snapshot complete queue
-     * behind. Either puts off the deadline for its snapshot complete.
+     * Whether what a session took says the recovery in flight is still on its way to it: a message
+     * of its snapshot, or one the snapshot and its snapshot complete queue behind - a live message or
+     * an alive sent before the request, or a snapshot message of an event recovery asked for before
+     * it. Any of them puts off the deadline for its snapshot complete. An event recovery asked for
+     * since does not: one after another, they would hold a recovery whose snapshot complete is lost
+     * for the maximum recovery time.
      */
-    private void heard(Track track, int id, long generatedAt, boolean snapshot) {
+    private void heard(Track track, int id, long generatedAt, long requestId) {
         Active active = track.active;
         if (active != null
                 && active.awaited.contains(id)
                 && !active.seen.contains(id)
-                && (snapshot || generatedAt < active.requestedAt)) {
+                && (requestId == 0 ? generatedAt < active.requestedAt : ahead(track, active, requestId))) {
             active.heardAt = now();
         }
+    }
+
+    /** Whether a snapshot message of {@code requestId} is the recovery's own, or queued ahead of it. */
+    private boolean ahead(Track track, Active active, long requestId) {
+        if (requestId == active.requestId) {
+            return true;
+        }
+        EventRecovery event = eventRecoveries.get(requestId);
+        return event != null && event.producerId == track.id && event.issuedAt < active.issuedAt;
     }
 
     /** A session has seen a snapshot complete; an id the actor has not in flight is counted, and ignored. */

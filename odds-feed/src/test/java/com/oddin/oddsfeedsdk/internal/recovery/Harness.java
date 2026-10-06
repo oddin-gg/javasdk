@@ -229,7 +229,7 @@ final class Harness {
 
     /** A session took a live message generated {@code agedBy} ago, now. */
     void live(int session, long producer, Duration agedBy) {
-        machine.processed(session, producer, now() - agedBy.toMillis(), now(), false);
+        machine.processed(session, producer, now() - agedBy.toMillis(), now(), 0);
     }
 
     void sessionAlive(int session, long producer) {
