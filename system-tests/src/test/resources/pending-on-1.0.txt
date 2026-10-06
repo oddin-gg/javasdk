@@ -7,58 +7,14 @@
 # com.oddin.oddsfeed.systemtests. A reason may follow, after whitespace and "#".
 # The list shrinks as the feed comes together, and goes once it is empty.
 
-FakeFeedIT#aPausedBrokerLooksLikeALostConnectionAndResumingRestoresIt  # the feed is not assembled yet
-FakeFeedIT#theSdkReceivesAnOddsChangeFromTheFake  # the feed is not assembled yet
+ProducerRecoveryScenarioIT#aProducerThatWentDownRecoversFromTheLastAliveItSawWhileUp  # the feed runs no recovery yet
+ProducerRecoveryScenarioIT#anUnsubscribedAliveForAProducerStillDownIsNotReported  # the feed runs no recovery yet
 
-FeedMessageScenarioIT#aBetCancelReachesOnBetCancelWithItsWindowAndVoidReasons  # the feed is not assembled yet
-FeedMessageScenarioIT#aBetSettlementReachesOnBetSettlementWithEveryOutcomeResult  # the feed is not assembled yet
-FeedMessageScenarioIT#aBetStopForSeveralGroupsNamesEach  # the feed is not assembled yet
-FeedMessageScenarioIT#aBetStopReachesOnBetStop  # the feed is not assembled yet
-FeedMessageScenarioIT#aBetStopWithAnUnknownMarketStatusIsDeliveredAndItsGetterThrows  # the feed is not assembled yet
-FeedMessageScenarioIT#aFixtureChangeOfAnUnknownTypeIsDeliveredAsAnotherChange  # the feed is not assembled yet
-FeedMessageScenarioIT#aFixtureChangeReachesOnFixtureChange  # the feed is not assembled yet
-FeedMessageScenarioIT#aRollbackBetCancelReachesOnRollbackBetCancel  # the feed is not assembled yet
-FeedMessageScenarioIT#aRollbackBetSettlementReachesOnRollbackBetSettlement  # the feed is not assembled yet
+ProducerStatusScenarioIT#anAliveSayingTheProducerIsNoLongerSubscribedTakesItDown  # the feed runs no recovery yet
+ProducerStatusScenarioIT#anAliveStartsARecoveryAndItsSnapshotCompleteBringsTheProducerUp  # the feed runs no recovery yet
+ProducerStatusScenarioIT#theSnapshotCompleteOfAnEventRecoveryCompletesIt  # the feed runs no recovery yet
 
-InvalidationScenarioIT#aFixtureChangeMakesTheNextReadFetchTheMatchAgain  # the feed is not assembled yet
-InvalidationScenarioIT#aRepeatedFixtureChangeIsDeliveredOnce  # the feed is not assembled yet
+ReconnectScenarioIT#afterAReconnectMessagesFlowAgainAndTheGapIsRecovered  # the feed runs no recovery yet
+ReconnectScenarioIT#afterTheBrokerTakesTheSessionsQueueMessagesFlowAgainAndTheGapIsRecovered  # the feed runs no recovery yet
 
-LocaleScenarioIT#theMatchOfAMessageHasItsNameInEveryLocaleAskedFor  # the feed is not assembled yet
-
-MatchStatusScenarioIT#aFeedStatusTheSdkDoesNotKnowReadsAsUnknown  # the feed is not assembled yet
-MatchStatusScenarioIT#aMatchCancelledOnTheFeedReadsAsCancelled  # the feed is not assembled yet
-MatchStatusScenarioIT#aSettlementRightAfterTheClosingOddsChangeReadsTheFeedsWinner  # the feed is not assembled yet
-
-OddsChangeScenarioIT#aMessageThatNeverArrivesFailsSayingWhatArrivedInstead  # the feed is not assembled yet
-OddsChangeScenarioIT#americanOddsAreMoneylineOdds  # the feed is not assembled yet
-OddsChangeScenarioIT#anOddsChangeLeadsToTheMatchItIsAbout  # the feed is not assembled yet
-OddsChangeScenarioIT#anOddsChangeWithAnUnknownMarketStatusIsDeliveredAndItsMarketsThrow  # the feed is not assembled yet
-OddsChangeScenarioIT#closingTheFeedLeavesNothingBehind  # the feed is not assembled yet
-
-ProducerRecoveryScenarioIT#aMessageFromAnUnknownProducerIsNotDelivered  # the feed is not assembled yet
-ProducerRecoveryScenarioIT#aProducerThatWentDownRecoversFromTheLastAliveItSawWhileUp  # the feed is not assembled yet
-ProducerRecoveryScenarioIT#anUnsubscribedAliveForAProducerStillDownIsNotReported  # the feed is not assembled yet
-
-ProducerStatusScenarioIT#anAliveSayingTheProducerIsNoLongerSubscribedTakesItDown  # the feed is not assembled yet
-ProducerStatusScenarioIT#anAliveStartsARecoveryAndItsSnapshotCompleteBringsTheProducerUp  # the feed is not assembled yet
-ProducerStatusScenarioIT#theSnapshotCompleteOfAnEventRecoveryCompletesIt  # the feed is not assembled yet
-
-ReconnectScenarioIT#afterAReconnectMessagesFlowAgainAndTheGapIsRecovered  # the feed is not assembled yet
-ReconnectScenarioIT#afterTheBrokerTakesTheSessionsQueueMessagesFlowAgainAndTheGapIsRecovered  # the feed is not assembled yet
-ReconnectScenarioIT#closingTheFeedIsNotReportedAsTheConnectionDown  # the feed is not assembled yet
-
-ReplayScenarioIT#aReplaySessionCannotOpenNextToALiveSession  # the feed is not assembled yet
-ReplayScenarioIT#aReplaySessionReceivesWhatTheReplayPlays  # the feed is not assembled yet
-
-RestOutageScenarioIT#aRecoveryRequestTheApiRefusedIsAskedForAgain  # the feed is not assembled yet
-RestOutageScenarioIT#messagesKeepArrivingThroughAnOutageAndEntitiesLoadOnceItEnds  # the feed is not assembled yet
-
-SessionScenarioIT#aSessionBuiltAfterOpenIsRefused  # the feed is not assembled yet
-
-StaleFeedScenarioIT#aMessageFromHalfAnHourAgoIsStillDelivered  # the feed is not assembled yet
-StaleFeedScenarioIT#anOlderMessageDoesNotReplaceTheStatusOfANewerOne  # the feed is not assembled yet
-
-StartupScenarioIT#aTokenTheBrokerRefusesStopsTheStart  # the feed is not assembled yet
-StartupScenarioIT#withTheApiDownTheFeedDoesNotStart  # the feed is not assembled yet
-
-ThrowingCallbackScenarioIT#aCallbackThatThrowsDoesNotStopTheSession  # the feed is not assembled yet
+RestOutageScenarioIT#aRecoveryRequestTheApiRefusedIsAskedForAgain  # the feed runs no recovery yet
