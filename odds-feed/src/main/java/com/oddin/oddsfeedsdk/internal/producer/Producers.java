@@ -174,7 +174,9 @@ public final class Producers implements ProducerManager {
     }
 
     /**
-     * When the last message from the producer arrived, epoch millis.
+     * When the last message from the producer arrived, epoch millis: the latest one set, never an
+     * earlier. A message is told when its callback has finished, with when it was taken, so an alive
+     * handled meanwhile, or another session's message, has set a later time already.
      *
      * @throws IllegalArgumentException unless the timestamp is positive
      */
@@ -182,7 +184,7 @@ public final class Producers implements ProducerManager {
         if (timestamp <= 0) {
             throw new IllegalArgumentException("a message timestamp is positive, was " + timestamp);
         }
-        update(id, state -> state.withLastMessageTimestamp(timestamp));
+        update(id, state -> state.withLastMessageTimestamp(Math.max(state.lastMessageTimestamp(), timestamp)));
     }
 
     public void setLastProcessedMessageGenTimestamp(long id, long timestamp) {

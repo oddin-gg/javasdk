@@ -1704,6 +1704,20 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aMessageTakenBeforeAnAliveDoesNotTakeTheLastMessageTimestampBack() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        long taken = feed.now();
+        feed.clock.advance(Duration.ofSeconds(3));
+        // the alive is handled while the session's callback for the message still runs
+        feed.alive(PRE);
+        feed.machine.processed(1, PRE, taken - 1_000, taken, 0);
+        assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastMessageTimestamp())
+                .as("the alive's")
+                .isEqualTo(feed.now());
+    }
+
+    @Test
     void closingAnswersEveryoneStillWaitingWithNull() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.start();
