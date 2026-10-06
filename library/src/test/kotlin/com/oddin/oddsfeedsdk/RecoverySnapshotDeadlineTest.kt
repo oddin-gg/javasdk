@@ -7,12 +7,14 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder
 import com.oddin.oddsfeedsdk.mq.FeedMessageFactory
 import com.oddin.oddsfeedsdk.mq.MessageInterest
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp
+import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
@@ -46,6 +48,7 @@ class RecoverySnapshotDeadlineTest {
             requests.add(secondArg())
             accepted
         }
+        coEvery { apiClient.postEventOddsRecovery("pre", any(), any(), any()) } returns true
 
         manager = RecoveryManagerImpl(
             OddsFeedConfigurationBuilder().setAccessToken("token").selectTest().build(),
@@ -144,5 +147,40 @@ class RecoverySnapshotDeadlineTest {
 
         runFor(1) { }
         assertEquals(2, requests.size)
+    }
+
+    // Every request of a recovery manager used to carry the same id, so a late
+    // snapshot_complete of a recovery given up completed the one asked for after it.
+    private fun snapshotComplete(requestId: Long) {
+        manager.onSnapshotCompleteReceived(
+            producerId,
+            MessageTimestamp(now, now, now, now),
+            requestId,
+            MessageInterest.ALL
+        )
+    }
+
+    @Test
+    fun eachRecoveryRequestGetsANewId() {
+        alive()
+        val eventRequestId = manager.initiateEventOddsMessagesRecovery(producerId, URN.parse("od:match:7"))!!
+        runFor(6) { }
+
+        assertEquals(2, requests.size)
+        val ids = listOf(requests[0], eventRequestId, requests[1])
+        assertEquals("ids repeat: $ids", 3, ids.toSet().size)
+    }
+
+    @Test
+    fun aLateSnapshotCompleteOfAGivenUpRecoveryDoesNotCompleteTheNewOne() {
+        alive()
+        runFor(6) { }
+        assertEquals(2, requests.size)
+
+        snapshotComplete(requests[0])
+        assertTrue("the given-up recovery completed the new one", down)
+
+        snapshotComplete(requests[1])
+        assertFalse("producer still down after its snapshot complete", down)
     }
 }

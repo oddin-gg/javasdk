@@ -20,6 +20,7 @@ import java.time.Instant
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.abs
 import kotlin.random.Random
 
@@ -101,7 +102,8 @@ class RecoveryManagerImpl @Inject constructor(
     private val messageProcessingTimes = ConcurrentHashMap<UUID, Long>()
     private var isOpened = false
     private val lock = Any()
-    private val sequence = generateSequence(Random.nextLong(20000)) { it + 1L }
+    // Each request takes the next id; ids of producer and event recoveries never repeat
+    private val sequence = AtomicLong(Random.nextLong(20000))
 
     // Tests move it to cross the recovery deadlines without waiting
     internal var clock: () -> Long = System::currentTimeMillis
@@ -277,7 +279,7 @@ class RecoveryManagerImpl @Inject constructor(
             val producerName = producerRecoveryData.producerName
                 ?: throw GenericOdsFeedException("Cannot find producer for $producerId", null)
 
-            val requestId = sequence.take(1).first()
+            val requestId = sequence.getAndIncrement()
             producerRecoveryData.setEventRecoveryState(eventId, requestId, now)
 
             val success = runBlocking {
@@ -378,7 +380,7 @@ class RecoveryManagerImpl @Inject constructor(
             } ?: recoverFrom
         }
 
-        val requestId = sequence.take(1).first()
+        val requestId = sequence.getAndIncrement()
         val producerName = producerRecoveryData.producerName
             ?: throw GenericOdsFeedException("Cannot find producer for ${producerRecoveryData.producerId}", null)
         producerRecoveryData.setProducerRecoveryState(requestId, now, RecoveryState.STARTED)
