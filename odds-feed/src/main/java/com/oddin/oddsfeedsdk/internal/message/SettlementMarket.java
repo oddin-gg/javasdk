@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.message;
 import com.oddin.oddsfeedsdk.cache.StaticData;
 import com.oddin.oddsfeedsdk.mq.entities.MarketWithSettlement;
 import com.oddin.oddsfeedsdk.mq.entities.OutcomeSettlement;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import org.jspecify.annotations.Nullable;
@@ -17,9 +18,10 @@ final class SettlementMarket extends FeedMarket implements MarketWithSettlement 
         this.outcomes = outcomes;
     }
 
+    /** A new list on each call, which the client may change: the message keeps its own. */
     @Override
     public List<OutcomeSettlement> getOutcomeSettlements() {
-        return outcomes;
+        return new ArrayList<>(outcomes);
     }
 
     @Override

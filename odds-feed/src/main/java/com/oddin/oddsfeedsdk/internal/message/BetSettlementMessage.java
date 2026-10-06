@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.mq.entities.BetSettlementCertainty;
 import com.oddin.oddsfeedsdk.mq.entities.MarketWithSettlement;
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlement;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -42,8 +43,9 @@ final class BetSettlementMessage extends FeedEventMessage implements BetSettleme
         return BetSettlementCertainty.UNKNOWN;
     }
 
+    /** A new list on each call, which the client may change: the message keeps its own. */
     @Override
     public List<MarketWithSettlement> getMarkets() {
-        return markets.get();
+        return new ArrayList<>(markets.get());
     }
 }

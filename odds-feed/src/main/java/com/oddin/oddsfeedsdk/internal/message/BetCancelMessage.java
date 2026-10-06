@@ -6,6 +6,7 @@ import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.MarketCancel;
 import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetCancel;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import org.jspecify.annotations.Nullable;
@@ -48,8 +49,9 @@ final class BetCancelMessage extends FeedEventMessage implements BetCancel<Sport
         return null;
     }
 
+    /** A new list on each call, which the client may change: the message keeps its own. */
     @Override
     public List<MarketCancel> getMarkets() {
-        return markets;
+        return new ArrayList<>(markets);
     }
 }

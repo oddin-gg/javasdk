@@ -31,12 +31,14 @@ import com.oddin.oddsfeedsdk.mq.entities.UnparsableMessage;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFOddsChange;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -374,6 +376,8 @@ class MessageFactoryTest {
 
     @Test
     void aMessagesMarketsAreOneListForEveryReader() throws Exception {
+        MarketWithOdds market =
+                ((OddsChange<?>) world.fixture(ODDS_CHANGE)).getMarkets().getFirst();
         var calls = new AtomicInteger();
         var nested = new AtomicReference<List<MarketWithOdds>>();
         var holder = new AtomicReference<OddsChangeMessage>();
@@ -385,16 +389,60 @@ class MessageFactoryTest {
                 requireNonNull(world.producers.getProducer(2)),
                 new MessageTimestamp(1, 1, 1, 1),
                 () -> {
-                    if (calls.incrementAndGet() == 1) {
+                    int call = calls.incrementAndGet();
+                    if (call == 1) {
                         nested.set(holder.get().getMarkets());
                     }
-                    return new ArrayList<>();
+                    // the first build one market, the second two: which was kept shows
+                    return Collections.nCopies(3 - call, market);
                 });
         holder.set(change);
         List<MarketWithOdds> first = change.getMarkets();
-        assertThat(first).as("the list the other reader stored").isSameAs(nested.get());
-        assertThat(change.getMarkets()).isSameAs(first);
+        assertThat(first).as("the markets the other reader stored").hasSize(1).isEqualTo(nested.get());
+        assertThat(change.getMarkets()).containsExactlyElementsOf(first);
         assertThat(calls).hasValue(2);
+    }
+
+    /** As 0.0.x's lists of two or more, and every list since the compat rule: the client's to change. */
+    @Test
+    void everyCollectionAMessageGivesIsANewOneTheClientMayChange() throws Exception {
+        var change = (OddsChange<?>) world.fixture(ODDS_CHANGE);
+        assertChangeable(change::getMarkets);
+        MarketWithOdds market = change.getMarkets().getFirst();
+        assertChangeable(market::getOutcomeOdds);
+        MarketWithOdds specified = change.getMarkets().stream()
+                .filter(each -> !each.getSpecifiers().isEmpty())
+                .findFirst()
+                .orElseThrow();
+        Map<String, String> specifiers = specified.getSpecifiers();
+        assertThat(specified.getSpecifiers()).as("a new one").isNotSameAs(specifiers);
+        Map<String, String> before = Map.copyOf(specifiers);
+        specifiers.clear();
+        assertThat(specified.getSpecifiers()).isEqualTo(before);
+
+        var settlement = (BetSettlement<?>) world.fixture("feed/bet_settlement/bet_settlement.xml");
+        assertChangeable(settlement::getMarkets);
+        assertChangeable(() -> settlement.getMarkets().getFirst().getOutcomeSettlements());
+        var cancel = (BetCancel<?>) world.fixture("feed/bet_cancel/bet_cancel.xml");
+        assertChangeable(cancel::getMarkets);
+        var stop = (BetStop<?>) world.build(Fixtures.read(BET_STOP).replace("groups=\"all\"", "groups=\"winner\""));
+        assertChangeable(() -> requireNonNull(stop.getGroups()));
+        var rollbackSettlement = (RollbackBetSettlement<?>) world.build(MessageWorld.fromLiveProducer(
+                Fixtures.read("feed/rollback_bet_settlement/rollback_bet_settlement.xml")));
+        assertChangeable(rollbackSettlement::getMarkets);
+        var rollbackCancel = (RollbackBetCancel<?>) world.build(
+                MessageWorld.fromLiveProducer(Fixtures.read("feed/rollback_bet_cancel/rollback_bet_cancel.xml")));
+        assertChangeable(rollbackCancel::getMarkets);
+    }
+
+    /** A new collection on each call, changeable, and a change to it changes no later call's. */
+    private static <T> void assertChangeable(Supplier<? extends Collection<T>> getter) {
+        Collection<T> given = getter.get();
+        assertThat(given).as("something to change").isNotEmpty();
+        List<T> before = List.copyOf(given);
+        assertThat(getter.get()).as("a new one").isNotSameAs(given);
+        given.clear();
+        assertThat(getter.get()).as("unchanged by the client's change").containsExactlyElementsOf(before);
     }
 
     @Test
