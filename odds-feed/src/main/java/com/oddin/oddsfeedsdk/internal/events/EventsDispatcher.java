@@ -29,6 +29,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
+import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -48,11 +49,12 @@ import org.slf4j.LoggerFactory;
  * dropped, a client that falls behind hears the state as it is now rather than one long gone, in the
  * order it changed - the last word of a producer is never the one that found no room, nor heard
  * before a connection loss reported ahead of it - and a flood of them takes one queued entry each. A
- * connection loss replaced that way is still told, by {@code onConnectionDown}. The telemetry queue carries the API calls, the failed callbacks and the raw API
- * data; it holds {@value #TELEMETRY_CAPACITY} and drops the oldest when full, counting them. The raw
- * API data it holds, and the response being delivered, are bounded by bytes too, at {@link
- * #TELEMETRY_BYTES}: a response with no room under that is dropped and counted, since a thousand of the largest the API may answer would
- * exhaust the heap while a callback lags.
+ * connection loss replaced that way is still told, by {@code onConnectionDown}. The telemetry
+ * queue carries the API calls, the failed callbacks and the raw API data; it holds {@value
+ * #TELEMETRY_CAPACITY} and drops the oldest when full, counting them. The raw API data it holds,
+ * and the response being delivered until both its callbacks are done, are bounded by bytes too, at
+ * {@link #TELEMETRY_BYTES}: a response with no room under that is dropped and counted, since a
+ * thousand of the largest the API may answer would exhaust the heap while a callback lags.
  *
  * <p>The thread takes the control queue first, then up to {@value #TELEMETRY_PER_TURN} telemetry
  * events, each only while no control event waits. A callback that throws, even an error, is
@@ -98,8 +100,15 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
      * queued, where its newest report stands.
      */
     private final Map<Object, Held> slots = new ConcurrentHashMap<>();
-    /** The generation of each report a slot takes, increasing. */
-    private final AtomicLong generation = new AtomicLong();
+    /**
+     * Held while a report fills its slot and moves the slot's marker, so a report never takes out
+     * the marker it replaces before that marker is queued, which would leave it queued for good.
+     */
+    private final ReentrantLock filling = new ReentrantLock();
+    /** The generation of each report a slot takes, increasing; guarded by {@link #filling}. */
+    private long generation;
+    /** A test's hook: runs in a report once its slot holds it, before its marker is queued. */
+    volatile Runnable afterFill = () -> {};
 
     private final Queue<Event> telemetry;
 
@@ -323,24 +332,31 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
      * Fills the slot, merged with what it holds, and moves its marker to the end of the control queue:
      * the slot's newest value is delivered where its newest report stands, so a connection loss
      * reported after a producer's status, and before its newest, is heard before that newest. The
-     * marker of the report it replaces is taken out, so a slot never has more than one queued.
+     * marker of the report it replaces is taken out, so a slot never has more than one queued. Two
+     * reports never fill at once: the second finds the first's marker queued, or already taken.
      */
     private void coalesce(Object slot, Pending pending) {
         if (closed) {
             return;
         }
-        var generations = new long[] {0, -1};
-        slots.compute(slot, (key, held) -> {
-            generations[0] = generation.incrementAndGet();
-            if (held == null) {
-                return new Held(pending, generations[0]);
+        filling.lock();
+        try {
+            long marked = ++generation;
+            var replaced = new long[] {-1};
+            slots.compute(slot, (key, held) -> {
+                if (held == null) {
+                    return new Held(pending, marked);
+                }
+                replaced[0] = held.generation();
+                return new Held(pending.after(held.pending()), marked);
+            });
+            afterFill.run();
+            control.add(new Marker(slot, marked));
+            if (replaced[0] >= 0) {
+                control.remove(new Marker(slot, replaced[0]));
             }
-            generations[1] = held.generation();
-            return new Held(pending.after(held.pending()), generations[0]);
-        });
-        control.add(new Marker(slot, generations[0]));
-        if (generations[1] >= 0) {
-            control.remove(new Marker(slot, generations[1]));
+        } finally {
+            filling.unlock();
         }
         LockSupport.unpark(thread);
     }
