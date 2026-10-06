@@ -10,11 +10,15 @@ import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.rabbitmq.client.Connection;
+import java.net.InetAddress;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.security.KeyStore;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -610,6 +614,56 @@ class AmqpTransportTest {
         assertThat(feed().openConnections())
                 .as("the connection the reconnect made is cut")
                 .isEmpty();
+    }
+
+    @Test
+    void closeDoesNotWaitForTheFirstConnectsHandshake() throws Exception {
+        try (var silent = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            var accepted = new CompletableFuture<Socket>();
+            Thread.ofVirtual().start(() -> {
+                try {
+                    accepted.complete(silent.accept());
+                } catch (java.io.IOException e) {
+                    accepted.completeExceptionally(e);
+                }
+            });
+            var base = settings(10, 1 << 20);
+            // a broker that takes the connection and never answers the handshake, within a connect
+            // timeout far longer than close() may take
+            var unanswered = new AmqpSettings(
+                    "127.0.0.1",
+                    silent.getLocalPort(),
+                    base.virtualHost(),
+                    base.accessToken(),
+                    base.tls(),
+                    base.connectionName(),
+                    base.prefetch(),
+                    base.maxMessageSize(),
+                    base.heartbeat(),
+                    Duration.ofSeconds(30),
+                    base.firstBackoff(),
+                    base.maxBackoff(),
+                    base.resourceBackoff());
+            AmqpTransport transport = transport(unanswered, false);
+            transport.addSession(allKeys());
+            var opening = CompletableFuture.runAsync(transport::open);
+            Socket socket = accepted.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+            try {
+                long closing = System.nanoTime();
+                transport.close();
+                assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                        .as("close() while the first connect waits for the broker's handshake")
+                        .isLessThan(Duration.ofSeconds(5));
+            } finally {
+                socket.close();
+            }
+            // the broker hangs up, so the handshake ends; the open finds the transport closed
+            assertThatThrownBy(() -> opening.get(WAIT.toSeconds(), TimeUnit.SECONDS))
+                    .cause()
+                    .isInstanceOf(InitException.class)
+                    .hasMessageContaining("closed as it opened");
+            assertThat(events.events).containsExactly("connecting");
+        }
     }
 
     @Test
