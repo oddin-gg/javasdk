@@ -149,11 +149,16 @@ public final class SessionDispatcher implements AutoCloseable {
 
     /**
      * Stops taking deliveries, once the one being handled is done or after a wait; what the queue still
-     * holds goes with the session's channel.
+     * holds goes with the session's channel. From one of the session's callbacks it does not wait: the
+     * thread ends once the callback returns and its message is acknowledged.
      */
     @Override
     public void close() {
         closed = true;
+        if (Thread.currentThread().equals(thread)) {
+            // a callback closing the session or the feed: waiting here would wait for itself
+            return;
+        }
         if (thread.isAlive()) {
             try {
                 if (!thread.join(CLOSE_WAIT)) {
@@ -270,8 +275,7 @@ public final class SessionDispatcher implements AutoCloseable {
             unparsable(route, body, delivery);
             return;
         }
-        MessageTimestamp timestamp = timestamp(message.getTimestamp(), delivery);
-        raw(message, body, route, timestamp);
+        raw(message, body, route, delivery);
 
         long producerId = message.getProduct();
         Producer producer = pipeline.producers().getProducer(producerId);
@@ -390,13 +394,15 @@ public final class SessionDispatcher implements AutoCloseable {
         }
     }
 
-    private void raw(BasicMessage message, byte[] body, RoutingKeyInfo route, MessageTimestamp timestamp) {
+    private void raw(BasicMessage message, byte[] body, RoutingKeyInfo route, RawDelivery delivery) {
         OddsFeedExtListener ext = extListener;
         if (ext == null) {
             return;
         }
-        client("onRawFeedMessageReceived", () -> ext.onRawFeedMessageReceived(message, interest, route, timestamp));
-        client("onRawFeedMessageBytes", () -> ext.onRawFeedMessageBytes(body, interest, route, timestamp));
+        MessageTimestamp received = timestamp(message.getTimestamp(), delivery);
+        client("onRawFeedMessageReceived", () -> ext.onRawFeedMessageReceived(message, interest, route, received));
+        MessageTimestamp bytes = timestamp(message.getTimestamp(), delivery);
+        client("onRawFeedMessageBytes", () -> ext.onRawFeedMessageBytes(body, interest, route, bytes));
     }
 
     /** A message that could not be read, for the event its routing key names, if it names one. */
