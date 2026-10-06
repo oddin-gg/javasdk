@@ -88,7 +88,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private static final int TELEMETRY_PER_TURN = 100;
     /** How long the thread waits for an event before it looks again, should a wake-up be missed. */
     private static final long IDLE_NANOS = TimeUnit.SECONDS.toNanos(1);
-    /** How long close() waits for the thread to end. */
+    /** How long close() waits for the thread to end; a feed closing gives every dispatcher one deadline instead. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
 
     private static final String ON_CALLBACK_FAILURE = "onCallbackFailure";
@@ -361,23 +361,46 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     /** Stops delivering. Events still queued are dropped, and so is anything reported from now on. */
     @Override
     public void close() {
+        stop();
+        awaitStop(System.nanoTime() + CLOSE_WAIT.toNanos());
+    }
+
+    /**
+     * Tells the thread to stop once the callback it runs returns, and returns at once: nothing more
+     * is delivered, and nothing reported from now on is queued. So a feed closing tells this and
+     * every other dispatcher before it waits for any, and waits for them all within one deadline.
+     */
+    public void stop() {
         closed = true;
-        if (Thread.currentThread().equals(thread)) {
-            // a callback closing the feed: its own thread ends once the callback returns
-            clearQueues();
-            return;
-        }
-        if (thread.isAlive()) {
-            LockSupport.unpark(thread);
-            try {
-                if (!thread.join(CLOSE_WAIT)) {
-                    LOG.warn("The events dispatcher did not stop within {}: a callback still runs", CLOSE_WAIT);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        LockSupport.unpark(thread);
+    }
+
+    /**
+     * Waits for the thread to end after a {@link #stop}, until {@code deadline}, by {@link
+     * System#nanoTime}, then drops the events still queued; says so in the log when it does not end.
+     * From the events thread itself - a callback closing the feed - it does not wait, as that would
+     * wait for itself: the thread ends once the callback returns.
+     *
+     * @return whether the thread has ended, or is the caller's own and ends next
+     */
+    public boolean awaitStop(long deadline) {
+        try {
+            if (Thread.currentThread().equals(thread) || !thread.isAlive()) {
+                return true;
             }
+            if (thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())))) {
+                return true;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            clearQueues();
         }
-        clearQueues();
+        if (!thread.isAlive()) {
+            return true;
+        }
+        LOG.warn("The events dispatcher did not stop in time: a callback still runs");
+        return false;
     }
 
     private void clearQueues() {
