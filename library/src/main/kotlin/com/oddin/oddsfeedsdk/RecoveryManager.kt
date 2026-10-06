@@ -85,6 +85,10 @@ class DummyRecoveryMessageProcessorImpl @Inject constructor() : RecoveryMessageP
 
 private val logger = KotlinLogging.logger {}
 
+// How long a recovery waits for its snapshot_complete after its last message. A lost
+// snapshot_complete would otherwise keep the producer down for the maximum recovery time.
+private const val SNAPSHOT_COMPLETE_TIMEOUT_MILLIS = 5 * 60 * 1000L
+
 class RecoveryManagerImpl @Inject constructor(
     private val oddsFeedConfiguration: OddsFeedConfiguration,
     private val producerManager: SDKProducerManager,
@@ -197,6 +201,15 @@ class RecoveryManagerImpl @Inject constructor(
                     producerRecoveryData
                 )
             }
+        }
+    }
+
+    // A session took a message of the producer. It keeps the recovery waiting for its
+    // snapshot_complete if it belongs to the recovery's snapshot, or was generated before the
+    // request, so the snapshot may still be queued behind it.
+    internal fun onRecoveryTraffic(producerId: Long, requestId: Long?, generatedTimestamp: Long) {
+        synchronized(lock) {
+            producerRecoveryData[producerId]?.recoveryTrafficReceived(requestId, generatedTimestamp, clock())
         }
     }
 
@@ -318,7 +331,12 @@ class RecoveryManagerImpl @Inject constructor(
 
                 val recoveryTiming = now - (producerRecoveryData.lastRecoveryStartedAt ?: 0)
                 val maxInterval = oddsFeedConfiguration.maxRecoveryExecutionMinutes * 60 * 1000L
-                if (producerRecoveryData.isPerformingRecovery && recoveryTiming > maxInterval) {
+                val snapshotCompleteWait = now - (producerRecoveryData.lastRecoveryTrafficAt ?: 0)
+                val snapshotCompleteLost = snapshotCompleteWait > SNAPSHOT_COMPLETE_TIMEOUT_MILLIS
+                if (producerRecoveryData.isPerformingRecovery && (recoveryTiming > maxInterval || snapshotCompleteLost)) {
+                    if (recoveryTiming <= maxInterval) {
+                        logger.warn { "No snapshot complete for request ${producerRecoveryData.currentRecoveryId} in $snapshotCompleteWait ms since its last message, asking again" }
+                    }
                     // @TODO recoveryId 0
                     producerRecoveryData.setProducerRecoveryState(0, 0, RecoveryState.ERROR)
                     makeSnapshotRecovery(producerRecoveryData, producerRecoveryData.timestampForRecovery)
@@ -539,6 +557,23 @@ class ProducerRecoveryData(val producerId: Long, private val producerManager: SD
     val lastRecoveryStartedAt: Long?
         get() = currentRecovery?.recoveryStartedAt
 
+    internal val currentRecoveryId: Long?
+        get() = currentRecovery?.recoveryId
+
+    internal val lastRecoveryTrafficAt: Long?
+        get() = currentRecovery?.lastTrafficAt
+
+    internal fun recoveryTrafficReceived(requestId: Long?, generatedTimestamp: Long, receivedAt: Long) {
+        val recovery = currentRecovery ?: return
+        if (!isPerformingRecovery) {
+            return
+        }
+
+        if (requestId == recovery.recoveryId || generatedTimestamp < recovery.recoveryStartedAt) {
+            recovery.lastTrafficAt = receivedAt
+        }
+    }
+
     val timestampForRecovery: Instant?
         get() = producerManager.getProducer(producerId)?.timestampForRecovery
 
@@ -618,6 +653,9 @@ open class RecoveryData(
     val recoveryStartedAt: Long
 ) {
     private val interestsOfSnapshotComplete = newConcurrentHashSet<MessageInterest>()
+
+    // When a session last took a message of this recovery, or one queued before it
+    internal var lastTrafficAt: Long = recoveryStartedAt
 
     fun snapshotComplete(messageInterest: MessageInterest): Set<MessageInterest> {
         interestsOfSnapshotComplete.add(messageInterest)
