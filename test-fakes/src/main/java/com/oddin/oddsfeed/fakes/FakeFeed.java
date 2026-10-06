@@ -78,6 +78,9 @@ public final class FakeFeed implements AutoCloseable {
     /** The management API's own login, not a feed connection; kept out of {@link #logins()}. */
     private static final String PUBLISHER = "fake-feed-publisher";
 
+    /** What the SDK binds a queue with for alives; its alive-only queue has no other binding. */
+    private static final String ALIVE_BINDING = "-.-.-.alive.#";
+
     private final String virtualHost = "/oddinfeed/" + BOOKMAKER_ID;
     private final List<Login> logins = new CopyOnWriteArrayList<>();
     private final List<String> refusedLogins = new CopyOnWriteArrayList<>();
@@ -296,6 +299,42 @@ public final class FakeFeed implements AutoCloseable {
      */
     public void deleteClientQueues() {
         for (String queue : clientQueues()) {
+            rabbitmqctl("delete_queue", "-p", virtualHost(), queue);
+        }
+    }
+
+    /**
+     * The client queues bound to the {@value #EXCHANGE} exchange for more than alives: one per
+     * session, without the queue the SDK binds to alives only.
+     */
+    public List<String> sessionQueues() {
+        return rabbitmqctl(
+                        "list_bindings",
+                        "--quiet",
+                        "--no-table-headers",
+                        "-p",
+                        virtualHost(),
+                        "source_name",
+                        "destination_name",
+                        "routing_key")
+                .lines()
+                .map(line -> line.split("\t", -1))
+                .filter(fields -> fields.length == 3
+                        && fields[0].equals(EXCHANGE)
+                        && fields[1].startsWith("amq.gen-")
+                        && !fields[2].equals(ALIVE_BINDING))
+                .map(fields -> fields[1])
+                .distinct()
+                .toList();
+    }
+
+    /**
+     * Deletes the {@linkplain #sessionQueues sessions' queues}, as an operator or a broker policy
+     * might, leaving the alive-only queue and the connection open. The broker cancels the consumers
+     * of a deleted queue; the channels stay open.
+     */
+    public void deleteSessionQueues() {
+        for (String queue : sessionQueues()) {
             rabbitmqctl("delete_queue", "-p", virtualHost(), queue);
         }
     }

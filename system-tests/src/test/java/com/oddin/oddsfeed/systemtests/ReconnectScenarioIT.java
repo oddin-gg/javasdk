@@ -18,9 +18,9 @@ import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
- * The connection to the feed breaking and coming back while the SDK runs. Whatever the broker
- * held for the old connection's queue is gone with it; messages flow again on the new one, and a
- * recovery is what fills the gap.
+ * The connection to the feed, or a session's queue, breaking and coming back while the SDK runs.
+ * Whatever the broker held for the old queue is gone with it; messages flow again on the new one,
+ * and a recovery is what fills the gap.
  *
  * <p>Kept short on purpose: 0.0.x starts watching producers for missing alives a minute after
  * {@code open()}, and a longer scenario would see that watchdog take the producer down on top of
@@ -103,6 +103,101 @@ class ReconnectScenarioIT {
                                 .hasSizeGreaterThanOrEqualTo(2);
                     });
         }
+    }
+
+    /**
+     * The broker deletes the session's queue while the connection stays up, as an operator or a
+     * broker policy might, and cancels its consumer. 1.0 opens the session's channel again, with a
+     * new queue, and asks for a recovery of what the old one held. 0.0.x's AMQP client recovers a
+     * lost connection only: the session receives nothing more, and since the SDK's alive-only queue
+     * still gets the alives, no recovery is asked for, and the producer stays up until the watchdog
+     * runs a minute after {@code open()} (KD-7), past the end of this scenario.
+     */
+    @Test
+    void afterTheBrokerTakesTheSessionsQueueMessagesFlowAgainAndTheGapIsRecovered() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            Received received = sdk.open(MessageInterest.ALL);
+            feed.publish(alive(1, true));
+            feed.publish(snapshotComplete(
+                    1, requestId(rest.awaitRequest("POST", PREMATCH_RECOVERY).parameter("request_id"))));
+            assertThat(sdk.events().nextProducerStatus(1).isDown())
+                    .as("down after the first recovery")
+                    .isFalse();
+            feed.publishFixture(ODDS_CHANGE);
+            received.next(OddsChange.class);
+            var queues = feed.sessionQueues();
+            assertThat(queues).as("the session's queue").hasSize(1);
+
+            feed.deleteSessionQueues();
+            assertThat(feed.sessionQueues())
+                    .as("session queues once the session's is deleted")
+                    .doesNotContainAnyElementsOf(queues);
+            Optional<?> afterLoss = firstOddsChange(feed, received, Received.DELIVERY);
+
+            KnownDifference.LOST_CHANNEL_IS_NOT_OPENED_AGAIN.expect(
+                    () -> {
+                        assertThat(afterLoss)
+                                .as("an odds change after the queue was deleted")
+                                .isEmpty();
+                        assertThat(feed.sessionQueues())
+                                .as("session queues declared again")
+                                .isEmpty();
+                        // once the recovery point shows this alive's time, the alive has been handled
+                        long aliveAt = System.currentTimeMillis();
+                        feed.publishAsIs(stampedAt(alive(1, true), aliveAt));
+                        var producers = sdk.oddsFeed().getProducerManager();
+                        long handled = System.nanoTime() + Received.DELIVERY.toNanos();
+                        while (!Instant.ofEpochMilli(aliveAt)
+                                        .equals(producers.getProducer(1).getTimestampForRecovery())
+                                && System.nanoTime() < handled) {
+                            Thread.sleep(50);
+                        }
+                        assertThat(producers.getProducer(1).getTimestampForRecovery())
+                                .as("recovery point of producer 1, from the last alive")
+                                .isEqualTo(Instant.ofEpochMilli(aliveAt));
+                        assertThat(rest.requests("POST", PREMATCH_RECOVERY))
+                                .as("recovery requests of producer 1")
+                                .hasSize(1);
+                        assertThat(sdk.events().pollProducerStatus(1, Duration.ofSeconds(1)))
+                                .as("a status change of producer 1")
+                                .isEmpty();
+                        assertThat(producers.isProducerDown(1))
+                                .as("producer 1 down")
+                                .isFalse();
+                        assertThat(sdk.events().awaitConnectionDown(Duration.ofSeconds(1)))
+                                .as("connection down")
+                                .isFalse();
+                    },
+                    () -> {
+                        assertThat(afterLoss)
+                                .as("an odds change after the queue was deleted")
+                                .isPresent();
+                        feed.publish(alive(1, true));
+                        assertThat(rest.awaitRequests("POST", PREMATCH_RECOVERY, 2))
+                                .as("recovery requests of producer 1")
+                                .hasSizeGreaterThanOrEqualTo(2);
+                    });
+        }
+    }
+
+    /**
+     * Publishes odds changes, each after an alive that says producer 1 is there, until one reaches
+     * the listener or {@code wait} is over.
+     */
+    private static Optional<?> firstOddsChange(FakeFeed feed, Received received, Duration wait)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + wait.toNanos();
+        while (System.nanoTime() < deadline) {
+            feed.publish(alive(1, true));
+            feed.publishFixture(ODDS_CHANGE);
+            var oddsChange = received.poll(OddsChange.class, Duration.ofSeconds(1));
+            if (oddsChange.isPresent()) {
+                return oddsChange;
+            }
+        }
+        return Optional.empty();
     }
 
     /**

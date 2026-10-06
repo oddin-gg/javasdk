@@ -367,12 +367,15 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **0.0.x:** The AMQP client's automatic recovery opens a lost connection again, with its
   channels, but not a channel the broker closes or a consumer it cancels while the connection
   stays up - a deleted queue, say. The session then receives nothing more, and nothing is
-  recovered.
+  recovered. The SDK's alive-only queue still gets the alives, so the producer stays up until
+  the watchdog runs (KD-7); then the session's missing alives take it down with
+  `PROCESSING_QUEUE_DELAY_VIOLATION`, which asks for no recovery, and it stays down.
 - **1.0:** The transport opens such a channel again, tells the session of the loss and of the
   new channel, and recovery covers what the old queue held, once the new one is bound (NEXT.md
   section 4, Connection, and Recovery and producers).
-- **Why:** A session that silently stops receiving keeps its producers up with stale state.
-- **Pinned by:** none in the system tests; the transport's and the recovery actor's unit tests
-  pin it.
+- **Why:** A session that silently stops receiving keeps its producers up with stale state,
+  and once the watchdog notices, down for good: only a restart brings them back.
+- **Pinned by:** `ReconnectScenarioIT.afterTheBrokerTakesTheSessionsQueueMessagesFlowAgainAndTheGapIsRecovered`
 - **Found:** by reading the source (`ChannelConsumer`, `AMQPConnectionProvider`) and the AMQP
-  client's documentation of automatic recovery, which a channel-level error does not start.
+  client's documentation of automatic recovery, which a channel-level error does not start;
+  confirmed by test against 0.0.57, the watchdog's part in a run of two minutes.
