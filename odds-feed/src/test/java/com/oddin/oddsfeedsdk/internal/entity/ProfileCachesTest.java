@@ -97,6 +97,44 @@ class ProfileCachesTest {
     }
 
     @Test
+    void aProfileNeedsNoWarmUpWhileItIsFreshOrLoading() throws Exception {
+        api.respond(
+                COMPETITOR_PROFILE_EN,
+                FakeRestServer.Reply.of(200, Fixtures.read("rest/competitor/competitor_profile.xml"))
+                        .after(Duration.ofMillis(500)));
+        api.respond(
+                PLAYER_PROFILE_EN,
+                FakeRestServer.Reply.of(200, Fixtures.read("rest/player/player_profile.xml"))
+                        .after(Duration.ofMillis(500)));
+        assertThat(caches.competitorWarm(COMPETITOR, EN)).as("never loaded").isFalse();
+        assertThat(caches.playerWarm(PLAYER, EN)).isFalse();
+
+        var competitor = threads.submit(() -> caches.competitor(COMPETITOR, EN, null));
+        api.awaitRequest("GET", COMPETITOR_PROFILE_EN);
+        assertThat(caches.competitorWarm(COMPETITOR, EN))
+                .as("its load under way")
+                .isTrue();
+        competitor.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(caches.competitorWarm(COMPETITOR, EN)).as("fresh").isTrue();
+        assertThat(caches.competitorWarm(COMPETITOR, Locale.GERMAN))
+                .as("not in German")
+                .isFalse();
+        assertThat(caches.playerWarm(PLAYER, EN))
+                .as("only filled by the competitor's profile: its own is not loaded")
+                .isFalse();
+
+        var player = threads.submit(() -> caches.player(PLAYER, EN, null));
+        api.awaitRequest("GET", PLAYER_PROFILE_EN);
+        assertThat(caches.playerWarm(PLAYER, EN)).as("its load under way").isTrue();
+        player.get(10, java.util.concurrent.TimeUnit.SECONDS);
+        assertThat(caches.playerWarm(PLAYER, EN)).as("fresh").isTrue();
+
+        time.advance(ProfileCaches.PROFILE_AGE.plusMinutes(1));
+        assertThat(caches.competitorWarm(COMPETITOR, EN)).as("out of date").isFalse();
+        assertThat(caches.playerWarm(PLAYER, EN)).isFalse();
+    }
+
+    @Test
     void aProfileWithAnEmptyPlayerListHasNoPlayers() {
         api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
         caches.competitor(COMPETITOR, EN, null);
