@@ -18,6 +18,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.random.RandomGenerator;
@@ -86,6 +87,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final Producers producers;
 
     private final Thread thread;
+    /**
+     * Where the actor is in its life, moved by compare-and-set only, so it starts at most once and
+     * its machine is closed exactly once: by close() when it never started, else by its thread.
+     */
+    private final AtomicReference<Lifecycle> lifecycle = new AtomicReference<>(Lifecycle.NEW);
+
     private volatile boolean closed;
     /** When the actor last began a turn, epoch millis; for the watchdog. */
     private volatile long turnedAt;
@@ -95,6 +102,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     volatile Consumer<Fact> beforeHandle = fact -> {};
     /** A test's hook, run before each take from the event recovery requests. */
     volatile Runnable beforeRequestPoll = () -> {};
+    /** A test's hook, run in start() once it has the start, before the thread starts. */
+    volatile Runnable beforeThreadStart = () -> {};
+    /** A test's hook, run as the machine closes, on the thread that closes it. */
+    volatile Runnable beforeMachineClose = () -> {};
     /** The turns the actor has taken; for the watchdog and a test. */
     private final AtomicLong turns = new AtomicLong();
 
@@ -189,9 +200,16 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * The feed is open: the actor starts, the sessions opened so far miss everything before now. It
      * asks for nothing until the transport's first {@link #up}, which comes once every session's
      * channel is bound: a recovery sent before would reach no queue.
+     *
+     * <p>Once only: a second start does nothing, and so does a start after {@link #close}, whose
+     * actor stays closed with its thread never run.
      */
     public void start() {
+        if (!lifecycle.compareAndSet(Lifecycle.NEW, Lifecycle.STARTED)) {
+            return;
+        }
         post(essential, new Fact.Start());
+        beforeThreadStart.run();
         thread.start();
     }
 
@@ -262,6 +280,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         return thread.isAlive();
     }
 
+    /** Whether the actor's thread was ever started, for a test. */
+    boolean threadStarted() {
+        return thread.getState() != Thread.State.NEW;
+    }
+
     /** The essential facts waiting, for a test. */
     int queued() {
         return essential.size();
@@ -280,11 +303,17 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     /**
      * Stops the actor. Whoever waits for an event recovery hears it was not accepted; facts posted
      * from now on are dropped.
+     *
+     * <p>Never started, the machine is closed here, and no start runs it later. Started, its thread
+     * closes it as it ends, and this waits for that - unless the close came between the start and
+     * the thread's own start: the thread then ends at once and closes it without this waiting.
      */
     @Override
     public void close() {
         closed = true;
-        if (thread.isAlive()) {
+        if (lifecycle.getAndSet(Lifecycle.CLOSED) == Lifecycle.NEW) {
+            closeMachine();
+        } else if (thread.isAlive()) {
             LockSupport.unpark(thread);
             try {
                 if (!thread.join(CLOSE_WAIT)) {
@@ -293,9 +322,6 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-        } else if (thread.getState() == Thread.State.NEW) {
-            // never started: nothing else runs the machine
-            closeMachine();
         }
     }
 
@@ -360,6 +386,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * by its poster, who sees the close and takes it back.
      */
     private void closeMachine() {
+        beforeMachineClose.run();
         Fact fact;
         while ((fact = control.poll()) != null) {
             if (fact instanceof Fact.RecoverEvent recover) {
@@ -677,6 +704,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 LOG.error("The recovery events listener threw on {}; the actor goes on", event, e);
             }
         }
+    }
+
+    private enum Lifecycle {
+        NEW,
+        STARTED,
+        CLOSED
     }
 
     /** What the actor's queues carry; package-private for a test's hook. */

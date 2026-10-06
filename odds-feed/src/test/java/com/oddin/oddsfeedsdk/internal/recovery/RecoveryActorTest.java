@@ -25,6 +25,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -1055,6 +1056,47 @@ class RecoveryActorTest {
         assertThat(inFlight.get(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("the API answers after the close")
                 .isNull();
+    }
+
+    @Test
+    void aCloseBetweenTheStartAndItsThreadLeavesTheMachineToTheThreadToCloseOnce() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        var closedBy = new ConcurrentLinkedQueue<String>();
+        var closedOnTheActor = new CountDownLatch(1);
+        actor.beforeMachineClose = () -> {
+            String thread = Thread.currentThread().getName();
+            closedBy.add(thread);
+            if (thread.equals("oddsfeed-recovery")) {
+                closedOnTheActor.countDown();
+            }
+        };
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        // the close comes once the start has begun, before the thread it starts runs
+        actor.beforeThreadStart = actor::close;
+        actor.start();
+
+        assertThat(closedOnTheActor.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(closedBy).as("the threads that closed the machine").containsExactly("oddsfeed-recovery");
+    }
+
+    @Test
+    void aStartAfterTheCloseOrASecondStartDoesNothing() throws InterruptedException {
+        var closes = new AtomicInteger();
+        RecoveryActor closed = actor(settings());
+        closed.beforeMachineClose = closes::incrementAndGet;
+        closed.close();
+        closed.start();
+        assertThat(closed.threadStarted()).as("the closed actor's thread").isFalse();
+        assertThat(closes).hasValue(1);
+
+        RecoveryActor started = actor(settings());
+        started.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        started.start();
+        started.start();
+        started.up();
+        long now = System.currentTimeMillis();
+        started.alive(PRE, now, now, true);
+        assertThat(api.next().producer()).as("after the second start").isEqualTo("pre");
     }
 
     @Test
