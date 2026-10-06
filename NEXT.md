@@ -280,9 +280,12 @@ itself would queue behind the wedge.
   and the consumer executor is never busy for longer than a queue put, so one session
   cannot delay another session's deliveries or the alive channel.
 - A body larger than the configured maximum message size (default 1 MiB) is not
-  decoded. It is counted, reported as unparsable, and acked. The per-session memory
-  budget is therefore `prefetch` times the maximum message size, and the configuration
-  documentation says so.
+  decoded. It is counted, reported as unparsable, and acked. The SDK's queue for a
+  session therefore holds at most `prefetch` times the maximum message size, and the
+  configuration documentation says so. The AMQP client assembles a body before the SDK
+  sees its size, up to its own inbound limit of max(64 MiB, maximum + 1 MiB), so one
+  oversized body is held briefly on top. The limit is above the maximum on purpose, so
+  an oversized message is counted rather than closing the connection.
 - The session dispatcher takes a raw delivery, decodes it, writes the feed data into the
   caches, builds the message object, runs the client callback, then acks. The cache write
   comes before the build, as in 0.0.x: it does not need the message object, so a message
@@ -1072,11 +1075,19 @@ group by group.
     Also `getReplayList`, built through ticket 20's factory.
 
     41. Transport and recovery hardening: the findings left open on the approved PRs
-        of tickets 21 and 24.
+        of tickets 21 and 24. Also the starts counted back from the initial snapshot
+        interval, which are on the SDK's clock: they are shifted once into the
+        producer's clock at its first alive. 0.0.x counts them on the SDK's clock too;
+        the two differ only when the client's clock is off, and that gets a KD entry if
+        a system test pins it.
 26. `OddsFeed` façade, sessions, builder, one-shot lifecycle with all-or-nothing
     `open()`, watchdog over every thread group, `getHealth()` with the full counter
     list. Also the recovery actor's wiring and its listener methods, `RecoveryManager`,
-    resuming from the oldest checkpoint, and the system tests against 1.0 in CI.
+    resuming from the oldest checkpoint, and the system tests against 1.0 in CI. The
+    actor starts before `transport.open()`, and its `start()` replaces any gap opened
+    before it, so a loss told before start cannot replace the client's recovery point.
+    Once the system tests run against 1.0, the KD-12 and KD-27 scenarios also check the
+    second recovery's `after` and the producer going down and back up.
 
     42. Concurrency stress suite on the assembled SDK, in CI.
 
@@ -1091,7 +1102,10 @@ group by group.
 30. Logging cleanup. Noisy logs are a client complaint.
 31. README, examples, release notes and upgrade guide, integration guide with the
     onboarding checklist (distinct node ids, the operator's queue limit above prefetch,
-    the per-session memory budget) and resuming after a restart, FAQ update.
+    the per-session memory budget with the AMQP client's own buffer) and resuming after
+    a restart, FAQ update. The replay guide says that a replay run again within the
+    hour has its fixture changes dropped as duplicates of the run before, by the
+    fixture-change deduplication, in both lines.
 32. Sweep the Go and .NET SDK history for fixes to port, from Go SDK 1.4.0 (commit
     `f0e8728`) and the .NET SDK of the same date. Again before every release.
 
@@ -1290,3 +1304,7 @@ clients have pinned a version, and only to a final release that is on Maven Cent
 - 2026-10-06, when Java 8 clients pin: not at the end-of-life notice, which would cost
   them the fixes until 31 March 2027, but on a reminder shortly before that date, to the
   last 0.0.x version.
+- 2026-10-06, after a code review of `next`: follow-ups recorded with tickets 26 (the
+  actor starts before the transport, the KD-12 and KD-27 scenarios check the second
+  recovery), 31 (the AMQP client's buffer in the memory budget, fixture changes of a
+  repeated replay run) and 41 (the initial snapshot interval on the producer's clock).
