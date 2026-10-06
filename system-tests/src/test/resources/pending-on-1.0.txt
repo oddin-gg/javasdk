@@ -66,6 +66,8 @@ RestOutageScenarioIT#theListsAnOutageEmptiesAreEmptyUnderEitherStrategy  # the f
 
 ReturnedListsScenarioIT#theListsTheGettersReturnCanBeChanged  # the feed is not assembled yet
 
+SessionScenarioIT#aSessionBuiltAfterOpenIsRefused  # the feed is not assembled yet
+
 StaleFeedScenarioIT#aMessageFromHalfAnHourAgoIsStillDelivered  # the feed is not assembled yet
 StaleFeedScenarioIT#anOlderMessageDoesNotReplaceTheStatusOfANewerOne  # the feed is not assembled yet
 
