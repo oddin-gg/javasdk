@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.MatchStatus;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionQueue;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
@@ -70,6 +71,7 @@ class SessionDispatcherTest {
     private static final String BET_STOP = "feed/bet_stop/bet_stop_all_groups.xml";
     private static final String FIXTURE_CHANGE = "feed/fixture_change/fixture_change.xml";
     private static final String SUMMARY = "/v1/sports/en/sport_events/" + MATCH + "/summary";
+    private static final String TOURNAMENT = "od:tournament:1042";
 
     private final MessageWorld world = MessageWorld.start();
     private final Failures failures = new Failures();
@@ -220,12 +222,22 @@ class SessionDispatcherTest {
     void aMessageOfADisabledProducerOrOneOutsideTheInterestIsDropped() {
         SessionDispatcher prematch = dispatcher(MessageInterest.PREMATCH_ONLY);
         handle(prematch, Fixtures.read(BET_STOP));
+        handle(prematch, withStatus("5", System.currentTimeMillis()));
         assertThat(listener.messages).as("producer 2 is live only").isEmpty();
 
         world.producers.setProducerState(2, false);
-        handle(dispatcher(MessageInterest.ALL), Fixtures.read(BET_STOP));
+        SessionDispatcher all = dispatcher(MessageInterest.ALL);
+        handle(all, Fixtures.read(BET_STOP));
+        handle(all, withStatus("5", System.currentTimeMillis()));
         assertThat(listener.messages).as("producer 2 disabled").isEmpty();
-        assertThat(transport.acked).hasSize(2);
+        assertThat(transport.acked).hasSize(4);
+        assertThat(facts.facts).as("nothing the recovery actor counts").isEmpty();
+
+        world.producers.setProducerState(2, true);
+        handle(all, Fixtures.read(BET_STOP));
+        assertThat(status((EventMessage<?>) listener.messages.getFirst().message()))
+                .as("the summary's status: neither dropped odds change wrote its own")
+                .isEqualTo(EventStatus.Finished);
     }
 
     @Test
@@ -261,6 +273,29 @@ class SessionDispatcherTest {
         listener.onFixture = message -> listener.read.add(((Match) message.getEvent()).getName(Locale.ENGLISH));
         handle(dispatcher, Fixtures.read(FIXTURE_CHANGE));
         assertThat(listener.read).containsExactly("Team Alpha vs Team Gamma");
+    }
+
+    @Test
+    void aFixtureChangeOfATournamentInvalidatesTheTournamentBeforeItsCallbackReadsIt() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        handle(
+                dispatcher,
+                Fixtures.read(BET_STOP).replace("od:match:198314", TOURNAMENT),
+                "hi.-.live.bet_stop.5.od:tournament.1042.-");
+        var tournament = (Tournament) ((BetStop<?>) listener.messages.getFirst().message()).getEvent();
+        assertThat(tournament.getName(Locale.ENGLISH)).isEqualTo("Test Tournament");
+        world.api.respond(
+                "/v1/sports/en/tournaments/" + TOURNAMENT + "/info",
+                200,
+                Fixtures.read("rest/tournament_info/tournament_info.xml")
+                        .replace("name=\"Test Tournament\"", "name=\"Renamed Tournament\""));
+
+        listener.onFixture = message -> listener.read.add(((Tournament) message.getEvent()).getName(Locale.ENGLISH));
+        handle(
+                dispatcher,
+                Fixtures.read(FIXTURE_CHANGE).replace("od:match:198314", TOURNAMENT),
+                "hi.-.live.fixture_change.5.od:tournament.1042.-");
+        assertThat(listener.read).containsExactly("Renamed Tournament");
     }
 
     @Test
@@ -394,6 +429,20 @@ class SessionDispatcherTest {
     }
 
     @Test
+    void aMessageTheSdkCannotBuildStillWritesItsStatus() throws InterruptedException {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        // the body's match, a routing key's event the SDK cannot build: a tournament without its sport
+        handle(dispatcher, withStatus("5", System.currentTimeMillis()), "hi.-.live.odds_change.-.od:tournament.7.-");
+        assertThat(listener.messages).isEmpty();
+        assertThat(failures.next().callback()).isEqualTo("build");
+
+        handle(dispatcher, Fixtures.read(BET_STOP));
+        assertThat(status((EventMessage<?>) listener.messages.getFirst().message()))
+                .as("written before the build")
+                .isEqualTo(EventStatus.Cancelled);
+    }
+
+    @Test
     void aCacheWriteThatFailsReachesNoCallbackAndIsReported() throws InterruptedException {
         SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
         handle(
@@ -463,7 +512,7 @@ class SessionDispatcherTest {
         return FeedMessages.stampedAt(Fixtures.read(WITH_STATUS).replace(" status=\"4\"", ""), timestamp);
     }
 
-    private static @Nullable EventStatus status(OddsChange<?> message) {
+    private static @Nullable EventStatus status(EventMessage<?> message) {
         MatchStatus status = ((Match) message.getEvent()).getStatus();
         return status == null ? null : status.getStatus();
     }
