@@ -86,7 +86,7 @@ public final class SessionDispatcher implements AutoCloseable {
 
     /** How long the thread waits for a delivery before it looks whether it is closed. */
     private static final Duration POLL = Duration.ofSeconds(1);
-    /** How long close() waits for a callback to end. */
+    /** How long close() waits for a callback to end; a feed closing gives every session one deadline instead. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
 
     private final OddsFeedSession session;
@@ -154,20 +154,43 @@ public final class SessionDispatcher implements AutoCloseable {
      */
     @Override
     public void close() {
+        stop();
+        awaitStop(System.nanoTime() + CLOSE_WAIT.toNanos());
+    }
+
+    /**
+     * Tells the thread to stop once the delivery it handles is done, and returns at once: so a feed
+     * closing several sessions tells each before it waits for any, and waits for them all within
+     * one deadline.
+     */
+    public void stop() {
         closed = true;
-        if (Thread.currentThread().equals(thread)) {
-            // a callback closing the session or the feed: waiting here would wait for itself
-            return;
+    }
+
+    /**
+     * Waits for the thread to end after a {@link #stop}, until {@code deadline}, by {@link
+     * System#nanoTime}; says so in the log when it does not. From the session's own thread - one of
+     * its callbacks closing the feed - it does not wait, as that would wait for itself: the thread
+     * ends once the callback returns and its message is acknowledged.
+     *
+     * @return whether the thread has ended, or is the caller's own and ends next
+     */
+    public boolean awaitStop(long deadline) {
+        if (Thread.currentThread().equals(thread) || !thread.isAlive()) {
+            return true;
         }
-        if (thread.isAlive()) {
-            try {
-                if (!thread.join(CLOSE_WAIT)) {
-                    LOG.warn("The dispatcher of {} did not stop within {}: a callback still runs", thread, CLOSE_WAIT);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        try {
+            if (thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())))) {
+                return true;
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
+        if (!thread.isAlive()) {
+            return true;
+        }
+        LOG.warn("The dispatcher of {} did not stop in time: a callback still runs", thread);
+        return false;
     }
 
     // ------------------------------------------------------------------ for the watchdog and getHealth()
