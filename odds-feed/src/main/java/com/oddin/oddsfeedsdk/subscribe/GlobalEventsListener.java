@@ -59,4 +59,31 @@ public interface GlobalEventsListener {
      * of these that throws is logged and not reported again.
      */
     default void onCallbackFailure(CallbackFailure failure) {}
+
+    /**
+     * A producer's status changed, its cause included: called after {@link #onProducerStatusChange}
+     * for each change that one hears, and also when only the cause changed, as when an alive says a
+     * producer still down is unsubscribed. New in 1.0; does nothing unless overridden. Of a producer's
+     * changes, the newest replaces one still queued.
+     */
+    default void onProducerCauseChange(ProducerCauseChange change) {}
+
+    /**
+     * The safety net reset a session too far behind, or could not, since the API did not accept a
+     * recovery it asked for first. New in 1.0; does nothing unless overridden.
+     */
+    default void onSafetyNetEvent(SafetyNetEvent event) {}
+
+    /**
+     * A session fell behind with the safety net's resets spent, or caught up again. New in 1.0; does
+     * nothing unless overridden. Of a session's changes, the newest replaces one still queued.
+     */
+    default void onSessionLagChange(SessionLagChange change) {}
+
+    /**
+     * A part of the feed changed its health, as the SDK's own watch found. New in 1.0; does nothing
+     * unless overridden. Each change is logged as well: a callback of this listener's that holds its
+     * thread up is told there first, since the event queues behind it.
+     */
+    default void onHealthEvent(HealthEvent event) {}
 }

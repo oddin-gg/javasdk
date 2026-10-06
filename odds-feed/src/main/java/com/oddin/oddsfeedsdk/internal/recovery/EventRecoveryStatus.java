@@ -33,7 +33,23 @@ public record EventRecoveryStatus(
          */
         FAILED,
         /** No snapshot complete within the maximum recovery time. */
-        TIMED_OUT
+        TIMED_OUT;
+
+        /** The state as the client reads it. */
+        public com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus.State toPublic() {
+            return switch (this) {
+                case PENDING -> com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus.State.PENDING;
+                case COMPLETED -> com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus.State.COMPLETED;
+                case FAILED -> com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus.State.FAILED;
+                case TIMED_OUT -> com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus.State.TIMED_OUT;
+            };
+        }
+    }
+
+    /** The status as the client reads it, field for field. */
+    public com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus toPublic() {
+        return new com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus(
+                requestId, producerId, eventId, state.toPublic(), startedAt, endedAt, reason);
     }
 
     static EventRecoveryStatus pending(long requestId, long producerId, URN eventId, Instant startedAt) {
