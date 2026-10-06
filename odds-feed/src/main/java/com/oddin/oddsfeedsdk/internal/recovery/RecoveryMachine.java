@@ -109,6 +109,12 @@ final class RecoveryMachine {
     private final List<DeferredEvent> deferred = new ArrayList<>();
 
     private boolean started;
+    /**
+     * Whether the feed is closing: from then on a resume point is published only when it goes back,
+     * so sessions closing one by one at shutdown cannot carry it past what one of them had left.
+     */
+    private boolean closing;
+
     private long startedAt;
     /**
      * Whether the transport has reported its connection up, with every session's channel bound: not
@@ -245,6 +251,16 @@ final class RecoveryMachine {
                 lane.checkpoint = gap.from;
             }
         }
+    }
+
+    /**
+     * The feed has begun to close: from now on the published resume points only go back. A session
+     * that closes takes its checkpoint out of the point; at shutdown that would move the point past
+     * its unprocessed messages, and the point the client persists would depend on the order the
+     * sessions close in. A gap opened meanwhile still takes the point back.
+     */
+    void closing() {
+        closing = true;
     }
 
     /**
@@ -1077,7 +1093,8 @@ final class RecoveryMachine {
     /**
      * Publishes each producer's resume point that moved, for {@link
      * Producer#getTimestampForRecovery()}: the actor calls it after every fact. Nothing before the
-     * start, when the client's own start stands; a producer no session receives keeps what it had.
+     * start, when the client's own start stands; a producer no session receives keeps what it had;
+     * once the feed is {@link #closing}, only a point that goes back.
      */
     void publishResumePoints() {
         if (!started) {
@@ -1085,7 +1102,9 @@ final class RecoveryMachine {
         }
         for (Track track : tracks.values()) {
             long point = resumePoint(track);
-            if (point != NO_POINT && point != track.published) {
+            if (point != NO_POINT
+                    && point != track.published
+                    && (!closing || track.published == NO_POINT || point < track.published)) {
                 track.published = point;
                 producers.setResumePoint(track.id, point);
             }

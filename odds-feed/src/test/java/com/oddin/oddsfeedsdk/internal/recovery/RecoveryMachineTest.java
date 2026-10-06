@@ -513,6 +513,39 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void whileTheFeedClosesItsSessionsInEitherOrderTheResumePointOnlyGoesBack() {
+        for (List<Integer> order : List.of(List.of(1, 2), List.of(2, 1))) {
+            var feed = new Harness();
+            feed.open(1, MessageInterest.ALL);
+            feed.open(2, MessageInterest.ALL);
+            feed.start();
+            feed.bothUp(1, 2);
+            long lastSubscribed = feed.now();
+            feed.clock.advance(Duration.ofMinutes(1));
+            feed.live(1, PRE, Duration.ZERO);
+            feed.live(2, PRE, Duration.ofSeconds(30));
+            Instant behind =
+                    Instant.ofEpochMilli(feed.now() - Duration.ofSeconds(30).toMillis());
+            assertThat(feed.timestampForRecovery(PRE)).isEqualTo(behind);
+
+            feed.machine.closing();
+            feed.close(order.getFirst());
+            assertThat(feed.timestampForRecovery(PRE))
+                    .as("session " + order.getFirst() + " closed first")
+                    .isEqualTo(behind);
+            // a gap opened meanwhile still takes it back
+            feed.unsubscribed(PRE);
+            assertThat(feed.timestampForRecovery(PRE))
+                    .as("closing " + order)
+                    .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+            feed.close(order.getLast());
+            assertThat(feed.timestampForRecovery(PRE))
+                    .as("every session closed, " + order)
+                    .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+        }
+    }
+
+    @Test
     void aGapOlderThanTheCheckpointHoldsTheResumePointUntilItsRecoveryCompletes() {
         var feed = Harness.upWith(MessageInterest.ALL);
         feed.clock.advance(Duration.ofMinutes(1));
