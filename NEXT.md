@@ -123,6 +123,9 @@ types in packages whose name contains `internal`.
 6. The schema classes carry `jakarta.xml.bind` annotations instead of `javax.xml.bind`.
    They are plain objects with getters and stay usable as such. Client code that
    creates its own `JAXBContext` over them must move to Jakarta too.
+7. Sessions are built before `open()`, which binds every session's queue once. After it,
+   the builder's `build()` and `buildReplay()` throw `IllegalStateException`; 0.0.x
+   returned a session that never received anything (KD-29).
 
 ### Behaviour that stays, and that the implementation must not "fix"
 
@@ -553,10 +556,12 @@ and REST workers post facts to it; it decides and posts work out.
   own reopen, a reconnect or a reset opened it), and ticket 26 posts both to the
   session's `SessionFacts`. An event recovery asked for meanwhile waits, as one does
   during a reset.
-- Session lifecycle: a session that closes leaves the checkpoint and completion sets
-  at once. A session that opens is seeded with the producer's current recovery-from
-  point and triggers a recovery for its interests, as today on `open()`; the producers
-  it receives are down until that recovery completes.
+- Session lifecycle: sessions open at `open()` and close with the feed (section 3,
+  difference 7), but the actor takes a session opening or closing at any time. A
+  session that closes leaves the checkpoint and completion sets at once. A session
+  that opens is seeded with the producer's current recovery-from point and triggers a
+  recovery for its interests, as today on `open()`; the producers it receives are down
+  until that recovery completes.
 - Snapshot completion is tracked per message interest, as today: a producer is up
   again when every session that receives it and takes snapshot completions has seen
   its `snapshot_complete` (a low-priority session next to a high-priority one takes
@@ -1313,3 +1318,5 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   actor starts before the transport, the KD-12 and KD-27 scenarios check the second
   recovery), 31 (the AMQP client's buffer in the memory budget, fixture changes of a
   repeated replay run) and 41 (the initial snapshot interval on the producer's clock).
+- 2026-10-06, sessions after `open()`: `build()` throws instead of returning a session
+  that never receives anything (section 3, difference 7; KD-29).
