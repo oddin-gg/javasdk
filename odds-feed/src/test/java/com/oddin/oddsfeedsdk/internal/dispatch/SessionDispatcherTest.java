@@ -76,7 +76,7 @@ class SessionDispatcherTest {
     private final MessageWorld world = MessageWorld.start();
     private final Failures failures = new Failures();
     private final EventsDispatcher events = new EventsDispatcher(failures, null, world.producers);
-    private final ClockOffsets offsets = new ClockOffsets();
+    private final ClockOffsets offsets = new ClockOffsets(world.producers);
     private final FixtureChanges fixtureChanges = new FixtureChanges();
     private final Transport transport = new Transport();
     private final Listener listener = new Listener();
@@ -254,6 +254,17 @@ class SessionDispatcherTest {
                 .containsExactly(1_000L, 1_001L);
         assertThat(hi.repeatedFixtureChanges() + all.repeatedFixtureChanges()).isEqualTo(2);
         assertThat(transport.acked).hasSize(4);
+    }
+
+    @Test
+    void aFixtureChangeWhoseEventIdIsNoUrnIsReportedAndNotRemembered() throws InterruptedException {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        String key = "hi.-.live.fixture_change.-.od:match.198314.-";
+        handle(dispatcher, Fixtures.read(FIXTURE_CHANGE).replace("od:match:198314", "x".repeat(16_384)), key);
+        assertThat(failures.next().callback()).isEqualTo("cache write");
+        assertThat(listener.messages).isEmpty();
+        assertThat(fixtureChanges.size()).as("remembered").isZero();
+        assertThat(transport.acked).hasSize(1);
     }
 
     // ---- what the callback reads from the caches

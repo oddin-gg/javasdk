@@ -26,7 +26,9 @@ class AliveDispatcherTest {
     private static final long WAIT_SECONDS = 10;
 
     private final BlockingQueue<String> posted = new LinkedBlockingQueue<>();
-    private final ClockOffsets offsets = new ClockOffsets();
+    /** Producers 1 and 2, as the fixtures' list has them. */
+    private final ClockOffsets offsets = new ClockOffsets(id -> id == 1 || id == 2);
+
     private final AliveFacts actor = (producer, generatedAt, receivedAt, subscribed) ->
             posted.add(producer + " " + generatedAt + " " + receivedAt + " " + subscribed + " "
                     + Thread.currentThread().getName());
@@ -56,6 +58,14 @@ class AliveDispatcherTest {
     }
 
     @Test
+    void anAliveOfAProducerTheListDoesNotHaveKeepsNoOffset() throws InterruptedException {
+        AliveDispatcher dispatcher = started();
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(7, true), 10_000), 12_500));
+        assertThat(next()).as("the actor drops and counts it").startsWith("7 10000 12500 true");
+        assertThat(offsets.age(7, 20_000, 22_500)).as("no offset").isEqualTo(2_500);
+    }
+
+    @Test
     void whatIsNoAliveIsCountedAndTheNextAliveStillArrives() throws InterruptedException {
         AliveDispatcher dispatcher = started();
         dispatcher.accept(alive("<alive", 1));
@@ -64,6 +74,11 @@ class AliveDispatcherTest {
         dispatcher.accept(alive(FeedMessages.alive(2, true), 5));
         assertThat(next()).startsWith("2 1777832981632 5 true");
         assertThat(dispatcher.unreadable()).isEqualTo(3);
+        // counted once the actor has it, so after the test hears it
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (dispatcher.handled() < 4 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
         assertThat(dispatcher.handled()).isEqualTo(4);
     }
 

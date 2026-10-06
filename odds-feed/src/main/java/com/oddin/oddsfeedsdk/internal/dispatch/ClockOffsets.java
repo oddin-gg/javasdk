@@ -1,7 +1,9 @@
 package com.oddin.oddsfeedsdk.internal.dispatch;
 
+import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.LongPredicate;
 
 /**
  * How far each producer's clock is from the SDK's, measured by the alive dispatcher on the alives of
@@ -10,18 +12,33 @@ import java.util.concurrent.ConcurrentHashMap;
  * producer's own clock - a message older than the match status age writes no live state (KD-14).
  *
  * <p>The recovery actor measures the same on the same alives for its safety net; this copy is the
- * dispatchers', so reading it waits for no actor. Safe for concurrent use.
+ * dispatchers', so reading it waits for no actor. Only the producers of the producer list have an
+ * offset: an alive of any other is not kept, as the actor does not keep it, so whatever ids the feed
+ * sends, the map holds one entry per producer of the list at most. Safe for concurrent use.
  */
 public final class ClockOffsets {
 
+    private final LongPredicate known;
     private final Map<Long, Long> offsets = new ConcurrentHashMap<>();
+
+    /** @param known whether the producer list has the producer */
+    public ClockOffsets(LongPredicate known) {
+        this.known = known;
+    }
+
+    /** For the producers of this list. */
+    public ClockOffsets(Producers producers) {
+        this(id -> producers.getProducer(id) != null);
+    }
 
     /**
      * @param generatedAt the alive's timestamp, epoch millis by the producer's clock
      * @param receivedAt when the SDK received it, epoch millis by its own clock
      */
     void alive(long producerId, long generatedAt, long receivedAt) {
-        offsets.put(producerId, receivedAt - generatedAt);
+        if (known.test(producerId)) {
+            offsets.put(producerId, receivedAt - generatedAt);
+        }
     }
 
     /**
