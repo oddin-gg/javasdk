@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatusReason;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -900,6 +901,71 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void theSnapshotOfARecoveryGivenUpPutsOffTheDeadlineOfTheNextOne() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.unsubscribed(PRE);
+        Outbox.Call.Snapshot lost = feed.lastSnapshot(PRE);
+        feed.accept(lost);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.unsubscribed(PRE);
+        assertThat(feed.counters.abandoned()).isEqualTo(1);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.alive(PRE);
+        Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
+        assertThat(again.requestId()).isNotEqualTo(lost.requestId());
+        feed.accept(again);
+        // a slow session takes what the one given up had sent, which the new one's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), lost.requestId());
+        }
+        assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
+        feed.runWithAlives(Duration.ofMinutes(5));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
+    }
+
+    @Test
+    void onlyTheLastEightRecoveriesThatEndedPutOffTheDeadline() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        var ended = new ArrayList<Long>();
+        // the producer restarts nine times, each time after it took the recovery
+        for (int restart = 1; restart <= 9; restart++) {
+            feed.clock.advance(Duration.ofSeconds(10));
+            feed.unsubscribed(PRE);
+            Outbox.Call.Snapshot lost = feed.lastSnapshot(PRE);
+            feed.accept(lost);
+            feed.clock.advance(Duration.ofSeconds(10));
+            feed.unsubscribed(PRE);
+            ended.add(lost.requestId());
+        }
+        assertThat(feed.counters.abandoned()).isEqualTo(9);
+        feed.alive(PRE);
+        Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
+        assertThat(ended).doesNotContain(again.requestId());
+        feed.accept(again);
+        // what the first of them sent no longer counts
+        for (int minute = 1; minute <= 5; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), ended.getFirst());
+        }
+        assertThat(feed.counters.timedOut()).as("at the deadline").isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the request")
+                .isEqualTo(1);
+    }
+
+    @Test
     void eventRecoveriesAskedForSinceDoNotPutOffTheDeadlineForItsSnapshotComplete() {
         feed.open(1, MessageInterest.PREMATCH_ONLY);
         feed.start();
@@ -978,6 +1044,19 @@ class RecoveryMachineTest {
         assertThat(feed.counters.timedOut()).as("at the maximum recovery time").isZero();
         feed.runWithAlives(Duration.ofSeconds(1));
         assertThat(feed.counters.timedOut()).isEqualTo(1);
+
+        // asked for again after the backoff, behind what the timed-out one still sends
+        feed.runWithAlives(Duration.ofSeconds(5));
+        Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
+        assertThat(again.requestId()).isNotEqualTo(recovery.requestId());
+        feed.accept(again);
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+        }
+        assertThat(feed.counters.timedOut()).as("the next one, still behind it").isEqualTo(1);
+        feed.runWithAlives(Duration.ofMinutes(5).plusSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(2);
     }
 
     // ---- what the client hears

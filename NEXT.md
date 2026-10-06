@@ -560,9 +560,11 @@ and REST workers post facts to it; it decides and posts work out.
 - A producer's recovery waits five minutes at most for its `snapshot_complete`: five
   minutes after it was asked for, or after a session that awaits it last took a message
   of its snapshot, or one the snapshot queues behind - a message or an alive sent before
-  the request, or a message of an event recovery asked for before it. An event recovery
-  asked for since does not count: one after another, they would keep the producer down
-  for the maximum recovery time. A slow session is not given up while its snapshot is still coming; a lost
+  the request, a message of one of the producer's last eight recoveries that failed or
+  were given up, or of an event recovery asked for before it. An event recovery asked
+  for since does not count: one after another, they would keep the producer down for
+  the maximum recovery time. A slow session is not given up while its snapshot is
+  still coming; a lost
   `snapshot_complete` - the Go SDK saw one on the test environment, on a bound and
   consuming queue - costs minutes, not the maximum recovery time. Five minutes is the
   Go SDK's deadline (recoveries completed there in 83 to 139 s); 0.0.x and the .NET SDK

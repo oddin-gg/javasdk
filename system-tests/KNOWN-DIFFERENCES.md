@@ -319,8 +319,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   meanwhile. The .NET SDK does the same, with a setter.
 - **1.0:** A producer's recovery waits five minutes at most for its `snapshot_complete`, counted
   from the request, or from the last message of its snapshot, or message or alive sent before the
-  request, that a session awaiting it took; an event recovery's snapshot message counts only when
-  that event recovery was asked for first. Then it is asked for again with backoff, as one the API refused
+  request, or of an earlier recovery of the producer that failed or was given up, that a session
+  awaiting it took; an event recovery's snapshot message counts only when that event recovery was
+  asked for first. Then it is asked for again with backoff, as one the API refused
   (KD-11). The maximum recovery time still bounds a recovery that keeps coming, and event
   recoveries (NEXT.md section 4, Recovery and producers).
 - **Why:** The Go SDK saw a `snapshot_complete` that never arrived on a bound, consuming queue;
