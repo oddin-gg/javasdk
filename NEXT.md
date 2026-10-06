@@ -258,10 +258,11 @@ or recovery state except by posting to it, so the state machine has one owner an
 locks.
 
 The events dispatcher has two queues. The control queue carries connection state,
-producer status, fatal errors, health and recovery completion; it is bounded at 10 000
-and a full queue is counted and logged, never blocked on. Each producer's status, the
-connection's state and each kind of fatal error (the API's, the broker's) have one slot
-in it instead, which the newest fills, as the recovery actor keeps the alives: one still
+producer status and its cause, fatal errors, health, the safety net's events, sessions
+lagging and recovery completion; it is bounded at 10 000 and a full queue is counted and
+logged, never blocked on. Each producer's status, each producer's cause, each session's
+lagging, the connection's state and each kind of fatal error (the API's, the broker's)
+have one slot in it instead, which the newest fills, as the recovery actor keeps the alives: one still
 queued is replaced rather than queued behind, and is delivered where its newest report
 stands, after what was reported before it. So none of them is ever the one a full queue
 drops, a client that falls behind hears the state as it is now and in the order it
@@ -638,7 +639,9 @@ and REST workers post facts to it; it decides and posts work out.
   for, or forgotten, has none, and producer recoveries have none. Pending ones are bounded
   by the event recoveries in flight; of the ended ones at most 10,000 are kept, and past
   that the first to end is forgotten early, and counted. The actor writes the statuses
-  and any thread reads them; ticket 26 makes them public.
+  and any thread reads them; `RecoveryManager.getEventRecoveryStatus(requestId)` returns
+  them as the public `EventRecoveryStatus`, whose `State` is `PENDING`, `COMPLETED`,
+  `FAILED` or `TIMED_OUT`.
 - The facts posted to the actor are of two kinds. Those whose loss would leave the
   state wrong for good - sessions opening and closing, the connection going and coming,
   the alives from the SDK's alive channel (an unsubscribed one is the only word of a
@@ -666,8 +669,8 @@ and REST workers post facts to it; it decides and posts work out.
   opened, safety-net reset, recovery failed, and the recoveries and the catching up that
   bring it back. The 0.0.x status callback fires when the down flag or the public reason
   changes, as in 0.0.x, so an alive saying a producer still down is unsubscribed raises
-  none (KD-2); every change of the cause, those included, is reported apart, for the
-  listener method that names causes (ticket 26). Alives are checked from `open()`: a
+  none (KD-2); every change of the cause, those included, is reported apart, to
+  `onProducerCauseChange`, whose `ProducerStatusCause` names it. Alives are checked from `open()`: a
   producer without one for longer than the maximum inactivity, 20 s by default, is
   reported down with `ALIVE_INTERVAL_VIOLATION`, one never up included, without 0.0.x's
   minute of grace (KD-7). A
@@ -740,13 +743,15 @@ and REST workers post facts to it; it decides and posts work out.
     meanwhile are asked for again. The net's numbers - the limit of two minutes, the window
     of one, three resets per session per ten minutes, a minute's backoff doubling - are
     decided defaults, fixed until ticket 28's options make them settable.
-  - Each reset raises an event and increments counters (resets, messages dropped by
-    the reset, epoch discards), so an operator can see exactly when and why.
+  - Each reset raises an event (`onSafetyNetEvent`, as does a refused request) and
+    increments counters (resets, messages dropped by the reset, epoch discards), so an
+    operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
     cool-down, and has its own cap of three per session per cool-down; only a reset the
     AMQP layer has made counts, and raises the event. When spent, the net stops
     resetting: messages keep flowing under
-    backpressure, the session is marked "lagging" in `getHealth()` with a health event,
+    backpressure, the session is marked "lagging" in `getHealth()` and
+    `onSessionLagChange` tells it,
     and the producer is **not** marked down, because a slow consumer on one session is
     not a producer fault and other sessions may be healthy. Backpressure wins in the
     end; the net gets three tries to shortcut it.
@@ -828,7 +833,8 @@ deadline, so a wedge on a permit, a latch or a queue, which `ThreadMXBean` canno
 turns into a timeout with a counter instead of a silent hang. A dispatcher inside one
 callback for longer than the configured limit, an executor whose queue has not moved
 while non-empty, or a reported deadlock produces a loud log line, a health event on the
-global listener (new `default` method), and a state change in `getHealth()`.
+global listener (`onHealthEvent`: the component, its previous and new `HealthState`, a
+reason), and a state change in `getHealth()`.
 
 `getHealth()` exposes the counters for every degradation the design deliberately
 allows: dropped side-loads, catalogs served stale and for how long, unparsable
@@ -862,10 +868,13 @@ exists in the Go SDK already.
   names, shutdown timeout, API call logging, the broker connection's own TLS context
   (`setMessagingSslContext`, for a truststore of the client's own or a proxy that
   inspects TLS).
-- Events on the global listener, all as `default` methods: connection state changes,
-  health events, listener and pipeline exceptions, fatal errors, safety-net resets,
-  API call events with method, URL, status and latency, producer-status reasons that
-  name the cause.
+- Events on the global listener, all as `default` methods: connection state changes
+  (`onConnectionStateChange`), health events (`onHealthEvent`), listener and pipeline
+  exceptions (`onCallbackFailure`), fatal errors (`onFatalError`), the safety net's resets
+  and refused requests (`onSafetyNetEvent`), sessions lagging and catching up
+  (`onSessionLagChange`), API call events with method, URL, status and latency
+  (`onApiCall`), and every change of a producer's status with the cause named
+  (`onProducerCauseChange`, `ProducerStatusCause`), a change of the cause alone included.
 - Raw data: `default` methods on the extended listener delivering raw XML bytes for
   feed messages and REST responses, and raw-string getters next to enum getters in the
   generated XML classes.

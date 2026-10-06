@@ -87,7 +87,7 @@ class ProducerRecoveryScenarioIT {
      * Every producer starts down, and 0.0.x reports a status change only when the down flag or its
      * reason changes: an alive saying a producer that is still down is unsubscribed changes neither,
      * so the client hears nothing, while the SDK does ask for a recovery. 1.0 does the same; the
-     * changed cause reaches only its listener method that names causes.
+     * changed cause reaches only onProducerCauseChange, which 1.0 adds.
      */
     @Test
     void anUnsubscribedAliveForAProducerStillDownIsNotReported() throws InterruptedException {
