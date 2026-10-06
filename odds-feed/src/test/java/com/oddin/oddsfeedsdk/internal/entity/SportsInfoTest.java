@@ -111,14 +111,23 @@ class SportsInfoTest {
 
     @Test
     void aListTheApiIsAskedForDirectlyFailsWithTheApisOwnException() {
+        var day = Date.from(Instant.parse("2026-08-26T12:00:00Z"));
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
-            world.api.respond(LIVE, 500, "");
-            world.api.respond("/v1/sports/en/fixtures/changes", 500, "");
-            world.api.respond(LOL_TOURNAMENTS, 500, "");
+            world.api.startOutage(400);
             assertThatThrownBy(world.sportsInfo::getLiveMatches).isExactlyInstanceOf(ApiException.class);
+            assertThatThrownBy(() -> world.sportsInfo.getMatchesFor(day)).isExactlyInstanceOf(ApiException.class);
+            assertThatThrownBy(() -> world.sportsInfo.getListOfMatches(0, 10)).isExactlyInstanceOf(ApiException.class);
             assertThatThrownBy(world.sportsInfo::getFixtureChanges).isExactlyInstanceOf(ApiException.class);
             assertThatThrownBy(() -> world.sportsInfo.getAvailableTournaments(LOL))
                     .isExactlyInstanceOf(ApiException.class);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
+            world.api.startOutage(400);
+            assertThat(world.sportsInfo.getLiveMatches()).isNull();
+            assertThat(world.sportsInfo.getMatchesFor(day)).isNull();
+            assertThat(world.sportsInfo.getListOfMatches(0, 10)).isNull();
+            assertThat(world.sportsInfo.getFixtureChanges()).isNull();
+            assertThat(world.sportsInfo.getAvailableTournaments(LOL)).isNull();
         }
     }
 
