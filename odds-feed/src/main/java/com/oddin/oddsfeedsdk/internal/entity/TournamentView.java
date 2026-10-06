@@ -84,9 +84,9 @@ final class TournamentView implements Tournament {
     }
 
     /**
-     * Every competitor its info lists, in its order, as 0.0.x listed them; their profiles are warmed
-     * in every locale of the tournament first, side by side, and one that does not load is still
-     * listed. An info listing none has none.
+     * Every competitor its info lists, in its order, as 0.0.x listed them, at once: their profiles
+     * start loading in every locale of the tournament in the background, and one that does not load
+     * is still listed. An info listing none has none.
      */
     @Override
     public @Nullable List<Competitor> getCompetitors() {
@@ -96,7 +96,8 @@ final class TournamentView implements Tournament {
             entities.warmEach(
                     competitors,
                     locales,
-                    (competitor, locale) -> entities.profiles.competitor(competitor, locale, null));
+                    (competitor, locale) -> entities.profiles.competitorWarm(competitor, locale),
+                    (competitor, locale, deadline) -> entities.profiles.competitor(competitor, locale, deadline));
             var list = new ArrayList<Competitor>(competitors.size());
             for (URN competitor : competitors) {
                 list.add(new CompetitorView(entities, competitor, locales));

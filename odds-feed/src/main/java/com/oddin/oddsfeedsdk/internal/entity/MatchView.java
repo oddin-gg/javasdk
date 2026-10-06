@@ -102,15 +102,19 @@ final class MatchView implements Match {
     }
 
     /**
-     * Every competitor the summary lists, in its order, as 0.0.x listed them; their profiles are
-     * warmed in every locale of the match first, side by side, and one that does not load is still
-     * listed. A match that cannot be loaded has none under {@code CATCH}, as in 0.0.x.
+     * Every competitor the summary lists, in its order, as 0.0.x listed them, at once: their profiles
+     * start loading in every locale of the match in the background, and one that does not load is
+     * still listed. A match that cannot be loaded has none under {@code CATCH}, as in 0.0.x.
      */
     @Override
     public @Nullable List<Competitor> getCompetitors() {
         List<Competitor> listed = entities.guard(this, () -> {
             List<CompetitorRef> refs = refs(shared());
-            entities.warmEach(refs, locales, (ref, locale) -> entities.profiles.competitor(ref.id(), locale, null));
+            entities.warmEach(
+                    refs,
+                    locales,
+                    (ref, locale) -> entities.profiles.competitorWarm(ref.id(), locale),
+                    (ref, locale, deadline) -> entities.profiles.competitor(ref.id(), locale, deadline));
             var competitors = new ArrayList<Competitor>(refs.size());
             for (CompetitorRef ref : refs) {
                 competitors.add(new TeamCompetitorView(entities, ref.id(), ref.qualifier(), locales));

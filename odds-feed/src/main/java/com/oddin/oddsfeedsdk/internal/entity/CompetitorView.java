@@ -101,9 +101,9 @@ class CompetitorView implements Competitor {
     }
 
     /**
-     * Every player the profile lists, in its order, as 0.0.x listed them; their profiles are warmed
-     * in every locale of the competitor first, side by side, and one that does not load is still
-     * listed. A profile listing none has none: unlike 0.0.x, an empty list is not loaded again on
+     * Every player the profile lists, in its order, as 0.0.x listed them, at once: their profiles
+     * start loading in every locale of the competitor in the background, and one that does not load
+     * is still listed. A profile listing none has none: unlike 0.0.x, an empty list is not loaded again on
      * every call.
      */
     @Override
@@ -111,7 +111,11 @@ class CompetitorView implements Competitor {
         return entities.<List<@Nullable Player>>guard(this, () -> {
             List<URN> ids = shared().get(PLAYERS, null);
             List<URN> players = ids == null ? List.of() : ids;
-            entities.warmEach(players, locales, (player, locale) -> entities.profiles.player(player, locale, null));
+            entities.warmEach(
+                    players,
+                    locales,
+                    (player, locale) -> entities.profiles.playerWarm(player, locale),
+                    (player, locale, deadline) -> entities.profiles.player(player, locale, deadline));
             var list = new ArrayList<@Nullable Player>(players.size());
             for (URN player : players) {
                 list.add(new PlayerView(entities, player, locales));

@@ -11,18 +11,20 @@ import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
 import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.Field;
+import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
-import java.util.function.BiFunction;
+import java.util.function.BiPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
@@ -37,8 +39,8 @@ import org.slf4j.LoggerFactory;
  * the caches anew, so it sees what was loaded or written since. A getter given a locale loads that
  * locale; any other loads every locale of the entity, side by side. A getter of a match's or a
  * tournament's competitors, or of a competitor's players, lists every member its entity names, as
- * 0.0.x did, and warms their profiles side by side, so its reader waits for one round of loads
- * rather than one per member; a member whose profile does not load is still listed, and its own
+ * 0.0.x did, and returns at once: their profiles start loading in the background, and a reader of
+ * a member joins its load; a member whose profile does not load is still listed, and its own
  * getters fail as the strategy says. The getters run on the caller's thread, and wait there.
  *
  * <p>A getter that cannot load what it reads follows the exception strategy: {@code THROW} throws
@@ -58,6 +60,8 @@ public final class Entities {
     final MatchStatusDescriptions statuses;
     private final ExceptionHandlingStrategy strategy;
     private final FanOut fanOut;
+    /** The members a list queued for a warm-up, until their load ends: queued once at a time. */
+    private final Set<InLocale<?>> warming = ConcurrentHashMap.newKeySet();
 
     /**
      * @param timeout the HTTP client timeout, each load's deadline
@@ -152,29 +156,34 @@ public final class Entities {
     }
 
     /**
-     * Warms each of {@code members} in each of {@code locales}, side by side: what a list of members
-     * loads so that its reader waits for one round of loads, not one per member. Best effort: a load
-     * that fails fails nothing, and the member's own getters load it again when they are called.
+     * Starts loading each of {@code members} in each of {@code locales} in the background, and waits
+     * for none of them: what a list of members does so that its reader finds them loaded, or joins
+     * their loads, rather than loading one after another. Best effort: a member that is fresh, whose
+     * load is under way, or that a list queued already, is not queued again; a full side-load queue
+     * drops the rest; a load that fails fails nothing, and the member's own getters load it when
+     * they are called.
+     *
+     * @param warm whether the member needs no load in the locale
+     * @param load the member's load in the locale, within the side-load's deadline
      */
-    <T> void warmEach(List<T> members, List<Locale> locales, BiFunction<T, Locale, Entry> load) {
-        var pairs = new ArrayList<InLocale<T>>(members.size() * locales.size());
+    <T> void warmEach(List<T> members, List<Locale> locales, BiPredicate<T, Locale> warm, WarmLoad<T> load) {
         for (T member : members) {
             for (Locale locale : locales) {
-                pairs.add(new InLocale<>(member, locale));
-            }
-        }
-        try {
-            each(pairs, pair -> {
-                try {
-                    return load.apply(pair.member(), pair.locale());
-                } catch (RuntimeException failed) {
-                    LOG.debug("{} not warmed in {}", pair.member(), pair.locale(), failed);
-                    return Entry.none();
+                var key = new InLocale<>(member, locale);
+                if (warm.test(member, locale) || !warming.add(key)) {
+                    continue;
                 }
-            });
-        } catch (RuntimeException failed) {
-            // the fan-out's own limits, such as no load finishing in time
-            LOG.debug("members not warmed", failed);
+                boolean queued = matches.sideLoad(deadline -> {
+                    try {
+                        load.load(member, locale, deadline);
+                    } finally {
+                        warming.remove(key);
+                    }
+                });
+                if (!queued) {
+                    warming.remove(key);
+                }
+            }
         }
     }
 
@@ -216,6 +225,12 @@ public final class Entities {
         return List.copyOf(new LinkedHashSet<>(locales));
     }
 
-    /** A member of a list in one locale: one load of a fan-out. */
+    /** A member in one locale: one warm-up load. */
     private record InLocale<T>(T member, Locale locale) {}
+
+    /** A member's load in one locale, within a deadline. */
+    @FunctionalInterface
+    interface WarmLoad<T> {
+        void load(T member, Locale locale, Deadline deadline);
+    }
 }

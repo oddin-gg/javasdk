@@ -141,8 +141,8 @@ class MatchViewTest {
     }
 
     @Test
-    void theCompetitorsAreLoadedSideBySideBeforeTheyAreReturned() {
-        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+    void theCompetitorsAreListedAtOnceAndTheirProfilesLoadSideBySideInTheBackground() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(SUMMARY_EN, 200, swapped(SUMMARY));
             var profile = Fixtures.read("rest/competitor/competitor_profile.xml");
             world.api.respond(HOME_EN, Reply.of(200, profile).after(Duration.ofMillis(300)));
@@ -159,15 +159,19 @@ class MatchViewTest {
             assertThat(competitors)
                     .extracting(c -> ((TeamCompetitor) c).getQualifier())
                     .containsExactly("away", "home");
+            world.api.awaitRequest("GET", HOME_EN);
+            world.api.awaitRequest("GET", AWAY_EN);
             assertThat(world.api.mostInFlight()).as("both at once").isEqualTo(2);
             assertThat(competitors.getFirst().getName(EN)).isEqualTo("Team Beta");
-            assertThat(world.api.requests("GET", AWAY_EN)).as("loaded already").hasSize(1);
+            assertThat(world.api.requests("GET", AWAY_EN))
+                    .as("the read joined the load under way")
+                    .hasSize(1);
         }
     }
 
     @Test
-    void aCompetitorWhoseProfileCannotLoadIsStillListedAndFailsOnItsOwn() {
-        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+    void aCompetitorWhoseProfileCannotLoadIsStillListedAndFailsOnItsOwn() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(AWAY_EN, 500, "");
             List<Competitor> competitors =
                     requireNonNull(world.entities.match(MATCH, List.of(EN)).getCompetitors());
@@ -175,7 +179,7 @@ class MatchViewTest {
                     .as("the summary's ids, as 0.0.x listed them")
                     .extracting(Competitor::getId)
                     .containsExactly(HOME, AWAY);
-            assertThat(world.api.requests("GET", AWAY_EN)).as("warmed").isNotEmpty();
+            world.api.awaitRequest("GET", AWAY_EN);
             assertThat(competitors.get(0).getName(EN)).isEqualTo("Team Alpha");
             assertThatThrownBy(() -> competitors.get(1).getName(EN))
                     .isInstanceOf(ItemNotFoundException.class)
@@ -187,6 +191,23 @@ class MatchViewTest {
             List<Competitor> competitors = requireNonNull(match.getCompetitors());
             assertThat(competitors).extracting(Competitor::getId).containsExactly(HOME, AWAY);
             assertThat(competitors.get(1).getName(EN)).isNull();
+        }
+    }
+
+    @Test
+    void aMatchListsItsCompetitorsWithoutWaitingForProfilesThatHang() {
+        // no side-load workers, so nothing but the getter itself could load the profiles
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            var profile = Fixtures.read("rest/competitor/competitor_profile.xml");
+            world.api.respond(HOME_EN, Reply.of(200, profile).after(Duration.ofSeconds(3)));
+            world.api.respond(AWAY_EN, Reply.of(200, profile).after(Duration.ofSeconds(3)));
+            Match match = world.entities.match(MATCH, List.of(EN));
+            match.getName(EN);
+            long started = System.nanoTime();
+            assertThat(match.getCompetitors()).hasSize(2);
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .as("returned without waiting for a profile")
+                    .isLessThan(Duration.ofSeconds(1));
         }
     }
 

@@ -113,6 +113,16 @@ public final class ProfileCaches {
         return read(players, id, PLAYER_PROFILE, locale, () -> playerLoads.load(new Key(id, locale), within));
     }
 
+    /** Whether the competitor's profile in {@code locale} needs no load: fresh, or a load of it under way. */
+    public boolean competitorWarm(URN id, Locale locale) {
+        return warm(competitors, id, COMPETITOR_PROFILE, locale, competitorLoads);
+    }
+
+    /** Whether the player's profile in {@code locale} needs no load: fresh, or a load of it under way. */
+    public boolean playerWarm(URN id, Locale locale) {
+        return warm(players, id, PLAYER_PROFILE, locale, playerLoads);
+    }
+
     /** The tournament as its info in {@code locale} describes it, loaded when missing or out of date. */
     public Entry tournament(URN id, Locale locale, @Nullable Deadline within) {
         return read(tournaments, id, TOURNAMENT_INFO, locale, () -> tournamentLoads.load(new Key(id, locale), within));
@@ -237,6 +247,11 @@ public final class ProfileCaches {
             entry = entryOf(cache, id);
         }
         return entry;
+    }
+
+    private boolean warm(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Loader<Key, Boolean> loads) {
+        return entryOf(cache, id).isFresh(endpoint, locale, clock.instant(), cache.age())
+                || loads.keys().contains(new Key(id, locale));
     }
 
     /** Whether the locale's list is fresh, and so is the sport's entry when the list names it. */
