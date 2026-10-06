@@ -68,23 +68,33 @@ class SideLoadsTest {
         var busy = new CountDownLatch(1);
         var idleRunning = new AtomicInteger();
         var mainRan = new CountDownLatch(3);
+        SideLoads.Load blocking = _ -> {
+            idleRunning.incrementAndGet();
+            await(busy);
+        };
         try (var sideLoads = new SideLoads(3, 4, BUDGET)) {
-            int accepted = 0;
-            for (int i = 0; i < 10; i++) {
-                if (sideLoads.offerWhenIdle(_ -> {
-                    idleRunning.incrementAndGet();
-                    await(busy);
-                })) {
-                    accepted++;
-                }
+            // first the limit, half the workers, running: no worker takes another while the rest are offered
+            for (int i = 0; i < 2; i++) {
+                assertThat(sideLoads.offerWhenIdle(blocking)).isTrue();
             }
-            assertThat(accepted).as("their own queue's capacity").isEqualTo(3);
             long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
             while (idleRunning.get() < 2 && System.nanoTime() < deadline) {
                 Thread.sleep(10);
             }
+            assertThat(idleRunning).as("two running").hasValue(2);
+
+            int accepted = 0;
+            for (int i = 0; i < 10; i++) {
+                if (sideLoads.offerWhenIdle(blocking)) {
+                    accepted++;
+                }
+            }
+            assertThat(accepted).as("their own queue's capacity").isEqualTo(3);
+            assertThat(sideLoads.dropped()).isEqualTo(7);
             Thread.sleep(100);
-            assertThat(idleRunning).as("half the workers at most").hasValue(2);
+            assertThat(idleRunning)
+                    .as("half the workers at most, with two idle and three waiting")
+                    .hasValue(2);
 
             for (int i = 0; i < 3; i++) {
                 assertThat(sideLoads.offer(_ -> mainRan.countDown()))
