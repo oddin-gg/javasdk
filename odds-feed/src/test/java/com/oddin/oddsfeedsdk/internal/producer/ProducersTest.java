@@ -200,6 +200,18 @@ class ProducersTest {
     }
 
     @Test
+    void theLastMessageTimestampNeverGoesBack() {
+        Producers producers = producers();
+        long alive = NOW.toEpochMilli();
+        producers.setLastMessageTimestamp(1L, alive);
+        // a message taken before the alive, whose callback ended after it
+        producers.setLastMessageTimestamp(1L, alive - 2_000);
+        assertThat(producer(producers, 1L).getLastMessageTimestamp()).isEqualTo(alive);
+        producers.setLastMessageTimestamp(1L, alive + 1);
+        assertThat(producer(producers, 1L).getLastMessageTimestamp()).isEqualTo(alive + 1);
+    }
+
+    @Test
     void aMessageTimestampIsPositive() {
         Producers producers = producers();
         assertThatThrownBy(() -> producers.setLastMessageTimestamp(1L, 0)).isInstanceOf(IllegalArgumentException.class);
