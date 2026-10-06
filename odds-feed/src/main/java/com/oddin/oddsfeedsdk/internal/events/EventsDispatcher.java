@@ -16,8 +16,12 @@ import com.oddin.oddsfeedsdk.subscribe.ConnectionState;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionStateChange;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
+import com.oddin.oddsfeedsdk.subscribe.ProducerCauseChange;
+import com.oddin.oddsfeedsdk.subscribe.SafetyNetEvent;
+import com.oddin.oddsfeedsdk.subscribe.SessionLagChange;
 import java.net.URI;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +34,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
+import java.util.function.IntFunction;
 import java.util.function.LongFunction;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -42,10 +48,11 @@ import org.slf4j.LoggerFactory;
  * puts it in a queue and returns, never waiting for the client and never running its code.
  *
  * <p>Two queues. The control queue carries what the client's view of the feed is made of: the
- * connection's state, producer status, fatal errors and event recovery completions. It holds {@value
- * #CONTROL_CAPACITY}; an event with no room is counted and logged, never waited for. Of those, each
- * producer's status, the connection's state and each kind of fatal error have one slot, which the
- * newest fills: such an event replaces one still queued rather than queueing behind it, and is
+ * connection's state, producer status and its cause, fatal errors, event recovery completions, the
+ * safety net's resets and the sessions lagging. It holds {@value #CONTROL_CAPACITY}; an event with
+ * no room is counted and logged, never waited for. Of those, each producer's status, each
+ * producer's cause, each session's lagging, the connection's state and each kind of fatal error have
+ * one slot, which the newest fills: such an event replaces one still queued rather than queueing behind it, and is
  * delivered where it was reported, after what was reported before it. So none of them is ever
  * dropped, a client that falls behind hears the state as it is now rather than one long gone, in the
  * order it changed - the last word of a producer is never the one that found no room, nor heard
@@ -89,6 +96,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private final GlobalEventsListener listener;
     private final @Nullable OddsFeedExtListener extListener;
     private final LongFunction<@Nullable Producer> producers;
+    private final IntFunction<@Nullable OddsFeedSession> sessions;
     private final InstantSource clock;
     private final int controlCapacity;
 
@@ -130,6 +138,8 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private volatile long busySince;
 
     /**
+     * With no sessions to name: the safety net's events and the sessions lagging are not delivered.
+     *
      * @param extListener the client's extended listener, null for none
      * @param producers what a producer status message names its producer from, by id: asked only
      *     when a status is delivered, so the feed binds it once the producer list has come, through a
@@ -139,10 +149,28 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
             GlobalEventsListener listener,
             @Nullable OddsFeedExtListener extListener,
             LongFunction<@Nullable Producer> producers) {
+        this(listener, extListener, producers, session -> null);
+    }
+
+    /**
+     * @param extListener the client's extended listener, null for none
+     * @param producers what a producer status message names its producer from, by id: asked only
+     *     when a status is delivered, so the feed binds it once the producer list has come, through a
+     *     REST client that already reports here
+     * @param sessions what the safety net's events and the sessions lagging name their session from,
+     *     by the id the recovery actor knows it by: asked only when one is delivered, so the feed
+     *     binds it once the sessions are built; one it does not name is not delivered
+     */
+    public EventsDispatcher(
+            GlobalEventsListener listener,
+            @Nullable OddsFeedExtListener extListener,
+            LongFunction<@Nullable Producer> producers,
+            IntFunction<@Nullable OddsFeedSession> sessions) {
         this(
                 listener,
                 extListener,
                 producers,
+                sessions,
                 InstantSource.system(),
                 CONTROL_CAPACITY,
                 TELEMETRY_CAPACITY,
@@ -154,6 +182,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
             GlobalEventsListener listener,
             @Nullable OddsFeedExtListener extListener,
             LongFunction<@Nullable Producer> producers,
+            IntFunction<@Nullable OddsFeedSession> sessions,
             InstantSource clock,
             int controlCapacity,
             int telemetryCapacity,
@@ -161,6 +190,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
         this.listener = listener;
         this.extListener = extListener;
         this.producers = producers;
+        this.sessions = sessions;
         this.clock = clock;
         this.controlCapacity = controlCapacity;
         this.telemetry = new ArrayBlockingQueue<>(telemetryCapacity);
@@ -183,8 +213,37 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     }
 
     @Override
+    public void producerCause(ProducerStatusChange change) {
+        coalesce(
+                new CauseSlot(change.producerId()),
+                new Latest(event("onProducerCauseChange", () -> listener.onProducerCauseChange(causeChange(change)))));
+    }
+
+    @Override
     public void eventRecoveryCompleted(long producerId, URN eventId, long requestId) {
         control(event("onEventRecoveryCompleted", () -> listener.onEventRecoveryCompleted(eventId, requestId)));
+    }
+
+    @Override
+    public void safetyNetReset(int session, long producerId, long ageMillis) {
+        safetyNet(session, SafetyNetEvent.Kind.RESET, producerId, Duration.ofMillis(ageMillis), null);
+    }
+
+    @Override
+    public void safetyNetRequestFailed(int session, long producerId, String reason) {
+        safetyNet(session, SafetyNetEvent.Kind.REQUEST_FAILED, producerId, Duration.ZERO, reason);
+    }
+
+    @Override
+    public void lagging(int session, boolean lagging) {
+        Instant at = clock.instant();
+        coalesce(
+                new LagSlot(session),
+                new Latest(event(
+                        "onSessionLagChange",
+                        () -> named(
+                                session,
+                                named -> listener.onSessionLagChange(new SessionLagChange(named, lagging, at))))));
     }
 
     // ------------------------------------------------------------------ the transport
@@ -329,6 +388,27 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     }
 
     // ------------------------------------------------------------------ queues
+
+    private void safetyNet(
+            int session, SafetyNetEvent.Kind kind, long producerId, Duration age, @Nullable String reason) {
+        Instant at = clock.instant();
+        control(event(
+                "onSafetyNetEvent",
+                () -> named(
+                        session,
+                        named -> listener.onSafetyNetEvent(new SafetyNetEvent(
+                                kind, named, producerId, producers.apply(producerId), age, reason, at)))));
+    }
+
+    /** Runs {@code callback} with the session the recovery actor knows by {@code id}; nothing for none. */
+    private void named(int id, Consumer<OddsFeedSession> callback) {
+        OddsFeedSession session = sessions.apply(id);
+        if (session == null) {
+            LOG.debug("No session {} to name; its event is not delivered", id);
+            return;
+        }
+        callback.accept(session);
+    }
 
     private void connection(ConnectionState state, @Nullable String reason, int attempt, long waitMillis) {
         var change = new ConnectionStateChange(state, reason, attempt, Duration.ofMillis(waitMillis), clock.instant());
@@ -518,6 +598,17 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
                 change.reason());
     }
 
+    private ProducerCauseChange causeChange(ProducerStatusChange change) {
+        return new ProducerCauseChange(
+                change.producerId(),
+                producers.apply(change.producerId()),
+                change.down(),
+                change.delayed(),
+                change.reason(),
+                change.cause().toPublic(),
+                Instant.ofEpochMilli(change.timestamp()));
+    }
+
     private static Event event(String callback, Runnable run) {
         return new Event(List.of(new Call(callback, run)));
     }
@@ -555,6 +646,10 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     }
 
     private record ProducerSlot(long producerId) {}
+
+    private record CauseSlot(long producerId) {}
+
+    private record LagSlot(int session) {}
 
     /** What a slot holds. */
     private sealed interface Pending {

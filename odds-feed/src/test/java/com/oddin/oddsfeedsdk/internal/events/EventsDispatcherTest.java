@@ -22,13 +22,19 @@ import com.oddin.oddsfeedsdk.subscribe.CallbackFailure;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionStateChange;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
+import com.oddin.oddsfeedsdk.subscribe.ProducerCauseChange;
+import com.oddin.oddsfeedsdk.subscribe.ProducerStatusCause;
+import com.oddin.oddsfeedsdk.subscribe.SafetyNetEvent;
+import com.oddin.oddsfeedsdk.subscribe.SessionLagChange;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -51,6 +57,11 @@ class EventsDispatcherTest {
 
     private final Listener listener = new Listener();
     private final Producers producers = producers();
+    private final OddsFeedSession first = new OddsFeedSession() {};
+    private final OddsFeedSession second = new OddsFeedSession() {};
+    /** The sessions the dispatcher names, by the recovery actor's id. */
+    private final Map<Integer, OddsFeedSession> sessions = Map.of(1, first, 2, second);
+
     private @Nullable EventsDispatcher dispatcher;
 
     @AfterEach
@@ -761,6 +772,273 @@ class EventsDispatcherTest {
         assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS)).isNull();
     }
 
+    // ------------------------------------------------------------------ the 1.0 events of the recovery actor
+
+    @Test
+    void aProducersCauseReachesItsCallbackOnTheEventsThread() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.producerCause(new ProducerStatusChange(PRODUCER, true, true, StatusCause.PROCESSING_DELAY, 1_000));
+
+        assertThat(listener.next()).isEqualTo("onProducerCauseChange oddsfeed-events");
+        ProducerCauseChange change = requireNonNull(listener.causes.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(change.producerId()).isEqualTo(PRODUCER);
+        assertThat(requireNonNull(change.producer()).getName()).isEqualTo("pre");
+        assertThat(change.down()).isTrue();
+        assertThat(change.delayed()).isTrue();
+        assertThat(change.reason()).isEqualTo(ProducerStatusReason.PROCESSING_QUEUE_DELAY_VIOLATION);
+        assertThat(change.cause()).isEqualTo(ProducerStatusCause.PROCESSING_QUEUE_DELAY_VIOLATION);
+        assertThat(change.at()).isEqualTo(Instant.ofEpochMilli(1_000));
+    }
+
+    @Test
+    void aCauseOfAProducerTheListDoesNotHaveIsReportedWithoutOne() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.producerCause(new ProducerStatusChange(99, true, false, StatusCause.UNSUBSCRIBED, 1));
+        ProducerCauseChange change = requireNonNull(listener.causes.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(change.producerId()).isEqualTo(99);
+        assertThat(change.producer()).isNull();
+        assertThat(change.cause()).isEqualTo(ProducerStatusCause.UNSUBSCRIBED);
+    }
+
+    /**
+     * KD-2 at the dispatcher: a change of the cause alone, which the recovery actor reports only as
+     * a cause, reaches the 1.0 callback and not 0.0.x's; a public change reaches both, the status
+     * first, as the actor reports them.
+     */
+    @Test
+    void aCauseAloneReachesOnlyTheCauseCallbackAndAStatusChangeBoth() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.producerCause(new ProducerStatusChange(PRODUCER, true, false, StatusCause.UNSUBSCRIBED, 1));
+        assertThat(listener.next()).isEqualTo("onProducerCauseChange oddsfeed-events");
+
+        var up = new ProducerStatusChange(PRODUCER, false, false, StatusCause.FIRST_RECOVERY_COMPLETED, 2);
+        dispatcher.producerStatus(up);
+        dispatcher.producerCause(up);
+        assertThat(listener.take(2))
+                .containsExactly("onProducerStatusChange oddsfeed-events", "onProducerCauseChange oddsfeed-events");
+        assertThat(listener.statuses).as("the status, once").hasSize(1);
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /**
+     * Behind a wedge, each producer's cause has a slot of its own, apart from its status: the newest
+     * cause replaces one still queued, where the newest was reported, and neither another producer's
+     * cause nor the producer's own status is replaced by it.
+     */
+    @Test
+    void eachProducersCauseHasASlotApartFromItsStatus() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, true, false, StatusCause.CONNECTION_LOST, 1));
+        dispatcher.producerCause(new ProducerStatusChange(PRODUCER, true, false, StatusCause.CONNECTION_LOST, 1));
+        dispatcher.producerCause(new ProducerStatusChange(99, true, false, StatusCause.ALIVE_INTERVAL_VIOLATION, 2));
+        dispatcher.producerCause(new ProducerStatusChange(PRODUCER, true, false, StatusCause.UNSUBSCRIBED, 3));
+
+        listener.release();
+        assertThat(listener.take(4))
+                .containsExactly(
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onProducerStatusChange oddsfeed-events",
+                        "onProducerCauseChange oddsfeed-events",
+                        "onProducerCauseChange oddsfeed-events");
+        var other = requireNonNull(listener.causes.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        var newest = requireNonNull(listener.causes.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(other.producerId())
+                .as("producer 99's, reported before producer 1's newest")
+                .isEqualTo(99);
+        assertThat(newest.cause()).as("producer 1's newest").isEqualTo(ProducerStatusCause.UNSUBSCRIBED);
+        assertThat(listener.statuses).as("the status, not replaced by a cause").hasSize(1);
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    @Test
+    void aSafetyNetResetReachesItsCallbackWithTheSessionNamed() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.safetyNetReset(2, PRODUCER, 150_000);
+
+        assertThat(listener.next()).isEqualTo("onSafetyNetEvent RESET oddsfeed-events");
+        SafetyNetEvent event = requireNonNull(listener.safetyNet.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(event.kind()).isEqualTo(SafetyNetEvent.Kind.RESET);
+        assertThat(event.session()).isSameAs(second);
+        assertThat(event.producerId()).isEqualTo(PRODUCER);
+        assertThat(requireNonNull(event.producer()).getId()).isEqualTo(PRODUCER);
+        assertThat(event.age()).isEqualTo(Duration.ofSeconds(150));
+        assertThat(event.reason()).isNull();
+        assertThat(event.at()).isNotNull();
+    }
+
+    @Test
+    void aSafetyNetRequestTheApiRefusedReachesItsCallbackWithTheReason() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.safetyNetRequestFailed(1, 99, "the API answered 500");
+
+        assertThat(listener.next()).isEqualTo("onSafetyNetEvent REQUEST_FAILED oddsfeed-events");
+        SafetyNetEvent event = requireNonNull(listener.safetyNet.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(event.kind()).isEqualTo(SafetyNetEvent.Kind.REQUEST_FAILED);
+        assertThat(event.session()).isSameAs(first);
+        assertThat(event.producerId()).isEqualTo(99);
+        assertThat(event.producer()).as("a producer the list does not have").isNull();
+        assertThat(event.age()).isZero();
+        assertThat(event.reason()).isEqualTo("the API answered 500");
+    }
+
+    /** The safety net's events are not coalesced: each is heard, within the control queue's bound. */
+    @Test
+    void theSafetyNetsEventsAreEachHeardWithinTheControlQueuesBound() throws InterruptedException {
+        EventsDispatcher dispatcher = dispatcher(null, 2, 10);
+        dispatcher.start();
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.safetyNetReset(1, PRODUCER, 1);
+        dispatcher.safetyNetRequestFailed(1, PRODUCER, "refused");
+        dispatcher.safetyNetReset(1, PRODUCER, 3);
+        assertThat(dispatcher.controlDropped())
+                .as("the third, past the queue's two")
+                .isEqualTo(1);
+
+        listener.release();
+        assertThat(listener.take(3))
+                .containsExactly(
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onSafetyNetEvent RESET oddsfeed-events",
+                        "onSafetyNetEvent REQUEST_FAILED oddsfeed-events");
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    @Test
+    void aSessionLaggingAndCatchingUpReachesItsCallback() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.lagging(1, true);
+        assertThat(listener.next()).isEqualTo("onSessionLagChange true oddsfeed-events");
+        SessionLagChange lagging = requireNonNull(listener.lags.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(lagging.session()).isSameAs(first);
+        assertThat(lagging.lagging()).isTrue();
+        assertThat(lagging.at()).isNotNull();
+
+        dispatcher.lagging(1, false);
+        assertThat(listener.next()).isEqualTo("onSessionLagChange false oddsfeed-events");
+        assertThat(requireNonNull(listener.lags.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .lagging())
+                .isFalse();
+    }
+
+    /**
+     * Behind a wedge, each session's lagging has a slot of its own: the newest replaces one still
+     * queued, and another session's is not replaced by it.
+     */
+    @Test
+    void eachSessionsLaggingHasASlotOfItsOwn() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.lagging(1, true);
+        dispatcher.lagging(2, true);
+        dispatcher.lagging(1, false);
+
+        listener.release();
+        assertThat(listener.take(3))
+                .containsExactly(
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onSessionLagChange true oddsfeed-events",
+                        "onSessionLagChange false oddsfeed-events");
+        var other = requireNonNull(listener.lags.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        var newest = requireNonNull(listener.lags.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(other.session())
+                .as("session 2's, reported before session 1's newest")
+                .isSameAs(second);
+        assertThat(newest.session()).isSameAs(first);
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /** A flood of causes and of lagging keeps one entry queued per slot, however long the client lags. */
+    @Test
+    void aFloodOfCausesAndLaggingKeepsOneEntryPerSlot() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        for (int i = 0; i < 3 * EventsDispatcher.CONTROL_CAPACITY; i++) {
+            dispatcher.producerCause(new ProducerStatusChange(PRODUCER, true, false, StatusCause.UNSUBSCRIBED, i));
+            dispatcher.lagging(1, i % 2 == 0);
+        }
+        assertThat(dispatcher.controlQueued()).as("one marker per slot").isEqualTo(2);
+        assertThat(dispatcher.controlDropped()).isZero();
+        listener.release();
+        assertThat(listener.take(3)).hasSize(3);
+        assertThat(requireNonNull(listener.causes.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .at())
+                .as("the newest cause")
+                .isEqualTo(Instant.ofEpochMilli(3L * EventsDispatcher.CONTROL_CAPACITY - 1));
+        assertThat(requireNonNull(listener.lags.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .lagging())
+                .as("the newest lagging")
+                .isFalse();
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /** A session the feed does not name is not heard of; the events after it are. */
+    @Test
+    void anEventOfASessionTheFeedDoesNotNameIsNotDelivered() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        dispatcher.lagging(7, true);
+        dispatcher.safetyNetReset(7, PRODUCER, 1);
+        dispatcher.up();
+        assertThat(listener.next()).isEqualTo("onConnectionStateChange UP null 0 PT0S");
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /** The feed's dispatcher before it names sessions: their events wait for nothing and reach no one. */
+    @Test
+    void withoutSessionsToNameTheSessionsEventsAreNotDelivered() throws InterruptedException {
+        var unnamed = new EventsDispatcher(listener, null, producers::getProducer);
+        dispatcher = unnamed;
+        unnamed.start();
+        unnamed.lagging(1, true);
+        unnamed.safetyNetRequestFailed(1, PRODUCER, "refused");
+        unnamed.producerCause(new ProducerStatusChange(PRODUCER, true, false, StatusCause.UNSUBSCRIBED, 1));
+        assertThat(listener.next()).isEqualTo("onProducerCauseChange oddsfeed-events");
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
+    /** Each new callback that throws is reported, and the event after it still arrives. */
+    @Test
+    void aNewCallbackThatThrowsIsReportedAndTheNextEventStillArrives() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        for (String callback : List.of("onProducerCauseChange", "onSafetyNetEvent", "onSessionLagChange")) {
+            listener.throwOn = callback;
+            dispatcher.producerCause(new ProducerStatusChange(PRODUCER, true, false, StatusCause.UNSUBSCRIBED, 1));
+            dispatcher.safetyNetReset(1, PRODUCER, 1);
+            dispatcher.lagging(1, true);
+            // the failure is telemetry, heard once no control event waits, so wherever the reports let it
+            assertThat(listener.take(4))
+                    .as(callback)
+                    .containsExactlyInAnyOrder(
+                            "onProducerCauseChange oddsfeed-events",
+                            "onSafetyNetEvent RESET oddsfeed-events",
+                            "onSessionLagChange true oddsfeed-events",
+                            "onCallbackFailure " + callback + " true thrown by the client");
+        }
+        assertThat(dispatcher.callbackFailures()).isEqualTo(3);
+    }
+
     private EventsDispatcher started(@Nullable OddsFeedExtListener ext) {
         EventsDispatcher started = dispatcher(
                 ext,
@@ -777,7 +1055,14 @@ class EventsDispatcherTest {
 
     private EventsDispatcher dispatcher(@Nullable OddsFeedExtListener ext, int control, int telemetry, long bytes) {
         var made = new EventsDispatcher(
-                listener, ext, producers::getProducer, InstantSource.system(), control, telemetry, bytes);
+                listener,
+                ext,
+                producers::getProducer,
+                sessions::get,
+                InstantSource.system(),
+                control,
+                telemetry,
+                bytes);
         dispatcher = made;
         return made;
     }
@@ -828,6 +1113,9 @@ class EventsDispatcherTest {
         final BlockingQueue<ProducerStatus> statuses = new LinkedBlockingQueue<>();
         final BlockingQueue<ApiCallEvent> calls = new LinkedBlockingQueue<>();
         final BlockingQueue<CallbackFailure> failures = new LinkedBlockingQueue<>();
+        final BlockingQueue<ProducerCauseChange> causes = new LinkedBlockingQueue<>();
+        final BlockingQueue<SafetyNetEvent> safetyNet = new LinkedBlockingQueue<>();
+        final BlockingQueue<SessionLagChange> lags = new LinkedBlockingQueue<>();
         volatile String throwOn = "";
         volatile String errorOn = "";
         volatile String interruptOn = "";
@@ -912,6 +1200,32 @@ class EventsDispatcherTest {
                     "onCallbackFailure",
                     "onCallbackFailure " + failure.callback() + " " + failure.clientCode() + " "
                             + failure.exception().getMessage());
+        }
+
+        @Override
+        public void onProducerCauseChange(ProducerCauseChange change) {
+            causes.add(change);
+            heard(
+                    "onProducerCauseChange",
+                    "onProducerCauseChange " + Thread.currentThread().getName());
+        }
+
+        @Override
+        public void onSafetyNetEvent(SafetyNetEvent event) {
+            safetyNet.add(event);
+            heard(
+                    "onSafetyNetEvent",
+                    "onSafetyNetEvent " + event.kind() + " "
+                            + Thread.currentThread().getName());
+        }
+
+        @Override
+        public void onSessionLagChange(SessionLagChange change) {
+            lags.add(change);
+            heard(
+                    "onSessionLagChange",
+                    "onSessionLagChange " + change.lagging() + " "
+                            + Thread.currentThread().getName());
         }
 
         private void heard(String callback, String event) {
