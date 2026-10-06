@@ -109,6 +109,8 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private long generation;
     /** A test's hook: runs in a report once its slot holds it, before its marker is queued. */
     volatile Runnable afterFill = () -> {};
+    /** A test's hook: runs on the events thread once it has read a marker's slot, before it empties it. */
+    volatile Runnable afterRead = () -> {};
 
     private final Queue<Event> telemetry;
 
@@ -454,7 +456,9 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
             switch (entry) {
                 case Marker(var slot, var markedAt) -> {
                     Held held = slots.get(slot);
-                    // a marker the slot's newest report replaced, before it was taken out, is skipped
+                    afterRead.run();
+                    // a marker the slot's newest report replaced, before it was taken out, is skipped,
+                    // and so is one whose slot a newer report fills now: that one's marker is queued
                     if (held != null && held.generation() == markedAt && slots.remove(slot, held)) {
                         deliver(held.pending().event(this));
                     }
