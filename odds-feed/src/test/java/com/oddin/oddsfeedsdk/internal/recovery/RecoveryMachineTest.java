@@ -74,6 +74,18 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void theFirstRecoveryStartsFromWhatTheClientSetNotWhatTheProducerReports() {
+        long from = feed.now() - Duration.ofHours(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        // what the producer reports for recovery follows the feed; the seed is the client's own
+        feed.producers.setLastAliveReceivedGenTimestamp(PRE, feed.now());
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after()).isEqualTo(Instant.ofEpochMilli(from));
+    }
+
+    @Test
     void aRecoveryPointIsClampedToTheStatefulRecoveryWindow() {
         // inside the window when the client set it, outside once the feed has run an hour
         long from = feed.now()

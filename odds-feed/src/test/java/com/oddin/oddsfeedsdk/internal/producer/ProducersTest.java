@@ -200,6 +200,20 @@ class ProducersTest {
     }
 
     @Test
+    void theClientsRecoveryStartIsWhatItSetWhateverTheProducerReports() {
+        Producers producers = producers();
+        assertThat(producers.recoveryFrom(1L)).as("none set").isZero();
+        long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
+        producers.setProducerRecoveryFromTimestamp(1L, saved);
+        producers.setLastAliveReceivedGenTimestamp(1L, NOW.toEpochMilli());
+        assertThat(producer(producers, 1L).getTimestampForRecovery()).isEqualTo(NOW);
+        assertThat(producers.recoveryFrom(1L)).isEqualTo(saved);
+        assertThat(producers.recoveryFrom(99L))
+                .as("a producer the list does not have")
+                .isZero();
+    }
+
+    @Test
     void theLastMessageTimestampNeverGoesBack() {
         Producers producers = producers();
         long alive = NOW.toEpochMilli();

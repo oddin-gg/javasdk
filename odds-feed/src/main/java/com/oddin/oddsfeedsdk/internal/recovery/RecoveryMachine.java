@@ -1028,11 +1028,12 @@ final class RecoveryMachine {
         return track.safePoint > 0 ? track.safePoint : seed(track);
     }
 
-    /** The client's recovery start, epoch millis, or 0 for a full snapshot. */
+    /**
+     * The client's recovery start, epoch millis, or 0 for a full snapshot: what the client set, not
+     * what {@link Producer#getTimestampForRecovery()} reports, which follows the feed as it runs.
+     */
     private long seed(Track track) {
-        Producer producer = producers.getProducer(track.id);
-        Instant from = producer == null ? null : producer.getTimestampForRecovery();
-        return from == null ? 0 : from.toEpochMilli();
+        return producers.recoveryFrom(track.id);
     }
 
     private boolean hasGaps(Track track) {

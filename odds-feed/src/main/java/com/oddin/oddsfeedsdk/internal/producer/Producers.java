@@ -152,6 +152,16 @@ public final class Producers implements ProducerManager {
         state.updateAndGet(s -> s.withRecoveryFrom(timestamp));
     }
 
+    /**
+     * Where the client asked recovery of the producer to start, epoch millis, 0 for a full snapshot
+     * or a producer the list does not have: what {@link #setProducerRecoveryFromTimestamp} last
+     * took, whatever {@link Producer#getTimestampForRecovery()} reports since.
+     */
+    public long recoveryFrom(long id) {
+        AtomicReference<ProducerState> state = producers.get(id);
+        return state == null ? 0 : state.get().recoveryFrom();
+    }
+
     @Override
     public boolean isProducerEnabled(long id) {
         AtomicReference<ProducerState> state = producers.get(id);
