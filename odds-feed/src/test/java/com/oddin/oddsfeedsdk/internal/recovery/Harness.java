@@ -150,6 +150,27 @@ final class Harness {
                 settings.tick());
     }
 
+    /** The design's numbers, with an initial snapshot interval, or null for none. */
+    static RecoverySettings withInitialSnapshotInterval(@Nullable Duration interval) {
+        RecoverySettings settings = settings();
+        return new RecoverySettings(
+                settings.maxInactivity(),
+                settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
+                interval,
+                settings.nodeId(),
+                settings.reissues(),
+                settings.firstReissueBackoff(),
+                settings.cooldown(),
+                settings.aliveInterval(),
+                settings.staleLimit(),
+                settings.staleWindow(),
+                settings.resets(),
+                settings.firstResetBackoff(),
+                settings.eventRecoveries(),
+                settings.tick());
+    }
+
     private static RAProducers list() {
         var list = new RAProducers();
         list.getProducer().add(producer(PRE, "pre", "prematch"));

@@ -212,6 +212,11 @@ final class RecoveryMachine {
      * The feed is open: every session misses everything before now, from the recovery point the
      * client set, or from nothing - a full snapshot. Each producer asks at its first alive, as in
      * 0.0.x, once the transport has reported its first {@link #connectionUp}.
+     *
+     * <p>A gap a session's lane got before - the connection down or its channel lost, told before
+     * the start - is replaced, not joined: nothing was received before the start, so there is
+     * nothing more to miss than the seed says, and joining it at the checkpoint 0 it started from
+     * would ask for a full snapshot.
      */
     void start() {
         if (started) {
@@ -222,7 +227,7 @@ final class RecoveryMachine {
         for (SessionState session : sessions.values()) {
             for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
                 Lane lane = entry.getValue();
-                Gap gap = openGap(lane.gap, seed(track(entry.getKey())), false);
+                Gap gap = openGap(null, seed(track(entry.getKey())), false);
                 lane.gap = gap;
                 // the start it got - an initial interval counted back from now, say - is where a
                 // later loss starts too, while the session has processed nothing to move it
