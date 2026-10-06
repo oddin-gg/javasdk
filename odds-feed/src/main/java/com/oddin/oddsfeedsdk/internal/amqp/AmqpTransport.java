@@ -80,6 +80,8 @@ public final class AmqpTransport implements AutoCloseable {
 
     private @Nullable ExecutorService consumers;
     private volatile @Nullable Connection connection;
+    /** Whether {@link #open} has begun; guarded by the lock. */
+    private boolean opening;
 
     private volatile boolean closed;
     private volatile boolean failed;
@@ -154,7 +156,7 @@ public final class AmqpTransport implements AutoCloseable {
     private SessionTransport addSession(List<String> bindings, int queueCapacity, ChannelEvents told) {
         lock.lock();
         try {
-            if (connection != null || opened.get()) {
+            if (opening) {
                 throw new IllegalStateException("sessions are added before the transport opens");
             }
             var session = channel(
@@ -191,9 +193,10 @@ public final class AmqpTransport implements AutoCloseable {
     public void open() {
         lock.lock();
         try {
-            if (closed || connection != null || opened.get()) {
+            if (closed || opening) {
                 throw new IllegalStateException("the transport opens once");
             }
+            opening = true;
             consumers = Executors.newFixedThreadPool(
                     channels.size() + 1,
                     Thread.ofPlatform()
@@ -201,15 +204,28 @@ public final class AmqpTransport implements AutoCloseable {
                             .name("oddsfeed-amqp-consumer-", 0)
                             .factory());
             events.connecting();
+        } finally {
+            lock.unlock();
+        }
+        Connection made;
+        try {
+            // without the lock, as a reconnect connects: close() does not wait out a TCP or TLS
+            // handshake, which can take the connect timeout, and the connection made after it is cut
+            made = connect();
+        } catch (IOException | TimeoutException | RuntimeException e) {
+            lock.lock();
             try {
-                connectAndOpenChannels();
-            } catch (IOException | TimeoutException | RuntimeException e) {
-                closed = true;
-                closeEverything();
-                throw new InitException(
-                        "Failed to open the feed: the broker " + settings.host() + ":" + settings.port() + " "
-                                + reason(e),
-                        Failure.redacted(e, settings.accessToken()));
+                throw failedToOpen(e);
+            } finally {
+                lock.unlock();
+            }
+        }
+        lock.lock();
+        try {
+            try {
+                openChannels(made);
+            } catch (IOException | RuntimeException e) {
+                throw failedToOpen(e);
             }
             afterChannelsOpen.run();
             if (closed) {
@@ -232,6 +248,21 @@ public final class AmqpTransport implements AutoCloseable {
         } finally {
             lock.unlock();
         }
+    }
+
+    /** Closes what the open made, under the lock, and says why it failed: a close meanwhile, or the broker. */
+    private InitException failedToOpen(Exception e) {
+        var closedMeanwhile = closed;
+        closed = true;
+        closeEverything();
+        if (closedMeanwhile) {
+            return new InitException(
+                    "Failed to open the feed: the feed was closed as it opened",
+                    Failure.redacted(e, settings.accessToken()));
+        }
+        return new InitException(
+                "Failed to open the feed: the broker " + settings.host() + ":" + settings.port() + " " + reason(e),
+                Failure.redacted(e, settings.accessToken()));
     }
 
     /**
@@ -279,10 +310,6 @@ public final class AmqpTransport implements AutoCloseable {
         } finally {
             lock.unlock();
         }
-    }
-
-    private void connectAndOpenChannels() throws IOException, TimeoutException {
-        openChannels(connect());
     }
 
     private Connection connect() throws IOException, TimeoutException {
