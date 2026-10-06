@@ -718,11 +718,11 @@ class RecoveryActorTest {
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
         actor.up();
-        // the session, the start and the connection handled first: the bad fact is the alive
+        // the session, the start and the connection handled first; the bad fact is the alive, not a tick
         awaitIdle(actor);
         var once = new AtomicBoolean(true);
-        actor.beforeHandle = () -> {
-            if (once.compareAndSet(true, false)) {
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Alives && once.compareAndSet(true, false)) {
                 throw new IllegalStateException("a bad fact");
             }
         };
