@@ -465,7 +465,9 @@ Ownership and ordering:
     asking the recovery actor; before the producer's first alive it is taken as none.
     A replay session's messages are old by design and write as current, in the order
     they come: the watermark does not hold them back, so a replay played again writes
-    each run; the watermark itself never moves back.
+    each run; the watermark itself never moves back. As in 0.0.x, a field the new run
+    leaves out keeps the earlier run's value until a message of the new run replaces it;
+    starting each run empty needs every delivery tagged with its run (ticket 26).
 - Within a feed message, a missing optional scalar means "keep what you have", never
   "reset to zero". Both schemas mark scores optional.
 - Fixture-change deduplication is one shared, concurrent map per `OddsFeed`, keyed by
