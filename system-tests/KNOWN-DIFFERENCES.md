@@ -381,3 +381,17 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Found:** by reading the source (`ChannelConsumer`, `AMQPConnectionProvider`) and the AMQP
   client's documentation of automatic recovery, which a channel-level error does not start;
   confirmed by test against 0.0.57, the watchdog's part in a run of two minutes.
+
+## KD-29 A session built after open() never receives anything
+
+- **0.0.x:** The session builder's `build()` and `buildReplay()` return a session after `open()`
+  as before, but only `open()` binds sessions to the feed, so the session never gets a message,
+  and nothing says so.
+- **1.0:** `build()` and `buildReplay()` throw `IllegalStateException` once the feed is open:
+  "the feed is already open; build sessions before open()". `open()` binds every session's queue
+  once (NEXT.md section 3, difference 7).
+- **Why:** A session that silently receives nothing looks like a quiet feed; the client finds
+  out only when it misses what it was built for.
+- **Pinned by:** `SessionScenarioIT.aSessionBuiltAfterOpenIsRefused`
+- **Found:** by reading the source (`OddsFeedSessionBuilderImpl.build`, `OddsFeed.open`), and by
+  test against 0.0.57.
