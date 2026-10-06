@@ -174,6 +174,88 @@ jobs:
             **/target/failsafe-reports/*.xml
           if-no-files-found: ignore
 
+  system-tests-next:
+    # The system tests against the 1.0 SDK this build makes, where the build job runs them against
+    # the published 0.0.x. The scenarios 1.0 does not pass yet are listed in
+    # system-tests/src/test/resources/pending-on-1.0.txt: while they fail they are reported as
+    # skipped, and one that passes fails this job until its line is removed.
+    name: System tests against 1.0
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # a release builds the commit its check accepted; otherwise the event's own commit
+          ref: ${{ inputs.commit }}
+          # do not leave the job token in .git/config for the build to find
+          persist-credentials: false
+
+      - name: Check the checkout left no credentials behind
+        run: |
+          if git config --local --get-regexp 'http\..*\.extraheader' >/dev/null 2>&1; then
+            echo "the checkout persisted a credential in .git/config" >&2
+            exit 1
+          fi
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          java-version: '25'
+          distribution: 'corretto'
+          cache: 'maven'
+          # no server for the packages registry: the 1.0 run needs nothing from it, and without a
+          # token a dependency that tried to come from there fails here instead of passing
+
+      - name: Build the SDK and run the system tests against it
+        # The SDK as the reactor packages it (-am), shaded jar and all. Its unit tests and their
+        # coverage floor run in the build job, so only the system tests' own unit tests run here
+        # (-Dtest), next to every integration test, odds-feed's ShadedJarIT included.
+        run: >-
+          ./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION}
+          -Dsdk.next -pl system-tests -am verify
+          '-Dtest=com/oddin/oddsfeed/systemtests/**/*Test' -Dsurefire.failIfNoSpecifiedTests=false
+          -Djacoco.skip=true
+        env:
+          REVISION: "${{ inputs.revision }}"
+
+      - name: Check the integration tests ran, against 1.0
+        # as in the build job, plus: the run checked the SDK it loaded is the one this reactor
+        # packaged, at the version Maven resolved. BuildWiringIT skips that check on 0.0.x, so a
+        # 1.0 run that quietly fell back to the published SDK would show it skipped, or not at all.
+        run: |
+          summary=system-tests/target/failsafe-reports/failsafe-summary.xml
+          if [ ! -f "$summary" ]; then
+            echo "no failsafe summary: the integration tests did not run" >&2
+            exit 1
+          fi
+          if grep -q '<completed>0</completed>' "$summary"; then
+            echo "failsafe ran zero integration tests" >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import sys, xml.etree.ElementTree as ET
+          report = "system-tests/target/failsafe-reports/TEST-com.oddin.oddsfeed.systemtests.BuildWiringIT.xml"
+          cases = {c.get("name"): c for c in ET.parse(report).getroot().iter("testcase")}
+          case = cases.get("theSdkIsTheOneThisReactorBuilt")
+          if case is None:
+              sys.exit("BuildWiringIT did not check the 1.0 SDK's version: no such test in the report")
+          outcome = [child.tag for child in case if child.tag in ("skipped", "failure", "error")]
+          if outcome:
+              sys.exit("BuildWiringIT did not check the 1.0 SDK's version: " + outcome[0])
+          PY
+          skipped=$(sed -n 's:.*<skipped>\([0-9]*\)</skipped>.*:\1:p' "$summary")
+          echo "integration tests skipped, most of them pending on 1.0: ${skipped:-0}"
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: test-reports-next
+          path: |
+            **/target/surefire-reports/*.xml
+            **/target/failsafe-reports/*.xml
+          if-no-files-found: ignore
+
   wrapper-windows:
     # The Windows wrapper validates the same pin in its own PowerShell implementation
     # (mvnw.cmd), which nothing else here runs. Only that path is checked - the build itself
