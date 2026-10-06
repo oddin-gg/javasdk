@@ -190,8 +190,8 @@ class FeedMessageGoldenTest {
         var change = (OddsChange<?>) deliver("odds_change/odds_change_closed_with_winner.xml");
         assertMessage(change, null);
         assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
-        MatchStatus status = status(EventStatus.Finished, 1, 3.0, 2.0, false);
-        assertThat(status.getWinnerId()).as("the feed's winner (KD-21)").isEqualTo(URN.parse("od:competitor:47214"));
+        // the feed's winner (KD-21)
+        MatchStatus status = status(EventStatus.Finished, 1, 3.0, 2.0, false, URN.parse("od:competitor:47214"));
         assertPeriods(status, period("round", 1, 0, 1.0, 0.0), period("round", 2, 0, 0.0, 1.0));
         assertThat(status.getScoreboard()).isNull();
     }
@@ -239,7 +239,9 @@ class FeedMessageGoldenTest {
     @Test
     @Golden("odds_change/odds_change_moba_scoreboard.xml")
     void oddsChangeMobaScoreboard() {
-        deliver("odds_change/odds_change_moba_scoreboard.xml");
+        var change = (OddsChange<?>) deliver("odds_change/odds_change_moba_scoreboard.xml");
+        assertMessage(change, null);
+        assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
         MatchStatus status = status(EventStatus.Live, 0, 0.0, 0.0, true);
         assertScoreboard(
                 status,
@@ -265,7 +267,9 @@ class FeedMessageGoldenTest {
     @Test
     @Golden("odds_change/odds_change_points_scoreboard.xml")
     void oddsChangePointsScoreboard() {
-        deliver("odds_change/odds_change_points_scoreboard.xml");
+        var change = (OddsChange<?>) deliver("odds_change/odds_change_points_scoreboard.xml");
+        assertMessage(change, null);
+        assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
         MatchStatus status = status(EventStatus.Live, 0, 92.0, 88.0, true);
         assertPeriods(
                 status,
@@ -292,7 +296,9 @@ class FeedMessageGoldenTest {
     @Test
     @Golden("odds_change/odds_change_rounds_scoreboard.xml")
     void oddsChangeRoundsScoreboard() {
-        deliver("odds_change/odds_change_rounds_scoreboard.xml");
+        var change = (OddsChange<?>) deliver("odds_change/odds_change_rounds_scoreboard.xml");
+        assertMessage(change, null);
+        assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
         MatchStatus status = status(EventStatus.Live, 0, 1.0, 0.0, true);
         assertPeriods(
                 status,
@@ -330,7 +336,9 @@ class FeedMessageGoldenTest {
     @Test
     @Golden("odds_change/odds_change_set_based_classic_sport.xml")
     void oddsChangeSetBasedClassicSport() {
-        deliver("odds_change/odds_change_set_based_classic_sport.xml");
+        var change = (OddsChange<?>) deliver("odds_change/odds_change_set_based_classic_sport.xml");
+        assertMessage(change, null);
+        assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
         MatchStatus status = status(EventStatus.Live, 1, 1.0, 1.0, false);
         assertPeriods(
                 status,
@@ -385,7 +393,9 @@ class FeedMessageGoldenTest {
     @Test
     @Golden("odds_change/odds_change_table_tennis_scoreboard.xml")
     void oddsChangeTableTennisScoreboard() {
-        deliver("odds_change/odds_change_table_tennis_scoreboard.xml");
+        var change = (OddsChange<?>) deliver("odds_change/odds_change_table_tennis_scoreboard.xml");
+        assertMessage(change, null);
+        assertThat(change.getMarkets()).as("an empty odds element").isEmpty();
         MatchStatus status = status(EventStatus.Live, 0, 2.0, 1.0, true);
         assertPeriods(
                 status,
@@ -600,14 +610,38 @@ class FeedMessageGoldenTest {
         return outcome.getOdds(OddsDisplayType.DECIMAL);
     }
 
-    /** The match's status as the callback read it, its own fields asserted. */
+    /** The match's status as the callback read it, of a fixture without a winner. */
     private MatchStatus status(EventStatus expected, int matchStatusId, double home, double away, boolean scoreboard) {
+        return status(expected, matchStatusId, home, away, scoreboard, null);
+    }
+
+    /**
+     * The match's status as the callback read it, its own getters asserted as the period scores' are: a
+     * getter not given here must return null. The period scores and the scoreboard are asserted apart,
+     * and nothing in this world describes a match status, so {@code getMatchStatus()} is null.
+     */
+    private MatchStatus status(
+            EventStatus expected,
+            int matchStatusId,
+            double home,
+            double away,
+            boolean scoreboard,
+            @Nullable URN winner) {
         MatchStatus status = requireNonNull(statuses.getFirst(), "the match's status in the callback");
-        assertThat(status.getStatus()).isEqualTo(expected);
-        assertThat(status.getMatchStatusId()).isEqualTo(matchStatusId);
-        assertThat(status.getHomeScore()).isEqualTo(home);
-        assertThat(status.getAwayScore()).isEqualTo(away);
-        assertThat(status.isScoreboardAvailable()).isEqualTo(scoreboard);
+        var expectedValues = new TreeMap<String, Object>(Map.of(
+                "getStatus", expected,
+                "getMatchStatusId", matchStatusId,
+                "getHomeScore", home,
+                "getAwayScore", away,
+                "isScoreboardAvailable", scoreboard,
+                "getProperties", Map.of()));
+        if (winner != null) {
+            expectedValues.put("getWinnerId", winner);
+        }
+        Map<String, Object> read = values(status, MatchStatus.class);
+        read.remove("getPeriodScores");
+        read.remove("getScoreboard");
+        assertThat(read).as("the match status").isEqualTo(expectedValues);
         return status;
     }
 
