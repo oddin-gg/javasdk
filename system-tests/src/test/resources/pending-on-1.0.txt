@@ -1,0 +1,77 @@
+# The system tests 1.0 does not pass yet. Against 1.0 a test listed here still runs: if it fails
+# it is reported as skipped, with the reason below; if it passes, the build fails until its line is
+# removed. Against 0.0.x this list is ignored. PendingOnNext reads it, PendingOnNextListTest checks
+# every name in it exists.
+#
+# One test per line, as Class#method, or a class for all of its tests; the class relative to
+# com.oddin.oddsfeed.systemtests. A reason may follow, after whitespace and "#".
+# The list shrinks as the feed comes together, and goes once it is empty.
+
+ExceptionStrategyScenarioIT#aCompetitorWhoseProfileCannotLoadIsStillListed  # the feed is not assembled yet
+ExceptionStrategyScenarioIT#underCatchAGetterTheApiCannotServeReturnsNull  # the feed is not assembled yet
+ExceptionStrategyScenarioIT#underThrowAGetterTheApiCannotServeThrows  # the feed is not assembled yet
+
+FakeFeedIT#aPausedBrokerLooksLikeALostConnectionAndResumingRestoresIt  # the feed is not assembled yet
+FakeFeedIT#theSdkReceivesAnOddsChangeFromTheFake  # the feed is not assembled yet
+
+FakeRestServerIT#anOverrideReachesTheSdk  # the feed is not assembled yet
+FakeRestServerIT#theSdkReadsWhoamiProducersAndAMatchSummaryFromTheFake  # the feed is not assembled yet
+
+FeedMessageScenarioIT#aBetCancelReachesOnBetCancelWithItsWindowAndVoidReasons  # the feed is not assembled yet
+FeedMessageScenarioIT#aBetSettlementReachesOnBetSettlementWithEveryOutcomeResult  # the feed is not assembled yet
+FeedMessageScenarioIT#aBetStopForSeveralGroupsNamesEach  # the feed is not assembled yet
+FeedMessageScenarioIT#aBetStopReachesOnBetStop  # the feed is not assembled yet
+FeedMessageScenarioIT#aBetStopWithAnUnknownMarketStatusIsDeliveredAndItsGetterThrows  # the feed is not assembled yet
+FeedMessageScenarioIT#aFixtureChangeOfAnUnknownTypeIsDeliveredAsAnotherChange  # the feed is not assembled yet
+FeedMessageScenarioIT#aFixtureChangeReachesOnFixtureChange  # the feed is not assembled yet
+FeedMessageScenarioIT#aRollbackBetCancelReachesOnRollbackBetCancel  # the feed is not assembled yet
+FeedMessageScenarioIT#aRollbackBetSettlementReachesOnRollbackBetSettlement  # the feed is not assembled yet
+
+InvalidationScenarioIT#aFixtureChangeMakesTheNextReadFetchTheMatchAgain  # the feed is not assembled yet
+InvalidationScenarioIT#aRepeatedFixtureChangeIsDeliveredOnce  # the feed is not assembled yet
+InvalidationScenarioIT#clearingAMatchMakesTheNextReadFetchItAgain  # the feed is not assembled yet
+
+LocaleScenarioIT#aMatchAskedForInALocaleHasItsNameInThatLocale  # the feed is not assembled yet
+LocaleScenarioIT#theMatchOfAMessageHasItsNameInEveryLocaleAskedFor  # the feed is not assembled yet
+
+MatchStatusScenarioIT#aFeedStatusTheSdkDoesNotKnowReadsAsUnknown  # the feed is not assembled yet
+MatchStatusScenarioIT#aMatchCancelledOnTheFeedReadsAsCancelled  # the feed is not assembled yet
+MatchStatusScenarioIT#aSettlementRightAfterTheClosingOddsChangeReadsTheFeedsWinner  # the feed is not assembled yet
+
+OddsChangeScenarioIT#aMessageThatNeverArrivesFailsSayingWhatArrivedInstead  # the feed is not assembled yet
+OddsChangeScenarioIT#americanOddsAreMoneylineOdds  # the feed is not assembled yet
+OddsChangeScenarioIT#anOddsChangeLeadsToTheMatchItIsAbout  # the feed is not assembled yet
+OddsChangeScenarioIT#anOddsChangeWithAnUnknownMarketStatusIsDeliveredAndItsMarketsThrow  # the feed is not assembled yet
+OddsChangeScenarioIT#closingTheFeedLeavesNothingBehind  # the feed is not assembled yet
+
+ProducerRecoveryScenarioIT#aMessageFromAnUnknownProducerIsNotDelivered  # the feed is not assembled yet
+ProducerRecoveryScenarioIT#aProducerListedWithBothScopesHasBoth  # the feed is not assembled yet
+ProducerRecoveryScenarioIT#aProducerThatWentDownRecoversFromTheLastAliveItSawWhileUp  # the feed is not assembled yet
+ProducerRecoveryScenarioIT#anUnsubscribedAliveForAProducerStillDownIsNotReported  # the feed is not assembled yet
+
+ProducerStatusScenarioIT#anAliveSayingTheProducerIsNoLongerSubscribedTakesItDown  # the feed is not assembled yet
+ProducerStatusScenarioIT#anAliveStartsARecoveryAndItsSnapshotCompleteBringsTheProducerUp  # the feed is not assembled yet
+ProducerStatusScenarioIT#theSnapshotCompleteOfAnEventRecoveryCompletesIt  # the feed is not assembled yet
+
+ReconnectScenarioIT#afterAReconnectMessagesFlowAgainAndTheGapIsRecovered  # the feed is not assembled yet
+ReconnectScenarioIT#afterTheBrokerTakesTheSessionsQueueMessagesFlowAgainAndTheGapIsRecovered  # the feed is not assembled yet
+ReconnectScenarioIT#closingTheFeedIsNotReportedAsTheConnectionDown  # the feed is not assembled yet
+
+ReplayScenarioIT#aReplaySessionCannotOpenNextToALiveSession  # the feed is not assembled yet
+ReplayScenarioIT#aReplaySessionReceivesWhatTheReplayPlays  # the feed is not assembled yet
+
+RestOutageScenarioIT#aRecoveryRequestTheApiRefusedIsAskedForAgain  # the feed is not assembled yet
+RestOutageScenarioIT#messagesKeepArrivingThroughAnOutageAndEntitiesLoadOnceItEnds  # the feed is not assembled yet
+RestOutageScenarioIT#theListsAnOutageEmptiesAreEmptyUnderEitherStrategy  # the feed is not assembled yet
+
+ReturnedListsScenarioIT#theListsTheGettersReturnCanBeChanged  # the feed is not assembled yet
+
+StaleFeedScenarioIT#aMessageFromHalfAnHourAgoIsStillDelivered  # the feed is not assembled yet
+StaleFeedScenarioIT#anOlderMessageDoesNotReplaceTheStatusOfANewerOne  # the feed is not assembled yet
+
+StartupScenarioIT#aTokenTheApiRefusesStopsTheStart  # the feed is not assembled yet
+StartupScenarioIT#aTokenTheBrokerRefusesStopsTheStart  # the feed is not assembled yet
+StartupScenarioIT#withTheApiDownTheFeedDoesNotStart  # the feed is not assembled yet
+StartupScenarioIT#withoutTheProducerListTheFeedDoesNotStart  # the feed is not assembled yet
+
+ThrowingCallbackScenarioIT#aCallbackThatThrowsDoesNotStopTheSession  # the feed is not assembled yet
