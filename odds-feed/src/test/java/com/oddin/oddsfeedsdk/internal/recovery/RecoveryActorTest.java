@@ -1316,6 +1316,24 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aCloseBetweenTheStartAndItsThreadLeavesNothingToBePublishedAfterItReturns() throws InterruptedException {
+        // with an initial snapshot interval the start would publish a point of its own
+        RecoveryActor actor = actor(withInactivity(Harness.settings().maxInactivity(), Duration.ofMinutes(30)));
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        var closedOnTheActor = new CountDownLatch(1);
+        actor.beforeMachineClose = closedOnTheActor::countDown;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.beforeThreadStart = actor::close;
+        actor.start();
+        assertThat(held.getTimestampForRecovery()).as("when close() returned").isNull();
+
+        assertThat(closedOnTheActor.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        assertThat(held.getTimestampForRecovery())
+                .as("once the thread has closed the machine")
+                .isNull();
+    }
+
+    @Test
     void aStartAfterTheCloseOrASecondStartDoesNothing() throws InterruptedException {
         var closes = new AtomicInteger();
         RecoveryActor closed = actor(settings());
