@@ -22,7 +22,8 @@ import org.openjdk.jmh.runner.options.TimeValue;
  * build, to their budget per message, from {@code budgets.properties}: microseconds and bytes
  * allocated. The allocation is the tight check - it
  * hardly moves from one machine or run to the next - and the time a coarse one, generous enough for a
- * shared CI runner, there to catch a step that became several times slower.
+ * shared CI runner, there to catch a step that became several times slower. No time budget is under
+ * {@link #TIME_FLOOR_US}: below it the runner's noise weighs as much as the code.
  *
  * <p>JMH forks a JVM of its own for the measurement, with its own options, so the coverage agent
  * the build gives the tests does not run inside it.
@@ -32,6 +33,20 @@ import org.openjdk.jmh.runner.options.TimeValue;
  * longer.
  */
 class BudgetTest {
+
+    /** The least time budget, in microseconds. */
+    private static final double TIME_FLOOR_US = 10;
+
+    @Test
+    void noTimeBudgetIsUnderTheFloor() throws IOException {
+        Properties budgets = budgets();
+        assertThat(budgets.stringPropertyNames())
+                .filteredOn(key -> key.endsWith(".us"))
+                .isNotEmpty()
+                .allSatisfy(key -> assertThat(Double.parseDouble(budgets.getProperty(key)))
+                        .as(key)
+                        .isGreaterThanOrEqualTo(TIME_FLOOR_US));
+    }
 
     @Test
     void theDecoderStaysWithinItsBudget() throws Exception {
