@@ -34,7 +34,8 @@ class SafetyNetTest {
     /** Whether the live producer sends its alives when the prematch one does. */
     private boolean liveAlives = true;
 
-    private boolean snapshot;
+    /** The request id of the messages {@link #stale} feeds: 0 for live ones. */
+    private long requestId;
 
     @Test
     void liveMessagesTooOldForTheWindowGetRecoveriesFirstAndTheResetOnceAllAreAccepted() {
@@ -296,7 +297,7 @@ class SafetyNetTest {
         feed.start();
         feed.bothUp(1, 2);
         // the live producer's cap spent, for a gap of session 2 that starts far ahead
-        feed.machine.processed(2, LIVE, feed.now() + Duration.ofHours(1).toMillis(), feed.now(), false);
+        feed.machine.processed(2, LIVE, feed.now() + Duration.ofHours(1).toMillis(), feed.now(), 0);
         feed.machine.channelLost(2);
         feed.machine.channelReopened(2);
         for (int attempt = 0; attempt < 4; attempt++) {
@@ -682,7 +683,7 @@ class SafetyNetTest {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         int before = feed.calls.size();
         long checkpoint = feed.machine.checkpoint(1, PRE);
-        snapshot = true;
+        requestId = feed.lastSnapshot(PRE).requestId();
         assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
                 .isEqualTo(-1);
         assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(checkpoint);
@@ -711,7 +712,7 @@ class SafetyNetTest {
         int before = feed.calls.size();
         feed.complete(recovery, 1, 2);
         long completedAt = feed.now();
-        feed.machine.processed(2, PRE, completedAt - OLD.toMillis() - 1_000, completedAt - 1_000, false);
+        feed.machine.processed(2, PRE, completedAt - OLD.toMillis() - 1_000, completedAt - 1_000, 0);
         long seconds = stale(feed, 2, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
         assertThat(seconds)
                 .as("seconds from the completion to the net's request")
@@ -917,7 +918,7 @@ class SafetyNetTest {
                 aliveBoth(feed);
             }
             long now = feed.now();
-            feed.machine.processed(session, PRE, now - preSkew - age.toMillis(), now, snapshot);
+            feed.machine.processed(session, PRE, now - preSkew - age.toMillis(), now, requestId);
             feed.machine.tick();
             if (until.getAsBoolean()) {
                 return second;

@@ -13,9 +13,10 @@ public interface SessionFacts {
      * @param generatedAt the message's timestamp, epoch millis by the producer's clock
      * @param takenAt when the dispatcher took it from the session's queue, epoch millis by the SDK's
      *     clock, so its age includes the broker's backlog and the session's own
-     * @param snapshot whether it belongs to a recovery, which it does when it carries a request id
+     * @param requestId the request id it carries, which makes it a recovery's snapshot message; 0
+     *     for a live message, which carries none
      */
-    void processed(long producerId, long generatedAt, long takenAt, boolean snapshot);
+    void processed(long producerId, long generatedAt, long takenAt, long requestId);
 
     /** The session has finished an alive from its own queue. */
     void alive(long producerId, long generatedAt, long takenAt, boolean subscribed);

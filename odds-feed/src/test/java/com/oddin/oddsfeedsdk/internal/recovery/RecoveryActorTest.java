@@ -155,8 +155,8 @@ class RecoveryActorTest {
         // three deliveries the session has not taken, and two samples older than the limit, which
         // the window, nothing, lets act at once
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, false);
-        session.processed(PRE, later - 300_000, later + 2, false);
+        session.processed(PRE, later - 300_000, later + 1, 0);
+        session.processed(PRE, later - 300_000, later + 2, 0);
         api.next();
         api.next();
         assertThat(transport.resets.await(WAIT_SECONDS, TimeUnit.SECONDS))
@@ -197,8 +197,8 @@ class RecoveryActorTest {
 
         // two samples past the limit, with a window of nothing: the net asks for both producers
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, false);
-        session.processed(PRE, later - 300_000, later + 2, false);
+        session.processed(PRE, later - 300_000, later + 1, 0);
+        session.processed(PRE, later - 300_000, later + 2, 0);
         held.runNext();
         held.runNext();
         List<Request> probes = List.of(api.next(), api.next());
@@ -560,8 +560,8 @@ class RecoveryActorTest {
         var held = new CountDownLatch(1);
         api.hold.set(held);
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, false);
-        session.processed(PRE, later - 300_000, later + 2, false);
+        session.processed(PRE, later - 300_000, later + 1, 0);
+        session.processed(PRE, later - 300_000, later + 2, 0);
         api.next();
         api.next();
         gate.rejectNext = true;
@@ -596,7 +596,7 @@ class RecoveryActorTest {
         long newer = System.currentTimeMillis() + 60_000;
         session.channelLost();
         session.channelReopened();
-        session.processed(PRE, newer, newer, false);
+        session.processed(PRE, newer, newer, 0);
         gate.release.countDown();
 
         Request recovery = api.next();
@@ -633,7 +633,7 @@ class RecoveryActorTest {
             if (once.compareAndSet(false, true)) {
                 session.channelLost();
                 session.channelReopened();
-                session.processed(PRE, newer, newer, false);
+                session.processed(PRE, newer, newer, 0);
             }
         };
         long later = System.currentTimeMillis();
@@ -873,8 +873,8 @@ class RecoveryActorTest {
     /** Two samples past the limit, which the window, nothing, lets the safety net act on at once. */
     private static void stale(SessionFacts session) {
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, false);
-        session.processed(PRE, later - 300_000, later + 2, false);
+        session.processed(PRE, later - 300_000, later + 1, 0);
+        session.processed(PRE, later - 300_000, later + 2, 0);
     }
 
     @Test
@@ -989,13 +989,13 @@ class RecoveryActorTest {
             }
             if (left.getAndDecrement() > 0) {
                 long now = System.currentTimeMillis();
-                session.processed(PRE, now, now, false);
+                session.processed(PRE, now, now, 0);
             } else {
                 done.countDown();
             }
         };
         long now = System.currentTimeMillis();
-        session.processed(PRE, now, now, false);
+        session.processed(PRE, now, now, 0);
         assertThat(done.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         assertThat(turnsSeen).as("turns the stream ran through").hasSizeGreaterThanOrEqualTo(3);
     }
@@ -1007,9 +1007,9 @@ class RecoveryActorTest {
                 producers, Harness.settings(), api, events(), workers, InstantSource.system(), new Random(1), 2, 2);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
-        session.processed(PRE, 1, 1, false);
-        session.processed(PRE, 2, 2, false);
-        session.processed(PRE, 3, 3, false);
+        session.processed(PRE, 1, 1, 0);
+        session.processed(PRE, 2, 2, 0);
+        session.processed(PRE, 3, 3, 0);
         assertThat(actor.counters().factsDropped()).as("a sample with no room").isEqualTo(1);
         assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
         assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
