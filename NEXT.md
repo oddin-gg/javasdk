@@ -182,7 +182,16 @@ types in packages whose name contains `internal`.
   built and cuts a start under way short; after a failed start it has nothing to release
   and logs nothing (KD-15). A closed feed does not start again.
 - `open()` is one-shot. After a fatal error the client closes the feed and creates a
-  new one. Same as today.
+  new one. Same as today. Once `open()` has taken the sessions, a second call throws
+  `InitException` ("feed cannot already opened", 0.0.x's words), whatever came of the
+  first; only an `open()` without sessions ("Feed created without sessions") leaves the
+  feed as it was. It checks the interests before it disables any producer or connects.
+- `close()` can be called at any time, more than once, and from a callback: it stops
+  delivery, tells every thread to stop, then waits for all of them within one shutdown
+  timeout of five seconds, not one per thread; it does not wait for the callback it is
+  called from, nor for an `open()` under way, which then fails and closes what it
+  started. A callback still running at the deadline is left to end on its own daemon
+  thread, and the log says so.
 - Delivery is at most once, as today. Exclusive queues die with the connection, so an
   unacknowledged message is never redelivered. The gap is closed by recovery, not by
   redelivery. Acking late buys backpressure, not at-least-once.
