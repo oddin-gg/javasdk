@@ -343,6 +343,18 @@ for path in sorted(seen):
                         "scripts/next-system-tests-job.json; if the change is meant, update it with "
                         "scripts/release-workflow-test.sh --update:\n" + diff)
 
+# and every bash job there that checks out checks, once, that the checkout left no credential
+GUARD = "Check the checkout left no credentials behind"
+for path in sorted(seen):
+    for name, nested in load(path).get("jobs", {}).items():
+        steps_ = nested.get("steps", [])
+        if not any(str(step.get("uses", "")).startswith("actions/checkout@") for step in steps_):
+            continue
+        if "ubuntu" not in str(nested.get("runs-on", "")):
+            continue
+        guards = [step for step in steps_ if step.get("name") == GUARD]
+        check(len(guards) == 1, "./%s > %s must check once that its checkout left no credentials behind"
+              % (os.path.relpath(path, root), name))
 # and next.yml builds that commit: every checkout there takes it
 for path in sorted(seen):
     for name, nested in load(path).get("jobs", {}).items():
@@ -908,18 +920,68 @@ fi
 for i in $(seq 0 $((count - 1))); do
   python3 -c 'import json, sys; print(json.loads(sys.argv[1])[int(sys.argv[2])])' "$guards" "$i" > "$work/guard.sh"
   rm -rf "$work/repo" && git init -q "$work/repo"
-  if ! (cd "$work/repo" && bash "$work/guard.sh") 2> "$work/err"; then
+  if ! (cd "$work/repo" && bash --noprofile --norc -eo pipefail "$work/guard.sh") 2> "$work/err"; then
     echo "FAIL credential guard $i refused a clean checkout: $(cat "$work/err")" >&2
     failures=$((failures + 1))
   fi
   git -C "$work/repo" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic x"
-  if (cd "$work/repo" && bash "$work/guard.sh") 2> /dev/null; then
+  if (cd "$work/repo" && bash --noprofile --norc -eo pipefail "$work/guard.sh") 2> /dev/null; then
     echo "FAIL credential guard $i accepted a checkout that kept the job token" >&2
     failures=$((failures + 1))
   else
     echo "ok   credential guard $i refused a checkout that kept the job token"
   fi
 done
+
+breaks next.yml replace '      - name: Check the checkout left no credentials behind
+        # persist-credentials: false is only a setting until something notices it stopped' '      - name: Check the checkout
+        # persist-credentials: false is only a setting until something notices it stopped' \
+  "./.github/workflows/next.yml > build must check once that its checkout left no credentials behind"
+
+# The 1.0 job's check of its reports, run as it is written (with the shell GitHub runs steps in),
+# against reports it must accept and reports it must refuse.
+check_run=$(yq '.jobs["system-tests-next"].steps[] | select(.name == "Check the integration tests ran, against 1.0") | .run' \
+  "$root/.github/workflows/next.yml")
+if [ -z "$check_run" ]; then
+  echo "FAIL next.yml > system-tests-next has no report check to test" >&2
+  failures=$((failures + 1))
+fi
+printf '%s\n' "$check_run" > "$work/reports.sh"
+reports() {  # reports <expect: pass|fail> <what> <summary: completed count or "none"> <report: none|ok|skipped|failure|error|missing-case>
+  local expect=$1 what=$2 completed=$3 report=$4 dir=$work/reports
+  rm -rf "$dir" && mkdir -p "$dir/system-tests/target/failsafe-reports"
+  local out=$dir/system-tests/target/failsafe-reports
+  if [ "$completed" != none ]; then
+    printf '<failsafe-summary>\n    <completed>%s</completed>\n    <skipped>1</skipped>\n</failsafe-summary>\n' "$completed" \
+      > "$out/failsafe-summary.xml"
+  fi
+  local inner=
+  case $report in
+    skipped|failure|error) inner="<$report message=\"x\"/>" ;;
+  esac
+  case $report in
+    none) ;;
+    missing-case) printf '<testsuite><testcase name="anotherTest"/></testsuite>\n' \
+      > "$out/TEST-com.oddin.oddsfeed.systemtests.BuildWiringIT.xml" ;;
+    *) printf '<testsuite><testcase name="theSdkIsTheOneThisReactorBuilt">%s</testcase></testsuite>\n' "$inner" \
+      > "$out/TEST-com.oddin.oddsfeed.systemtests.BuildWiringIT.xml" ;;
+  esac
+  if (cd "$dir" && bash --noprofile --norc -eo pipefail "$work/reports.sh") > /dev/null 2>&1; then got=pass; else got=fail; fi
+  if [ "$got" = "$expect" ]; then
+    echo "ok   the 1.0 report check: $what -> $got"
+  else
+    echo "FAIL the 1.0 report check: $what -> $got, should $expect" >&2
+    failures=$((failures + 1))
+  fi
+}
+reports pass "the version test ran" 67 ok
+reports fail "the version test skipped" 67 skipped
+reports fail "the version test failed" 67 failure
+reports fail "the version test errored" 67 error
+reports fail "no version test in the report" 67 missing-case
+reports fail "no BuildWiringIT report" 67 none
+reports fail "no failsafe summary" none ok
+reports fail "zero integration tests" 0 ok
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures broken copies were not refused as they should be" >&2
