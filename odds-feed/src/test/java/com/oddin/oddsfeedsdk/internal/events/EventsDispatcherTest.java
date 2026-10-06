@@ -389,6 +389,44 @@ class EventsDispatcherTest {
                 .isNull();
     }
 
+    /**
+     * A newer report that fills the slot after the events thread has read the older one, and before
+     * it empties the slot: the older one is not delivered in the newer one's place, and the newer
+     * one is heard, once, from its own marker.
+     */
+    @Test
+    void aReportThatFillsTheSlotAsTheEventsThreadTakesTheOlderOneIsHeard() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        var hold = new AtomicBoolean(true);
+        var filled = new CountDownLatch(1);
+        dispatcher.afterRead = () -> {
+            if (hold.getAndSet(false)) {
+                var newer = Thread.ofPlatform()
+                        .start(() -> dispatcher.producerStatus(
+                                new ProducerStatusChange(PRODUCER, false, false, StatusCause.RECOVERY_COMPLETED, 2)));
+                try {
+                    newer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+                    if (!newer.isAlive()) {
+                        filled.countDown();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        dispatcher.producerStatus(new ProducerStatusChange(PRODUCER, true, false, StatusCause.CONNECTION_LOST, 1));
+
+        assertThat(filled.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the newer report filled the slot as the older one was taken")
+                .isTrue();
+        assertThat(listener.next()).isEqualTo("onProducerStatusChange oddsfeed-events");
+        ProducerStatus status = requireNonNull(listener.statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(status.isDown()).as("the newer status, up").isFalse();
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("nothing more")
+                .isNull();
+    }
+
     @Test
     void aConnectionLossWhoseLegacyCallbackThrowsStillTellsTheState() throws InterruptedException {
         EventsDispatcher dispatcher = started(null);
