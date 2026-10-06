@@ -17,9 +17,9 @@
 # The jobs' if: conditions are evaluated over every combination of results, not compared as
 # text. On top of the rules, the whole of release.yml is compared with its pinned form,
 # scripts/release-workflow.json: any change to it has to update that file too, in the same
-# reviewed change (scripts/release-workflow-test.sh --update writes it). next.yml's 1.0 job,
-# system-tests-next, is pinned the same way, in scripts/next-system-tests-job.json, since a
-# release waits on it. The rules stay for what
+# reviewed change (scripts/release-workflow-test.sh --update writes it). next.yml, which a
+# release calls and waits on, is pinned the same way, whole, in scripts/next-workflow.json.
+# The rules stay for what
 # they say when they fail. Then each rule is broken in a copy of the workflows, and the policy
 # must refuse every copy for that rule, so a rule that stopped checking anything shows up too.
 # next.yml runs it on every push. Needs python3 and yq.
@@ -333,28 +333,31 @@ for path in sorted(seen):
         keys = [k for k in with_ if k == "cache" or k.startswith("cache-") or k.startswith("server-")]
         check(not keys, "%s > system-tests-next must restore no cache and name no registry server: %s"
               % (where, ", ".join(keys)))
-    # and the whole job against its pinned form, as release.yml below
-    actual_next = json.dumps(nested, indent=2, sort_keys=True) + "\n"
+    # and the whole of next.yml against its pinned form, as release.yml below
+    actual_next = json.dumps(load(path), indent=2, sort_keys=True) + "\n"
     pinned_next = open(pinned_next_path).read()
     if actual_next != pinned_next:
         diff = "".join(difflib.unified_diff(pinned_next.splitlines(True), actual_next.splitlines(True),
-                                             "scripts/next-system-tests-job.json", "next.yml > system-tests-next"))
-        problems.append("next.yml > system-tests-next differs from its pinned form in "
-                        "scripts/next-system-tests-job.json; if the change is meant, update it with "
-                        "scripts/release-workflow-test.sh --update:\n" + diff)
+                                             "scripts/next-workflow.json", "next.yml"))
+        problems.append("next.yml differs from its pinned form in scripts/next-workflow.json; if the "
+                        "change is meant, update it with scripts/release-workflow-test.sh --update:\n" + diff)
 
-# and every bash job there that checks out checks, once, that the checkout left no credential
+# and every job there that checks out checks, once, unconditionally and right after the checkout,
+# that the checkout left no credential behind
 GUARD = "Check the checkout left no credentials behind"
 for path in sorted(seen):
     for name, nested in load(path).get("jobs", {}).items():
         steps_ = nested.get("steps", [])
-        if not any(str(step.get("uses", "")).startswith("actions/checkout@") for step in steps_):
+        checkouts = [i for i, step in enumerate(steps_) if str(step.get("uses", "")).startswith("actions/checkout@")]
+        if not checkouts:
             continue
-        if "ubuntu" not in str(nested.get("runs-on", "")):
-            continue
-        guards = [step for step in steps_ if step.get("name") == GUARD]
-        check(len(guards) == 1, "./%s > %s must check once that its checkout left no credentials behind"
-              % (os.path.relpath(path, root), name))
+        where = "./%s > %s" % (os.path.relpath(path, root), name)
+        guards = [i for i, step in enumerate(steps_) if step.get("name") == GUARD]
+        check(len(guards) == 1, "%s must check once that its checkout left no credentials behind" % where)
+        check(guards == [checkouts[0] + 1] and len(checkouts) == 1,
+              "%s must check its checkout for credentials in the step right after it" % where)
+        for i in guards:
+            unconditional(name, steps_[i], "the credential guard")
 # and next.yml builds that commit: every checkout there takes it
 for path in sorted(seen):
     for name, nested in load(path).get("jobs", {}).items():
@@ -414,7 +417,7 @@ sys.exit(1 if problems else 0)
 EOF
 
 pinned=$root/scripts/release-workflow.json
-pinned_next=$root/scripts/next-system-tests-job.json
+pinned_next=$root/scripts/next-workflow.json
 policy() {
   python3 "$work/policy.py" "$1" "$pinned" "$pinned_next"
 }
@@ -433,14 +436,14 @@ if [ "${1:-}" = "--update" ]; then
     echo "could not read release.yml; $pinned is unchanged" >&2
     exit 1
   fi
-  if yq -o=json '.jobs["system-tests-next"]' "$root/.github/workflows/next.yml" \
-    | python3 -c 'import json, sys; job = json.load(sys.stdin); assert job; print(json.dumps(job, indent=2, sort_keys=True))' \
+  if yq -o=json '.' "$root/.github/workflows/next.yml" \
+    | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), indent=2, sort_keys=True))' \
       > "$pinned_next.part"; then
     mv "$pinned_next.part" "$pinned_next"
     echo "wrote $pinned_next; review the diff"
   else
     rm -f "$pinned_next.part"
-    echo "could not read next.yml's system-tests-next; $pinned_next is unchanged" >&2
+    echo "could not read next.yml; $pinned_next is unchanged" >&2
     exit 1
   fi
 fi
@@ -896,7 +899,7 @@ breaks next.yml replace "          distribution: 'corretto'
           # No server" "./.github/workflows/next.yml > system-tests-next must restore no cache and name no registry server: server-id"
 breaks next.yml replace "          outcome = [child.tag for child in case if child.tag in (\"skipped\", \"failure\", \"error\")]
 " "          outcome = [child.tag for child in case if child.tag in (\"failure\", \"error\")]
-" "next.yml > system-tests-next differs from its pinned form"
+" "next.yml differs from its pinned form"
 
 breaks next.yml replace '      - name: Build the SDK and run the system tests against it
 ' '      - uses: actions/cache/restore@v4
@@ -905,6 +908,37 @@ breaks next.yml replace '      - name: Build the SDK and run the system tests ag
           key: m2
       - name: Build the SDK and run the system tests against it
 ' "./.github/workflows/next.yml > system-tests-next must restore no cache: actions/cache/restore@v4"
+
+breaks next.yml replace '      - name: Check the checkout left no credentials behind
+        # persist-credentials: false is only a setting until something notices it stopped' '      - name: Check the checkout left no credentials behind
+        if: false
+        # persist-credentials: false is only a setting until something notices it stopped' \
+  "build: the credential guard must not be conditional"
+breaks next.yml replace '      - name: Check the checkout left no credentials behind
+        # persist-credentials: false is only a setting until something notices it stopped' '      - name: Check the checkout left no credentials behind
+        continue-on-error: true
+        # persist-credentials: false is only a setting until something notices it stopped' \
+  "build: the credential guard must not continue on error"
+breaks next.yml replace '    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout' '    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the checkout left no credentials behind
+        run: "true"
+      - name: Checkout' \
+  "./.github/workflows/next.yml > build must check once that its checkout left no credentials behind"
+breaks next.yml replace '      - name: Check the checkout left no credentials behind
+        # persist-credentials: false is only a setting until something notices it stopped' '      - name: Look around first
+        run: "true"
+      - name: Check the checkout left no credentials behind
+        # persist-credentials: false is only a setting until something notices it stopped' \
+  "./.github/workflows/next.yml > build must check its checkout for credentials in the step right after it"
+breaks next.yml replace '      - name: Check the checkout left no credentials behind
+        shell: pwsh' '      - name: Check the checkout
+        shell: pwsh' \
+  "./.github/workflows/next.yml > wrapper-windows must check once that its checkout left no credentials behind"
 
 # The credential guard after each checkout in next.yml, run as it is written: it must fail on a
 # config that kept the job token, and pass on one that did not.
@@ -920,12 +954,12 @@ fi
 for i in $(seq 0 $((count - 1))); do
   python3 -c 'import json, sys; print(json.loads(sys.argv[1])[int(sys.argv[2])])' "$guards" "$i" > "$work/guard.sh"
   rm -rf "$work/repo" && git init -q "$work/repo"
-  if ! (cd "$work/repo" && bash --noprofile --norc -eo pipefail "$work/guard.sh") 2> "$work/err"; then
+  if ! (cd "$work/repo" && bash -e "$work/guard.sh") 2> "$work/err"; then
     echo "FAIL credential guard $i refused a clean checkout: $(cat "$work/err")" >&2
     failures=$((failures + 1))
   fi
   git -C "$work/repo" config --local http.https://github.com/.extraheader "AUTHORIZATION: basic x"
-  if (cd "$work/repo" && bash --noprofile --norc -eo pipefail "$work/guard.sh") 2> /dev/null; then
+  if (cd "$work/repo" && bash -e "$work/guard.sh") 2> /dev/null; then
     echo "FAIL credential guard $i accepted a checkout that kept the job token" >&2
     failures=$((failures + 1))
   else
@@ -938,7 +972,8 @@ breaks next.yml replace '      - name: Check the checkout left no credentials be
         # persist-credentials: false is only a setting until something notices it stopped' \
   "./.github/workflows/next.yml > build must check once that its checkout left no credentials behind"
 
-# The 1.0 job's check of its reports, run as it is written (with the shell GitHub runs steps in),
+# The 1.0 job's check of its reports, run as it is written (with bash -e, GitHub's shell for a step
+# that names none),
 # against reports it must accept and reports it must refuse.
 check_run=$(yq '.jobs["system-tests-next"].steps[] | select(.name == "Check the integration tests ran, against 1.0") | .run' \
   "$root/.github/workflows/next.yml")
@@ -947,7 +982,7 @@ if [ -z "$check_run" ]; then
   failures=$((failures + 1))
 fi
 printf '%s\n' "$check_run" > "$work/reports.sh"
-reports() {  # reports <expect: pass|fail> <what> <summary: completed count or "none"> <report: none|ok|skipped|failure|error|missing-case>
+reports() {  # reports <expect: pass|fail> <what> <summary: completed count or "none"> <report: none|ok|skipped|failure|error|missing-case> [<message a refusal must print>]
   local expect=$1 what=$2 completed=$3 report=$4 dir=$work/reports
   rm -rf "$dir" && mkdir -p "$dir/system-tests/target/failsafe-reports"
   local out=$dir/system-tests/target/failsafe-reports
@@ -966,7 +1001,10 @@ reports() {  # reports <expect: pass|fail> <what> <summary: completed count or "
     *) printf '<testsuite><testcase name="theSdkIsTheOneThisReactorBuilt">%s</testcase></testsuite>\n' "$inner" \
       > "$out/TEST-com.oddin.oddsfeed.systemtests.BuildWiringIT.xml" ;;
   esac
-  if (cd "$dir" && bash --noprofile --norc -eo pipefail "$work/reports.sh") > /dev/null 2>&1; then got=pass; else got=fail; fi
+  if (cd "$dir" && bash -e "$work/reports.sh") > /dev/null 2> "$work/reports.err"; then got=pass; else got=fail; fi
+  if [ "$got" = fail ] && [ -n "${5:-}" ] && ! grep -qF -- "$5" "$work/reports.err"; then
+    got="fail for another reason: $(head -c 200 "$work/reports.err")"
+  fi
   if [ "$got" = "$expect" ]; then
     echo "ok   the 1.0 report check: $what -> $got"
   else
@@ -975,13 +1013,13 @@ reports() {  # reports <expect: pass|fail> <what> <summary: completed count or "
   fi
 }
 reports pass "the version test ran" 67 ok
-reports fail "the version test skipped" 67 skipped
-reports fail "the version test failed" 67 failure
-reports fail "the version test errored" 67 error
-reports fail "no version test in the report" 67 missing-case
-reports fail "no BuildWiringIT report" 67 none
-reports fail "no failsafe summary" none ok
-reports fail "zero integration tests" 0 ok
+reports fail "the version test skipped" 67 skipped "check the 1.0 SDK's version: skipped"
+reports fail "the version test failed" 67 failure "check the 1.0 SDK's version: failure"
+reports fail "the version test errored" 67 error "check the 1.0 SDK's version: error"
+reports fail "no version test in the report" 67 missing-case "no such test in the report"
+reports fail "no BuildWiringIT report" 67 none "TEST-com.oddin.oddsfeed.systemtests.BuildWiringIT.xml"
+reports fail "no failsafe summary" none ok "no failsafe summary"
+reports fail "zero integration tests" 0 ok "failsafe ran zero integration tests"
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures broken copies were not refused as they should be" >&2
