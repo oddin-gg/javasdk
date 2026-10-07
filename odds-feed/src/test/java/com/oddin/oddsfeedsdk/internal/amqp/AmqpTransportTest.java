@@ -24,6 +24,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
@@ -664,6 +665,45 @@ class AmqpTransportTest {
                     .hasMessageContaining("closed as it opened");
             assertThat(events.events).containsExactly("connecting");
         }
+    }
+
+    @Test
+    void aFirstConnectThatSucceedsAfterCloseIsCutBeforeAnyChannelOpens() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        long before = session.epoch();
+        long aliveBefore = alive(transport).epoch();
+        // a close that comes as the connect ends: marked closed, held before it cuts or closes anything
+        var closing = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        transport.beforeAbort = () -> {
+            closing.countDown();
+            awaitQuietly(() -> release.getCount() == 0);
+        };
+        var closer = new AtomicReference<@Nullable Thread>();
+        transport.afterConnect = () -> {
+            closer.set(Thread.ofVirtual().start(transport::close));
+            awaitQuietly(() -> closing.getCount() == 0);
+        };
+        try {
+            assertThatThrownBy(transport::open)
+                    .isInstanceOf(InitException.class)
+                    .hasMessageContaining("closed as it opened");
+        } finally {
+            release.countDown();
+        }
+        requireNonNull(closer.get()).join(WAIT);
+
+        assertThat(session.epoch()).as("no channel opened on the connection").isEqualTo(before);
+        assertThat(alive(transport).epoch()).as("nor the alive channel").isEqualTo(aliveBefore);
+        assertThat(events.events).as("never told up").containsExactly("connecting");
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (!feed().openConnections().isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(100);
+        }
+        assertThat(feed().openConnections())
+                .as("the connection made after the close is cut")
+                .isEmpty();
     }
 
     @Test

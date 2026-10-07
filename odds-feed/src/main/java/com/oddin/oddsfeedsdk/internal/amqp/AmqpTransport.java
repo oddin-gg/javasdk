@@ -85,6 +85,8 @@ public final class AmqpTransport implements AutoCloseable {
 
     private volatile boolean closed;
     private volatile boolean failed;
+    /** A test's hook: runs in open() once the first connect has made the connection, before its channels open. */
+    volatile Runnable afterConnect = () -> {};
     /** A test's hook: runs under the lock once a connect has opened every channel, before up is told. */
     volatile Runnable afterChannelsOpen = () -> {};
     /** A test's hook: runs in close() once it is marked closing, before the connection is aborted. */
@@ -220,6 +222,7 @@ public final class AmqpTransport implements AutoCloseable {
                 lock.unlock();
             }
         }
+        afterConnect.run();
         lock.lock();
         try {
             try {
