@@ -1,6 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.amqp;
 
-import java.time.InstantSource;
+import com.oddin.oddsfeedsdk.internal.BusySince;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -8,6 +8,7 @@ import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -18,20 +19,21 @@ import org.jspecify.annotations.Nullable;
  */
 final class ConsumerPool extends ThreadPoolExecutor {
 
-    private final InstantSource clock;
-    /** When each thread running a task began it, epoch millis by {@link #clock}. */
+    /** {@link System#nanoTime}, or a test's. */
+    private final LongSupplier nanos;
+    /** When each thread running a task began it, a {@link BusySince} by {@link #nanos}. */
     private final Map<Thread, Long> running = new ConcurrentHashMap<>();
 
     private final AtomicLong taken = new AtomicLong();
 
-    ConsumerPool(int threads, ThreadFactory factory, InstantSource clock) {
+    ConsumerPool(int threads, ThreadFactory factory, LongSupplier nanos) {
         super(threads, threads, 0, TimeUnit.MILLISECONDS, new LinkedBlockingQueue<>(), factory);
-        this.clock = clock;
+        this.nanos = nanos;
     }
 
     @Override
     protected void beforeExecute(Thread thread, Runnable task) {
-        running.put(thread, Math.max(1, clock.millis()));
+        running.put(thread, BusySince.mark(nanos.getAsLong()));
         super.beforeExecute(thread, task);
     }
 
@@ -42,11 +44,12 @@ final class ConsumerPool extends ThreadPoolExecutor {
         taken.incrementAndGet();
     }
 
-    /** When the task running longest began, epoch millis by the transport's clock; 0 when none runs. */
+    /** When the task running longest began, a {@link BusySince}; {@link BusySince#IDLE} when none runs. */
     long busySince() {
-        long oldest = 0;
+        long oldest = BusySince.IDLE;
         for (long since : running.values()) {
-            if (oldest == 0 || since < oldest) {
+            // by their difference: a reading of System.nanoTime may be negative
+            if (oldest == BusySince.IDLE || since - oldest < 0) {
                 oldest = since;
             }
         }

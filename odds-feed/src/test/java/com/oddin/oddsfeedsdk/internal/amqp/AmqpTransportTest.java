@@ -764,13 +764,13 @@ class AmqpTransportTest {
                 .as("no consumer thread before the open")
                 .isEqualTo(new AmqpTransport.ConsumerState(0, 0, 0));
         transport.open();
-        long published = System.currentTimeMillis();
+        long published = System.nanoTime();
         feed().publishFixture("feed/alive/alive.xml");
         assertThat(entered.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
         var wedged = transport.consumerState();
-        assertThat(wedged.busySince())
-                .as("the alive's hand-off, running")
-                .isBetween(published, System.currentTimeMillis());
+        assertThat(wedged.busySince() - published)
+                .as("the alive's hand-off, running, by System.nanoTime")
+                .isBetween(0L, System.nanoTime() - published);
 
         long taken = wedged.taken();
         release.countDown();

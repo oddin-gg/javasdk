@@ -2,10 +2,10 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.time.Instant;
-import java.time.InstantSource;
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -14,10 +14,12 @@ class ConsumerPoolTest {
 
     private static final long WAIT_SECONDS = 10;
 
-    private volatile Instant now = Instant.parse("2026-10-07T12:00:00Z");
-    private final InstantSource clock = () -> now;
+    /** System.nanoTime as a test moves it: just short of where its readings wrap round, as they may. */
+    private final AtomicLong nanos =
+            new AtomicLong(Long.MAX_VALUE - Duration.ofSeconds(2).toNanos());
+
     private final ConsumerPool pool = new ConsumerPool(
-            2, Thread.ofPlatform().daemon().name("test-consumer-", 0).factory(), clock);
+            2, Thread.ofPlatform().daemon().name("test-consumer-", 0).factory(), nanos::get);
 
     @AfterEach
     void close() {
@@ -29,10 +31,10 @@ class ConsumerPoolTest {
         assertThat(pool.busySince()).isZero();
         var release = new CountDownLatch(1);
         var entered = new CountDownLatch(2);
-        long first = now.toEpochMilli();
+        long first = nanos.get();
         pool.execute(() -> hold(entered, release));
         awaitBusy();
-        now = now.plusSeconds(5);
+        nanos.addAndGet(Duration.ofSeconds(5).toNanos());
         pool.execute(() -> hold(entered, release));
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         pool.execute(() -> {});

@@ -35,6 +35,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -67,7 +68,7 @@ class WatchdogTest {
 
     private final AtomicInteger readings = new AtomicInteger();
     private final Watchdog watchdog = new Watchdog(
-            health, () -> samples, readings::incrementAndGet, () -> deadlocked, clock, Watchdog.Limits.DEFAULT);
+            health, () -> samples, readings::incrementAndGet, () -> deadlocked, clock::nanos, Watchdog.Limits.DEFAULT);
 
     @AfterEach
     void close() {
@@ -80,7 +81,7 @@ class WatchdogTest {
     @Test
     void aCallbackOverItsLimitStallsTheSessionOnceAndItsReturnMakesItHealthy() throws InterruptedException {
         events.start();
-        long taken = clock.millis();
+        long taken = clock.nanos();
         samples = List.of(session(taken, 0, 7));
         watchdog.tick();
         clock.advance(Duration.ofSeconds(30));
@@ -182,7 +183,7 @@ class WatchdogTest {
                 () -> Watchdog.parts(events, null),
                 () -> {},
                 List::of,
-                InstantSource.system(),
+                System::nanoTime,
                 new Watchdog.Limits(Duration.ofMillis(200), Duration.ofMillis(200), Duration.ofHours(1)));
         events.start();
         heard.wedge();
@@ -219,8 +220,8 @@ class WatchdogTest {
 
     @Test
     void aDeadlockOnLocksStallsTheThreadsUntilItEnds() throws InterruptedException {
-        var real =
-                new Watchdog(health, List::of, () -> {}, Watchdog::deadlockedThreads, clock, Watchdog.Limits.DEFAULT);
+        var real = new Watchdog(
+                health, List::of, () -> {}, Watchdog::deadlockedThreads, clock::nanos, Watchdog.Limits.DEFAULT);
         events.start();
         real.tick();
         heard.nothingMore("no deadlock");
@@ -283,7 +284,7 @@ class WatchdogTest {
                 List::of,
                 () -> {},
                 List::of,
-                clock,
+                clock::nanos,
                 new Watchdog.Limits(Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofMinutes(10)));
         events.start();
         timed.recheck();
@@ -322,7 +323,7 @@ class WatchdogTest {
                 List::of,
                 ticked::incrementAndGet,
                 List::of,
-                InstantSource.system(),
+                System::nanoTime,
                 new Watchdog.Limits(Duration.ofHours(1), Duration.ofMillis(300), Duration.ofMillis(50)));
         events.start();
         timed.start();
@@ -373,7 +374,7 @@ class WatchdogTest {
                 },
                 ticked::incrementAndGet,
                 List::of,
-                InstantSource.system(),
+                System::nanoTime,
                 new Watchdog.Limits(Duration.ofHours(1), Duration.ofHours(1), Duration.ofMillis(20)));
         timed.start();
         try {
@@ -535,17 +536,26 @@ class WatchdogTest {
         }
     }
 
-    /** A clock a test moves. */
+    /**
+     * A clock a test moves, the wall clock's and {@link System#nanoTime}'s alike. Its nanos begin
+     * below 0 and pass it, as System.nanoTime's may.
+     */
     private static final class FakeClock implements InstantSource {
         private volatile Instant now = Instant.parse("2026-10-07T12:00:00Z");
+        private final AtomicLong nanos = new AtomicLong(-Duration.ofSeconds(10).toNanos());
 
         @Override
         public Instant instant() {
             return now;
         }
 
+        long nanos() {
+            return nanos.get();
+        }
+
         void advance(Duration by) {
             now = now.plus(by);
+            nanos.addAndGet(by.toNanos());
         }
     }
 
@@ -632,12 +642,7 @@ class WatchdogTest {
                     change -> System.out.println(change.component() + " " + change.previous() + " -> " + change.state()
                             + ": " + change.reason()));
             var watchdog = new Watchdog(
-                    health,
-                    List::of,
-                    () -> {},
-                    Watchdog::deadlockedThreads,
-                    InstantSource.system(),
-                    Watchdog.Limits.DEFAULT);
+                    health, List::of, () -> {}, Watchdog::deadlockedThreads, System::nanoTime, Watchdog.Limits.DEFAULT);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
             while (Watchdog.deadlockedThreads().size() < 2 && System.nanoTime() < deadline) {
                 Thread.sleep(10);

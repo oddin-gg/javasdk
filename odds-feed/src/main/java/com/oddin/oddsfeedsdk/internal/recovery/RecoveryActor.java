@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
+import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
@@ -132,8 +133,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private volatile boolean closed;
     /** The deadline of the close, by {@link System#nanoTime}; null before it. */
     private volatile @Nullable Long closeBy;
-    /** When the actor last began a turn, epoch millis; for the watchdog. */
-    private volatile long turnedAt;
+    /** When the actor last began a turn, a {@link BusySince}; idle before the first; for the watchdog. */
+    private volatile long turnedAt = BusySince.IDLE;
     /** A test's hook, run before each take from the samples, after the look at the essential facts. */
     volatile Runnable beforeSamplePoll = () -> {};
     /** A test's hook, run inside the handling of each fact, with the fact. */
@@ -394,7 +395,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         return turns.get();
     }
 
-    /** When the actor last began a turn, epoch millis by its clock, 0 before the first. */
+    /** When the actor last began a turn, a {@link BusySince}; {@link BusySince#IDLE} before the first. */
     public long turnedAt() {
         return turnedAt;
     }
@@ -508,7 +509,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             long nextTick = clock.millis();
             while (!closed) {
                 ran = true;
-                turnedAt = clock.millis();
+                turnedAt = BusySince.now();
                 turns.incrementAndGet();
                 boolean worked = drainEssential();
                 worked |= drainLesser(control, REQUESTS_PER_TURN, beforeRequestPoll);
