@@ -475,6 +475,110 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aSessionsFactPostedAsTheCloseComesIsHandledBeforeTheActorEnds() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        long lastSubscribed = lastSubscribedThenProcessed(actor, session);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        Instant processed = requireNonNull(held.getTimestampForRecovery());
+
+        var looked = new CountDownLatch(1);
+        var offer = new CountDownLatch(1);
+        holdThePoster(actor, looked, offer);
+        statuses.clear();
+        Thread poster = Thread.ofPlatform().name("poster").start(session::channelLost);
+        assertThat(looked.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        Thread closer = Thread.ofPlatform().start(actor::close);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (!actor.awaitedPosts() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.awaitedPosts()).as("the actor waited for the post").isTrue();
+        offer.countDown();
+        poster.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        closer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+
+        assertThat(actor.running()).isFalse();
+        assertThat(statuses)
+                .extracting(ProducerStatusChange::cause)
+                .as("the lost channel, handled before the actor ended")
+                .contains(StatusCause.CHANNEL_LOST);
+        assertThat(held.getTimestampForRecovery())
+                .as("a lost channel takes no point back")
+                .isEqualTo(processed)
+                .isNotEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
+    void aSessionsFactPostedPastTheTimeToFinishLeavesThePointAtTheFallback() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        long lastSubscribed = lastSubscribedThenProcessed(actor, session);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+
+        actor.finishWait = Duration.ofMillis(100);
+        var looked = new CountDownLatch(1);
+        var offer = new CountDownLatch(1);
+        holdThePoster(actor, looked, offer);
+        statuses.clear();
+        Thread poster = Thread.ofPlatform().name("poster").start(session::channelLost);
+        assertThat(looked.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        long closing = System.nanoTime();
+        actor.close();
+        assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                .as("close() with the post held past the time to finish")
+                .isLessThan(Duration.ofSeconds(1));
+        assertThat(actor.running()).isFalse();
+        assertThat(held.getTimestampForRecovery())
+                .as("back to the last subscribed alive, the post never handled")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+        offer.countDown();
+        poster.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(statuses)
+                .extracting(ProducerStatusChange::cause)
+                .as("the lost channel, never handled")
+                .doesNotContain(StatusCause.CHANNEL_LOST);
+    }
+
+    /**
+     * Both producers up on the session, then a message of the prematch producer processed ten
+     * seconds after their alives: returns those alives' time, the point now the message's.
+     */
+    private long lastSubscribedThenProcessed(RecoveryActor actor, SessionFacts session) throws InterruptedException {
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+        long later = lastSubscribed + 10_000;
+        session.processed(PRE, later, later, 0);
+        awaitTimestampForRecovery(
+                requireNonNull(producers.getProducer(PRE)),
+                Instant.ofEpochMilli(later)::equals,
+                "the message processed");
+        return lastSubscribed;
+    }
+
+    /** Holds the essential post of the thread named poster after its look at the close. */
+    private static void holdThePoster(RecoveryActor actor, CountDownLatch looked, CountDownLatch offer) {
+        actor.beforeEssentialOffer = () -> {
+            if (Thread.currentThread().getName().equals("poster")) {
+                looked.countDown();
+                try {
+                    offer.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+    }
+
+    @Test
     void aResetTheClosingActorDecidesOnIsNotMade() throws InterruptedException {
         var handed = new Handed(workers);
         var actor = new RecoveryActor(
