@@ -137,6 +137,38 @@ class EntityCacheTest {
     }
 
     @Test
+    void anOlderFetchDoesNotWriteBackASharedFieldTheNewerOneClearedByLeavingItOut() {
+        profile("c1", EN, "Team", "CZ", "T1", List.of("p1"));
+        Stamp english = cache.stamp("c1");
+        Stamp german = cache.stamp("c1");
+        // always sent when it exists: the newer fetch leaving the abbreviation out says it is gone
+        cache.writeAuthoritative(
+                "c1",
+                Write.from(PROFILE, DE)
+                        .put(NAME, "Mannschaft")
+                        .put(COUNTRY, "CZ")
+                        .put(PLAYERS, List.of("p1")),
+                german);
+        assertThat(entry("c1").get(ABBREVIATION, null))
+                .as("cleared by the newer fetch")
+                .isNull();
+        cache.writeAuthoritative(
+                "c1",
+                Write.from(PROFILE, EN)
+                        .put(NAME, "Team")
+                        .put(COUNTRY, "CZ")
+                        .put(ABBREVIATION, "T1")
+                        .put(PLAYERS, List.of("p1")),
+                english);
+        Entry entry = entry("c1");
+        assertThat(entry.get(ABBREVIATION, null))
+                .as("left cleared: the older fetch, answered last, does not write it back")
+                .isNull();
+        assertThat(entry.isAuthoritative(ABBREVIATION, null)).isTrue();
+        assertThat(entry.get(NAME, EN)).as("its own locale").isEqualTo("Team");
+    }
+
+    @Test
     void responsesOfTwoEndpointsOfOneEntityDoNotHoldEachOtherBack() {
         Stamp icons = cache.stamp("c1");
         Stamp profile = cache.stamp("c1");
