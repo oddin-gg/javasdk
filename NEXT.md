@@ -678,9 +678,10 @@ and REST workers post facts to it; it decides and posts work out.
   that queue, sessions, connection changes, the API's answers and finished resets are
   bounded by what the feed itself does; lost and reopened channels by the transport's
   own reopening; and the
-  `snapshot_complete`s, one per request per session, by the recoveries asked for on the
-  node id - which include another instance's sharing it, the one input there not
-  bounded by this feed alone.
+  `snapshot_complete`s, one queued per request per session until handled, by the
+  recoveries this feed asked for: one of a request id it did not ask for - another
+  instance's sharing the node id, say - is dropped and counted as it is posted, which the
+  machine would have ignored anyway.
   The rest - event recovery requests, and the messages and alives a session finished -
   are bounded and dropped with a count when full; a dropped request is answered as not
   accepted. The lesser queues yield to the essential one: after taking a fact, the actor
@@ -1393,4 +1394,13 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   callback of the failed one. A system test stamped a later alive earlier than the first;
   1.0 resumes from the newest subscribed alive by its timestamp, 0.0.x from the last one
   received, which differ only when a producer's clock goes back. A recovery-from timestamp
-  set before `open()` starts the first recovery on 1.0; 0.0.x forgets it (KD-32).
+  set before `open()` starts the first recovery on 1.0; 0.0.x forgets it (KD-32). The alive
+  ordering is KD-33.
+- 2026-10-07, ticket 26, after the first review of the recovery's wiring: a snapshot complete of
+  a request the feed did not ask for is dropped and counted as it is posted, and the same one is
+  queued once per session until handled, so the actor's essential queue stays bounded by the
+  feed's own requests; an event recovery whose caller stopped waiting is never asked for; a close
+  that comes as the transport opens fails the open; the actor's close waits 200 ms at least past
+  the shutdown deadline, so the resume points are final when `close()` returns. The connection's
+  callbacks say nothing of the producers' state when they run, as in 0.0.x, which never took a
+  producer down for a lost connection (KD-12): a producer's change is told on its own.
