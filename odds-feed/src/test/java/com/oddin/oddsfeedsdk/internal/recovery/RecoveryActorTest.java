@@ -349,6 +349,64 @@ class RecoveryActorTest {
         return behindAt;
     }
 
+    @Test
+    void aResetTheClosingActorDecidesOnIsNotMade() throws InterruptedException {
+        RecoveryActor actor = actor(settings(Harness.settings().firstReissueBackoff(), Duration.ZERO));
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+
+        // the safety net's recoveries, whose answers come once the actor is held in a fact
+        var answer = new CountDownLatch(1);
+        api.hold.set(answer);
+        long later = System.currentTimeMillis();
+        session.processed(PRE, later - 300_000, later + 1, 0);
+        session.processed(PRE, later - 300_000, later + 2, 0);
+        api.next();
+        api.next();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        session.processed(PRE, later, later + 3, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        answer.countDown();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.queued() < 2 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.queued()).as("both answers queued").isEqualTo(2);
+
+        // the close comes; the answers, handled as the actor ends, would have the channel replaced
+        Thread closer = Thread.ofPlatform().start(actor::close);
+        while (!actor.closeBegun() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        release.countDown();
+        closer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(actor.running()).isFalse();
+        assertThat(transport.resets.await(300, TimeUnit.MILLISECONDS))
+                .as("a reset made")
+                .isFalse();
+        assertThat(actor.counters().resets()).isZero();
+    }
+
     /** Waits until what the producer reports for recovery is as {@code expected} says. */
     private static void awaitTimestampForRecovery(
             Producer producer, Predicate<@Nullable Instant> expected, String description) throws InterruptedException {
