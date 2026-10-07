@@ -784,6 +784,11 @@ class FeedMessageGoldenTest {
         }
 
         @Override
+        public long skippedAcks() {
+            return 0;
+        }
+
+        @Override
         public SessionQueue queue() {
             return queue;
         }

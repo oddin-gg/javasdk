@@ -26,5 +26,11 @@ public interface SessionTransport {
     /** The channel the session reads now; each replacement adds one. */
     long epoch();
 
+    /**
+     * Acknowledgements skipped because their delivery's channel was gone, replaced or lost: the
+     * broker let those deliveries go with it.
+     */
+    long skippedAcks();
+
     SessionQueue queue();
 }

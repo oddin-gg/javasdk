@@ -24,6 +24,25 @@ class SessionQueueTest {
     }
 
     @Test
+    void theDeliveriesAReplacementTakesOutAndTurnsAwayAreEpochDiscards() {
+        var queue = new SessionQueue(10);
+        queue.offer(delivery(0));
+        queue.offer(delivery(0));
+        queue.offer(delivery(1));
+        queue.removeEpochsBefore(1);
+        assertThat(queue.epochDiscards())
+                .as("the two of the old channel taken out")
+                .isEqualTo(2);
+        assertThat(queue.size()).as("the new channel's stays").isEqualTo(1);
+
+        queue.offer(delivery(0));
+        assertThat(queue.epochDiscards()).as("and the late one turned away").isEqualTo(3);
+        queue.offer(delivery(1));
+        queue.removeEpochsBefore(1);
+        assertThat(queue.epochDiscards()).as("the current channel's are none").isEqualTo(3);
+    }
+
+    @Test
     void anOlderEpochDoesNotLetOlderDeliveriesBackIn() {
         var queue = new SessionQueue(10);
         queue.removeEpochsBefore(3);

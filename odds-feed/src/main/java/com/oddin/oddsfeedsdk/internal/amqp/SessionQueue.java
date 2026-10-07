@@ -24,6 +24,9 @@ public final class SessionQueue {
     private final ReentrantLock lock = new ReentrantLock();
     private final AtomicLong overflowed = new AtomicLong();
     private final AtomicLong stale = new AtomicLong();
+    /** Deliveries of a replaced channel taken out of the queue; changed under the lock. */
+    private final AtomicLong removed = new AtomicLong();
+
     private long oldestEpoch;
 
     public SessionQueue(int capacity) {
@@ -70,7 +73,13 @@ public final class SessionQueue {
         lock.lock();
         try {
             oldestEpoch = Math.max(oldestEpoch, epoch);
-            deliveries.removeIf(delivery -> delivery.epoch() < epoch);
+            deliveries.removeIf(delivery -> {
+                boolean older = delivery.epoch() < epoch;
+                if (older) {
+                    removed.incrementAndGet();
+                }
+                return older;
+            });
         } finally {
             lock.unlock();
         }
@@ -88,5 +97,14 @@ public final class SessionQueue {
     /** Deliveries of a replaced channel that arrived after it was replaced. */
     public long stale() {
         return stale.get();
+    }
+
+    /**
+     * Deliveries of a replaced channel that the session never got: those still queued when it was
+     * replaced, taken out, and those that arrived after, turned away. The broker let them go with
+     * the channel; recovery covers them.
+     */
+    public long epochDiscards() {
+        return removed.get() + stale.get();
     }
 }
