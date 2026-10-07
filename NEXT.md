@@ -562,7 +562,8 @@ and REST workers post facts to it; it decides and posts work out.
   close in. The façade tells the actor `closing()` before it closes any session, and the
   actor's own close does the same, then handles the essential facts already queued,
   for two seconds at most, before its machine closes: an unsubscribed alive among them
-  still takes the point back. Facts it has no time for take each point back to the
+  still takes the point back, and so does one whose post was under way as the close came,
+  which the actor waits for. Facts it has no time for take each point back to the
   producer's last subscribed alive, where such an alive's gap would start, or to a full
   snapshot without one. A close that comes before the actor's thread has run handles
   nothing, so nothing is published after it returns. The resume point is not

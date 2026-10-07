@@ -350,6 +350,96 @@ class RecoveryActorTest {
     }
 
     @Test
+    void anEssentialFactPostedAsTheCloseComesIsHandledBeforeTheActorEnds() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        long later = lastSubscribed + 10_000;
+        session.processed(PRE, later, later, 0);
+        awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
+
+        // the unsubscribed alive's post has looked at the close, and not offered yet, as it comes
+        var looked = new CountDownLatch(1);
+        var offer = new CountDownLatch(1);
+        actor.beforeEssentialOffer = () -> {
+            looked.countDown();
+            try {
+                offer.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        Thread poster = Thread.ofPlatform().start(() -> actor.alive(PRE, later, later, false));
+        assertThat(looked.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        Thread closer = Thread.ofPlatform().start(actor::close);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        // the closing actor waits for the post under way before it looks at the queue
+        while (!actor.awaitedPosts() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.awaitedPosts()).as("the actor waited for the post").isTrue();
+        offer.countDown();
+        poster.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        closer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+
+        assertThat(actor.running()).isFalse();
+        assertThat(held.getTimestampForRecovery())
+                .as("the producer's gap from its last subscribed alive")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
+    void anEssentialPostStillUnderWayWhenTheTimeToFinishRunsOutTakesThePointBack() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        long later = lastSubscribed + 10_000;
+        session.processed(PRE, later, later, 0);
+        awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
+
+        // the post held past the actor's time to finish
+        actor.finishWait = Duration.ofMillis(100);
+        var looked = new CountDownLatch(1);
+        var offer = new CountDownLatch(1);
+        actor.beforeEssentialOffer = () -> {
+            looked.countDown();
+            try {
+                offer.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        Thread poster = Thread.ofPlatform().start(() -> actor.alive(PRE, later, later, false));
+        assertThat(looked.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        actor.close();
+        offer.countDown();
+        poster.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+
+        assertThat(actor.running()).isFalse();
+        assertThat(held.getTimestampForRecovery())
+                .as("back to the last subscribed alive, the post never handled")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
     void aResetTheClosingActorDecidesOnIsNotMade() throws InterruptedException {
         RecoveryActor actor = actor(settings(Harness.settings().firstReissueBackoff(), Duration.ZERO));
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
