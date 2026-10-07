@@ -60,6 +60,7 @@ public final class HealthMonitor implements RecoveryEvents {
     private final IntFunction<@Nullable OddsFeedSession> sessions;
     private final InstantSource clock;
     private final Duration catalogStaleLimit;
+    private final Log log;
 
     /** The sessions lagging, by the feed's number, as the recovery actor last told. */
     private final Set<Integer> lagging = ConcurrentHashMap.newKeySet();
@@ -67,6 +68,11 @@ public final class HealthMonitor implements RecoveryEvents {
     private final Map<Part, Found> watched = new ConcurrentHashMap<>();
     /** Taken by every reading before it reads. */
     private final AtomicLong readings = new AtomicLong();
+    /**
+     * Held to keep what the watch found and take its reading's number in one step, so of two watches
+     * of a part the one with the newer number is the one the map holds.
+     */
+    private final ReentrantLock noting = new ReentrantLock();
 
     /** Held to compare what a reading found with what was told, and to tell the change. */
     private final ReentrantLock telling = new ReentrantLock();
@@ -80,7 +86,14 @@ public final class HealthMonitor implements RecoveryEvents {
      * @param sessions what a session's change names its session from, by the feed's number for it
      */
     public HealthMonitor(EventsDispatcher events, IntFunction<@Nullable OddsFeedSession> sessions) {
-        this(events, sessions, InstantSource.system(), CATALOG_STALE_LIMIT);
+        this(events, sessions, Log.SLF4J);
+    }
+
+    /**
+     * @param log where each change is logged; a test's, to read the lines
+     */
+    public HealthMonitor(EventsDispatcher events, IntFunction<@Nullable OddsFeedSession> sessions, Log log) {
+        this(events, sessions, InstantSource.system(), CATALOG_STALE_LIMIT, log);
     }
 
     /** With the clock and the catalogs' limit a test sets. */
@@ -89,10 +102,20 @@ public final class HealthMonitor implements RecoveryEvents {
             IntFunction<@Nullable OddsFeedSession> sessions,
             InstantSource clock,
             Duration catalogStaleLimit) {
+        this(events, sessions, clock, catalogStaleLimit, Log.SLF4J);
+    }
+
+    HealthMonitor(
+            EventsDispatcher events,
+            IntFunction<@Nullable OddsFeedSession> sessions,
+            InstantSource clock,
+            Duration catalogStaleLimit,
+            Log log) {
         this.events = events;
         this.sessions = sessions;
         this.clock = clock;
         this.catalogStaleLimit = catalogStaleLimit;
+        this.log = log;
     }
 
     // ------------------------------------------------------------------ what changes a part's state
@@ -119,15 +142,41 @@ public final class HealthMonitor implements RecoveryEvents {
      * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS}, whose state is their own
      */
     public void watched(HealthComponent component, int session, HealthState state, String reason) {
+        note(component, session, state, reason).tell();
+    }
+
+    /**
+     * What the SDK's own watch found of a part, kept now and told when the result's {@link
+     * Noted#tell} runs: a watch that decides under a lock of its own notes there, in the order it
+     * decides, and tells - which logs - once out of it. Of two notes of a part, the later is the
+     * one kept, and the earlier tells nothing once the later has told.
+     *
+     * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS}, whose state is their own
+     */
+    public Noted note(HealthComponent component, int session, HealthState state, String reason) {
         if (component == HealthComponent.CATALOGS) {
             throw new IllegalArgumentException("the catalogs' state is their own");
         }
         var part = new Part(component, component == HealthComponent.SESSION ? session : 0);
         var found = new Found(state, reason);
-        watched.put(part, found);
-        long reading = nextReading();
+        long reading;
+        noting.lock();
+        try {
+            watched.put(part, found);
+            reading = nextReading();
+        } finally {
+            noting.unlock();
+        }
         var derived = component == HealthComponent.SESSION ? laggingFound(session) : null;
-        tell(reading, Map.of(part, worse(derived, found, true)));
+        var now = worse(derived, found, true);
+        return () -> tell(reading, Map.of(part, now));
+    }
+
+    /** What the watch found of a part, kept, to be told. */
+    @FunctionalInterface
+    public interface Noted {
+        /** Tells the change, if the part's state changed and no newer reading of it has told. */
+        void tell();
     }
 
     // ------------------------------------------------------------------ getHealth()
@@ -390,13 +439,28 @@ public final class HealthMonitor implements RecoveryEvents {
         } finally {
             telling.unlock();
         }
-        for (HealthEvent change : changes) {
-            if (change.state().compareTo(change.previous()) > 0) {
-                LOG.warn("The feed's {} went {}: {}", change.component(), change.state(), change.reason());
-            } else {
+        changes.forEach(log::changed);
+    }
+
+    /** Where each change of a part's state is logged. */
+    @FunctionalInterface
+    public interface Log {
+        /**
+         * The SDK's log: a stall as an error, a degradation as a warning, each loud enough to be seen
+         * without the health being read; a part getting better as information.
+         */
+        Log SLF4J = change -> {
+            if (change.state().compareTo(change.previous()) <= 0) {
                 LOG.info("The feed's {} is {} now: {}", change.component(), change.state(), change.reason());
+            } else if (change.state() == HealthState.STALLED) {
+                LOG.error("The feed's {} went {}: {}", change.component(), change.state(), change.reason());
+            } else {
+                LOG.warn("The feed's {} went {}: {}", change.component(), change.state(), change.reason());
             }
-        }
+        };
+
+        /** One change, once, told after it was given to the events dispatcher. */
+        void changed(HealthEvent change);
     }
 
     /** A part of the feed: one session, or a part that is no session, numbered 0. */

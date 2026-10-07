@@ -34,6 +34,7 @@ import java.time.InstantSource;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
@@ -52,8 +53,11 @@ class HealthMonitorTest {
     private final OddsFeedSession first = new OddsFeedSession() {};
     private final Heard heard = new Heard();
     private final EventsDispatcher events = new EventsDispatcher(heard, null, id -> null, id -> null);
+    /** The changes the health logged, in order. */
+    private final List<HealthEvent> logged = new CopyOnWriteArrayList<>();
+
     private final HealthMonitor health =
-            new HealthMonitor(events, id -> id == 1 ? first : null, InstantSource.fixed(NOW), HOUR);
+            new HealthMonitor(events, id -> id == 1 ? first : null, InstantSource.fixed(NOW), HOUR, logged::add);
 
     @AfterEach
     void close() {
@@ -319,6 +323,25 @@ class HealthMonitorTest {
                 .containsEntry(HealthComponent.TIMERS, HealthState.STALLED);
         assertThatThrownBy(() -> health.watched(HealthComponent.CATALOGS, 0, HealthState.STALLED, "no"))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void ofTwoNotesOfAPartTheLaterIsKeptAndTheEarlierToldAfterItTellsNothing() throws InterruptedException {
+        events.start();
+        var stalled = health.note(HealthComponent.EVENTS, 0, HealthState.STALLED, "in one callback for 31 s");
+        var moving = health.note(HealthComponent.EVENTS, 0, HealthState.HEALTHY, "moves again");
+        moving.tell();
+        heard.nothingMore("healthy, as it was");
+        stalled.tell();
+        heard.nothingMore("the earlier note, told after the later");
+        assertThat(read().components()).containsEntry(HealthComponent.EVENTS, HealthState.HEALTHY);
+
+        health.note(HealthComponent.EVENTS, 0, HealthState.STALLED, "in one callback for 31 s")
+                .tell();
+        var told = heard.next();
+        assertThat(told.state()).isEqualTo(HealthState.STALLED);
+        assertThat(told.reason()).isEqualTo("in one callback for 31 s");
+        assertThat(logged).as("each change logged once, as it is told").containsExactly(told);
     }
 
     @Test
