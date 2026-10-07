@@ -20,6 +20,7 @@ public final class RecoveryCounters {
     final AtomicLong eventRefused = new AtomicLong();
     final AtomicLong eventExpired = new AtomicLong();
     final AtomicLong eventAbandoned = new AtomicLong();
+    final AtomicLong eventCallerGone = new AtomicLong();
     final AtomicLong eventStatusesDropped = new AtomicLong();
     final AtomicLong resets = new AtomicLong();
     final AtomicLong resetDropped = new AtomicLong();
@@ -83,6 +84,14 @@ public final class RecoveryCounters {
     /** Event recoveries given up because their snapshot complete went with a lost queue. */
     public long eventAbandoned() {
         return eventAbandoned.get();
+    }
+
+    /**
+     * Event recoveries not asked for because their caller had stopped waiting for the answer, while
+     * they waited for a session's channel or in the actor's queue.
+     */
+    public long eventCallerGone() {
+        return eventCallerGone.get();
     }
 
     /**

@@ -1762,6 +1762,37 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void anEventRecoveryWhoseCallerStoppedWaitingIsNeverAskedForAndTakesNoRoom()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.machine.channelLost(1);
+        // the caller of each stopped waiting while it waited for the session's channel
+        for (int i = 0; i < 128; i++) {
+            CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+            assertThat(reply).as("waiting for the session's channel").isNotDone();
+            reply.complete(null);
+        }
+        CompletableFuture<@Nullable Long> waiting = feed.recoverEvent(LIVE);
+        assertThat(waiting).as("one more, with room: the abandoned take none").isNotDone();
+        feed.machine.channelReopened(1);
+
+        assertThat(feed.calls.stream().filter(call -> call instanceof Outbox.Call.Event))
+                .as("event recoveries asked for once the channel is back")
+                .hasSize(1);
+        assertThat(feed.counters.eventCallerGone()).isEqualTo(128);
+        assertThat(waiting).isNotDone();
+
+        // and one whose caller stopped waiting before the actor took it
+        var gone = new CompletableFuture<@Nullable Long>();
+        gone.complete(null);
+        feed.machine.recoverEvent(LIVE, MATCH, false, gone);
+        assertThat(feed.calls.stream().filter(call -> call instanceof Outbox.Call.Event))
+                .hasSize(1);
+        assertThat(feed.counters.eventCallerGone()).isEqualTo(129);
+    }
+
+    @Test
     void anEventRecoveryWhileTheConnectionIsDownIsRefused() throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.start();

@@ -689,6 +689,12 @@ final class RecoveryMachine {
      * @throws IllegalArgumentException through {@code reply}, for a producer the list does not have
      */
     void recoverEvent(long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply) {
+        if (reply.isDone()) {
+            // the caller stopped waiting: a request sent now would carry an id it never got
+            counters.eventCallerGone.incrementAndGet();
+            LOG.info("Event recovery of {} not asked for: its caller stopped waiting", eventId);
+            return;
+        }
         Track track = known(producerId);
         if (track == null) {
             outbox.fail(reply, new IllegalArgumentException("Unknown producer " + producerId));
@@ -702,6 +708,14 @@ final class RecoveryMachine {
             outbox.reply(reply, null);
             return;
         }
+        // a deferred one whose caller stopped waiting will not be asked for, and takes no room
+        deferred.removeIf(event -> {
+            boolean gone = event.reply().isDone();
+            if (gone) {
+                counters.eventCallerGone.incrementAndGet();
+            }
+            return gone;
+        });
         long inFlight = eventRecoveries.values().stream()
                         .filter(recovery -> recovery.producerId == producerId)
                         .count()
