@@ -1329,6 +1329,45 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aFactThatFailsAfterItMovedAPointStillPublishesIt() throws InterruptedException {
+        var clock = new FailingOnce();
+        // a tick an hour away: no later fact publishes the point in the failed one's place
+        var hourly = settings(
+                Harness.settings().firstReissueBackoff(), Harness.settings().staleWindow(), Duration.ofHours(1));
+        var actor = new RecoveryActor(
+                producers,
+                hourly,
+                api,
+                events(),
+                workers,
+                clock,
+                new Random(1),
+                RecoveryActor.CONTROL_CAPACITY,
+                RecoveryActor.SAMPLE_CAPACITY);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        bothUp(actor, session);
+        // a wide margin for the API's answers to the first recoveries to be handled
+        Thread.sleep(200);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        var once = new AtomicBoolean(true);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed && once.compareAndSet(true, false)) {
+                // the message moves the session's checkpoint; the machine's next look at the time fails
+                clock.armed.set(Thread.currentThread());
+            }
+        };
+        Instant processed = Instant.ofEpochMilli(System.currentTimeMillis() + 1_000);
+        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        awaitTimestampForRecovery(held, processed::equals, "the point the failed fact moved");
+        assertThat(actor.counters().factsFailed()).isEqualTo(1);
+        assertThat(clock.armed.get()).as("the failure the clock was armed for").isNull();
+        assertThat(actor.running()).isTrue();
+    }
+
+    @Test
     void aRequestTheWorkersFailOnWithAnErrorCountsAsFailedAndIsAskedForAgain() throws InterruptedException {
         var broken = new AtomicBoolean(true);
         Executor workers = task -> {
@@ -2096,6 +2135,19 @@ class RecoveryActorTest {
         public void execute(Runnable task) {
             tasks.incrementAndGet();
             workers.execute(task);
+        }
+    }
+
+    /** The system's clock, but the next read on the thread it is armed for fails. */
+    private static final class FailingOnce implements InstantSource {
+        final AtomicReference<@Nullable Thread> armed = new AtomicReference<>();
+
+        @Override
+        public Instant instant() {
+            if (armed.compareAndSet(Thread.currentThread(), null)) {
+                throw new IllegalStateException("a clock that fails once");
+            }
+            return Instant.now();
         }
     }
 

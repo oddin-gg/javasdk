@@ -570,11 +570,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     }
 
     /**
-     * One fact, to the end, and the resume points it moved published. A fact the machine fails on,
-     * even with an error, is counted, and the actor goes on: one bad fact must not end the
-     * recovery of every producer.
+     * One fact, to the end, and the resume points it moved published, even those of a fact the
+     * machine failed on part way. A fact the machine fails on, even with an error, is counted, and
+     * the actor goes on: one bad fact must not end the recovery of every producer.
      */
     private void handle(Fact fact) {
+        boolean failed = false;
         try {
             beforeHandle.accept(fact);
             switch (fact) {
@@ -618,11 +619,26 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 case Fact.Tick() -> machine.tick();
                 case Fact.Closing() -> machine.closing();
             }
-            // whatever the fact moved, the client reads it from the producer at once
-            machine.publishResumePoints();
         } catch (Throwable e) {
+            failed = true;
             counters.factsFailed.incrementAndGet();
             LOG.error("The recovery actor failed on {}; it goes on with the next", fact, e);
+        } finally {
+            // whatever the fact moved, even one that failed part way, the client reads it from the
+            // producer at once
+            publishResumePoints(fact, failed);
+        }
+    }
+
+    /** The points {@code fact} moved published; a failure fails the fact, counted once. */
+    private void publishResumePoints(Fact fact, boolean counted) {
+        try {
+            machine.publishResumePoints();
+        } catch (Throwable e) {
+            if (!counted) {
+                counters.factsFailed.incrementAndGet();
+            }
+            LOG.error("The recovery actor failed to publish what {} moved; it goes on with the next", fact, e);
         }
     }
 
