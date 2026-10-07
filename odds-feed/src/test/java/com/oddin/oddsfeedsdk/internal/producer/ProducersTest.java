@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.ProducerScope;
@@ -20,8 +21,9 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.Date;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -215,25 +217,71 @@ class ProducersTest {
     /** The feed reads the starts as it opens: one set after would be lost without a word. */
     @Test
     void aRecoveryStartSetOnceTheFeedHasBegunToOpenIsIgnoredWithAWarning() {
-        var warnings = new ArrayList<String>();
-        var producers = new Producers(client.fetchProducers(), InstantSource.fixed(NOW), warnings::add);
-        long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
-        producers.setProducerRecoveryFromTimestamp(1L, saved);
-        assertThat(warnings).as("before open()").isEmpty();
+        Producers producers = producers();
+        try (var log = LogCapture.of(Producers.class)) {
+            long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
+            producers.setProducerRecoveryFromTimestamp(1L, saved);
+            assertThat(log.lines()).as("before open()").isEmpty();
 
-        producers.opened();
-        long later = NOW.minus(Duration.ofMinutes(5)).toEpochMilli();
-        producers.setProducerRecoveryFromTimestamp(1L, later);
-        assertThat(producers.recoveryFrom(1L)).as("what the feed read stays").isEqualTo(saved);
-        assertThat(producer(producers, 1L).getTimestampForRecovery()).isEqualTo(Instant.ofEpochMilli(saved));
-        assertThat(warnings)
-                .containsExactly("setProducerRecoveryFromTimestamp(1, " + later + ") after open() is ignored: the"
-                        + " feed read where each producer's recovery starts as it opened. Set it before open().");
-        assertThatThrownBy(() -> producers.setProducerRecoveryFromTimestamp(1L, 1))
-                .as("refused as before")
-                .isInstanceOf(IllegalArgumentException.class);
-        producers.setProducerRecoveryFromTimestamp(99L, later);
-        assertThat(warnings).as("a producer the list does not have, as before").hasSize(1);
+            producers.opened();
+            long later = NOW.minus(Duration.ofMinutes(5)).toEpochMilli();
+            producers.setProducerRecoveryFromTimestamp(1L, later);
+            assertThat(producers.recoveryFrom(1L))
+                    .as("what the feed read stays")
+                    .isEqualTo(saved);
+            assertThat(producer(producers, 1L).getTimestampForRecovery()).isEqualTo(Instant.ofEpochMilli(saved));
+            assertThat(log.lines())
+                    .containsExactly("WARN setProducerRecoveryFromTimestamp(1, " + later + ") after open() is"
+                            + " ignored: the feed read where each producer's recovery starts as it opened. Set it"
+                            + " before open().");
+            assertThatThrownBy(() -> producers.setProducerRecoveryFromTimestamp(1L, 1))
+                    .as("refused as before")
+                    .isInstanceOf(IllegalArgumentException.class);
+            producers.setProducerRecoveryFromTimestamp(99L, later);
+            assertThat(log.lines())
+                    .as("a producer the list does not have, as before")
+                    .hasSize(1);
+        }
+    }
+
+    /**
+     * A set under way as the feed begins to open lands before the feed goes on to read the starts:
+     * {@link Producers#opened} waits for it. Held inside the set by the clock its window check reads.
+     */
+    @Test
+    void aRecoveryStartSetAsTheFeedBeginsToOpenLandsBeforeTheFeedReadsIt() throws InterruptedException {
+        var inTheSet = new CountDownLatch(1);
+        var letItGo = new CountDownLatch(1);
+        var clock = new InstantSource() {
+            @Override
+            public Instant instant() {
+                inTheSet.countDown();
+                try {
+                    letItGo.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return NOW;
+            }
+        };
+        var producers = new Producers(client.fetchProducers(), clock);
+        long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
+        var setter = Thread.ofPlatform().start(() -> producers.setProducerRecoveryFromTimestamp(1L, saved));
+        assertThat(inTheSet.await(10, TimeUnit.SECONDS)).isTrue();
+        var opener = Thread.ofPlatform().start(producers::opened);
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (opener.getState() != Thread.State.WAITING
+                && opener.getState() != Thread.State.TERMINATED
+                && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(opener.getState()).as("opened() waits for the set under way").isEqualTo(Thread.State.WAITING);
+        letItGo.countDown();
+        setter.join(10_000);
+        opener.join(10_000);
+        assertThat(producers.recoveryFrom(1L))
+                .as("landed, so the feed reads it")
+                .isEqualTo(saved);
     }
 
     @Test
