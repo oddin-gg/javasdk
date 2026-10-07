@@ -164,7 +164,8 @@ public final class SessionDispatcher implements AutoCloseable {
     /**
      * Tells the thread to stop once the delivery it handles is done, and returns at once: so a feed
      * closing several sessions tells each before it waits for any, and waits for them all within
-     * one deadline.
+     * one deadline. A delivery the thread takes from now on reaches no callback and is not
+     * acknowledged.
      */
     public void stop() {
         closed = true;
@@ -264,10 +265,18 @@ public final class SessionDispatcher implements AutoCloseable {
                 // nobody but close() ends the dispatcher, and close() sets closed first
                 continue;
             }
-            if (delivery != null) {
+            // closed while it waited: dropped unacknowledged, with no facts, as one still queued is -
+            // nothing reaches the client once close() has begun, as in 0.0.x, and the resume point
+            // already covers what the close leaves
+            if (delivery != null && !closed) {
                 handle(delivery);
             }
         }
+    }
+
+    /** The dispatcher's thread; for a test. */
+    Thread thread() {
+        return thread;
     }
 
     /** One delivery, every step, then its acknowledgement; package-private for a test to drive. */

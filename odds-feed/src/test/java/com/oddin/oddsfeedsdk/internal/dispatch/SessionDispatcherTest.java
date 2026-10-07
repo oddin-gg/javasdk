@@ -13,6 +13,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.MatchStatus;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
+import com.oddin.oddsfeedsdk.internal.amqp.Queues;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionQueue;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
@@ -512,7 +513,46 @@ class SessionDispatcherTest {
         assertThat(Thread.currentThread().isInterrupted()).isFalse();
     }
 
+    // ---- closing
+
+    @Test
+    void aDeliveryTakenOnceTheCloseBeganReachesNoCallbackAndIsNotAcknowledged() throws InterruptedException {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        dispatcher.start();
+        try {
+            awaitWaitingForADelivery(dispatcher.thread());
+            // the close begins as the dispatcher waits; the broker delivers before the connection closes
+            dispatcher.stop();
+            Queues.offer(
+                    transport.queue(),
+                    delivery(
+                            Fixtures.read(ODDS_CHANGE).getBytes(StandardCharsets.UTF_8),
+                            FakeFeed.routingKey(Fixtures.read(ODDS_CHANGE))));
+            assertThat(dispatcher.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                    .as("ended")
+                    .isTrue();
+        } finally {
+            dispatcher.close();
+        }
+        assertThat(listener.messages).as("callbacks").isEmpty();
+        assertThat(ext.calls).as("raw callbacks").isEmpty();
+        assertThat(transport.acked).as("acknowledged").isEmpty();
+        assertThat(facts.facts).as("facts posted").isEmpty();
+        assertThat(dispatcher.handled()).isZero();
+    }
+
     // ---- helpers
+
+    /** Until the thread waits in its poll for the next delivery. */
+    private static void awaitWaitingForADelivery(Thread thread) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (thread.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat(thread.getState())
+                .as("the dispatcher waiting for a delivery")
+                .isEqualTo(Thread.State.TIMED_WAITING);
+    }
 
     private SessionDispatcher dispatcher(MessageInterest interest) {
         return dispatcher(interest, false);
