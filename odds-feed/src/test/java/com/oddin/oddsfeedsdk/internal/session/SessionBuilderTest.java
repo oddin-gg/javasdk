@@ -48,6 +48,23 @@ class SessionBuilderTest {
     }
 
     @Test
+    void theRegistryNamesASessionByItsIdOnceTheFeedIsOpen() {
+        OddsFeedSession first = builder.setListener(listener)
+                .setMessageInterest(MessageInterest.HI_PRIORITY_ONLY)
+                .build();
+        OddsFeedSession second = builder.setListener(listener)
+                .setMessageInterest(MessageInterest.LOW_PRIORITY_ONLY)
+                .build();
+        assertThat(registry.session(1)).as("before open()").isNull();
+
+        registry.open();
+        assertThat(registry.session(1)).isSameAs(first);
+        assertThat(registry.session(2)).isSameAs(second);
+        assertThat(registry.session(0)).as("no session 0").isNull();
+        assertThat(registry.session(3)).as("one past the last").isNull();
+    }
+
+    @Test
     void aFeedWithoutAnExtendedListenerGivesItsSessionsNone() {
         var plain = new SessionRegistry(null);
         plain.builder()
