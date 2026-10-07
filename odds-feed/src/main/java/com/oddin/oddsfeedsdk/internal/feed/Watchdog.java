@@ -187,7 +187,12 @@ public final class Watchdog {
         }
     }
 
-    /** Stops looking, and returns at once; a tick under way ends on its own. */
+    /**
+     * Stops looking, and returns at once; a tick under way ends on its own. The timers are healthy
+     * from then on, told so if they were found stalled: a watchdog stopped is not one wedged, and its
+     * thread, ended, is late for no tick. What it found of every other part stays as it last found
+     * it, since nothing looks again.
+     */
     public void stop() {
         @Nullable ScheduledThreadPoolExecutor stopping;
         lifecycle.lock();
@@ -203,6 +208,21 @@ public final class Watchdog {
         }
         if (stopping != null) {
             stopping.shutdown();
+        }
+        tell(timersStopped());
+    }
+
+    /** Notes the timers healthy, if they were not; a look after, no longer running, leaves them so. */
+    private List<HealthMonitor.Noted> timersStopped() {
+        deciding.lock();
+        try {
+            if (timers == HealthState.HEALTHY) {
+                return List.of();
+            }
+            timers = HealthState.HEALTHY;
+            return List.of(health.note(HealthComponent.TIMERS, 0, HealthState.HEALTHY, "the watchdog stopped"));
+        } finally {
+            deciding.unlock();
         }
     }
 

@@ -907,7 +907,9 @@ deadlock ended - is told so the same way.
 The watchdog is one daemon thread, `oddsfeed-timer`, started with the feed's first start
 (the events thread and the catalogs exist from then; the consumer, the sessions, the
 alives and the recovery actor join once the feed opens) and stopped first by `close()`,
-within its one shutdown deadline. At each tick it reads, for every part with a thread of
+within its one shutdown deadline. Once stopped, the timers are `HEALTHY`, told so if they
+were found stalled - a watchdog stopped is not one wedged - and every other part stays as
+the watchdog last found it, since nothing looks again. At each tick it reads, for every part with a thread of
 its own, when the callback it runs began (0 when none runs), what waits for it and how
 much it has taken: a session (`busySince`, its queue's depth, `handled`), the events
 thread (`busySince`, the control events, filled slots and telemetry queued, the events
