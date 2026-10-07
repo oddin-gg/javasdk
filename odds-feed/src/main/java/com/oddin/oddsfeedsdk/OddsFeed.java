@@ -277,6 +277,8 @@ public final class OddsFeed {
             state.unlock();
         }
         var producers = core.producers();
+        // the recovery starts are read as the feed opens: a later one would be lost unsaid
+        producers.opened();
         var plan = Sessions.plan(specs, producers.getAvailableProducers(), configuration.getSdkNodeId());
         plan.disabledProducers().forEach(id -> producers.setProducerState(id, false));
         var run = OpenFeed.build(core, plan, configuration, health);
