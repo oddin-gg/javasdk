@@ -153,7 +153,7 @@ class RecoveryActorTest {
     }
 
     @Test
-    void aGapLeftQueuedWhenTheTimeToFinishRunsOutStillTakesThePointBack() throws InterruptedException {
+    void aFactLeftQueuedWhenTheTimeToFinishRunsOutTakesThePointBack() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -168,7 +168,8 @@ class RecoveryActorTest {
         Producer held = requireNonNull(producers.getProducer(PRE));
         long later = lastSubscribed + 10_000;
 
-        // no time at all for what is queued when the close comes: the unsubscribed alive is left
+        // no time at all for what is queued when the close comes: a fact that, handled, would move
+        // no point is left, so only the fallback can take the point back
         actor.finishWait = Duration.ZERO;
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
@@ -184,7 +185,7 @@ class RecoveryActorTest {
         };
         session.processed(PRE, later, later, 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
-        actor.alive(PRE, later, later, false);
+        session.channelReopened();
         Thread closer = Thread.ofPlatform().start(actor::close);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (!actor.closeBegun() && System.nanoTime() < deadline) {
@@ -195,7 +196,7 @@ class RecoveryActorTest {
 
         assertThat(actor.running()).isFalse();
         assertThat(held.getTimestampForRecovery())
-                .as("the last subscribed alive, where the gap left queued would start")
+                .as("the last subscribed alive, the fallback for a fact left unhandled")
                 .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
     }
 
@@ -429,13 +430,19 @@ class RecoveryActorTest {
         };
         Thread poster = Thread.ofPlatform().start(() -> actor.alive(PRE, later, later, false));
         assertThat(looked.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        long closing = System.nanoTime();
         actor.close();
-        offer.countDown();
-        poster.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
-
+        assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                .as("close() with the post held past the time to finish")
+                .isLessThan(Duration.ofSeconds(1));
         assertThat(actor.running()).isFalse();
         assertThat(held.getTimestampForRecovery())
-                .as("back to the last subscribed alive, the post never handled")
+                .as("back to the last subscribed alive, with the post still held")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+        offer.countDown();
+        poster.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(held.getTimestampForRecovery())
+                .as("the post released after the actor ended")
                 .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
     }
 
