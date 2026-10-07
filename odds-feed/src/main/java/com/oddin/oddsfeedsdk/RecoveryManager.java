@@ -17,7 +17,8 @@ public interface RecoveryManager {
     /**
      * Where the event recovery with this request id is: pending, completed, failed or timed out. Null
      * for an id this feed never started an event recovery with, and for one that ended more than five
-     * minutes ago. New in 1.0.
+     * minutes ago - or sooner, once 10,000 event recoveries have ended after it: the feed keeps that
+     * many ended ones at most. New in 1.0.
      */
     default @Nullable EventRecoveryStatus getEventRecoveryStatus(long requestId) {
         return null;
