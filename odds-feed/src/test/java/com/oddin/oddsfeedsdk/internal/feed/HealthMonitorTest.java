@@ -173,6 +173,50 @@ class HealthMonitorTest {
     }
 
     @Test
+    void aNewerReadingOfOnePartHoldsBackNoChangeAnOlderReadingFoundOfTheOthers() throws InterruptedException {
+        events.start();
+        long whole = health.nextReading();
+        // read after the whole feed's reading, told before it: of its own part only
+        health.lagging(1, true);
+        assertThat(heard.next().component()).isEqualTo(HealthComponent.SESSION);
+
+        health.assess(
+                whole,
+                true,
+                true,
+                true,
+                transport(),
+                alives(),
+                List.of(session(1, true)),
+                recovery(),
+                stale(),
+                caches(),
+                noEvents());
+        var catalogs = heard.next();
+        assertThat(catalogs.component())
+                .as("a part the newer reading did not read")
+                .isEqualTo(HealthComponent.CATALOGS);
+        assertThat(catalogs.state()).isEqualTo(HealthState.DEGRADED);
+        heard.nothingMore("the session, which the newer reading told");
+
+        health.lagging(1, false);
+        assertThat(heard.next().state()).isEqualTo(HealthState.HEALTHY);
+        health.assess(
+                whole,
+                true,
+                true,
+                true,
+                transport(),
+                alives(),
+                List.of(session(1, false)),
+                recovery(),
+                stale(),
+                caches(),
+                noEvents());
+        heard.nothingMore("an older reading of a part a newer one told");
+    }
+
+    @Test
     void theStateIsTheWorstOfThePartsTheFeedHasNow() {
         var notStarted = health.assess(
                 health.nextReading(),
