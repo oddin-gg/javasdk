@@ -174,6 +174,37 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void anAliveWithoutAPositiveTimestampMovesNeitherTheResumePointNorTheRecovery() {
+        for (long stamp : new long[] {0, -Duration.ofHours(1).toMillis()}) {
+            var feed = Harness.upWith(MessageInterest.ALL);
+            feed.clock.advance(Duration.ofSeconds(5));
+            long processed = feed.now();
+            feed.machine.processed(1, PRE, processed, feed.now(), 0);
+            feed.clock.advance(Duration.ofSeconds(1));
+            // a bad value: as an offset it would put the producer's now at or before the epoch
+            feed.machine.alive(PRE, stamp, feed.now(), true);
+            assertThat(feed.timestampForRecovery(PRE))
+                    .as("the resume point, after an alive stamped " + stamp)
+                    .isEqualTo(Instant.ofEpochMilli(processed));
+
+            int before = feed.snapshots(PRE).size();
+            feed.machine.alive(PRE, stamp, feed.now(), false);
+            assertThat(feed.snapshots(PRE))
+                    .as("recoveries, after an unsubscribed alive stamped " + stamp)
+                    .hasSize(before);
+            assertThat(feed.producers.isProducerDown(PRE)).isFalse();
+
+            feed.machine.connectionDown();
+            feed.clock.advance(Duration.ofSeconds(10));
+            feed.machine.connectionUp();
+            feed.alive(PRE);
+            assertThat(feed.lastSnapshot(PRE).after())
+                    .as("the recovery after a loss, with an alive stamped " + stamp + " before it")
+                    .isEqualTo(Instant.ofEpochMilli(processed));
+        }
+    }
+
+    @Test
     void aClientsRecoveryPointInTheFutureAsksFromNow() {
         long from = feed.now() + Duration.ofHours(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, from);

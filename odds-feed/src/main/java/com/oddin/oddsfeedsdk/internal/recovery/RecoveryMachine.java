@@ -473,13 +473,19 @@ final class RecoveryMachine {
     /**
      * An alive from the SDK's own alive channel: the producer is there. It measures the producer's
      * clock offset and alive interval; subscribed, it is the point everything before was sent;
-     * unsubscribed, the producer has stopped sending since the last one that was.
+     * unsubscribed, the producer has stopped sending since the last one that was. One without a
+     * positive timestamp is ignored: as the producer's clock it would put the producer's now at or
+     * before the epoch, and every recovery and resume point capped at it with it.
      *
      * @param receivedAt when the SDK received it, epoch millis by its clock
      */
     void alive(long producerId, long generatedAt, long receivedAt, boolean subscribed) {
         Track track = known(producerId);
         if (track == null || !enabled(track)) {
+            return;
+        }
+        if (generatedAt <= 0) {
+            LOG.warn("An alive of producer {} stamped {}, not a time, is ignored", producerId, generatedAt);
             return;
         }
         long now = now();
