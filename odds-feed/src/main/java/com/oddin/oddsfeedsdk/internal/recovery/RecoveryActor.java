@@ -119,7 +119,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final AtomicInteger posting = new AtomicInteger();
     /** Whether the closing actor has waited for an essential post under way; for a test. */
     private volatile boolean awaitingPosts;
-    /** A test's hook, run in an essential post after its look at the close, before the offer. */
+    /** A test's hook, run in an essential post after its look at the close, before what it queues. */
     volatile Runnable beforeEssentialOffer = () -> {};
     /** How long the actor spends on the facts queued when it closes; a test shortens it. */
     volatile Duration finishWait = FINISH_WAIT;
@@ -240,30 +240,40 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      */
     @Override
     public void alive(long producerId, long generatedAt, long receivedAt, boolean subscribed) {
-        if (closed) {
-            return;
-        }
-        if (!producers.isKnown(producerId)) {
-            long unknown = counters.unknownProducers.incrementAndGet();
-            if (unknown == 1 || unknown % 1_000 == 0) {
-                LOG.warn("An alive of producer {}, which the producer list does not have, is dropped", producerId);
+        // one essential post, counted from its look at the close until its slot and fact are in:
+        // the closing actor waits for it, or takes the points back without it
+        posting.incrementAndGet();
+        try {
+            if (closed) {
+                return;
             }
-            return;
-        }
-        var alive = new AliveSlot.Seen(generatedAt, receivedAt, subscribed);
-        var fresh = new boolean[1];
-        alives.compute(producerId, (id, slot) -> {
-            AliveSlot joined = slot;
-            if (joined == null) {
-                fresh[0] = true;
-                joined = new AliveSlot(alive);
+            beforeEssentialOffer.run();
+            if (!producers.isKnown(producerId)) {
+                long unknown = counters.unknownProducers.incrementAndGet();
+                if (unknown == 1 || unknown % 1_000 == 0) {
+                    LOG.warn("An alive of producer {}, which the producer list does not have, is dropped", producerId);
+                }
+                return;
             }
-            joined.add(alive);
-            return joined;
-        });
-        if (fresh[0]) {
-            postEssential(new Fact.Alives(producerId));
+            var alive = new AliveSlot.Seen(generatedAt, receivedAt, subscribed);
+            var fresh = new boolean[1];
+            alives.compute(producerId, (id, slot) -> {
+                AliveSlot joined = slot;
+                if (joined == null) {
+                    fresh[0] = true;
+                    joined = new AliveSlot(alive);
+                }
+                joined.add(alive);
+                return joined;
+            });
+            if (fresh[0]) {
+                // no second look at the close: counted since the first, the fact is waited for
+                essential.offer(new Fact.Alives(producerId));
+            }
+        } finally {
+            posting.decrementAndGet();
         }
+        LockSupport.unpark(thread);
     }
 
     /**
