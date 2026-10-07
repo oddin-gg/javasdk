@@ -116,6 +116,27 @@ class EntityCacheTest {
     }
 
     @Test
+    void anOlderFetchWritesASharedFieldTheNewerOneLeftOutAndDidNotClear() {
+        var loose = new Endpoint("profile, loosely", Set.of(NAME, ICON), Set.of(NAME));
+        Stamp english = cache.stamp("c1");
+        Stamp german = cache.stamp("c1");
+        cache.writeAuthoritative("c1", Write.from(loose, DE).put(NAME, "Mannschaft"), german);
+        cache.writeAuthoritative("c1", Write.from(loose, EN).put(NAME, "Team").put(ICON, "old.png"), english);
+        assertThat(entry("c1").get(ICON, null))
+                .as("the newer fetch said nothing of it: as if they had answered in the order they started")
+                .isEqualTo("old.png");
+
+        Stamp french = cache.stamp("c1");
+        Stamp italian = cache.stamp("c1");
+        cache.writeAuthoritative(
+                "c1", Write.from(loose, Locale.ITALIAN).put(NAME, "Squadra").put(ICON, "new.png"), italian);
+        cache.writeAuthoritative(
+                "c1", Write.from(loose, Locale.FRENCH).put(NAME, "Equipe").put(ICON, "older.png"), french);
+        assertThat(entry("c1").get(ICON, null)).as("the newer fetch's").isEqualTo("new.png");
+        assertThat(entry("c1").get(NAME, Locale.FRENCH)).as("its own locale").isEqualTo("Equipe");
+    }
+
+    @Test
     void responsesOfTwoEndpointsOfOneEntityDoNotHoldEachOtherBack() {
         Stamp icons = cache.stamp("c1");
         Stamp profile = cache.stamp("c1");
