@@ -1102,6 +1102,8 @@ Performance is a requirement, not a follow-up.
   Central credentials live in the secrets of an environment only `v1.*` tags can use,
   and only once its reviewers approve the job.
   `RELEASING.md` has the checklist.
+- The jar names the automatic module `gg.oddin.oddsfeed` in its manifest, from the first
+  release on: naming it later would rename the module under the clients that require it.
 - The new line publishes `gg.oddin.oddsfeed:odds-feed` to Maven Central only. The old
   line keeps publishing `com.oddin.oddsfeed:odds-feed` to GitHub Packages only, from
   `release/0.x`. Each line's pre-release check queries its own registry. Never two

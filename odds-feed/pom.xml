@@ -213,6 +213,22 @@
         </executions>
       </plugin>
       <plugin>
+        <!--
+          The module name a client's module-info requires the SDK by, kept by the shaded jar, which
+          keeps this jar's manifest. Set before 1.0.0: without it the jar's name would make it
+          odds.feed, and naming it later would rename the module under the clients that require it.
+        -->
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>gg.oddin.oddsfeed</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
+        </configuration>
+      </plugin>
+      <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
         <version>${maven-shade-plugin.version}</version>

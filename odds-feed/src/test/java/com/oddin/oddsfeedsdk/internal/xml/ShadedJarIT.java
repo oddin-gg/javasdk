@@ -4,6 +4,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
+import java.lang.module.ModuleFinder;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -14,8 +15,9 @@ import java.util.jar.JarFile;
 import org.junit.jupiter.api.Test;
 
 /**
- * The jar as published: Woodstox inside it under the SDK's own package, registered as no one's StAX
- * parser, and the decoder in it reading with it, hardened as in the unit tests.
+ * The jar as published: the module it names, Woodstox inside it under the SDK's own package,
+ * registered as no one's StAX parser, and the decoder in it reading with it, hardened as in the unit
+ * tests.
  */
 class ShadedJarIT {
 
@@ -46,6 +48,25 @@ class ShadedJarIT {
                     .noneMatch(name -> name.startsWith("com/ctc/") || name.startsWith("org/codehaus/"))
                     .noneMatch(name -> name.startsWith("META-INF/services/"));
         }
+    }
+
+    /**
+     * The module a client's module-info requires: named in the manifest, which the shading keeps,
+     * and a module the JDK accepts with Woodstox's relocated packages in it.
+     */
+    @Test
+    void theJarIsTheAutomaticModuleGgOddinOddsfeed() throws IOException {
+        try (var jar = new JarFile(JAR.toFile())) {
+            assertThat(jar.getManifest().getMainAttributes().getValue("Automatic-Module-Name"))
+                    .isEqualTo("gg.oddin.oddsfeed");
+        }
+        var modules = ModuleFinder.of(JAR).findAll();
+        assertThat(modules).hasSize(1);
+        var descriptor = modules.iterator().next().descriptor();
+        assertThat(descriptor.name()).isEqualTo("gg.oddin.oddsfeed");
+        assertThat(descriptor.isAutomatic()).isTrue();
+        assertThat(descriptor.packages())
+                .contains("com.oddin.oddsfeedsdk", "com.oddin.oddsfeedsdk.internal.woodstox.wstx.stax");
     }
 
     @Test
