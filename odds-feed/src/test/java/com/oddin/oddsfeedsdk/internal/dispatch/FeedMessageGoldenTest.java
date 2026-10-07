@@ -524,9 +524,9 @@ class FeedMessageGoldenTest {
                         MarketCancel::getVoidReasonValue,
                         Market::getRefId)
                 .containsExactly(
-                        tuple(1, Map.of(), null, null, null, null, null),
-                        tuple(42, Map.of("setnr", "1"), null, null, null, null, null),
-                        tuple(17, Map.of("mapnr", "2"), "1", 4, "minutes=5", null, null));
+                        tuple(1, Map.of(), null, null, null, null, 0),
+                        tuple(42, Map.of("setnr", "1"), null, null, null, null, 0),
+                        tuple(17, Map.of("mapnr", "2"), "1", 4, "minutes=5", null, 0));
     }
 
     @Test
@@ -599,7 +599,9 @@ class FeedMessageGoldenTest {
     @SuppressWarnings("deprecation") // the getters the feed never sends are part of the golden
     private static void assertOutcomesWithoutWhatTheFeedNeverSends(List<MarketWithOdds> markets) {
         for (MarketWithOdds market : markets) {
-            assertThat(market.getRefId()).isNull();
+            assertThat(market.getRefId())
+                    .as("0, as 0.0.x read the absent attribute")
+                    .isZero();
             for (OutcomeOdds outcome : market.getOutcomeOdds()) {
                 assertThat(outcome.getRefId()).isNull();
                 assertThat(outcome.getAdditionalProbabilities()).isNull();

@@ -7,7 +7,12 @@ import org.jspecify.annotations.Nullable;
 public interface MarketDescription {
     int getId();
 
-    /** @deprecated the feed never sends this value. */
+    /**
+     * Always 0, as 0.0.x read the absent attribute, and reading it loads nothing. Declared nullable,
+     * as 0.0.x declared it.
+     *
+     * @deprecated the feed never sends this value.
+     */
     @Deprecated
     @Nullable
     Integer getRefId();

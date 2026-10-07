@@ -92,7 +92,7 @@ class DescriptionManagerTest {
         assertThat(winner.getGroups()).containsExactly("all", "regular_play");
         assertThat(winner.getIncludesOutcomesOfType()).isNull();
         assertThat(winner.getOutcomeType()).isNull();
-        assertDeprecatedRefIdsAreNull(winner);
+        assertDeprecatedRefIds(winner);
         assertThat(api.requests("GET", LIST_EN))
                 .as("one list, however many getters")
                 .hasSize(1);
@@ -311,7 +311,7 @@ class DescriptionManagerTest {
         assertThat(caught.getSpecifiers()).isNull();
         assertThat(caught.getGroups()).isEmpty();
         assertThat(thrown.getId()).as("as it was got").isEqualTo(1);
-        assertThat(refId(thrown)).as("fetching nothing").isNull();
+        assertThat(refId(thrown)).as("fetching nothing").isZero();
     }
 
     @Test
@@ -478,8 +478,10 @@ class DescriptionManagerTest {
     }
 
     @SuppressWarnings("deprecation") // the deprecated getters on purpose
-    private static void assertDeprecatedRefIdsAreNull(MarketDescription market) {
-        assertThat(market.getRefId()).isNull();
+    private static void assertDeprecatedRefIds(MarketDescription market) {
+        assertThat(market.getRefId())
+                .as("0, as 0.0.x read the absent attribute")
+                .isZero();
         for (OutcomeDescription outcome : market.getOutcomes()) {
             assertThat(outcome.getRefId()).isNull();
         }
