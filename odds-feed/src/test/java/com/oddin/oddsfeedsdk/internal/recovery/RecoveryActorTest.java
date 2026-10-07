@@ -127,6 +127,13 @@ class RecoveryActorTest {
                 .isBetween(0L, System.nanoTime() - stepped);
     }
 
+    /** Until the wall clock is past {@code epochMillis}. */
+    private static void awaitPast(long epochMillis) throws InterruptedException {
+        while (System.currentTimeMillis() <= epochMillis) {
+            Thread.sleep(5);
+        }
+    }
+
     private static void awaitTicks(AtomicInteger ticks, int count) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (ticks.get() < count && System.nanoTime() < deadline) {
@@ -167,7 +174,9 @@ class RecoveryActorTest {
         bothUp(actor, session);
         awaitTimestampForRecovery(held, at -> at != null && at.isAfter(from), "past the client's start");
 
-        Instant processed = Instant.ofEpochMilli(System.currentTimeMillis() + 1_000);
+        Instant processed = Instant.ofEpochMilli(System.currentTimeMillis() + 100);
+        // a point is never published past the producer's now
+        awaitPast(processed.toEpochMilli());
         session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
 
@@ -204,7 +213,8 @@ class RecoveryActorTest {
         session.snapshotComplete(PRE, first.requestId());
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        Instant processed = Instant.ofEpochMilli(lastSubscribed + 1_000);
+        clock.advance(Duration.ofSeconds(1));
+        Instant processed = clock.instant();
         session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
 
@@ -230,7 +240,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
 
         // no time at all for what is queued when the close comes: a fact that, handled, would move
         // no point is left, so only the fallback can take the point back
@@ -320,7 +332,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
 
         // the feed's shutdown deadline spent on its sessions: the actor's own time to finish is
         // cut to it, so what is queued is left to the fallback
@@ -372,7 +386,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
 
         // the actor busy with a fact a little while, another queued behind it, as the feed's close
         // comes with its deadline spent on wedged sessions
@@ -414,7 +430,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
 
         // as above, but the closing thread interrupted - an executor shutting down now, say
         var entered = new CountDownLatch(1);
@@ -497,7 +515,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        Instant processed = Instant.ofEpochMilli(lastSubscribed + 1_000);
+        Instant processed = Instant.ofEpochMilli(lastSubscribed + 100);
+        // a point is never published past the producer's now
+        awaitPast(processed.toEpochMilli());
         session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
 
@@ -568,7 +588,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
         session.processed(PRE, later, later, 0);
         awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
 
@@ -602,7 +624,8 @@ class RecoveryActorTest {
                 }
             }
         };
-        long later = System.currentTimeMillis() + 10_000;
+        long later = System.currentTimeMillis() + 100;
+        awaitPast(later);
         ahead.processed(PRE, later, later, 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         behind.closed();
@@ -635,7 +658,8 @@ class RecoveryActorTest {
 
     /**
      * Both producers up on two sessions, then a message of the prematch producer processed on each,
-     * the second's ten seconds older: what the point is now, the second's.
+     * the second's a tenth of a second older, neither in the producer's future: what the point is
+     * now, the second's.
      */
     private Instant twoSessionsApart(RecoveryActor actor, SessionFacts first, SessionFacts second)
             throws InterruptedException {
@@ -650,8 +674,10 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         awaitUp(LIVE);
-        long ahead = now + 20_000;
-        long behind = ahead - 10_000;
+        long ahead = now + 200;
+        long behind = ahead - 100;
+        // a point is never published past the producer's now
+        awaitPast(ahead);
         first.processed(PRE, ahead, ahead, 0);
         second.processed(PRE, behind, behind, 0);
         aheadAt = Instant.ofEpochMilli(ahead);
@@ -675,7 +701,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
         session.processed(PRE, later, later, 0);
         awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
 
@@ -723,7 +751,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
         session.processed(PRE, later, later, 0);
         awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
 
@@ -838,7 +868,9 @@ class RecoveryActorTest {
         }
         awaitUp(PRE);
         awaitUp(LIVE);
-        long later = lastSubscribed + 10_000;
+        long later = lastSubscribed + 100;
+        // a point is never published past the producer\'s now
+        awaitPast(later);
         session.processed(PRE, later, later, 0);
         awaitTimestampForRecovery(
                 requireNonNull(producers.getProducer(PRE)),
@@ -1644,7 +1676,8 @@ class RecoveryActorTest {
                 clock.armed.set(Thread.currentThread());
             }
         };
-        Instant processed = Instant.ofEpochMilli(System.currentTimeMillis() + 1_000);
+        // after the alives, and not in the producer's future
+        Instant processed = Instant.ofEpochMilli(System.currentTimeMillis());
         session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
         awaitTimestampForRecovery(held, processed::equals, "the point the failed fact moved");
         assertThat(actor.counters().factsFailed()).isEqualTo(1);

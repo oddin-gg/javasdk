@@ -124,6 +124,67 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aMessageFromTheProducersFutureMovesNeitherTheResumePointNorTheRecoveryPastItsNow() {
+        for (long offset : new long[] {
+            0, Duration.ofMinutes(10).toMillis(), -Duration.ofMinutes(10).toMillis()
+        }) {
+            var feed = Harness.upWith(MessageInterest.ALL);
+            feed.clock.advance(Duration.ofSeconds(5));
+            // the producer's clock behind the SDK's by the offset, or ahead of it, as its alive says
+            feed.machine.alive(PRE, feed.now() - offset, feed.now(), true);
+            long producerNow = feed.now() - offset;
+            // one message stamped an hour ahead: a component's fast clock, or a bad value
+            long ahead = producerNow + Duration.ofHours(1).toMillis();
+            feed.machine.processed(1, PRE, ahead, feed.now(), 0);
+            assertThat(feed.machine.checkpoint(1, PRE))
+                    .as("the checkpoint keeps it")
+                    .isEqualTo(ahead);
+            assertThat(feed.timestampForRecovery(PRE))
+                    .as("the resume point, with an offset of " + offset + " ms")
+                    .isEqualTo(Instant.ofEpochMilli(producerNow));
+
+            feed.machine.connectionDown();
+            feed.clock.advance(Duration.ofSeconds(10));
+            feed.machine.connectionUp();
+            feed.machine.alive(PRE, feed.now() - offset, feed.now(), true);
+            assertThat(feed.lastSnapshot(PRE).after())
+                    .as("the recovery, with an offset of " + offset + " ms")
+                    .isEqualTo(Instant.ofEpochMilli(feed.now() - offset));
+            assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(feed.now() - offset));
+        }
+    }
+
+    @Test
+    void anAliveFromTheProducersFutureMovesNoRecoveryPastItsNow() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofSeconds(5));
+        long ahead = feed.now() + Duration.ofHours(1).toMillis();
+        feed.machine.alive(PRE, ahead, feed.now(), true);
+        // the next alive is on time again: the offset is back to none
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.alive(PRE);
+        feed.clock.advance(Duration.ofSeconds(1));
+        // the producer stopped sending: every session misses what came after its last subscribed alive
+        int before = feed.snapshots(PRE).size();
+        feed.unsubscribed(PRE);
+        assertThat(feed.snapshots(PRE)).hasSize(before + 1);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("not the alive an hour ahead")
+                .isEqualTo(Instant.ofEpochMilli(feed.now()));
+    }
+
+    @Test
+    void aClientsRecoveryPointInTheFutureAsksFromNow() {
+        long from = feed.now() + Duration.ofHours(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after()).isEqualTo(Instant.ofEpochMilli(feed.now()));
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(feed.now()));
+    }
+
+    @Test
     void aSessionThatProcessedNothingKeepsItsInitialBoundaryForALaterLoss() {
         var settings = Harness.settings();
         var feed = new Harness(new RecoverySettings(
