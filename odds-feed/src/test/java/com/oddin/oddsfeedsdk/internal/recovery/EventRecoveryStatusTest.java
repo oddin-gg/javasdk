@@ -70,6 +70,29 @@ class EventRecoveryStatusTest {
     }
 
     @Test
+    void aProducerDownForAProcessingDelayLeavesOneInFlightPendingUntilItsSnapshotCompletes() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        Outbox.Call call = feed.calls.getLast();
+        feed.accept(call);
+        // the session processes the producer late: down, with no recovery and nothing lost
+        feed.live(1, PRE, Duration.ofSeconds(25));
+        feed.advance(Duration.ofMillis(10));
+        assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.PROCESSING_DELAY);
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+        assertThat(status(call).state()).as("its snapshot is still on its way").isEqualTo(PENDING);
+
+        feed.clock.advance(Duration.ofSeconds(1));
+        feed.machine.snapshotComplete(1, PRE, call.requestId());
+        EventRecoveryStatus completed = status(call);
+        assertThat(completed.state()).isEqualTo(COMPLETED);
+        assertThat(completed.endedAt()).isEqualTo(Instant.ofEpochMilli(feed.now()));
+        assertThat(completed.reason()).isNull();
+    }
+
+    @Test
     void oneTheApiRefusedHasFailed() {
         feed.open(1, MessageInterest.ALL);
         feed.start();
