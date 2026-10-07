@@ -5,7 +5,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.OddsFeed;
 import java.time.Duration;
-import java.util.List;
+import java.util.ArrayList;
 import java.util.Locale;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.Test;
@@ -171,27 +171,30 @@ class OddsFeedConfigurationBuilderTest {
     @Test
     void aNullArgumentIsANullPointerExceptionAtOnceAndChangesNothing() {
         var builder = builder().selectProduction().setAccessToken("token");
-        List<ThrowingCallable> nulls = List.of(
-                () -> builder.selectProduction(nullValue()),
-                () -> builder.selectIntegration(nullValue()),
-                () -> builder.selectTest(nullValue()),
-                () -> builder.selectEnvironment(nullValue(), "api.local"),
-                () -> builder.selectEnvironment("mq.local", nullValue()),
-                () -> builder.selectEnvironment(nullValue(), "api.local", 5671),
-                () -> builder.selectEnvironment("mq.local", nullValue(), 5671),
-                () -> builder.setAccessToken(nullValue()),
-                () -> builder.setExceptionHandlingStrategy(nullValue()),
-                () -> builder.setInitialSnapshotRecoveryInterval(nullValue()),
-                () -> builder.setHttpClientTimeout(nullValue()),
-                () -> builder.setStartupTimeout(nullValue()),
-                () -> builder.setMessagingSslContext(nullValue()));
-        for (int i = 0; i < nulls.size(); i++) {
-            assertThatThrownBy(nulls.get(i)).as("setter %d", i).isInstanceOf(NullPointerException.class);
+        // each with the name of the argument its exception gives
+        record Null(ThrowingCallable call, String name) {}
+        var nulls = new ArrayList<Null>();
+        nulls.add(new Null(() -> builder.selectProduction(nullValue()), "region"));
+        nulls.add(new Null(() -> builder.selectIntegration(nullValue()), "region"));
+        nulls.add(new Null(() -> builder.selectTest(nullValue()), "region"));
+        nulls.add(new Null(() -> builder.selectEnvironment(nullValue(), "api.local"), "messagingHost"));
+        nulls.add(new Null(() -> builder.selectEnvironment("mq.local", nullValue()), "apiHost"));
+        nulls.add(new Null(() -> builder.selectEnvironment(nullValue(), "api.local", 5671), "messagingHost"));
+        nulls.add(new Null(() -> builder.selectEnvironment("mq.local", nullValue(), 5671), "apiHost"));
+        nulls.add(new Null(() -> builder.setAccessToken(nullValue()), "accessToken"));
+        nulls.add(new Null(() -> builder.setExceptionHandlingStrategy(nullValue()), "exceptionHandlingStrategy"));
+        nulls.add(new Null(() -> builder.setInitialSnapshotRecoveryInterval(nullValue()), "interval"));
+        nulls.add(new Null(() -> builder.setHttpClientTimeout(nullValue()), "HTTP client timeout"));
+        nulls.add(new Null(() -> builder.setStartupTimeout(nullValue()), "startup timeout"));
+        nulls.add(new Null(() -> builder.setMessagingSslContext(nullValue()), "context"));
+        nulls.add(new Null(() -> new Environment(nullValue(), "api.local", 5671), "messagingHost"));
+        nulls.add(new Null(() -> new Environment("mq.local", nullValue(), 5671), "apiHost"));
+        for (var argument : nulls) {
+            assertThatThrownBy(argument.call())
+                    .as(argument.name())
+                    .isExactlyInstanceOf(NullPointerException.class)
+                    .hasMessage(argument.name());
         }
-        assertThatThrownBy(() -> new Environment(nullValue(), "api.local", 5671))
-                .isInstanceOf(NullPointerException.class);
-        assertThatThrownBy(() -> new Environment("mq.local", nullValue(), 5671))
-                .isInstanceOf(NullPointerException.class);
 
         OddsFeedConfiguration configuration = builder.build();
         assertThat(configuration.getAccessToken()).isEqualTo("token");
