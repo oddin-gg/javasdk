@@ -148,6 +148,36 @@ class AliveDispatcherTest {
         assertThat(waiting.unreadable()).isEqualTo(1);
     }
 
+    @Test
+    void theAlivesTheCloseDropsReadAsNoneQueued() {
+        var waiting = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
+        dispatcher = waiting;
+        for (int i = 0; i < 3; i++) {
+            waiting.accept(alive(FeedMessages.alive(2, true), i));
+        }
+        assertThat(waiting.queued()).isEqualTo(3);
+        waiting.stop();
+        assertThat(waiting.awaitStop(System.nanoTime())).isTrue();
+        assertThat(waiting.queued())
+                .as("what getHealth() reads once the feed is closed")
+                .isZero();
+        assertThat(posted).isEmpty();
+    }
+
+    @Test
+    void anAliveHandedOverAsTheCloseDrainsTheQueueIsGivenBackToo() {
+        var waiting = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
+        dispatcher = waiting;
+        // the close, stop and drain, between the hand-off's look at it and its add
+        waiting.beforeQueued = () -> {
+            waiting.stop();
+            waiting.awaitStop(System.nanoTime());
+        };
+        waiting.accept(alive(FeedMessages.alive(2, true), 1));
+        assertThat(waiting.queued()).as("queued once the close has drained").isZero();
+        assertThat(posted).isEmpty();
+    }
+
     private AliveDispatcher started() {
         var started = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
         dispatcher = started;
