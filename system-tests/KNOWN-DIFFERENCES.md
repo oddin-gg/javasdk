@@ -466,3 +466,17 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Pinned by:** `ProducerRecoveryScenarioIT.theRecoveryTimestampTheClientSetsIsWhereTheFirstRecoveryStarts`
 - **Found:** by test against 0.0.57; the source (`OddsFeed.open`, `ProducerManagerImpl.open`)
   explains it.
+
+## KD-33 A recovery after a producer gap starts from the last alive received, not the newest
+
+- **0.0.x:** When an alive says the producer is no longer subscribed, the recovery starts from the
+  timestamp of the last alive it received before.
+- **1.0:** It starts from the newest subscribed alive by its timestamp, the running maximum, which
+  says everything sent before it has been sent (NEXT.md section 4, Recovery and producers). The
+  two differ only when a producer's clock goes back between alives; then 1.0 starts later, from
+  what the producer stamped before the step back.
+- **Why:** A producer's alives arrive in the order it sent them, so with a clock that only moves
+  forward the last received is the newest. A clock that steps back is the one case they part.
+- **Pinned by:** `ProducerRecoveryScenarioIT.aProducerWhoseClockWentBackRecoversFromTheNewestAliveOn10`
+- **Found:** by test against 1.0, a scenario that stamped its first alive later than the ones after
+  it; the 0.0.x side read in the source (`RecoveryManager.systemSessionAliveReceived`).
