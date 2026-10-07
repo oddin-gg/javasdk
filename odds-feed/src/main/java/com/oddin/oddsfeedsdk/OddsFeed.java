@@ -5,6 +5,7 @@ import static java.util.Objects.requireNonNull;
 import com.oddin.oddsfeedsdk.api.BookmakerDetail;
 import com.oddin.oddsfeedsdk.api.MarketDescriptionManager;
 import com.oddin.oddsfeedsdk.api.SportsInfoManager;
+import com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
@@ -49,27 +50,6 @@ public final class OddsFeed {
     static final String OPENED_ALREADY = "feed cannot already opened";
 
     /**
-     * Before the feed opens there is no queue a recovery's messages could reach, so no request is
-     * accepted.
-     */
-    private static final RecoveryManager NOT_OPEN = new RecoveryManager() {
-        @Override
-        public @Nullable Long initiateEventOddsMessagesRecovery(long producerId, URN eventId) {
-            return notAccepted(producerId, eventId);
-        }
-
-        @Override
-        public @Nullable Long initiateEventStatefulMessagesRecovery(long producerId, URN eventId) {
-            return notAccepted(producerId, eventId);
-        }
-
-        private @Nullable Long notAccepted(long producerId, URN eventId) {
-            LOG.warn("Recovery of {} from producer {} not accepted: the feed is not open", eventId, producerId);
-            return null;
-        }
-    };
-
-    /**
      * Keeps {@code OddsFeed.Companion.getOddsFeedConfigurationBuilder()} compiling: 0.0.x was
      * Kotlin, and that is how Java code reached a function of its companion object.
      */
@@ -86,6 +66,8 @@ public final class OddsFeed {
      */
     private final EventsDispatcher events;
 
+    /** The event recoveries, over whatever the feed is when they are asked for. */
+    private final RecoveryManager recovery = new FeedRecovery();
     /** Held by the one start under way, so callers that come meanwhile wait for it, not start again. */
     private final ReentrantLock starting = new ReentrantLock();
 
@@ -181,12 +163,15 @@ public final class OddsFeed {
     }
 
     /**
-     * Event recoveries. Until the feed opens, a request is not accepted: it returns null, since no
-     * session's queue exists yet that the recovered messages could reach.
+     * Event recoveries. Once the feed is open, a request waits on the caller's thread for the API's
+     * answer, for the HTTP timeout and a second at most, and returns the request id, or null when it
+     * was not accepted. Until the feed opens, a request is not accepted: it returns null, since no
+     * session's queue exists yet that the recovered messages could reach; nor on a replay feed,
+     * which runs no recovery, or once the feed is closed.
      */
     public RecoveryManager getRecoveryManager() {
         core();
-        return NOT_OPEN;
+        return recovery;
     }
 
     /**
@@ -383,6 +368,57 @@ public final class OddsFeed {
             return running;
         } finally {
             state.unlock();
+        }
+    }
+
+    /** The event recovery of a request of the client's, over the feed as it is now. */
+    private @Nullable Long recover(long producerId, URN eventId, boolean stateful) {
+        @Nullable OpenFeed run;
+        boolean wasClosed;
+        state.lock();
+        try {
+            run = running;
+            wasClosed = closed;
+        } finally {
+            state.unlock();
+        }
+        if (run == null || wasClosed) {
+            LOG.warn(
+                    "Recovery of {} from producer {} not accepted: the feed is {}",
+                    eventId,
+                    producerId,
+                    wasClosed ? "closed" : "not open");
+            return null;
+        }
+        return run.recoverEvent(producerId, eventId, stateful);
+    }
+
+    private @Nullable EventRecoveryStatus recoveryStatus(long requestId) {
+        @Nullable OpenFeed run;
+        state.lock();
+        try {
+            run = closed ? null : running;
+        } finally {
+            state.unlock();
+        }
+        return run == null ? null : run.recoveryStatus(requestId);
+    }
+
+    /** What {@link #getRecoveryManager} returns: one, whether the feed is open yet or not. */
+    private final class FeedRecovery implements RecoveryManager {
+        @Override
+        public @Nullable Long initiateEventOddsMessagesRecovery(long producerId, URN eventId) {
+            return recover(producerId, eventId, false);
+        }
+
+        @Override
+        public @Nullable Long initiateEventStatefulMessagesRecovery(long producerId, URN eventId) {
+            return recover(producerId, eventId, true);
+        }
+
+        @Override
+        public @Nullable EventRecoveryStatus getEventRecoveryStatus(long requestId) {
+            return recoveryStatus(requestId);
         }
     }
 

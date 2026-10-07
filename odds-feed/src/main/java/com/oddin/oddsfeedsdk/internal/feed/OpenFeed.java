@@ -8,17 +8,24 @@ import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
 import com.oddin.oddsfeedsdk.internal.dispatch.Pipeline;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
+import com.oddin.oddsfeedsdk.internal.recovery.EventRecoveryStatus;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoverySettings;
 import com.oddin.oddsfeedsdk.internal.recovery.SessionFacts;
 import com.oddin.oddsfeedsdk.internal.session.Sessions;
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
+import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * What {@code open()} adds to the feed: the broker connection, a dispatcher per session, and the
@@ -34,6 +41,8 @@ import org.jspecify.annotations.Nullable;
  */
 public final class OpenFeed {
 
+    private static final Logger LOG = LoggerFactory.getLogger(OpenFeed.class);
+
     /** The exchange of the live feed, as 0.0.x named it. */
     static final String FEED_EXCHANGE = "oddinfeed";
 
@@ -45,6 +54,13 @@ public final class OpenFeed {
      * left to end on its own, on a daemon thread, and said so in the log.
      */
     public static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
+
+    /**
+     * How much longer than the HTTP timeout an event recovery's caller waits for the API's answer:
+     * the request's own deadline covers the call and its retries, and this the actor's turn around
+     * it, as a loader's waiters wait for its fetch.
+     */
+    static final Duration ANSWER_MARGIN = Duration.ofSeconds(1);
 
     private enum State {
         BUILT,
@@ -59,6 +75,8 @@ public final class OpenFeed {
     private final @Nullable RecoveryActor actor;
     /** Each session's facts, as the actor took them; none for a replay feed. */
     private final List<SessionFacts> facts;
+    /** How long an event recovery's caller waits for the API's answer. */
+    private final Duration answerWait;
     /** What the transport tells of the connection, in turn; for a test. */
     private final ConnectionTee connection;
     /** A test's hook, run in a start just before the transport opens. */
@@ -75,12 +93,14 @@ public final class OpenFeed {
             @Nullable AliveDispatcher alives,
             @Nullable RecoveryActor actor,
             List<SessionFacts> facts,
+            Duration answerWait,
             ConnectionTee connection) {
         this.transport = transport;
         this.sessions = List.copyOf(sessions);
         this.alives = alives;
         this.actor = actor;
         this.facts = List.copyOf(facts);
+        this.answerWait = answerWait;
         this.connection = connection;
     }
 
@@ -146,7 +166,14 @@ public final class OpenFeed {
                     spec.replay(),
                     pipeline));
         }
-        return new OpenFeed(transport, dispatchers, alives, actor, facts, connection);
+        return new OpenFeed(
+                transport,
+                dispatchers,
+                alives,
+                actor,
+                facts,
+                configuration.getHttpClientTimeout().plus(ANSWER_MARGIN),
+                connection);
     }
 
     /**
@@ -249,6 +276,49 @@ public final class OpenFeed {
         }
         transport.close();
         return stopped;
+    }
+
+    /**
+     * Asks for one event's messages again, and waits on the caller's thread for the API's answer,
+     * for the HTTP timeout and a margin at most, as 0.0.x waited for its call.
+     *
+     * @return the request id, or null when the request was not accepted, was not answered in time,
+     *     names a producer the list does not have, or the feed is a replay feed or closed
+     */
+    public @Nullable Long recoverEvent(long producerId, URN eventId, boolean stateful) {
+        if (actor == null) {
+            LOG.warn(
+                    "Recovery of {} from producer {} not accepted: a replay feed runs no recovery",
+                    eventId,
+                    producerId);
+            return null;
+        }
+        var reply = actor.recoverEvent(producerId, eventId, stateful);
+        try {
+            return reply.get(answerWait.toNanos(), TimeUnit.NANOSECONDS);
+        } catch (TimeoutException e) {
+            // the actor may still make the request; the caller has no id to look it up by
+            LOG.warn("Recovery of {} from producer {} not answered within {}", eventId, producerId, answerWait);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            LOG.warn(
+                    "Recovery of {} from producer {} not accepted: {}",
+                    eventId,
+                    producerId,
+                    cause == null ? e.getMessage() : cause.getMessage());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        return null;
+    }
+
+    /** Where the event recovery with this request id is; null for none, and on a replay feed. */
+    public com.oddin.oddsfeedsdk.api.entities.@Nullable EventRecoveryStatus recoveryStatus(long requestId) {
+        if (actor == null) {
+            return null;
+        }
+        EventRecoveryStatus status = actor.recoveryStatus(requestId);
+        return status == null ? null : status.toPublic();
     }
 
     /** Closes it all, within the shutdown timeout: for a start that fails, which keeps nothing of it. */

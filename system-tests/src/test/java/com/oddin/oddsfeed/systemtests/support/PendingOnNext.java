@@ -16,8 +16,9 @@ import org.junit.jupiter.api.extension.TestExecutionExceptionHandler;
 import org.opentest4j.TestAbortedException;
 
 /**
- * The scenarios 1.0 does not pass yet, while its feed is being put together: the ones listed in
- * {@code pending-on-1.0.txt}, in the test resources.
+ * The scenarios 1.0 does not pass yet: the ones listed in {@code pending-on-1.0.txt}, in the test
+ * resources. The list held the scenarios back while the feed was put together, and is empty since;
+ * a scenario written ahead of the 1.0 behaviour it checks is listed until that behaviour lands.
  *
  * <p>Against 1.0 a listed test still runs. If it fails, it is aborted instead, with the reason the
  * list gives, so the run shows it as skipped and the failure as its cause. If it passes, it fails:
