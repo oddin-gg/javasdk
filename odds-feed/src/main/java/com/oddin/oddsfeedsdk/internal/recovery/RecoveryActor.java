@@ -17,6 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
@@ -112,6 +113,14 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     volatile Runnable beforeRequestPoll = () -> {};
     /** A test's hook, run in start() once it has the start, before the thread starts. */
     volatile Runnable beforeThreadStart = () -> {};
+    /** How long the closing actor waits between its looks at the essential posts under way. */
+    private static final long POSTING_POLL_NANOS = TimeUnit.MICROSECONDS.toNanos(50);
+    /** The essential posts between their look at the close and their offer. */
+    private final AtomicInteger posting = new AtomicInteger();
+    /** Whether the closing actor has waited for an essential post under way; for a test. */
+    private volatile boolean awaitingPosts;
+    /** A test's hook, run in an essential post after its look at the close, before the offer. */
+    volatile Runnable beforeEssentialOffer = () -> {};
     /** How long the actor spends on the facts queued when it closes; a test shortens it. */
     volatile Duration finishWait = FINISH_WAIT;
     /** A test's hook, run as the machine closes, on the thread that closes it. */
@@ -172,7 +181,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * @return where the session's dispatcher posts its facts
      */
     public SessionFacts openSession(SessionInfo info, SessionTransport transport) {
-        post(essential, new Fact.Opened(info, transport));
+        postEssential(new Fact.Opened(info, transport));
         int id = info.id();
         return new SessionFacts() {
             @Override
@@ -187,22 +196,22 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
             @Override
             public void snapshotComplete(long producerId, long requestId) {
-                post(essential, new Fact.SnapshotComplete(id, producerId, requestId));
+                postEssential(new Fact.SnapshotComplete(id, producerId, requestId));
             }
 
             @Override
             public void channelLost() {
-                post(essential, new Fact.ChannelLost(id));
+                postEssential(new Fact.ChannelLost(id));
             }
 
             @Override
             public void channelReopened() {
-                post(essential, new Fact.ChannelReopened(id));
+                postEssential(new Fact.ChannelReopened(id));
             }
 
             @Override
             public void closed() {
-                post(essential, new Fact.Closed(id));
+                postEssential(new Fact.Closed(id));
             }
         };
     }
@@ -219,7 +228,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         if (!lifecycle.compareAndSet(Lifecycle.NEW, Lifecycle.STARTED)) {
             return;
         }
-        post(essential, new Fact.Start());
+        postEssential(new Fact.Start());
         beforeThreadStart.run();
         thread.start();
     }
@@ -253,7 +262,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             return joined;
         });
         if (fresh[0]) {
-            post(essential, new Fact.Alives(producerId));
+            postEssential(new Fact.Alives(producerId));
         }
     }
 
@@ -264,17 +273,17 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * it too, before the facts still queued.
      */
     public void closing() {
-        post(essential, new Fact.Closing());
+        postEssential(new Fact.Closing());
     }
 
     @Override
     public void up() {
-        post(essential, new Fact.Connection(true));
+        postEssential(new Fact.Connection(true));
     }
 
     @Override
     public void down(String reason) {
-        post(essential, new Fact.Connection(false));
+        postEssential(new Fact.Connection(false));
     }
 
     /**
@@ -356,7 +365,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
     }
 
-    /** Puts a fact in its queue, never waiting; false when it was dropped or the actor is closed. */
+    /**
+     * Puts a fact in one of the lesser queues, never waiting; false when it was dropped or the actor
+     * is closed. The essential facts go through {@link #postEssential}.
+     */
     private boolean post(Queue<Fact> queue, Fact fact) {
         if (closed) {
             return false;
@@ -368,6 +380,27 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         if (closed && queue.remove(fact)) {
             // the close came between the check and the offer, and its last drain may be over
             return false;
+        }
+        LockSupport.unpark(thread);
+        return true;
+    }
+
+    /**
+     * An essential fact, counted from before its look at the close until it is queued, so the
+     * closing actor, which waits until none is counted, finds every one queued before the close: a
+     * fact either sees the close, and is dropped as one posted after it, or is in the queue by then.
+     * Never taken back, since the actor then handles it. Its queue has no capacity of its own.
+     */
+    private boolean postEssential(Fact fact) {
+        posting.incrementAndGet();
+        try {
+            if (closed) {
+                return false;
+            }
+            beforeEssentialOffer.run();
+            essential.offer(fact);
+        } finally {
+            posting.decrementAndGet();
         }
         LockSupport.unpark(thread);
         return true;
@@ -432,16 +465,33 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * after the close is taken, since posting is refused once closed. The samples are dropped: one
      * could only move a point forward.
      *
-     * @return whether every one was handled; when not, the machine takes the points back to where
-     *     those left could have taken them, at the furthest
+     * <p>It first waits for the essential posts under way to be queued: a fact posted before the
+     * close is then in the queue, and every later one has seen the close.
+     *
+     * @return whether every one was handled, a post under way included; when not, the machine takes
+     *     the points back to where those left could have taken them, at the furthest
      */
     private boolean finishEssential() {
         long deadline = System.nanoTime() + finishWait.toNanos();
+        // an essential fact posted before the close is queued once none is counted; one still
+        // counted when the time is up is one this cannot handle
+        while (posting.get() > 0) {
+            awaitingPosts = true;
+            if (System.nanoTime() - deadline >= 0) {
+                return false;
+            }
+            LockSupport.parkNanos(POSTING_POLL_NANOS);
+        }
         Fact fact;
         while (System.nanoTime() - deadline < 0 && (fact = essential.poll()) != null) {
             handle(fact);
         }
         return essential.isEmpty();
+    }
+
+    /** Whether the closing actor has waited for an essential post under way, for a test. */
+    boolean awaitedPosts() {
+        return awaitingPosts;
     }
 
     /** Whether close() has begun, for a test. */
@@ -579,7 +629,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 workers.execute(() -> send(call));
             } catch (RuntimeException e) {
                 // turned away, or the workers broke: the request failed, and is asked for again
-                post(essential, new Fact.Answered(call.requestId(), e));
+                postEssential(new Fact.Answered(call.requestId(), e));
             } catch (Error e) {
                 post(
                         essential,
@@ -617,12 +667,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                             counters.resetDropped.addAndGet(dropped);
                             awaitOpen(session, transport);
                         }
-                        post(essential, new Fact.ResetDone(session, number, replaced));
+                        postEssential(new Fact.ResetDone(session, number, replaced));
                     }
                 });
             } catch (RuntimeException | Error e) {
                 LOG.warn("The safety net could not reset session {}: the workers turned it away", session, e);
-                post(essential, new Fact.ResetDone(session, number, false));
+                postEssential(new Fact.ResetDone(session, number, false));
             }
         }
 
@@ -668,7 +718,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             } catch (Error e) {
                 failure = new IllegalStateException("the request failed with an error", e);
             } finally {
-                post(essential, new Fact.Answered(call.requestId(), failure));
+                postEssential(new Fact.Answered(call.requestId(), failure));
             }
         }
     }
