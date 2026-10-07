@@ -15,6 +15,8 @@ import com.oddin.oddsfeedsdk.subscribe.CallbackFailure;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionState;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionStateChange;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
+import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
+import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
 import com.oddin.oddsfeedsdk.subscribe.ProducerCauseChange;
 import com.oddin.oddsfeedsdk.subscribe.SafetyNetEvent;
@@ -49,10 +51,10 @@ import org.slf4j.LoggerFactory;
  *
  * <p>Two queues. The control queue carries what the client's view of the feed is made of: the
  * connection's state, producer status and its cause, fatal errors, event recovery completions, the
- * safety net's resets and the sessions lagging. It holds {@value #CONTROL_CAPACITY}; an event with
+ * safety net's resets, the sessions lagging and the feed's health. It holds {@value #CONTROL_CAPACITY}; an event with
  * no room is counted and logged, never waited for. Of those, each producer's status, each
- * producer's cause, each session's lagging, the connection's state and each kind of fatal error have
- * one slot, which the newest fills: such an event replaces one still queued rather than queueing behind it, and is
+ * producer's cause, each session's lagging, each part's health, the connection's state and each kind
+ * of fatal error have one slot, which the newest fills: such an event replaces one still queued rather than queueing behind it, and is
  * delivered where it was reported, after what was reported before it. So none of them is ever
  * dropped, a client that falls behind hears the state as it is now rather than one long gone, in the
  * order it changed - the last word of a producer is never the one that found no room, nor heard
@@ -244,6 +246,17 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
                         () -> named(
                                 session,
                                 named -> listener.onSessionLagChange(new SessionLagChange(named, lagging, at))))));
+    }
+
+    // ------------------------------------------------------------------ the feed's health
+
+    /**
+     * A part of the feed changed its health, or a session did. Each part, and each session, has a
+     * slot: a change still queued is replaced by the next, which then tells as its previous state
+     * the one the client heard last, and tells nothing when it came back to that state.
+     */
+    public void health(HealthEvent event) {
+        coalesce(new HealthSlot(event.component(), event.session()), new Health(event));
     }
 
     // ------------------------------------------------------------------ the transport
@@ -674,12 +687,42 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
 
     private record LagSlot(int session) {}
 
+    /** A part's health, a session's of its own; {@code session} null for a part that is no session. */
+    private record HealthSlot(
+            HealthComponent component, @Nullable OddsFeedSession session) {}
+
     /** What a slot holds. */
     private sealed interface Pending {
         /** This, reported after {@code held}, which the slot still holds. */
         Pending after(Pending held);
 
         Event event(EventsDispatcher dispatcher);
+    }
+
+    /** A part's newest health, with the state the client heard before the one it replaces. */
+    private record Health(HealthEvent latest) implements Pending {
+        @Override
+        public Pending after(Pending held) {
+            if (!(held instanceof Health(var earlier))) {
+                return this;
+            }
+            return new Health(new HealthEvent(
+                    latest.component(),
+                    latest.session(),
+                    earlier.previous(),
+                    latest.state(),
+                    latest.reason(),
+                    latest.at()));
+        }
+
+        @Override
+        public Event event(EventsDispatcher dispatcher) {
+            if (latest.previous() == latest.state()) {
+                // back where the client heard it last: nothing changed for it
+                return new Event(List.of());
+            }
+            return EventsDispatcher.event("onHealthEvent", () -> dispatcher.listener.onHealthEvent(latest));
+        }
     }
 
     /** The newest replaces what the slot holds. */

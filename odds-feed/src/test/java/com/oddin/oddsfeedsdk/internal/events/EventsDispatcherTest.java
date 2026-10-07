@@ -21,6 +21,9 @@ import com.oddin.oddsfeedsdk.subscribe.ApiCallEvent;
 import com.oddin.oddsfeedsdk.subscribe.CallbackFailure;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionStateChange;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
+import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
+import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
+import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
 import com.oddin.oddsfeedsdk.subscribe.ProducerCauseChange;
 import com.oddin.oddsfeedsdk.subscribe.ProducerStatusCause;
@@ -1103,6 +1106,57 @@ class EventsDispatcherTest {
                 .isNull();
     }
 
+    @Test
+    void aHealthEventReachesItsCallbackOnTheEventsThread() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        var event = new HealthEvent(
+                HealthComponent.SESSION, first, HealthState.HEALTHY, HealthState.DEGRADED, "lagging", Instant.EPOCH);
+        dispatcher.health(event);
+
+        assertThat(listener.next()).isEqualTo("onHealthEvent SESSION HEALTHY DEGRADED lagging oddsfeed-events");
+        assertThat(listener.health.poll(WAIT_SECONDS, TimeUnit.SECONDS)).isSameAs(event);
+    }
+
+    /**
+     * Behind a wedge, each part's health and each session's has a slot of its own: the newest
+     * replaces one still queued and tells the state the client heard last as its previous, and one
+     * back at that state tells nothing.
+     */
+    @Test
+    void eachPartsHealthHasASlotAndTheClientHearsFromTheStateItHeardLast() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.health(health(HealthComponent.SESSION, first, HealthState.HEALTHY, HealthState.DEGRADED, "lag"));
+        dispatcher.health(health(HealthComponent.SESSION, second, HealthState.HEALTHY, HealthState.DEGRADED, "lag"));
+        dispatcher.health(health(HealthComponent.CATALOGS, null, HealthState.HEALTHY, HealthState.DEGRADED, "stale"));
+        dispatcher.health(health(HealthComponent.SESSION, first, HealthState.DEGRADED, HealthState.STALLED, "stuck"));
+        dispatcher.health(health(HealthComponent.CATALOGS, null, HealthState.DEGRADED, HealthState.HEALTHY, "fresh"));
+
+        listener.release();
+        assertThat(listener.take(3))
+                .containsExactly(
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onHealthEvent SESSION HEALTHY DEGRADED lag oddsfeed-events",
+                        "onHealthEvent SESSION HEALTHY STALLED stuck oddsfeed-events");
+        assertThat(requireNonNull(listener.health.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .session())
+                .as("session 2's, reported before session 1's newest")
+                .isSameAs(second);
+        assertThat(requireNonNull(listener.health.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .session())
+                .isSameAs(first);
+        assertThat(listener.events.poll(200, TimeUnit.MILLISECONDS))
+                .as("the catalogs back where the client heard them last: nothing")
+                .isNull();
+
+        dispatcher.health(health(HealthComponent.CATALOGS, null, HealthState.HEALTHY, HealthState.DEGRADED, "again"));
+        assertThat(listener.next())
+                .as("a slot delivered is empty, and the next change is heard as it is")
+                .isEqualTo("onHealthEvent CATALOGS HEALTHY DEGRADED again oddsfeed-events");
+    }
+
     /** A flood of causes and of lagging keeps one entry queued per slot, however long the client lags. */
     @Test
     void aFloodOfCausesAndLaggingKeepsOneEntryPerSlot() throws InterruptedException {
@@ -1222,6 +1276,15 @@ class EventsDispatcherTest {
         }
     }
 
+    private static HealthEvent health(
+            HealthComponent component,
+            @Nullable OddsFeedSession session,
+            HealthState previous,
+            HealthState state,
+            String reason) {
+        return new HealthEvent(component, session, previous, state, reason, Instant.EPOCH);
+    }
+
     private static ApiCall call(int status, @Nullable Exception failure) {
         return new ApiCall("GET", URI_CALLED, status, Duration.ofMillis(12), 2, failure);
     }
@@ -1249,6 +1312,7 @@ class EventsDispatcherTest {
         final BlockingQueue<ProducerCauseChange> causes = new LinkedBlockingQueue<>();
         final BlockingQueue<SafetyNetEvent> safetyNet = new LinkedBlockingQueue<>();
         final BlockingQueue<SessionLagChange> lags = new LinkedBlockingQueue<>();
+        final BlockingQueue<HealthEvent> health = new LinkedBlockingQueue<>();
         volatile String throwOn = "";
         volatile String errorOn = "";
         volatile String interruptOn = "";
@@ -1359,6 +1423,15 @@ class EventsDispatcherTest {
                     "onSessionLagChange",
                     "onSessionLagChange " + change.lagging() + " "
                             + Thread.currentThread().getName());
+        }
+
+        @Override
+        public void onHealthEvent(HealthEvent event) {
+            health.add(event);
+            heard(
+                    "onHealthEvent",
+                    "onHealthEvent " + event.component() + " " + event.previous() + " " + event.state() + " "
+                            + event.reason() + " " + Thread.currentThread().getName());
         }
 
         private void heard(String callback, String event) {
