@@ -38,8 +38,10 @@ import org.slf4j.LoggerFactory;
  * or a catalog serving a value stale for {@link #CATALOG_STALE_LIMIT} or more - and from what the
  * SDK's own watch found of it, through {@link #watched}; the worse of the two. A session's lagging
  * is told as the actor tells it; a catalog's staleness is found when the health is read. Each
- * reading takes a number before it reads, and a reading older than one told already tells nothing,
- * so two readings that race cannot tell an older state after a newer one.
+ * reading takes a number before it reads, and what a reading found of a part tells nothing once a
+ * newer reading has told of that part: two readings that race cannot tell an older state after a
+ * newer one, and a reading of one part - a lagging, a watch - holds back no change an older reading
+ * of the whole feed found of the others.
  *
  * <p>Cheap and safe for concurrent use: a reading reads counters and flags, never waits for a thread
  * of the feed, and holds a lock only to compare what it found with what was told.
@@ -70,8 +72,8 @@ public final class HealthMonitor implements RecoveryEvents {
     private final ReentrantLock telling = new ReentrantLock();
     /** The state last told of each part; a part not in it was healthy. Guarded by {@link #telling}. */
     private final Map<Part, HealthState> told = new HashMap<>();
-    /** The newest reading told; guarded by {@link #telling}. */
-    private long toldReading;
+    /** The newest reading told of each part; guarded by {@link #telling}. */
+    private final Map<Part, Long> toldReading = new HashMap<>();
 
     /**
      * @param events where a change is told; the feed's, which drops it once stopped
@@ -360,19 +362,20 @@ public final class HealthMonitor implements RecoveryEvents {
     // ------------------------------------------------------------------ telling
 
     /**
-     * Tells each part whose state differs from the one told last, unless a newer reading has told
-     * already: what this one read may be older than what that one did.
+     * Tells each part whose state differs from the one told last, unless a newer reading has told of
+     * that part already: what this one read of it may be older than what that one did. A part this
+     * reading did not read is not held back by it.
      */
     private void tell(long reading, Map<Part, Found> found) {
         var changes = new ArrayList<HealthEvent>();
         telling.lock();
         try {
-            if (reading < toldReading) {
-                return;
-            }
-            toldReading = reading;
             Instant at = clock.instant();
             found.forEach((part, now) -> {
+                if (reading < toldReading.getOrDefault(part, 0L)) {
+                    return;
+                }
+                toldReading.put(part, reading);
                 HealthState was = told.getOrDefault(part, HealthState.HEALTHY);
                 if (was == now.state()) {
                     return;
