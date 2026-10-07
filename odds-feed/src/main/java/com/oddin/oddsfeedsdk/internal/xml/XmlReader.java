@@ -49,11 +49,17 @@ final class XmlReader {
     static final int MAX_NAMES = 512;
 
     /**
-     * The most attributes and namespace declarations on one element, together; the schemas' widest
-     * has 35. Woodstox holds the two in separate arrays and checks their sum only as one grows, so
-     * it bounds a start tag's memory but not this sum: the name limit counts it.
+     * The most attributes and namespace declarations on one element, together; the schemas' widest,
+     * the scoreboard, has 35 and grows with each sport. Well above it, so that the attributes a
+     * newer schema adds are skipped as unknown, not a reason to refuse every message carrying the
+     * element; and half of {@link #MAX_NAMES}, so an element of that many attributes leaves the
+     * rest of the document half its names. It still bounds what one start tag holds: Woodstox reads
+     * a tag whole before {@link NameLimit} sees it, so a tag of names built to collide costs it at
+     * most this many, squared, before the document is refused. Woodstox holds attributes and
+     * declarations in separate arrays and checks their sum only as one grows, so it bounds a start
+     * tag's memory but not this sum: the name limit counts it.
      */
-    static final int MAX_ATTRIBUTES = 64;
+    static final int MAX_ATTRIBUTES = 256;
 
     /**
      * The longest attribute value, a namespace declared included: the API's values are names and
