@@ -1,7 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.entity;
 
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.COMPETITOR_PROFILE;
-import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.PLAYER_LISTED;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.PLAYER_PROFILE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.SPORT_LIST;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.SPORT_TOURNAMENT_LIST;
@@ -254,7 +253,7 @@ public final class ProfileCaches {
         return competitors.get(id);
     }
 
-    /** What is cached of the player, loading nothing; for a test. */
+    /** What is cached of the player, loading nothing: for a test, and for a player's shared fields once loaded. */
     @Nullable
     Entry cachedPlayer(URN id) {
         return players.get(id);
@@ -318,7 +317,7 @@ public final class ProfileCaches {
             for (RAPlayer player : listedPlayers) {
                 URN id = ApiValues.urn(player.getId());
                 if (id != null) {
-                    players.fill(id, ProfileWrites.player(PLAYER_LISTED, player, key.locale()), listed);
+                    players.fill(id, ProfileWrites.listedPlayer(player, key.locale()), listed);
                 }
             }
         }
@@ -331,8 +330,7 @@ public final class ProfileCaches {
         Stamp started = players.stamp(key.id(), abandoned);
         var player = client.fetchPlayerProfile(key.id(), key.locale(), deadline).getPlayer();
         return player != null
-                && players.writeAuthoritative(
-                        key.id(), ProfileWrites.player(PLAYER_PROFILE, player, key.locale()), started);
+                && players.writeAuthoritative(key.id(), ProfileWrites.player(player, key.locale()), started);
     }
 
     private Boolean fetchTournament(Key key, Deadline deadline, BooleanSupplier abandoned) {

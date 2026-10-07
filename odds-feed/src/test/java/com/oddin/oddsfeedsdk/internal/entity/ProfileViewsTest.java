@@ -39,6 +39,7 @@ class ProfileViewsTest {
     private static final String PROFILE_EN = "/v1/sports/en/competitors/od:competitor:47214/profile";
     private static final String PROFILE_DE = "/v1/sports/de/competitors/od:competitor:47214/profile";
     private static final String PLAYER_EN = "/v1/sports/en/players/od:player:9001/profile";
+    private static final String PLAYER_DE = "/v1/sports/de/players/od:player:9001/profile";
     private static final String TOURNAMENT_EN = "/v1/sports/en/tournaments/od:tournament:1042/info";
     private static final String SPORTS_EN = "/v1/sports/en/sports";
 
@@ -211,6 +212,81 @@ class ProfileViewsTest {
             assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage())
                     .as("never sent")
                     .isEqualTo(UnderageStatus.UNKNOWN);
+        }
+    }
+
+    @Test
+    void aPlayerOfSeveralLocalesHasOneUnderageTheNewestProfileSaid() {
+        String profile = Fixtures.read("rest/player/player_profile.xml");
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(PLAYER_EN, 200, profile);
+            world.api.respond(PLAYER_DE, 200, profile.replace("underage=\"1\"", "underage=\"-1\""));
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage()).isEqualTo(UnderageStatus.YES);
+            assertThat(world.entities.player(PLAYER, List.of(EN, DE)).getUnderage())
+                    .as("the German profile, loaded after the English one, says -1")
+                    .isEqualTo(UnderageStatus.UNKNOWN);
+            assertThat(world.api.requests("GET", PLAYER_DE)).hasSize(1);
+            assertThat(world.api.requests("GET", PLAYER_EN)).as("fresh").hasSize(1);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(PLAYER_EN, 200, profile);
+            world.api.respond(PLAYER_DE, 200, profile.replace(" underage=\"1\"", ""));
+            assertThat(world.entities.player(PLAYER, List.of(DE, EN)).getUnderage())
+                    .as("loaded side by side, one of them leaving it out")
+                    .isEqualTo(UnderageStatus.YES);
+        }
+    }
+
+    /**
+     * The English profile's fetch starts first and is answered last; the German one, started later,
+     * leaves the attribute out. Applied in the order they started, the English value stays.
+     */
+    @Test
+    void aProfileAnsweredLateKeepsItsUnderageWhenALaterFetchLeftItOut() throws Exception {
+        String profile = Fixtures.read("rest/player/player_profile.xml");
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(PLAYER_EN, Reply.of(200, profile).after(Duration.ofSeconds(3)));
+            world.api.respond(PLAYER_DE, 200, profile.replace(" underage=\"1\"", ""));
+            var english = world.threads.submit(
+                    () -> world.entities.player(PLAYER, List.of(EN)).getName(EN));
+            world.api.awaitRequest("GET", PLAYER_EN);
+            assertThat(world.entities.player(PLAYER, List.of(DE)).getName(DE)).isEqualTo("Player One");
+            assertThat(english.isDone()).as("the English answer still to come").isFalse();
+            english.get(10, java.util.concurrent.TimeUnit.SECONDS);
+
+            assertThat(world.entities.player(PLAYER, List.of(EN, DE)).getUnderage())
+                    .isEqualTo(UnderageStatus.YES);
+            assertThat(world.api.requests())
+                    .as("both fresh: nothing loaded again")
+                    .hasSize(2);
+        }
+    }
+
+    @Test
+    void aCompetitorsPlayerListNeitherSetsNorKeepsAPlayersUnderage() {
+        String listingYes = PROFILE.replace(
+                "full_name=\"Player One Full\" underage=\"-1\"", "full_name=\"Player One Full\" underage=\"1\"");
+        assertThat(listingYes).isNotEqualTo(PROFILE);
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(PROFILE_EN, 200, listingYes);
+            world.api.respond(
+                    PLAYER_EN,
+                    200,
+                    Fixtures.read("rest/player/player_profile.xml").replace(" underage=\"1\"", ""));
+            assertThat(world.entities.competitor(COMPETITOR, List.of(EN)).getName(EN))
+                    .isEqualTo("Team Alpha");
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage())
+                    .as("only the player's own profile says it, and it left it out")
+                    .isEqualTo(UnderageStatus.UNKNOWN);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(PROFILE_EN, 200, PROFILE);
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage()).isEqualTo(UnderageStatus.YES);
+            assertThat(world.entities.competitor(COMPETITOR, List.of(EN)).getName(EN))
+                    .isEqualTo("Team Alpha");
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage())
+                    .as("the list's -1 does not make it unknown")
+                    .isEqualTo(UnderageStatus.YES);
         }
     }
 
