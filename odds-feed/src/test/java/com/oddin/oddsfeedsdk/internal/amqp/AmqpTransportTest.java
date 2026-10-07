@@ -747,6 +747,44 @@ class AmqpTransportTest {
     }
 
     @Test
+    void theWatchdogSeesAConsumerHandOffThatHasNotReturned() throws Exception {
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var transport = new AmqpTransport(settings(10, 1 << 20), FakeFeed.EXCHANGE, events, alive -> {
+            entered.countDown();
+            try {
+                release.await(WAIT.toSeconds(), TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        open.add(transport);
+        transport.addSession(allKeys());
+        assertThat(transport.consumerState())
+                .as("no consumer thread before the open")
+                .isEqualTo(new AmqpTransport.ConsumerState(0, 0, 0));
+        transport.open();
+        long published = System.currentTimeMillis();
+        feed().publishFixture("feed/alive/alive.xml");
+        assertThat(entered.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+        var wedged = transport.consumerState();
+        assertThat(wedged.busySince())
+                .as("the alive's hand-off, running")
+                .isBetween(published, System.currentTimeMillis());
+
+        long taken = wedged.taken();
+        release.countDown();
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (transport.consumerState().busySince() != 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        var returned = transport.consumerState();
+        assertThat(returned.busySince()).as("nothing running").isZero();
+        assertThat(returned.taken()).as("the hand-off ran to its end").isGreaterThan(taken);
+        assertThat(returned.waiting()).isZero();
+    }
+
+    @Test
     void aResetOnceTheCloseHasBegunAndBeforeItsAbortMovesNoEpochAndKeepsTheDeliveries() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());

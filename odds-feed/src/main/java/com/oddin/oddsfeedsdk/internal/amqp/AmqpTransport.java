@@ -17,8 +17,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -81,7 +79,7 @@ public final class AmqpTransport implements AutoCloseable {
     /** Connections made again after a loss, each told up. */
     private final AtomicLong reconnects = new AtomicLong();
 
-    private @Nullable ExecutorService consumers;
+    private volatile @Nullable ConsumerPool consumers;
     private volatile @Nullable Connection connection;
     /** Whether {@link #open} has begun; guarded by the lock. */
     private boolean opening;
@@ -202,12 +200,13 @@ public final class AmqpTransport implements AutoCloseable {
                 throw new IllegalStateException("the transport opens once");
             }
             opening = true;
-            consumers = Executors.newFixedThreadPool(
+            consumers = new ConsumerPool(
                     channels.size() + 1,
                     Thread.ofPlatform()
                             .daemon()
                             .name("oddsfeed-amqp-consumer-", 0)
-                            .factory());
+                            .factory(),
+                    clock);
             events.connecting();
         } finally {
             lock.unlock();
@@ -292,6 +291,24 @@ public final class AmqpTransport implements AutoCloseable {
     public long reconnects() {
         return reconnects.get();
     }
+
+    /** What the watchdog reads of the consumer threads; nothing running or taken before the open. */
+    public ConsumerState consumerState() {
+        ConsumerPool pool = consumers;
+        return pool == null
+                ? new ConsumerState(0, 0, 0)
+                : new ConsumerState(pool.busySince(), pool.waiting(), pool.taken());
+    }
+
+    /**
+     * The consumer threads, for the watchdog.
+     *
+     * @param busySince when the hand-off running longest began, epoch millis by the transport's
+     *     clock; 0 when none runs
+     * @param waiting hand-offs waiting for a thread
+     * @param taken hand-offs run to their end
+     */
+    public record ConsumerState(long busySince, int waiting, long taken) {}
 
     boolean isClosed() {
         return closed;
@@ -619,7 +636,7 @@ public final class AmqpTransport implements AutoCloseable {
             channel.close();
         }
         closeConnectionQuietly();
-        ExecutorService pool = consumers;
+        ConsumerPool pool = consumers;
         if (pool != null) {
             pool.shutdownNow();
         }

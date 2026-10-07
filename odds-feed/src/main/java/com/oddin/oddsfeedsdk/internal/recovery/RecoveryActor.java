@@ -384,6 +384,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         return essential.size();
     }
 
+    /** The facts waiting, of every queue; for the watchdog. */
+    public int pending() {
+        return essential.size() + control.size() + samples.size();
+    }
+
     /** How many turns the actor has taken. */
     public long turns() {
         return turns.get();
