@@ -30,7 +30,9 @@ import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -38,6 +40,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -64,6 +67,8 @@ class OddsFeedWatchdogTest {
 
     /** The changes the feed's health logged, in order. */
     private final List<HealthEvent> logged = new CopyOnWriteArrayList<>();
+    /** The timer threads alive before the test: those of no feed of this test. */
+    private final Set<Thread> timersBefore = timerThreads();
 
     @BeforeAll
     static void startTheBroker() {
@@ -210,16 +215,16 @@ class OddsFeedWatchdogTest {
         try (var api = FakeRestServer.start()) {
             var feed = feedAgainst(api, new Heard());
             feed.getProducerManager();
-            assertThat(timerThreads())
+            assertThat(timerThreadsOfThisTest())
                     .as("started with the feed, before it opens")
-                    .isOne();
+                    .hasSize(1);
             api.awaitQuiet();
             feed.close();
             long deadline = System.nanoTime() + WAIT.toNanos();
-            while (timerThreads() > 0 && System.nanoTime() < deadline) {
+            while (!timerThreadsOfThisTest().isEmpty() && System.nanoTime() < deadline) {
                 Thread.sleep(20);
             }
-            assertThat(timerThreads()).as("ended with the close").isZero();
+            assertThat(timerThreadsOfThisTest()).as("ended with the close").isEmpty();
             // past the limit of a tick overdue: a watchdog stopped is not one wedged
             Thread.sleep(LIMITS.queue().plus(LIMITS.tick()).plusMillis(500).toMillis());
             assertThat(feed.getHealth().components()).containsEntry(HealthComponent.TIMERS, HealthState.HEALTHY);
@@ -358,8 +363,11 @@ class OddsFeedWatchdogTest {
                 assertThat(feed.getHealth().sessions().getFirst().handled()).isEqualTo(4);
 
                 var events = feed.events();
+                // a sample taken in a callback has moved == delivered too: the running one counts once done
                 var delivered = awaitPart(
-                        feed, HealthComponent.EVENTS, part -> part.queued() == 0 && part.moved() == events.delivered());
+                        feed,
+                        HealthComponent.EVENTS,
+                        part -> part.queued() == 0 && part.moved() == events.delivered() && part.busySince() == 0);
                 assertThat(delivered.moved())
                         .as("the connection's change at least")
                         .isPositive();
@@ -460,10 +468,17 @@ class OddsFeedWatchdogTest {
                 .orElseThrow();
     }
 
-    private static long timerThreads() {
+    /** The timer threads alive now but not before the test: one alive before it is no feed's of this test. */
+    private Set<Thread> timerThreadsOfThisTest() {
+        var now = timerThreads();
+        now.removeAll(timersBefore);
+        return now;
+    }
+
+    private static Set<Thread> timerThreads() {
         return Thread.getAllStackTraces().keySet().stream()
                 .filter(thread -> thread.getName().equals("oddsfeed-timer") && thread.isAlive())
-                .count();
+                .collect(Collectors.toCollection(HashSet::new));
     }
 
     private static void await(CountDownLatch latch) {
