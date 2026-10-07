@@ -194,7 +194,8 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   what `close()` releases after the timer - the caches and the API client - is left as it is.
 - **1.0:** `open()` is all or nothing and closes whatever it created when a step fails; the
   client's exit is `close()` and a new `OddsFeed` (section 4, Connection, and section 3, Behaviour
-  that stays). The test expects no error from that `close()`.
+  that stays). A failed start has released what it built, so that `close()` has nothing to
+  release and logs nothing; the test expects nothing logged by it.
 - **Why:** Closing after a failure is what clients are told to do; it should not look like a
   second failure.
 - **Pinned by:** `StartupScenarioIT.withTheApiDownTheFeedDoesNotStart`

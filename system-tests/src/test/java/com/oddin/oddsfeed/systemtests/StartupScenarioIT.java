@@ -40,20 +40,25 @@ class StartupScenarioIT {
                 FakeFeed feed = FakeFeed.start()) {
             rest.startOutage(503);
             try (LogCapture logs = LogCapture.start()) {
-                try (Sdk failed = Sdk.against(rest, feed)) {
+                Sdk failed = Sdk.against(rest, feed);
+                try {
                     assertThat(catchThrowable(() -> failed.open(MessageInterest.ALL)))
                             .as("opening the feed while the API is down")
                             .isInstanceOf(OddsFeedSdkException.class);
                     assertThat(feed.logins()).as("logins to the broker").isEmpty();
+                } finally {
+                    // what the close logs, and only that
+                    logs.clear();
+                    failed.close();
                 }
                 KnownDifference.CLOSE_AFTER_A_FAILED_START_LOGS_AN_ERROR.expect(
                         () -> assertThat(logs.warningsFrom("com.oddin"))
                                 .as("what closing the failed feed logged")
                                 .anySatisfy(line ->
                                         assertThat(line).startsWith("ERROR").contains("Failed to close")),
-                        () -> assertThat(logs.warningsFrom("com.oddin"))
-                                .as("what closing the failed feed logged")
-                                .noneSatisfy(line -> assertThat(line).startsWith("ERROR")));
+                        () -> assertThat(logs.everythingFrom("com.oddin"))
+                                .as("what closing the failed feed logged: it has nothing to release")
+                                .isEmpty());
             }
 
             rest.endOutage();
