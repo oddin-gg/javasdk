@@ -909,26 +909,28 @@ The watchdog is one daemon thread, `oddsfeed-timer`, started with the feed's fir
 alives and the recovery actor join once the feed opens) and stopped first by `close()`,
 within its one shutdown deadline. Once stopped, the timers are `HEALTHY`, told so if they
 were found stalled - a watchdog stopped is not one wedged - and every other part stays as
-the watchdog last found it, since nothing looks again. At each tick it reads, for every part with a thread of
-its own, when the callback it runs began (0 when none runs), what waits for it and how
-much it has taken: a session (`busySince`, its queue's depth, `handled`), the events
-thread (`busySince`, the control events, filled slots and telemetry queued, the events
-delivered), the broker's consumer threads (a pool of the transport's own that keeps when
-the hand-off running longest began, the hand-offs waiting and those run), the alive
-dispatcher (its queue and `handled`; it has no callback worth a limit) and the recovery
-actor (`turnedAt` as its busy-since - it begins a turn every second however idle, so a turn
-begun 30 s ago is one not ended - its facts waiting and `turns`). A queue is still from the
-first look that sees it not empty with the same count taken; any look that sees the count
-move, or the queue empty, ends that. The JVM's deadlocks come from
+the watchdog last found it, since nothing looks again. At each tick it reads, for every
+part with a thread of its own, when the callback it runs began (0 when none runs), what
+waits for it and how much it has taken - every time by `System.nanoTime`, the watchdog's
+own looks too, so a change of the wall clock neither stalls a part nor hides a stall: a
+session (`busySince`, its queue's depth, `handled`), the events thread (`busySince`, the
+control events, filled slots and telemetry queued, the events delivered), the broker's
+consumer threads (a pool of the transport's own that keeps when the hand-off running
+longest began, the hand-offs waiting and those run), the alive dispatcher (its queue and
+`handled`; it has no callback worth a limit) and the recovery actor (`turnedAt` as its
+busy-since - it begins a turn every second however idle, so a turn begun 30 s ago is one
+not ended - its facts waiting and `turns`). A queue is still from the first look that
+sees it not empty with the same count taken; any look that sees the count move, or the
+queue empty, ends that. The JVM's deadlocks come from
 `ThreadMXBean.findDeadlockedThreads()`, which sees monitors and locks alike, once a tick
 only, since the search takes the JVM to a safepoint; the reason names the threads. The
-watchdog cannot see its own thread wedge, so `getHealth()` looks at the parts again on the
-caller's thread, and finds the timers `STALLED` when the next tick is more than 30 s late;
-the tick that returns tells them healthy. The looks decide under one lock that only reads
-counters and flags, and note what they decide there, in order; what is logged is logged out
-of it. A look that throws is logged and the next one runs. Not watched yet: the
-connection being down is not a degradation of its own (a pending decision; `onConnectionDown`
-and the connection's state callback tell it today).
+watchdog cannot see its own thread wedge, so `getHealth()` looks at the parts again on
+the caller's thread, and finds the timers `STALLED` when the next tick is more than 30 s
+late; the tick that returns tells them healthy. The looks decide under one lock that only
+reads counters and flags, and note what they decide there, in order; what is logged is
+logged out of it. A look that throws is logged and the next one runs. Not watched yet:
+the connection being down is not a degradation of its own (a pending decision;
+`onConnectionDown` and the connection's state callback tell it today).
 
 Remediation is limited and stated: the watchdog does not kill threads. A wedged
 dispatcher is reported; the client's remedy is `close()` and a new `OddsFeed`, and
@@ -1476,3 +1478,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   thread. The health now keeps the newest reading per part, so a reading of one part no
   longer holds back what an older reading of the whole feed found of the others. A
   connection that is down is not yet a degradation of its own: that waits for a decision.
+- 2026-10-07, ticket 26, after the review of the watchdog: busy, still and overdue times are
+  measured by `System.nanoTime`, not the wall clock; a watchdog stopped leaves the timers
+  `HEALTHY` (a stopped watchdog is not a wedged one) and every other part as it last found it.
+  An event recovery whose caller's wait ends in the instant the actor answers returns the id
+  the request went out with, not null. The benchmark run takes no machine-wide JMH lock, so
+  two builds at once no longer fail each other.
