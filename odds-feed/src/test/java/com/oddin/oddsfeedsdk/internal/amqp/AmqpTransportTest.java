@@ -561,7 +561,7 @@ class AmqpTransportTest {
     }
 
     @Test
-    void aResetBetweenTheClosesAbortAndTheChannelsCloseMovesNoEpochAndKeepsTheDeliveries() throws Exception {
+    void aResetBetweenTheClosesAbortAndTheChannelsCloseMovesNoEpochAndDiscardsNothing() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());
         transport.open();
@@ -573,10 +573,32 @@ class AmqpTransportTest {
         transport.afterAbort = session::reset;
         transport.close();
         assertThat(session.epoch()).as("nothing was replaced").isEqualTo(before);
-        assertThat(session.queue().size())
-                .as("what the session had taken stays for it")
-                .isEqualTo(2);
+        assertThat(session.queue().epochDiscards())
+                .as("nothing taken out as a replaced channel's")
+                .isZero();
         assertThat(session.channel()).isNull();
+    }
+
+    @Test
+    void aClosedTransportDropsWhatItsSessionsHeldAndWhatComesLate() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        feed().publishFixture(ODDS_CHANGE);
+        feed().publishFixture(ODDS_CHANGE);
+        awaitSize(session, 2);
+        transport.close();
+        assertThat(session.queue().size())
+                .as("the bodies a closed feed would keep for as long as it is reachable")
+                .isZero();
+        var late = new RawDelivery(new byte[1], 1, "key", 3, session.epoch(), Instant.EPOCH, null);
+        assertThat(session.queue().offer(late))
+                .as("a delivery handed over as the channel closed")
+                .isEqualTo(SessionQueue.Offer.CLOSED);
+        assertThat(session.queue().size()).isZero();
+        assertThat(session.queue().epochDiscards())
+                .as("none of a replaced channel")
+                .isZero();
     }
 
     @Test
@@ -785,7 +807,7 @@ class AmqpTransportTest {
     }
 
     @Test
-    void aResetOnceTheCloseHasBegunAndBeforeItsAbortMovesNoEpochAndKeepsTheDeliveries() throws Exception {
+    void aResetOnceTheCloseHasBegunAndBeforeItsAbortMovesNoEpochAndDiscardsNothing() throws Exception {
         AmqpTransport transport = transport(settings(10, 1 << 20), false);
         var session = (SessionChannel) transport.addSession(allKeys());
         transport.open();
@@ -797,9 +819,9 @@ class AmqpTransportTest {
         transport.beforeAbort = session::reset;
         transport.close();
         assertThat(session.epoch()).as("nothing was replaced").isEqualTo(before);
-        assertThat(session.queue().size())
-                .as("what the session had taken stays for it")
-                .isEqualTo(2);
+        assertThat(session.queue().epochDiscards())
+                .as("nothing taken out as a replaced channel's")
+                .isZero();
         assertThat(session.channel()).isNull();
     }
 
