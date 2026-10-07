@@ -15,4 +15,11 @@ public final class Queues {
         }
         return queue;
     }
+
+    /** Puts {@code delivery} in {@code queue}, as the broker's consumer thread does. */
+    public static void offer(SessionQueue queue, RawDelivery delivery) {
+        if (queue.offer(delivery) != SessionQueue.Offer.QUEUED) {
+            throw new IllegalStateException("not queued: " + delivery.deliveryTag());
+        }
+    }
 }
