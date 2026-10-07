@@ -83,6 +83,26 @@ class AliveDispatcherTest {
     }
 
     @Test
+    void anAliveWithoutAPositiveTimestampIsCountedAndReachesNeitherTheOffsetsNorTheActor() throws InterruptedException {
+        AliveDispatcher dispatcher = started();
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 10_000), 12_500));
+        assertThat(next()).startsWith("2 10000 12500 true");
+
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 0), 13_000));
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, false), -5_000), 14_000));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (dispatcher.handled() < 3 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(dispatcher.handled()).isEqualTo(3);
+        assertThat(dispatcher.unreadable()).isEqualTo(2);
+        assertThat(posted).as("posted to the actor").isEmpty();
+        assertThat(offsets.age(2, 20_000, 22_500))
+                .as("the offset of the alive with a time, 2.5 s")
+                .isZero();
+    }
+
+    @Test
     void anActorThatThrowsDoesNotEndTheDispatcher() throws InterruptedException {
         var throwing = new AliveDispatcher(
                 FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES),

@@ -31,8 +31,9 @@ import org.slf4j.LoggerFactory;
  * alive, would otherwise fill the heap. An alive with no room is dropped and counted. That costs the
  * actor a beat, not a wrong state: a producer that stays unsubscribed says so in every alive until a
  * recovery is asked for, and one whose alives stop for longer than the maximum inactivity is taken
- * down, never kept up. An alive that does not decode, or a message on the channel that is no alive,
- * is counted and logged.
+ * down, never kept up. An alive that does not decode, one without a positive timestamp, or a
+ * message on the channel that is no alive, is counted and logged, and reaches neither the offsets
+ * nor the actor.
  *
  * <p>Safe for concurrent use.
  */
@@ -220,6 +221,11 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
                     delivery,
                     new IllegalArgumentException(
                             "not an alive: " + message.getClass().getSimpleName()));
+            return;
+        }
+        if (alive.getTimestamp() <= 0) {
+            // as a producer's clock it would make every age and every cap at the producer's now wrong
+            unreadable(delivery, new IllegalArgumentException("stamped " + alive.getTimestamp() + ", not a time"));
             return;
         }
         long receivedAt = delivery.receivedAt().toEpochMilli();
