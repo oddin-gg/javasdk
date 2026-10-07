@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.LiveOddsAvailability;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Player;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Sport;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
+import com.oddin.oddsfeedsdk.api.entities.sportevent.UnderageStatus;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
@@ -42,7 +43,7 @@ class ProfileViewsTest {
     private static final String SPORTS_EN = "/v1/sports/en/sports";
 
     @Test
-    @SuppressWarnings("deprecation") // the reference id is read, to show it loads nothing
+    @SuppressWarnings("deprecation") // the reference id, to show it loads nothing, and the raw underage
     void aCompetitorReadsItsProfileInEachOfItsLocales() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(PROFILE_DE, 200, german(PROFILE));
@@ -169,6 +170,88 @@ class ProfileViewsTest {
             assertThat(player.getFullName(EN)).isNull();
             assertThat(player.getSportIDs()).containsExactly(entry(EN, "od:sport:1"), entry(DE, "od:sport:1"));
             assertThat(player.getSportID(DE)).isEqualTo("od:sport:1");
+        }
+    }
+
+    @Test
+    void aPlayersUnderageIsItsProfilesAndAProfileWithoutItKeepsIt() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            String profile = Fixtures.read("rest/player/player_profile.xml");
+            world.api.respond(PLAYER_EN, 200, profile);
+            world.api.respond(
+                    "/v1/sports/de/players/od:player:9001/profile", 200, profile.replace(" underage=\"1\"", ""));
+            world.api.respond(
+                    "/v1/sports/fr/players/od:player:9001/profile",
+                    200,
+                    profile.replace("underage=\"1\"", "underage=\"-1\""));
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage()).isEqualTo(UnderageStatus.YES);
+            assertThat(world.entities.player(PLAYER, List.of(DE)).getUnderage())
+                    .as("left out: the value an earlier profile sent, as 0.0.x kept it")
+                    .isEqualTo(UnderageStatus.YES);
+            assertThat(world.entities.player(PLAYER, List.of(Locale.FRENCH)).getUnderage())
+                    .as("-1: unknown again")
+                    .isEqualTo(UnderageStatus.UNKNOWN);
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage())
+                    .as("the English profile is fresh: not loaded again")
+                    .isEqualTo(UnderageStatus.UNKNOWN);
+            assertThat(world.api.requests("GET", PLAYER_EN)).hasSize(1);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    PLAYER_EN,
+                    200,
+                    Fixtures.read("rest/player/player_profile.xml").replace("underage=\"1\"", "underage=\"0\""));
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage()).isEqualTo(UnderageStatus.NO);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    PLAYER_EN,
+                    200,
+                    Fixtures.read("rest/player/player_profile.xml").replace(" underage=\"1\"", ""));
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage())
+                    .as("never sent")
+                    .isEqualTo(UnderageStatus.UNKNOWN);
+        }
+    }
+
+    @Test
+    void aPlayersUnderageIsNotFoundOrNullAsItsOtherGetters() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(PLAYER_EN, 404, Fixtures.read("rest/error/not_found.xml"));
+            assertThatThrownBy(() -> world.entities.player(PLAYER, List.of(EN)).getUnderage())
+                    .isInstanceOf(ItemNotFoundException.class);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
+            world.api.respond(PLAYER_EN, 404, Fixtures.read("rest/error/not_found.xml"));
+            assertThat(world.entities.player(PLAYER, List.of(EN)).getUnderage())
+                    .as("no profile: null, not unknown, as 0.0.x answered")
+                    .isNull();
+        }
+    }
+
+    @Test
+    @SuppressWarnings("deprecation") // the raw number is read next to the status it maps to
+    void aCompetitorsUnderageStatusIsItsNumberMapped() {
+        for (var wire : List.of("-1", "0", "1", "7")) {
+            try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+                world.api.respond(PROFILE_EN, 200, PROFILE.replace("underage=\"-1\"", "underage=\"" + wire + "\""));
+                Competitor competitor = world.entities.competitor(COMPETITOR, List.of(EN));
+                assertThat(competitor.getUnderage()).isEqualTo(Integer.valueOf(wire));
+                assertThat(competitor.getUnderageStatus())
+                        .as(wire)
+                        .isEqualTo(
+                                switch (wire) {
+                                    case "0" -> UnderageStatus.NO;
+                                    case "1" -> UnderageStatus.YES;
+                                    default -> UnderageStatus.UNKNOWN;
+                                });
+            }
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
+            world.api.respond(PROFILE_EN, 500, "");
+            assertThat(world.entities.competitor(COMPETITOR, List.of(EN)).getUnderageStatus())
+                    .as("no profile: the missing number reads as unknown, as on 0.0.x")
+                    .isEqualTo(UnderageStatus.UNKNOWN);
         }
     }
 

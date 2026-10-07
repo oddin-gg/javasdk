@@ -33,8 +33,15 @@ public interface Competitor {
     @Nullable
     String getCountryCode();
 
+    /** @deprecated the number as the API sends it; {@link #getUnderageStatus()} reads it. */
+    @Deprecated
     @Nullable
     Integer getUnderage();
+
+    /** Whether the competitor is flagged as underage: {@link #getUnderage()} as an {@link UnderageStatus}. */
+    default UnderageStatus getUnderageStatus() {
+        return UnderageStatus.fromValue(getUnderage());
+    }
 
     @Nullable
     String getIconPath();
