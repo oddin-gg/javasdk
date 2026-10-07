@@ -67,8 +67,10 @@ final class PlayerView implements Player {
     }
 
     /**
-     * The value of the profiles in every locale of the player. A profile that leaves it out keeps
-     * what an earlier one sent, as on 0.0.58: the field is not one the profile always sends.
+     * One value for the player, whatever the locale: what its profiles said last, by the order
+     * their fetches started in. A profile that leaves it out keeps what an earlier one sent, as on
+     * 0.0.58: the field is not one the profile always sends. Only the player's own profile writes
+     * it.
      */
     @Override
     public @Nullable UnderageStatus getUnderage() {
@@ -84,8 +86,14 @@ final class PlayerView implements Player {
         return Entities.found(entities.profiles.player(id, locale, null), PLAYER_PROFILE, locale, this);
     }
 
-    /** The profile in every locale of the player, for its shared fields. */
+    /**
+     * The player once its profile is loaded in every locale of the player, for its shared fields:
+     * the cache's entry as it is now, which every one of those loads has written to, rather than
+     * what one of them saw when it finished. The loaded one, if the player was invalidated since.
+     */
     private Entry shared() {
-        return entities.each(locales, this::profile).getFirst();
+        Entry loaded = entities.each(locales, this::profile).getFirst();
+        Entry now = entities.profiles.cachedPlayer(id);
+        return now != null && now.generation() == loaded.generation() ? now : loaded;
     }
 }

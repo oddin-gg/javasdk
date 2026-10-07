@@ -42,13 +42,17 @@ final class ProfileWrites {
         return team(Write.from(TEAM_LISTED, locale), team);
     }
 
-    /** A player profile's player, or a player a competitor profile lists. */
-    static Write player(Endpoint endpoint, RAPlayer player, Locale locale) {
-        return Write.from(endpoint, locale)
-                .put(PLAYER_NAME, player.getName())
-                .put(FULL_NAME, player.getFullName())
-                .put(PLAYER_SPORT, player.getSport())
-                .put(PLAYER_UNDERAGE, player.getUnderage());
+    /** A player profile's player. */
+    static Write player(RAPlayer player, Locale locale) {
+        return player(Write.from(PLAYER_PROFILE, locale), player).put(PLAYER_UNDERAGE, player.getUnderage());
+    }
+
+    /**
+     * A player a competitor profile lists. Its underage is left out: as on 0.0.58, only the
+     * player's own profile says it, so the list neither sets it nor keeps it set.
+     */
+    static Write listedPlayer(RAPlayer player, Locale locale) {
+        return player(Write.from(PLAYER_LISTED, locale), player);
     }
 
     /**
@@ -104,6 +108,12 @@ final class ProfileWrites {
                 .put(COUNTRY_CODE, team.getCountryCode())
                 .put(VIRTUAL, team.getVirtual())
                 .put(UNDERAGE, team.getUnderage());
+    }
+
+    private static Write player(Write write, RAPlayer player) {
+        return write.put(PLAYER_NAME, player.getName())
+                .put(FULL_NAME, player.getFullName())
+                .put(PLAYER_SPORT, player.getSport());
     }
 
     private static Write listedSport(Write write, RASport sport) {
