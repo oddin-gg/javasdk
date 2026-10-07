@@ -49,7 +49,8 @@ public enum KnownDifference {
     SESSION_BUILT_AFTER_OPEN_RECEIVES_NOTHING("KD-29", true),
     EVENT_RECOVERY_BEFORE_OPEN_IS_SENT("KD-30", true),
     RAW_API_DATA_ONLY_ONCE_OPEN("KD-31", true),
-    RECOVERY_FROM_SET_BEFORE_OPEN_IS_FORGOTTEN("KD-32", true);
+    RECOVERY_FROM_SET_BEFORE_OPEN_IS_FORGOTTEN("KD-32", true),
+    RECOVERY_FROM_THE_LAST_ALIVE_RECEIVED("KD-33", true);
 
     /** The SDK lines a scenario can run against. */
     public enum Line {

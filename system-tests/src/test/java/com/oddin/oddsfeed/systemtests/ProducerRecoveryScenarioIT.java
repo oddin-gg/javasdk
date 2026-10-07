@@ -193,6 +193,47 @@ class ProducerRecoveryScenarioIT {
     }
 
     /**
+     * A producer whose clock went back between two alives: 0.0.x recovers from the last alive it
+     * received, 1.0 from the newest by its timestamp, which says everything before it was sent
+     * (KD-33). With a clock that only goes forward, as in the scenario above, the two are the same.
+     */
+    @Test
+    void aProducerWhoseClockWentBackRecoversFromTheNewestAliveOn10() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            sdk.open(MessageInterest.ALL);
+            long newest = System.currentTimeMillis() - 1_000;
+            feed.publishAsIs(stampedAt(alive(1, true), newest));
+            feed.publish(snapshotComplete(
+                    1,
+                    requestId(rest.awaitRequests("POST", PREMATCH_RECOVERY, 1).getFirst())));
+            assertThat(sdk.events().nextProducerStatus(1).isDown())
+                    .as("down after the first recovery")
+                    .isFalse();
+
+            // the producer's clock two seconds back, then it says it is no longer subscribed
+            long lastReceived = newest - 2_000;
+            feed.publishAsIs(stampedAt(alive(1, true), lastReceived));
+            feed.publishAsIs(stampedAt(alive(1, false), lastReceived + 500));
+            assertThat(sdk.events().nextProducerStatus(1).isDown())
+                    .as("down after the unsubscribed alive")
+                    .isTrue();
+
+            String after =
+                    rest.awaitRequests("POST", PREMATCH_RECOVERY, 2).get(1).parameter("after");
+            assertThat(after).as("where the recovery after the down starts").isNotNull();
+            KnownDifference.RECOVERY_FROM_THE_LAST_ALIVE_RECEIVED.expect(
+                    () -> assertThat(Long.parseLong(after))
+                            .as("where the recovery after the down starts: the last alive received")
+                            .isEqualTo(lastReceived),
+                    () -> assertThat(Long.parseLong(after))
+                            .as("where the recovery after the down starts: the newest alive")
+                            .isEqualTo(newest));
+        }
+    }
+
+    /**
      * Every producer starts down, and 0.0.x reports a status change only when the down flag or its
      * reason changes: an alive saying a producer that is still down is unsubscribed changes neither,
      * so the client hears nothing, while the SDK does ask for a recovery. 1.0 does the same; the
