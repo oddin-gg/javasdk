@@ -26,4 +26,12 @@ public interface Player {
 
     @Nullable
     String getSportID(Locale locale);
+
+    /**
+     * Whether the player is flagged as underage, from the player's profile: {@link
+     * UnderageStatus#UNKNOWN} while no profile has said. A profile that leaves the value out keeps the
+     * one an earlier profile sent; one that sends -1 makes it unknown again.
+     */
+    @Nullable
+    UnderageStatus getUnderage();
 }

@@ -87,4 +87,19 @@ class EnumLookupTest {
                 .isEqualTo(LiveOddsAvailability.NOT_AVAILABLE);
         assertThat(LiveOddsAvailability.Companion.fromApiEvent(null)).isEqualTo(LiveOddsAvailability.AVAILABLE);
     }
+
+    @Test
+    void anUnderageStatusIsFoundByItsNumberAndAnythingElseIsUnknown() {
+        assertThat(UnderageStatus.values())
+                .extracting(UnderageStatus::name, UnderageStatus::getValue)
+                .containsExactly(tuple("UNKNOWN", -1), tuple("NO", 0), tuple("YES", 1));
+        for (UnderageStatus status : UnderageStatus.values()) {
+            assertThat(UnderageStatus.fromValue(status.getValue())).isEqualTo(status);
+            assertThat(UnderageStatus.Companion.fromValue(status.getValue())).isEqualTo(status);
+        }
+        assertThat(UnderageStatus.fromValue(null)).isEqualTo(UnderageStatus.UNKNOWN);
+        assertThat(UnderageStatus.fromValue(2)).isEqualTo(UnderageStatus.UNKNOWN);
+        assertThat(UnderageStatus.fromValue(-2)).isEqualTo(UnderageStatus.UNKNOWN);
+        assertThat(UnderageStatus.Companion.fromValue(null)).isEqualTo(UnderageStatus.UNKNOWN);
+    }
 }

@@ -80,6 +80,8 @@ class CompetitorView implements Competitor {
         return entities.guard(this, () -> shared().get(COUNTRY_CODE, null));
     }
 
+    /** @deprecated the number as the API sends it; {@link #getUnderageStatus()} reads it. */
+    @Deprecated
     @Override
     public @Nullable Integer getUnderage() {
         return entities.guard(this, () -> shared().get(UNDERAGE, null));
