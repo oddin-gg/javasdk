@@ -26,6 +26,8 @@ code.
 
 Each entry says what 0.0.x does, what 1.0 does and where NEXT.md says so, why it matters, which
 test pins it, and whether it was found by a test against 0.0.56 or by reading the 0.0.56 source.
+The 0.0.x side is that of 0.0.58, the release the system tests run against; where an older 0.0.x
+release behaved otherwise, the entry says so.
 
 ## KD-1 An event recovery is never reported complete
 
@@ -138,15 +140,18 @@ withdrawn: 1.0 keeps 0.0.x's answer. A match's competitors are none, and so are 
 answered an outage with, under either strategy (NEXT.md section 3, Behaviour that stays).
 `ExceptionStrategyScenarioIT.underCatchAGetterTheApiCannotServeReturnsNull` checks it on both lines.
 
-## KD-11 A recovery request the API refused is not asked for again
+## KD-11 A recovery request the API refused is asked for again only after five minutes
 
-- **0.0.x:** When the API refuses the recovery request, the recovery stays marked as started, and
-  later alives ask for another only once the maximum recovery time, 360 minutes by default, has
-  passed. The producer stays down meanwhile.
+- **0.0.x:** When the API refuses the recovery request, the recovery stays marked as started.
+  Nothing of it arrives, so it is lost for 0.0.58's five-minute rule (KD-25): the first alive
+  more than five minutes after the request asks for another, and so on every five minutes while
+  the API refuses, with no backoff and no cap. The producer stays down meanwhile. 0.0.57 and
+  older asked again only once the maximum recovery time, 360 minutes by default, had passed.
 - **1.0:** Re-issued with backoff, at most three times in a row, re-armed after ten minutes or
   when an alive arrives after a gap (section 4, Recovery and producers). The test allows 30 s for
   the second request.
-- **Why:** A short API outage at the wrong moment keeps a producer down for hours.
+- **Why:** A short API outage at the wrong moment keeps a producer down for five minutes on
+  0.0.58, for hours on 0.0.57 and older.
 - **Pinned by:** `RestOutageScenarioIT.aRecoveryRequestTheApiRefusedIsAskedForAgain`
 - **Found:** by test against 0.0.56.
 
@@ -329,25 +334,32 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Found:** in the source (`OutcomeOddsImpl.convertOdds`, which subtracts `1.0 * 100`), and by test
   against 0.0.57.
 
-## KD-25 A lost snapshot complete keeps a producer down for six hours
+## KD-25 A lost snapshot complete is given up only at an alive, and asked for again without backoff
 
-- **0.0.x:** A recovery whose `snapshot_complete` never arrives is asked for again only once the
-  maximum recovery time has passed: 360 minutes, with no setter. The producer stays down
-  meanwhile. The .NET SDK does the same, with a setter.
+- **0.0.x:** Since 0.0.58, a recovery whose `snapshot_complete` never arrives is given up once
+  five minutes have passed since the request, or since the last message a session took that
+  carries the request's id or was generated before the request. The check runs only when an alive
+  arrives on the SDK's alive channel, and the recovery is asked for again at once, with a new
+  request id and no backoff. 0.0.57 and older asked again only once the maximum recovery time had
+  passed, 360 minutes with no setter, and the producer stayed down meanwhile; the .NET SDK does the
+  same, with a setter.
 - **1.0:** A producer's recovery waits five minutes at most for its `snapshot_complete`, counted
   from the request, or from the last message of its snapshot, or message or alive sent before the
   request, or of an earlier recovery of the producer that failed or was given up, that a session
   awaiting it took; an event recovery's snapshot message counts only when that event recovery was
-  asked for first. Then it is asked for again with backoff, as one the API refused
-  (KD-11). The maximum recovery time still bounds a recovery that keeps coming, and event
-  recoveries (NEXT.md section 4, Recovery and producers).
+  asked for first. The deadline is checked every second. Then it is asked for again with backoff,
+  as one the API refused (KD-11). The maximum recovery time still bounds a recovery that keeps
+  coming, and event recoveries (NEXT.md section 4, Recovery and producers).
 - **Why:** The Go SDK saw a `snapshot_complete` that never arrived on a bound, consuming queue;
-  until the recovery is given up, the client drops or buffers the producer's live feed.
+  until the recovery is given up, the client drops or buffers the producer's live feed. Against
+  0.0.58 the five minutes are the same; a recovery is given up up to an alive interval later
+  there, asked for again sooner, and kept waiting by less of the traffic before it.
 - **Pinned by:** none in the system tests; the fake feed cannot lose one message of a recovery,
   and a scenario of five minutes is not worth it. The recovery actor's unit tests pin the
   deadline.
 - **Found:** by reading the source (`RecoveryManagerImpl.systemSessionAliveReceived`), after the
-  Go SDK's unmerged fix for it.
+  Go SDK's unmerged fix for it; 0.0.58 has the five minutes too, and the source of that release
+  (`RecoveryManagerImpl.systemSessionAliveReceived`, `onRecoveryTraffic`) shows how they differ.
 
 ## KD-26 An unsubscribed alive during a recovery asks again at once
 

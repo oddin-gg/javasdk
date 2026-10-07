@@ -100,9 +100,9 @@ class RestOutageScenarioIT {
 
     /**
      * A recovery request the API refuses leaves the producer down. 0.0.x marks the recovery as
-     * started anyway and asks again only once the maximum recovery time has passed - six hours by
-     * default - so the alives that arrive after the API is back change nothing. 1.0 re-issues it
-     * with backoff.
+     * started anyway and asks again only five minutes after the request (0.0.57 and older once the
+     * maximum recovery time had passed, six hours by default), so the alives that arrive after the
+     * API is back change nothing for now. 1.0 re-issues it with backoff.
      */
     @Test
     void aRecoveryRequestTheApiRefusedIsAskedForAgain() throws InterruptedException {
