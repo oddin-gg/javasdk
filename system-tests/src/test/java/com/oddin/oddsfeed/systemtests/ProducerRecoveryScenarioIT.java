@@ -14,14 +14,28 @@ import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.LogCapture;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
+import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.ProducerManager;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.ProducerScope;
+import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
+import com.oddin.oddsfeedsdk.mq.entities.BetSettlement;
+import com.oddin.oddsfeedsdk.mq.entities.BetStop;
+import com.oddin.oddsfeedsdk.mq.entities.FixtureChange;
 import com.oddin.oddsfeedsdk.mq.entities.Message;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatusReason;
+import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
+import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
+import com.oddin.oddsfeedsdk.mq.entities.UnparsableMessage;
+import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.Test;
 
@@ -33,6 +47,12 @@ import org.junit.jupiter.api.Test;
 class ProducerRecoveryScenarioIT {
 
     private static final String PREMATCH_RECOVERY = "/v1/pre/recovery/initiate_request";
+
+    /** A live odds change from producer 1, carrying no request id, so not a recovery's. */
+    private static final String LIVE_ODDS_CHANGE = Fixtures.replace(
+            FeedMessages.fromProducer(Fixtures.read("feed/odds_change/odds_change_markets_only.xml"), 2, 1),
+            " request_id=\"2049987833\"",
+            "");
 
     /**
      * After a down, the SDK asks for a recovery from where it left off, not for everything: from
@@ -81,6 +101,94 @@ class ProducerRecoveryScenarioIT {
             assertThat(sdk.oddsFeed().getProducerManager().isProducerDown(1))
                     .as("producer 1 down")
                     .isFalse();
+        }
+    }
+
+    /**
+     * A recovery-from timestamp the client sets before the feed opens is where the first recovery
+     * of that producer starts on 1.0, as a client resuming after a restart wants it to. 0.0.x
+     * forgets it: open() fetches the producer list again and replaces what the setter wrote, so
+     * the first recovery asks for a full snapshot (KD-32).
+     */
+    @Test
+    void theRecoveryTimestampTheClientSetsIsWhereTheFirstRecoveryStarts() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            long from = System.currentTimeMillis() - Duration.ofMinutes(30).toMillis();
+            sdk.oddsFeed().getProducerManager().setProducerRecoveryFromTimestamp(1, from);
+            sdk.open(MessageInterest.ALL);
+            feed.publish(alive(1, true));
+
+            String after = rest.awaitRequest("POST", PREMATCH_RECOVERY).parameter("after");
+            KnownDifference.RECOVERY_FROM_SET_BEFORE_OPEN_IS_FORGOTTEN.expect(
+                    () -> assertThat(after)
+                            .as("where the first recovery of producer 1 starts; none is a full snapshot")
+                            .isNull(),
+                    () -> assertThat(after)
+                            .as("where the first recovery of producer 1 starts")
+                            .isEqualTo(Long.toString(from)));
+        }
+    }
+
+    /**
+     * The recovery timestamp a client reads to resume from: 0.0.x reports the last alive on the
+     * SDK's alive channel, which is ahead of a message the session is still in the callback of; 1.0
+     * reports what the session has processed, so a client that resumes from it misses nothing
+     * (KD-28).
+     */
+    @Test
+    void theRecoveryTimestampIsWhatTheSessionProcessedNotALaterAlive() throws InterruptedException {
+        var listener = new HoldingTheSecond();
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            sdk.oddsFeed()
+                    .getSessionBuilder()
+                    .setListener(listener)
+                    .setMessageInterest(MessageInterest.ALL)
+                    .build();
+            sdk.oddsFeed().open();
+            feed.publish(alive(1, true));
+            feed.publish(snapshotComplete(
+                    1,
+                    requestId(rest.awaitRequests("POST", PREMATCH_RECOVERY, 1).getFirst())));
+            assertThat(sdk.events().nextProducerStatus(1).isDown())
+                    .as("down after the first recovery")
+                    .isFalse();
+
+            try {
+                long processedAt = System.currentTimeMillis();
+                feed.publishAsIs(stampedAt(LIVE_ODDS_CHANGE, processedAt));
+                assertThat(listener.first.await(Received.DELIVERY.toSeconds(), TimeUnit.SECONDS))
+                        .as("the first odds change processed")
+                        .isTrue();
+                ProducerManager producers = sdk.oddsFeed().getProducerManager();
+                feed.publishAsIs(stampedAt(LIVE_ODDS_CHANGE, processedAt + 1));
+                assertThat(listener.held.await(Received.DELIVERY.toSeconds(), TimeUnit.SECONDS))
+                        .as("the second odds change in its callback")
+                        .isTrue();
+                Thread.sleep(20);
+                long aliveAt = System.currentTimeMillis();
+                feed.publishAsIs(stampedAt(alive(1, true), aliveAt));
+
+                KnownDifference.RECOVERY_TIMESTAMP_RUNS_AHEAD.expect(
+                        () -> assertThat(awaitTimestampForRecovery(producers, aliveAt))
+                                .as("recovery timestamp of producer 1, with the second odds change in its callback")
+                                .isEqualTo(Instant.ofEpochMilli(aliveAt)),
+                        () -> {
+                            assertThat(awaitTimestampForRecovery(producers, processedAt))
+                                    .as("recovery timestamp of producer 1 once the first odds change is processed")
+                                    .isEqualTo(Instant.ofEpochMilli(processedAt));
+                            // the alive has nothing to move: it stays as it was
+                            Thread.sleep(1_000);
+                            assertThat(producers.getProducer(1).getTimestampForRecovery())
+                                    .as("recovery timestamp of producer 1, with the second odds change in its callback")
+                                    .isEqualTo(Instant.ofEpochMilli(processedAt));
+                        });
+            } finally {
+                listener.release.countDown();
+            }
         }
     }
 
@@ -180,6 +288,64 @@ class ProducerRecoveryScenarioIT {
                             .as("scopes of producer 2, listed as live|prematch")
                             .containsExactlyInAnyOrder(ProducerScope.LIVE, ProducerScope.PREMATCH));
         }
+    }
+
+    /**
+     * Producer 1's recovery timestamp once it reads {@code expected}, or as it reads when {@link
+     * Received#DELIVERY} is over.
+     */
+    private static Instant awaitTimestampForRecovery(ProducerManager producers, long expected)
+            throws InterruptedException {
+        long deadline = System.nanoTime() + Received.DELIVERY.toNanos();
+        while (!Instant.ofEpochMilli(expected).equals(producers.getProducer(1).getTimestampForRecovery())
+                && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        return producers.getProducer(1).getTimestampForRecovery();
+    }
+
+    /** A session listener that holds its second odds change in the callback until released. */
+    private static final class HoldingTheSecond implements OddsFeedListener {
+        final CountDownLatch first = new CountDownLatch(1);
+        final CountDownLatch held = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+        private final AtomicInteger oddsChanges = new AtomicInteger();
+
+        @Override
+        public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {
+            if (oddsChanges.incrementAndGet() == 1) {
+                first.countDown();
+                return;
+            }
+            held.countDown();
+            try {
+                release.await(Received.DELIVERY.toSeconds(), TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        @Override
+        public void onBetStop(OddsFeedSession session, BetStop<SportEvent> message) {}
+
+        @Override
+        public void onBetSettlement(OddsFeedSession session, BetSettlement<SportEvent> message) {}
+
+        @Override
+        public void onRollbackBetSettlement(OddsFeedSession session, RollbackBetSettlement<SportEvent> message) {}
+
+        @Override
+        public void onRollbackBetCancel(OddsFeedSession session, RollbackBetCancel<SportEvent> message) {}
+
+        @Override
+        public void onBetCancel(OddsFeedSession session, BetCancel<SportEvent> message) {}
+
+        @Override
+        public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {}
+
+        // abstract on 0.0.x, a default on 1.0
+        @Override
+        public void onUnparsableMessage(OddsFeedSession session, UnparsableMessage<SportEvent> message) {}
     }
 
     private static long requestId(RecordedRequest recovery) {
