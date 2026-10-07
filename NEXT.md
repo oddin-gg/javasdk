@@ -267,7 +267,7 @@ to one of them:
 | AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues; the alive hand-off | decode, build, cache writes, client code, anything blocking |
 | Session dispatcher | one thread per session | decode, build, cache write, client callback, ack, age sampling | nothing else |
 | Alive dispatcher | one thread | alive decode, clock offsets, posting liveness facts to the recovery actor | REST, client code |
-| Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
+| Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second, paced by `System.nanoTime`, so a wall clock set back stops none of its ticks | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
 | Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, fatal errors, listener exceptions, API call events, recovery completion | message callbacks |
 | REST workers | virtual threads | HTTP calls, posting results back to whoever asked | client code |
 | Timers | one scheduled executor | scheduling only, each tick posts a message to an actor or a worker | blocking work, client code |
@@ -592,7 +592,14 @@ and REST workers post facts to it; it decides and posts work out.
   clamped: passed back after a downtime longer than the stateful recovery window, the
   setter throws `IllegalArgumentException`, as in 0.0.x, and the getter's documentation
   tells the client to catch it and pass 0 for a full recovery. Ticket 31 documents
-  resuming. A recovery's start is clamped
+  resuming. Both the published point and a recovery's start are capped at the
+  producer's now - the SDK's clock corrected by the offset measured on the producer's
+  last alive - so one message or alive stamped in the producer's future, from a
+  component's fast clock or a bad value, moves neither past what the producer has
+  sent: a request is not refused for a start ahead of the producer, and a client does
+  not persist one. The marks themselves still take the stamp; a tolerance that keeps
+  such a stamp from moving a checkpoint or a live-state watermark comes later. A
+  recovery's start is clamped
   to the producer's stateful recovery window, as today - counted back by the producer's
   clock, as the gaps' starts are, with the offset measured on its alives - and a cold
   start with no seed requests a full snapshot, or the configured initial snapshot
@@ -818,8 +825,8 @@ and REST workers post facts to it; it decides and posts work out.
   old queue held.
 - Authentication and authorisation failures and a wrong virtual host are treated as
   permanent once at least three refusals have gone on for a whole minute with no
-  connection in between. They are counted by the clock, not by attempts, which the
-  backoff spaces a few seconds apart at first, because a refusal can be an auth backend
+  connection in between. They are counted by the time, by `System.nanoTime`, not by
+  attempts, which the backoff spaces a few seconds apart at first, because a refusal can be an auth backend
   being deployed or a virtual host being written. Permanent means the reconnect loop
   stops and a fatal error event carries the broker's reason, with how many refusals
   over how long. The client's exit is `close()` and a
@@ -936,8 +943,9 @@ control events, filled slots and telemetry queued, the events delivered), the br
 consumer threads (a pool of the transport's own that keeps when the hand-off running
 longest began, the hand-offs waiting and those run), the alive dispatcher (its queue and
 `handled`; it has no callback worth a limit) and the recovery actor (`turnedAt` as its
-busy-since - it begins a turn every second however idle, so a turn begun 30 s ago is one
-not ended - its facts waiting and `turns`). A queue is still from the first look that
+busy-since - it begins a turn every second however idle, paced by `System.nanoTime` so a
+wall clock set back does not idle it, so a turn begun longer ago than the limit is one not
+ended - its facts waiting and `turns`). A queue is still from the first look that
 sees it not empty with the same count taken; any look that sees the count move, or the
 queue empty, ends that. The JVM's deadlocks come from
 `ThreadMXBean.findDeadlockedThreads()`, which sees monitors and locks alike, once a tick
@@ -1516,3 +1524,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   limits follow the HTTP timeout, `max(30 s, 2 × timeout + 5 s)` (65 s for the default 30 s),
   so a callback whose read waits on a slow API - up to `2 × (timeout + 1 s) + 1 s` - is not
   reported `STALLED`, whose remedy, a new feed, would not help.
+- 2026-10-07, ticket 26, clocks after the final review: the recovery actor paces its ticks and
+  its park by `System.nanoTime`, so a wall clock set back no longer stops its ticks nor makes
+  an idle actor read `STALLED`; the login-refusal minute is measured the same way. The
+  machine's own durations stay on the wall clock for now. The published resume point and a
+  recovery's start are capped at the producer's now, so a timestamp from the producer's
+  future moves neither past it; the tolerance on the checkpoints and watermarks follows.
