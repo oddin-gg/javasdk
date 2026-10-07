@@ -484,11 +484,13 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **0.0.x:** When an alive says the producer is no longer subscribed, the recovery starts from the
   timestamp of the last alive it received before.
 - **1.0:** It starts from the newest subscribed alive by its timestamp, the running maximum, which
-  says everything sent before it has been sent (NEXT.md section 4, Recovery and producers). The
-  two differ only when a producer's clock goes back between alives; then 1.0 starts later, from
-  what the producer stamped before the step back.
+  says everything sent before it has been sent, but no later than the producer's now: the SDK's
+  clock corrected by the offset measured on the producer's last alive (NEXT.md section 4,
+  Recovery and producers). The two differ only when a producer's clock goes back between alives;
+  then 1.0 starts later than 0.0.x, from the producer's now as it asks, but no later than what the
+  producer stamped before the step back.
 - **Why:** A producer's alives arrive in the order it sent them, so with a clock that only moves
   forward the last received is the newest. A clock that steps back is the one case they part.
-- **Pinned by:** `ProducerRecoveryScenarioIT.aProducerWhoseClockWentBackRecoversFromTheNewestAliveOn10`
+- **Pinned by:** `ProducerRecoveryScenarioIT.aProducerWhoseClockWentBackRecoversFromTheNewestAliveCappedAtItsNowOn10`
 - **Found:** by test against 1.0, a scenario that stamped its first alive later than the ones after
   it; the 0.0.x side read in the source (`RecoveryManager.systemSessionAliveReceived`).
