@@ -53,17 +53,24 @@ class FanOutTest {
 
     @Test
     void theFirstFailureFailsTheWholeAtOnceAndStartsNoMore() throws InterruptedException {
-        var fanOut = new FanOut(threads, 2, Duration.ofSeconds(5));
+        // counted as the fan-out hands a load over, on the caller's thread, so before each() returns
         var started = new AtomicInteger();
+        Executor counted = load -> {
+            started.incrementAndGet();
+            threads.execute(load);
+        };
+        var fanOut = new FanOut(counted, 2, Duration.ofSeconds(5));
+        Thread caller = Thread.currentThread();
         var slowOneDone = new CountDownLatch(1);
         long before = System.nanoTime();
         assertThatThrownBy(() -> fanOut.each(List.of(0, 1, 2, 3, 4), item -> {
-                    started.incrementAndGet();
                     if (item == 0) {
                         sleep(2_000);
                         slowOneDone.countDown();
                         return item;
                     }
+                    // fails while the caller waits for the permit this load holds, for the next item
+                    awaitWaiting(caller);
                     throw new ApiException("item " + item + " failed");
                 }))
                 .isInstanceOf(ApiException.class)
@@ -127,6 +134,14 @@ class FanOutTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("no load could start")
                 .hasCauseInstanceOf(RejectedExecutionException.class);
+    }
+
+    /** Waits, for up to a second, until {@code thread} waits for a permit. */
+    private static void awaitWaiting(Thread thread) {
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
+        while (thread.getState() != Thread.State.TIMED_WAITING && System.nanoTime() < until) {
+            sleep(1);
+        }
     }
 
     private static void sleep(long millis) {
