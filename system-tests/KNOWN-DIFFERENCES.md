@@ -495,3 +495,193 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Pinned by:** `ProducerRecoveryScenarioIT.aProducerWhoseClockWentBackRecoversFromTheNewestAliveCappedAtItsNowOn10`
 - **Found:** by test against 1.0, a scenario that stamped its first alive later than the ones after
   it; the 0.0.x side read in the source (`RecoveryManager.systemSessionAliveReceived`).
+
+## KD-34 A failed open() cannot be tried again on the same feed
+
+- **0.0.x:** `open()` marks the feed opened only once it has succeeded, so after an `open()` that
+  failed, on a broker it could not reach say, the next `open()` on the same feed tries again.
+- **1.0:** `open()` is one-shot: once it has taken the sessions, a second call throws
+  `InitException("feed cannot already opened")`, 0.0.x's words, whatever came of the first; only
+  an `open()` without sessions leaves the feed as it was (NEXT.md section 3, Behaviour that
+  stays). A failed `open()` closes what it created. The last connection state it told through
+  `onConnectionStateChange` is `CONNECTING`: no state says the open failed, the exception does.
+- **Why:** A client that retries `open()` on the same feed gets the same exception every time; it
+  closes the feed and builds a new one instead.
+- **Pinned by:** none in the system tests, where a failed `open()` is followed by `close()`; the
+  unit tests pin it (`OddsFeedOpenTest`'s `anOpenTheBrokerRefusesLeavesNoThreadAndNoConnection`).
+- **Found:** by reading the source (`OddsFeed.open`, `feedOpened`).
+
+## KD-35 Global events run in order on one thread, and a queued status gives way to the newest
+
+- **0.0.x:** `onProducerStatusChange` and `onEventRecoveryCompleted` each run in a coroutine of
+  their own: at once, in no set order, every change delivered. `onConnectionDown` runs once per
+  loss, on the AMQP client's thread.
+- **1.0:** Every global-listener callback runs on the events dispatcher's one thread, in the order
+  things happened (NEXT.md section 4, Threads). A producer's status, its cause, a session's
+  lagging, a part's health, the connection's state and each source of fatal errors have one slot
+  each: a report still queued is replaced by the newest. A client that falls behind hears the
+  state as it is now, so a producer's down and up both queued behind a slow callback reach it as
+  the newest alone, and connection losses queued together as one `onConnectionDown`. Recovery
+  completions and safety-net events are each delivered.
+- **Why:** A client that counts every status change sees fewer, and one slow callback delays the
+  others.
+- **Pinned by:** none in the system tests; the events dispatcher's unit tests pin it
+  (`EventsDispatcherTest`'s `aFloodOfReportsForOneSlotKeepsOneEntryQueued`).
+- **Found:** by reading the source (`RecoveryManagerImpl`, `GlobalScope.launch`).
+
+## KD-36 A start with the API down takes 90 seconds to fail, and needs the producer list too
+
+- **0.0.x:** The feed's start, on the first manager call, fetches whoami once; with the API down
+  it fails within seconds. The producer list loads later, when first needed.
+- **1.0:** The start fetches whoami and the producer list, and tries again, a second apart, until
+  both have answered or the startup deadline has passed: three HTTP timeouts, 90 s by default,
+  which `setStartupTimeout` changes. Then it throws `InitException`, also when only the producer
+  list is down. A failed start keeps nothing, and the next call on the same feed starts again and
+  waits as long (NEXT.md section 3, Behaviour that stays, and section 4, REST). The events thread
+  and the watchdog's timer stay from the first start until `close()`, so a client that gives up
+  on a feed closes it.
+- **Why:** A first call, or a readiness check, that failed fast during an API outage now waits up
+  to 90 s, and so does each retry. A client that wants a quick failure sets a shorter startup
+  timeout, which also rides out a shorter outage.
+- **Pinned by:** none; `StartupScenarioIT` runs into the 90 s on 1.0 without asserting it, and the
+  REST client's unit tests pin the retries (`ApiClientTest`'s `startupTriesAgainUntilTheApiAnswers`
+  and `startupFailsClearlyAtItsDeadline`).
+- **Found:** by test against 0.0.57 and 1.0: the scenarios with the API down took about 4 s on
+  0.0.57 and about 93 s on 1.0.
+
+## KD-37 A producer's recovery completes once every session that takes it has its snapshot complete
+
+- **0.0.x:** The first `snapshot_complete` of the request that a session neither live-only nor
+  prematch-only sees completes it, a client `SYSTEM_ALIVE_ONLY` session or one for specified
+  matches included; live-only and prematch-only sessions complete it once each of the producer's
+  scopes has had one. So the producer can go up while another session is still receiving its
+  snapshot.
+- **1.0:** A producer is up again when every session that receives it and takes snapshot
+  completions has seen its `snapshot_complete`; a low-priority session next to a high-priority
+  one takes none, and a recovery no session takes completions for completes once the API has
+  accepted it (NEXT.md section 4, Recovery and producers).
+- **Why:** A producer reported up while one of its sessions is still behind tells that session's
+  client a state it does not have yet. On 1.0 the producer comes up later, once all are done.
+- **Pinned by:** none in the system tests; the recovery machine's unit tests pin it
+  (`RecoveryMachineTest`'s `aProducerIsUpOnceEverySessionThatReceivesItHasSeenItsSnapshotComplete`).
+- **Found:** by reading the source (`ProducerRecoveryData.validateSnapshotComplete`,
+  `snapshotValidationNeeded`).
+
+## KD-38 The processing delay is the client's sessions' own
+
+- **0.0.x:** `getLastProcessedMessageGenTimestamp` and `getProcessingQueDelay` move with every alive
+  on the SDK's own alive session, and with the alives, bet stops and odds changes of the client's
+  sessions. With a session stuck in a callback, the delay stays near the age of the last alive.
+- **1.0:** Only the client's sessions move them, with every message they process and their
+  alives; the SDK's alive channel does not (NEXT.md section 4, Recovery and producers). With a
+  session stuck, the delay keeps growing. The samples reach the recovery actor through a bounded
+  queue, which drops one when full and counts it.
+- **Why:** A client that alerts on the delay sees it grow while a session is stuck, which is what
+  it is for; one that reads it as the age of the last alive sees larger numbers.
+- **Pinned by:** none; no test compares what feeds it on the two lines.
+- **Found:** by reading the source (`OddsFeedSessionImpl`, `RecoveryManagerImpl`).
+
+## KD-39 A live-state field a message leaves out keeps its value
+
+- **0.0.x:** An odds change or a match summary without `period_scores` empties the period scores,
+  and one without `scoreboard_available` reads false; a summary without `match_status_code` sets
+  the status code null. The scores and the scoreboard are kept. A summary without
+  `sport_event_status` stores no status, so the match status getters throw under `THROW` and
+  return null under `CATCH`.
+- **1.0:** A field a message or a summary leaves out keeps its value, the period scores, whether a
+  scoreboard is available and the status code included; the status itself is always written
+  (`odds-feed/CACHE-FIELDS.md`, question 6). A summary without `sport_event_status`, which the
+  schema requires, leaves the held values as they are and counts as a fresh read: with nothing
+  held, the status and the scoreboard are null, the scores 0.0, the period scores empty, and
+  nothing throws.
+- **Why:** A client that reads an empty list as "no periods yet" sees the last ones instead.
+- **Pinned by:** none in the system tests; the unit tests pin it (`MatchWritesTest`'s
+  `periodScoresAndAScoreboardLeftOutAreKeptFromEitherSide`, `MatchCachesTest`'s
+  `aSummaryWithoutAStatusKeepsTheWinnerAndIsNotAskedAgainForTheLiveState`).
+- **Found:** by reading the source (`MatchStatusCache`); 1.0's rule was decided with ticket 17.
+
+## KD-40 A tournament that lists no competitors has an empty list
+
+- **0.0.x:** `Tournament.getCompetitors()` for a tournament whose info lists none throws an
+  `ItemNotFoundException` under `THROW` and returns null under `CATCH`, and asks the API again on
+  every call.
+- **1.0:** An empty list under either strategy, as a match's competitors are none, and nothing is
+  asked again while the tournament is fresh, 12 hours. A tournament whose info cannot load fails
+  as before.
+- **Why:** A client that catches the exception, or tests for null, to see "no competitors" gets an
+  empty list.
+- **Pinned by:** none; every tournament in the fixtures lists competitors.
+- **Found:** by reading the source (`TournamentCache.getCompetitors`).
+
+## KD-41 Small changes
+
+- **0.0.x:** Item by item:
+  1. Message callbacks run on the AMQP client's consumer thread.
+  2. A REST call is one attempt, with the HTTP library's own timeouts and no limit on calls at
+     once.
+  3. A message of any size is decoded and delivered.
+  4. `open()` disables the producers no session asks for, then checks the interests, so an
+     `open()` they fail leaves those producers disabled.
+  5. `RecoveryInfo.getSuccessful()` records only the API's answer to the request.
+  6. A feed whose only session is `SYSTEM_ALIVE_ONLY` asks for recoveries; its producers go up,
+     then down at the watchdog's first run, for the processing delay.
+  7. A producer whose stateful recovery window is 0 has its recovery start clamped to now.
+  8. `getNames()`, `getCountries()` and the other maps per locale are the cache's own, with every
+     locale anyone loaded; a player's or competitor's outcome name is the first of them, in any
+     locale.
+  9. `getActiveTournaments(sportName, locale)` returns the tournaments in the default locale.
+  10. `getAvailableTournaments(sportId)` asks the API on every call, and the sport list never
+      expires.
+  11. Market descriptions and void reasons are never refreshed, and every market missing from the
+      list fetches the whole list again.
+  12. A summary, fixture or schedule response overwrites the match's fields, nulls included, and a
+      schedule serves the matches' names.
+  13. A TV channel without `stream_url` fails the whole fixture.
+  14. A competitor without players loads its profile again on every `getPlayers()`.
+  15. A match status description without a locale is in the first locale ever cached for its id;
+      other locales come only from what is cached, and nothing is loaded.
+  16. `getFixtureChanges` reads `update_time` in the JVM's time zone, and one bad id fails the
+      list.
+- **1.0:** Item by item:
+  1. They run on a daemon thread of the session's own, `oddsfeed-session-<id>` (NEXT.md section
+     2, decision 10): a `ThreadLocal`, an MDC or a thread name a callback relies on sees another
+     thread.
+  2. One deadline, the HTTP timeout, covers the wait for a permit, every attempt and the pauses
+     between them; up to three attempts; at most 16 entity calls at once by default. A burst of
+     cold getters can fail "waiting for its turn" where 0.0.x was only slow, and a getter that
+     loads twice can wait about twice the timeout. A recovery request is retried after a 5xx too,
+     with the same request id (NEXT.md section 4, REST).
+  3. A message over the maximum message size, 1 MiB unless `setMaxMessageSize` says otherwise, is
+     not decoded, has no raw callback, and is reported to `onUnparsableMessage` and
+     `onCallbackFailure`.
+  4. The interests are checked first; a refused `open()` disables nothing.
+  5. It is false too for a recovery given up for a lost `snapshot_complete` or the maximum
+     recovery time.
+  6. No session receives a producer, so no recovery is asked for, and the producers stay down,
+     never told up.
+  7. No clamp for a window of 0; the start is still capped at the producer's now.
+  8. They are a copy with the entity's own locales; the outcome name is in the asked locale.
+  9. They are in `locale`, and the sport's name is matched in it.
+  10. Both are cached for 24 hours, and `clearTournament` does not reach a sport's list; only a full
+      clear does. A tournament new upstream shows up up to a day late, and with the list held an
+      API outage no longer throws.
+  11. Each list is refreshed an hour after its fetch. A market missing from it fetches the list
+      again once, when the list held is at least a minute old, so a market new upstream can read
+      no name for up to a minute. `clearMarketDescription` for a market without dynamic outcomes
+      drops every locale's list.
+  12. A field a response leaves out is kept, and a schedule fills only what is not held, so the
+      name of a listed match loads its summary: one call per match and locale.
+  13. The channel has an empty stream URL.
+  14. The empty list is kept as long as the profile.
+  15. `getMatchStatus()` describes the status in the match's own locales, loading the ones not
+      held, and `getDescription()` reads the first that has it; a failed load is null under
+      either strategy.
+  16. A time without a zone is UTC; a change whose id is not a URN, or without a time, is left out.
+- **Why:** Each is small or rare, but a client can see it; this list is where the upgrade guide
+  takes them from.
+- **Pinned by:** none in the system tests. On 1.0 unit tests pin several: 3
+  (`SessionDispatcherTest`'s `aBodyOverTheMaximumSizeIsUnparsableWithoutItsBytes`), 6
+  (`RecoveryMachineTest`'s `aClientsAliveOnlySessionReceivesNoProducer`), 11 (`CatalogTest`'s
+  `anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld`) and 14 (`ProfileViewsTest`'s
+  `aCompetitorWithoutPlayersHasNoneAndIsNotLoadedAgainForThem`).
+- **Found:** by reading the source of both lines, for the review of 1.0 against 0.0.58.
