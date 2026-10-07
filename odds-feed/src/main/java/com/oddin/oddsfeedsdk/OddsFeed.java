@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.feed.FeedCore;
 import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
 import com.oddin.oddsfeedsdk.internal.feed.OpenFeed;
+import com.oddin.oddsfeedsdk.internal.feed.Watchdog;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.session.SessionRegistry;
 import com.oddin.oddsfeedsdk.internal.session.SessionSpec;
@@ -71,12 +72,18 @@ public final class OddsFeed {
     /** What {@link #getHealth} reads, and what tells a part's change of health; for the feed's life. */
     private final HealthMonitor health;
 
+    /** The watch over the feed's threads, from its first start to its close, on its timer thread. */
+    private final Watchdog watchdog;
+
     /** The event recoveries, over whatever the feed is when they are asked for. */
     private final RecoveryManager recovery = new FeedRecovery();
     /** Held by the one start under way, so callers that come meanwhile wait for it, not start again. */
     private final ReentrantLock starting = new ReentrantLock();
 
-    /** Whether the first start has started the events dispatcher; guarded by {@link #starting}. */
+    /**
+     * Whether the first start has started the events dispatcher and the watchdog; guarded by {@link
+     * #starting}.
+     */
     private boolean eventsStarted;
 
     /** Guards the fields below, briefly: {@link #close} never waits for a start, nor for an open. */
@@ -97,20 +104,32 @@ public final class OddsFeed {
     private boolean closed;
 
     public OddsFeed(GlobalEventsListener listener, OddsFeedConfiguration configuration) {
-        requireNonNull(listener, "listener");
-        this.configuration = requireNonNull(configuration, "configuration");
-        this.sessions = new SessionRegistry(null);
-        this.events = events(listener, null);
-        this.health = new HealthMonitor(events, sessions::session);
+        this(listener, configuration, null, Watchdog.Limits.DEFAULT, HealthMonitor.Log.SLF4J);
     }
 
     public OddsFeed(
             GlobalEventsListener listener, OddsFeedConfiguration configuration, OddsFeedExtListener extListener) {
+        this(
+                listener,
+                configuration,
+                requireNonNull(extListener, "extListener"),
+                Watchdog.Limits.DEFAULT,
+                HealthMonitor.Log.SLF4J);
+    }
+
+    /** With the watchdog's limits and the health's log a test sets. */
+    OddsFeed(
+            GlobalEventsListener listener,
+            OddsFeedConfiguration configuration,
+            @Nullable OddsFeedExtListener extListener,
+            Watchdog.Limits limits,
+            HealthMonitor.Log log) {
         requireNonNull(listener, "listener");
         this.configuration = requireNonNull(configuration, "configuration");
-        this.sessions = new SessionRegistry(requireNonNull(extListener, "extListener"));
+        this.sessions = new SessionRegistry(extListener);
         this.events = events(listener, extListener);
-        this.health = new HealthMonitor(events, sessions::session);
+        this.health = new HealthMonitor(events, sessions::session, log);
+        this.watchdog = new Watchdog(health, () -> Watchdog.parts(events, running()), this::read, limits);
     }
 
     /**
@@ -186,22 +205,29 @@ public final class OddsFeed {
      * deliberately gives up, for a health check or a metrics exporter. Cheap, and safe from any
      * thread, a callback included: it reads counters and flags, never waits for the feed, and does
      * not start it. Before the feed starts it has no part and counts nothing; once started it has the
-     * events and the catalogs, and once open the consumer and the sessions, and the alives and the
-     * recovery unless it is a replay feed. Once closed it still reads what the feed counted.
+     * events, the catalogs, the timers and the JVM's threads, and once open the consumer and the
+     * sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
+     * what the feed counted.
      *
-     * <p>A change it finds is also told to {@code onHealthEvent}, until the feed closes: a catalog that
-     * has served a value stale for an hour or more is found when the health is read. A session's
-     * lagging is told as it changes. New in 1.0.
+     * <p>From its start to its close the feed watches its own threads, every 5 seconds: a part that
+     * has been in one callback for more than 30 seconds, or whose queue has not moved for 30 seconds
+     * while not empty, is stalled, and so are the JVM's threads while a deadlock holds some; each is
+     * healthy again once that ends. A catalog that has served a value stale for an hour or more is
+     * degraded, and a session lagging. Each change is logged - a stall as an error - and told to
+     * {@code onHealthEvent}, until the feed closes; a session's lagging as it changes. The feed never
+     * interrupts a stalled thread: the remedy is to close it and open a new one. This call looks at
+     * the parts again itself, so it finds a stall even when the watch's own thread is the one wedged,
+     * and the timers stalled then. New in 1.0.
      */
     public FeedHealth getHealth() {
-        @Nullable OpenFeed run;
-        state.lock();
-        try {
-            run = running;
-        } finally {
-            state.unlock();
-        }
-        return health.health(core, run);
+        // on the caller's thread too: the watchdog cannot see its own thread wedge
+        watchdog.recheck();
+        return read();
+    }
+
+    /** The health as it is now, and any change it finds told. */
+    private FeedHealth read() {
+        return health.health(core, running());
     }
 
     /**
@@ -293,10 +319,13 @@ public final class OddsFeed {
             state.unlock();
         }
         var deadline = System.nanoTime() + OpenFeed.SHUTDOWN_TIMEOUT.toNanos();
+        // first, so it finds no part stopping for stalled
+        watchdog.stop();
         if (built == null && calling == null && run == null) {
             // never started, or its start failed and released what it built: nothing to say, but a
             // callback of the failed start's may still run
             events.stop();
+            watchdog.awaitStop(deadline);
             events.awaitStop(deadline);
             return;
         }
@@ -312,6 +341,7 @@ public final class OddsFeed {
             built.close();
         }
         events.stop();
+        watchdog.awaitStop(deadline);
         if (run != null) {
             run.awaitStop(deadline);
         }
@@ -341,6 +371,7 @@ public final class OddsFeed {
             }
             if (!eventsStarted) {
                 events.start();
+                watchdog.start();
                 eventsStarted = true;
             }
             try {
@@ -395,7 +426,12 @@ public final class OddsFeed {
         return events;
     }
 
-    /** What {@link #open} added and {@link #close} is to stop; for a test. */
+    /** The watch over the feed's threads; for a test. */
+    Watchdog watchdog() {
+        return watchdog;
+    }
+
+    /** What {@link #open} added and {@link #close} is to stop; for the health, and a test. */
     @Nullable
     OpenFeed running() {
         state.lock();

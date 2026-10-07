@@ -20,13 +20,14 @@ import java.util.Map;
  * <p>A part is {@link HealthState#DEGRADED} while it works with a quality the SDK gave up: a session
  * lagging, with the safety net's resets spent, or a catalog that has served a value stale, its
  * refreshes failing, for an hour or more. It is {@link HealthState#STALLED} when the SDK's own watch finds it not
- * moving. The feed's state is the worst of its parts'. Each change is also told to {@code
- * GlobalEventsListener.onHealthEvent}.
+ * moving: in one callback for more than 30 seconds, with a queue that has not moved for 30 seconds,
+ * or held by a deadlock; it is healthy again once that ends. The feed's state is the worst of its
+ * parts'. Each change is also told to {@code GlobalEventsListener.onHealthEvent}.
  *
  * @param state the worst of the parts' states; healthy when there is none yet
- * @param components the state of each part the feed has now: the events and the catalogs once the
- *     feed has started, the consumer and the sessions once it is open, and the alives and the
- *     recovery once a feed that is not a replay feed is open
+ * @param components the state of each part the feed has now: the events, the catalogs, the timers
+ *     and the JVM's threads once the feed has started, the consumer and the sessions once it is open,
+ *     and the alives and the recovery once a feed that is not a replay feed is open
  * @param transport the broker connection; not connected, and nothing counted, before the feed opens
  * @param alives the SDK's own alive consumer; nothing counted on a replay feed or before it opens
  * @param sessions each session, in the order they were built; none before the feed opens
