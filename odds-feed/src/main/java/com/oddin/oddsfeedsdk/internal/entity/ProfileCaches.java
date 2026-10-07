@@ -221,6 +221,25 @@ public final class ProfileCaches {
     }
 
     /**
+     * Fetch results of competitors, players, tournaments and sports thrown away as stale; for
+     * {@code getHealth()}.
+     */
+    public long discardedFetches() {
+        return competitors.discarded() + players.discarded() + tournaments.discarded() + sports.discarded();
+    }
+
+    /**
+     * Invalidations of competitors, players, tournaments and sports the size bound forgot while a
+     * fetch could still run; for {@code getHealth()}.
+     */
+    public long invalidationsForgotten() {
+        return competitors.forgottenForRoom()
+                + players.forgottenForRoom()
+                + tournaments.forgottenForRoom()
+                + sports.forgottenForRoom();
+    }
+
+    /**
      * How many competitors, players, tournaments and sports are held at most, in that order; for a
      * test.
      */

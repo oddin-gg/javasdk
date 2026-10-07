@@ -378,6 +378,9 @@ class ProfileCachesTest {
                 .isEqualTo("Team Alpha Again");
         assertThat(before.get(10, java.util.concurrent.TimeUnit.SECONDS).get(COMPETITOR_NAME, EN))
                 .isEqualTo("Team Alpha Again");
+        assertThat(caches.discardedFetches())
+                .as("the competitor, its player and its sport")
+                .isEqualTo(3);
     }
 
     @Test

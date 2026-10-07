@@ -215,11 +215,32 @@ class EntityCacheTest {
         assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "Old Name"), started))
                 .isFalse();
         assertThat(entry("c1").get(NAME, EN)).isNull();
+        assertThat(cache.discarded()).as("the stale fetch, counted").isEqualTo(1);
 
         // the caller reads again and fetches afresh
         assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "New Name"), cache.stamp("c1")))
                 .isTrue();
         assertThat(entry("c1").get(NAME, EN)).isEqualTo("New Name");
+        assertThat(cache.discarded()).as("a write is no discard").isEqualTo(1);
+    }
+
+    @Test
+    void aFillOfAnInvalidatedEntryOrOfAnAbandonedFetchIsCountedAsDiscarded() {
+        Stamp started = cache.stamp("c1");
+        cache.invalidate("c1");
+        assertThat(cache.fill("c1", Write.from(SCHEDULE, EN).put(NAME, "Old"), started))
+                .isFalse();
+        assertThat(cache.discarded()).isEqualTo(1);
+
+        assertThat(cache.fill("c2", Write.from(SCHEDULE, EN).put(NAME, "Given Up"), cache.stamp("c2", () -> true)))
+                .isFalse();
+        assertThat(cache.writeAuthoritative("c2", profileWrite(EN, "Given Up"), cache.stamp("c2", () -> true)))
+                .isFalse();
+        assertThat(cache.discarded()).isEqualTo(3);
+
+        assertThat(cache.fill("c2", Write.from(SCHEDULE, EN).put(NAME, "Fine"), cache.stamp("c2")))
+                .isTrue();
+        assertThat(cache.discarded()).as("a fill is no discard").isEqualTo(3);
     }
 
     @Test

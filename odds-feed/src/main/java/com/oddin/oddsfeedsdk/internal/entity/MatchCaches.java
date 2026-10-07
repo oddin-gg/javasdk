@@ -257,6 +257,24 @@ public final class MatchCaches {
         fixtures.clear();
     }
 
+    /** Fetch results of matches and fixtures thrown away as stale; for {@code getHealth()}. */
+    public long discardedFetches() {
+        return matches.discarded() + fixtures.discarded();
+    }
+
+    /**
+     * Invalidations of matches and fixtures the size bound forgot while a fetch could still run;
+     * for {@code getHealth()}.
+     */
+    public long invalidationsForgotten() {
+        return matches.forgottenForRoom() + fixtures.forgottenForRoom();
+    }
+
+    /** Live states the feed wrote that the size bound dropped; for {@code getHealth()}. */
+    public long liveStatesDropped() {
+        return live.dropped();
+    }
+
     /** The match's live state as it is, loading nothing; for a test. */
     @Nullable
     LiveValues cachedLive(URN id) {
