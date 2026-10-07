@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.recovery;
 
 import static com.oddin.oddsfeedsdk.internal.recovery.Harness.LIVE;
 import static com.oddin.oddsfeedsdk.internal.recovery.Harness.PRE;
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -83,6 +84,34 @@ class SafetyNetTest {
                 .extracting(ProducerStatusChange::cause)
                 .isEqualTo(StatusCause.PROCESSING_DELAY);
         assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
+    void aSessionsAliveWithoutAPositiveTimestampIsNoSampleAndMovesNothing() {
+        for (long stamp : new long[] {0, -Duration.ofHours(1).toMillis()}) {
+            Harness feed = Harness.upWith(MessageInterest.ALL);
+            feed.clock.advance(Duration.ofSeconds(1));
+            long processedAt = feed.now();
+            feed.machine.processed(1, PRE, processedAt, feed.now(), 0);
+            long checkpoint = feed.machine.checkpoint(1, PRE);
+            int before = feed.calls.size();
+            // the session takes nothing but such alives, past the window after the limit
+            for (int second = 1; second <= Duration.ofMinutes(5).toSeconds(); second++) {
+                feed.clock.advance(Duration.ofSeconds(1));
+                if (second % 10 == 0) {
+                    aliveBoth(feed);
+                }
+                feed.machine.sessionAlive(1, PRE, stamp, feed.now(), second % 2 == 0);
+                feed.machine.tick();
+            }
+            assertThat(feed.calls)
+                    .as("requests, with the session's alives stamped " + stamp)
+                    .hasSize(before);
+            assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(checkpoint);
+            assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastProcessedMessageGenTimestamp())
+                    .as("the last processed message's timestamp")
+                    .isEqualTo(processedAt);
+        }
     }
 
     @Test

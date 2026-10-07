@@ -485,7 +485,7 @@ final class RecoveryMachine {
             return;
         }
         if (generatedAt <= 0) {
-            LOG.warn("An alive of producer {} stamped {}, not a time, is ignored", producerId, generatedAt);
+            // the alive dispatcher refuses and logs it before it gets here
             return;
         }
         long now = now();
@@ -550,9 +550,14 @@ final class RecoveryMachine {
 
     /**
      * A session has finished an alive from its own queue: everything the producer sent before it is
-     * done, so a subscribed one moves the session's checkpoint. Both kinds are samples.
+     * done, so a subscribed one moves the session's checkpoint. Both kinds are samples. One without
+     * a positive timestamp is ignored, as {@link #alive} ignores it.
      */
     void sessionAlive(int id, long producerId, long generatedAt, long takenAt, boolean subscribed) {
+        if (generatedAt <= 0) {
+            // not a time: the alive dispatcher logs the same alive on the SDK's own channel
+            return;
+        }
         Track track = known(producerId);
         SessionState session = sessions.get(id);
         Lane lane = session == null || track == null ? null : session.lanes.get(producerId);
