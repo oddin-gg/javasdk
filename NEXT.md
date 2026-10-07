@@ -873,6 +873,33 @@ recovery requests issued, re-issued and failed, reconnects, events queue overflo
 and per-session queue depth and lag state. Silent degradation is a log line plus a
 counter plus, for anything that discards data, an event.
 
+`getHealth()` returns a `FeedHealth`: the feed's state, the worst of its parts', a state
+per `HealthComponent` the feed has now, and typed groups of counters - the transport
+(connected, reconnects), the alives, one record per session (its state, lagging, queue
+depth, overflows, epoch discards, skipped acks, messages handled, unparsable, oversized,
+pipeline and callback failures, unknown producers, repeated fixture changes), the
+recovery (requests issued, re-issued, failed, timed out, abandoned, completed, unknown
+completions, the event recoveries', the safety net's resets, the messages they dropped
+and its refused requests, the actor's dropped and failed facts), each catalog (its state,
+served stale and for how long, failed fetches, evictions), the caches (dropped and failed
+side-loads, discarded stale fetches, forgotten invalidations, dropped live states, dedup
+evictions) and the events thread (dropped control and telemetry events, dropped raw API
+data, callback failures). `counters()` has every value under a stable dotted name
+(`session.1.queue_depth`, `catalog.void_reasons.stale_for_millis`) for a metrics
+exporter. It reads counters and flags on the caller's thread, never waits for a thread of
+the feed and never starts it: before the start it has no part, once started the events
+and the catalogs, once open the consumer and the sessions, and the alives and the
+recovery unless it is a replay feed; once closed it still reads what was counted.
+
+The defaults, fixed until ticket 28 makes them options: a catalog that has served a value
+stale for an hour or more is `DEGRADED`, found when the health is read (by `getHealth()`,
+and by the watchdog's tick once it runs); a session is `DEGRADED` while the recovery actor
+reports it lagging, told at once. The watchdog's limits: a callback running for more than
+30 s and a queue not moving for 30 s are `STALLED`, checked every 5 s. Each change of a
+part's state is logged and told to `onHealthEvent`, through a slot per part (per session
+for a session's) in the events dispatcher's control queue: behind a slow client the newest
+change replaces one still queued, with the state the client heard last as its previous.
+
 Remediation is limited and stated: the watchdog does not kill threads. A wedged
 dispatcher is reported; the client's remedy is `close()` and a new `OddsFeed`, and
 `close()` uses the shutdown timeout so a wedged callback cannot block shutdown. A stall
@@ -1165,7 +1192,7 @@ group by group.
     Once the system tests run against 1.0, the KD-12 and KD-27 scenarios also check the
     second recovery's `after` and the producer going down and back up.
     The recovery runs in the feed, and the whole system-test suite passes against 1.0 as
-    well as 0.0.57, in CI; `getHealth()` and the watchdog remain.
+    well as 0.0.57, in CI; `getHealth()` is in, and the watchdog remains.
 
     42. Concurrency stress suite on the assembled SDK, in CI.
 
@@ -1404,3 +1431,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   the shutdown deadline, so the resume points are final when `close()` returns. The connection's
   callbacks say nothing of the producers' state when they run, as in 0.0.x, which never took a
   producer down for a lost connection (KD-12): a producer's change is told on its own.
+- 2026-10-07, ticket 26, `getHealth()`: typed, with a `counters()` map for metric export; a
+  stale catalog is degraded after an hour, a lagging session at once. The counters it lacked
+  are added: the transport's reconnects, a session's epoch discards and skipped acks, the
+  entity caches' discarded stale fetches, and a public snapshot of the recovery's counters.
+  The watchdog sets the `STALLED` states in the next step.
