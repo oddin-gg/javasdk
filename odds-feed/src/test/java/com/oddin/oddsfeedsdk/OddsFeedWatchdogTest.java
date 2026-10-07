@@ -7,6 +7,7 @@ import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
 import com.oddin.oddsfeedsdk.internal.feed.Watchdog;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
@@ -223,16 +224,100 @@ class OddsFeedWatchdogTest {
         }
     }
 
+    @Test
+    void theWatchdogReadsEachPartsBusySinceQueueAndCountFromWhatTheOpenBuilt() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var feed = feedAgainst(api, new Heard());
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            try {
+                feed.getSessionBuilder()
+                        .setListener(new Wedged(entered, release))
+                        .setMessageInterest(MessageInterest.ALL)
+                        .build();
+                feed.open();
+                // what the watchdog reads of each part, beside what getHealth() counts of it
+                var feedBroker = requireNonNull(broker);
+                assertThat(feedBroker.publishFixture("feed/alive/alive.xml")).isTrue();
+                var alive = awaitPart(feed, HealthComponent.ALIVES, part -> part.moved() > 0);
+                var alives = feed.getHealth().alives();
+                assertThat(alive.queued()).isZero().isEqualTo(alives.queued());
+                assertThat(alive.moved()).isEqualTo(alives.handled());
+                assertThat(alive.busySince()).isZero();
+                // the session has the alive too
+                var before = awaitPart(feed, HealthComponent.SESSION, part -> part.moved() == 1);
+                assertThat(before.queued()).isZero();
+                assertThat(before.busySince()).isZero();
+
+                for (int i = 0; i < 3; i++) {
+                    assertThat(feedBroker.publishFixture(ODDS_CHANGE)).isTrue();
+                }
+                assertThat(entered.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+                var wedged = awaitPart(feed, HealthComponent.SESSION, part -> part.queued() == 2);
+                var session = feed.getHealth().sessions().getFirst();
+                assertThat(wedged.session()).isEqualTo(session.id());
+                assertThat(wedged.busySince()).as("in the first odds change").isNotZero();
+                assertThat(wedged.queued()).isEqualTo(session.queueDepth());
+                assertThat(wedged.moved()).as("the alive only").isOne().isEqualTo(session.handled());
+
+                var consumer = awaitPart(feed, HealthComponent.CONSUMER, part -> part.busySince() == 0);
+                assertThat(consumer.moved()).as("hand-offs run").isPositive();
+                assertThat(consumer.queued()).as("none waiting for a thread").isZero();
+
+                release.countDown();
+                var handled = awaitPart(feed, HealthComponent.SESSION, part -> part.moved() == 4);
+                assertThat(handled.queued()).isZero();
+                assertThat(handled.busySince()).isZero();
+                assertThat(feed.getHealth().sessions().getFirst().handled()).isEqualTo(4);
+
+                var events = feed.events();
+                var delivered = awaitPart(
+                        feed, HealthComponent.EVENTS, part -> part.queued() == 0 && part.moved() == events.delivered());
+                assertThat(delivered.moved())
+                        .as("the connection's change at least")
+                        .isPositive();
+                assertThat(delivered.busySince()).isZero();
+                api.awaitQuiet();
+            } finally {
+                release.countDown();
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    void theWatchdogsTickReadsTheWholeHealthThoughNobodyReadsIt() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            // for a limit of nothing every catalog is stale at once: a staleness only a read of the
+            // whole health finds, and nobody but the watchdog's tick reads it here
+            var feed = feedAgainst(api, new Heard(), Duration.ZERO);
+            try {
+                feed.getProducerManager();
+                assertThat(logged(HealthComponent.CATALOGS, 1)).singleElement().satisfies(degraded -> {
+                    assertThat(degraded.state()).isEqualTo(HealthState.DEGRADED);
+                    assertThat(degraded.reason()).startsWith("the ").contains(" have served a value stale for ");
+                });
+                api.awaitQuiet();
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ support
 
     private OddsFeed feedAgainst(FakeRestServer api, GlobalEventsListener listener) {
+        return feedAgainst(api, listener, HealthMonitor.CATALOG_STALE_LIMIT);
+    }
+
+    private OddsFeed feedAgainst(FakeRestServer api, GlobalEventsListener listener, Duration catalogStaleLimit) {
         var feed = requireNonNull(broker);
         var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectEnvironment(feed.host(), api.apiHost(), feed.port())
                 .setMessagingSslContext(TestTls.clientContext())
                 .setAccessToken("token")
                 .build();
-        return new OddsFeed(listener, configuration, null, LIMITS, logged::add);
+        return new OddsFeed(listener, configuration, null, LIMITS, logged::add, catalogStaleLimit);
     }
 
     /**
@@ -264,6 +349,28 @@ class OddsFeedWatchdogTest {
                 .as("the health within %s: %s", WAIT, health)
                 .isTrue();
         return health;
+    }
+
+    /** The watchdog's reading of the part, once it satisfies {@code ready} or {@link #WAIT} has passed. */
+    private static Watchdog.Sample awaitPart(OddsFeed feed, HealthComponent component, Predicate<Watchdog.Sample> ready)
+            throws InterruptedException {
+        long until = System.nanoTime() + WAIT.toNanos();
+        var part = part(feed, component);
+        while (!ready.test(part) && System.nanoTime() < until) {
+            Thread.sleep(20);
+            part = part(feed, component);
+        }
+        assertThat(ready.test(part))
+                .as("the %s within %s: %s", component, WAIT, part)
+                .isTrue();
+        return part;
+    }
+
+    private static Watchdog.Sample part(OddsFeed feed, HealthComponent component) {
+        return Watchdog.parts(feed.events(), feed.running()).stream()
+                .filter(part -> part.component() == component)
+                .findFirst()
+                .orElseThrow();
     }
 
     private static long timerThreads() {
