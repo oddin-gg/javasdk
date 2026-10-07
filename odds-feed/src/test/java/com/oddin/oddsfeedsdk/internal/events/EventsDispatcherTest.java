@@ -300,13 +300,22 @@ class EventsDispatcherTest {
     }
 
     @Test
-    void whileACallbackRunsTheWatchdogSeesSince() throws InterruptedException {
+    void whileACallbackRunsTheWatchdogSeesSinceByTheMonotonicClockNotTheWallClock() throws InterruptedException {
+        // a wall clock a day ahead, set back an hour as the callback runs: neither moves the busy-since
+        var wall = new AtomicReference<>(Instant.now().plus(Duration.ofDays(1)));
+        clock = wall::get;
         EventsDispatcher dispatcher = started(null);
         assertThat(dispatcher.busySince()).isZero();
         listener.wedge();
+        long before = System.nanoTime();
         dispatcher.up();
         listener.awaitWedged();
-        assertThat(dispatcher.busySince()).isPositive();
+        wall.set(wall.get().minus(Duration.ofHours(1)));
+        long since = dispatcher.busySince();
+        assertThat(since).isNotZero();
+        assertThat(since - before)
+                .as("begun since the test began, by System.nanoTime")
+                .isBetween(0L, System.nanoTime() - before);
         listener.release();
         assertThat(listener.next()).startsWith("onConnectionStateChange UP");
         awaitIdle(dispatcher);

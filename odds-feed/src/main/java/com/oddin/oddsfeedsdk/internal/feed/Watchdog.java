@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.feed;
 
+import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
@@ -9,7 +10,6 @@ import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.time.Duration;
-import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -20,6 +20,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -41,6 +42,10 @@ import org.slf4j.LoggerFactory;
  * caller's thread, reads the parts too, and finds the timers {@link HealthComponent#TIMERS stalled}
  * when the next tick is more than {@link Limits#queue} late. One per feed, started with the feed's
  * first start, stopped by its close.
+ *
+ * <p>Every duration it measures - a callback's, a queue's still time, the time since its last tick
+ * - is one of {@link System#nanoTime}, so a change of the wall clock neither stalls a part nor hides
+ * a stall.
  *
  * <p>Safe for concurrent use: the tick and every recheck read the parts and decide under one lock,
  * which only reads counters and flags, and note what they decide there in that order; what is told
@@ -71,8 +76,8 @@ public final class Watchdog {
      * @param session the feed's number for a session, 0 for a part that is no session
      * @param name the part in words, for the reason told: "session 1", "the events thread"
      * @param busy what the part is busy with, for the reason told: "one callback"
-     * @param busySince when the part began what it is busy with now, epoch millis by the SDK's clock;
-     *     0 when it is idle
+     * @param busySince when the part began what it is busy with now, a {@link BusySince}; {@link
+     *     BusySince#IDLE} when it is idle
      * @param queued what waits for the part
      * @param moved how much the part has taken: a count that grows while the queue moves
      */
@@ -94,15 +99,19 @@ public final class Watchdog {
         HealthState state = HealthState.HEALTHY;
         /** The part's taken count when the watchdog first saw it not moving with something queued. */
         long moved = -1;
-        /** When the watchdog first saw it so, by its clock; -1 while it moves or has nothing queued. */
-        long stillSince = -1;
+        /** Whether it is so: not moving with something queued, from {@link #stillSince} on. */
+        boolean still;
+        /** When the watchdog first saw it so, by {@link Watchdog#nanos}; meaningless unless {@link #still}. */
+        long stillSince;
     }
 
     private final HealthMonitor health;
     private final Supplier<List<Sample>> parts;
     private final Runnable readHealth;
     private final Supplier<List<String>> deadlocks;
-    private final InstantSource clock;
+    /** {@link System#nanoTime}, or a test's. */
+    private final LongSupplier nanos;
+
     private final Limits limits;
 
     /** Held to decide and note, never to tell: it only reads counters and flags. */
@@ -114,7 +123,7 @@ public final class Watchdog {
     /** The state last noted of the timers; guarded by {@link #deciding}. */
     private HealthState timers = HealthState.HEALTHY;
 
-    /** When the last tick began, epoch millis by {@link #clock}; the start, before the first. */
+    /** When the last tick began, by {@link #nanos}; the start, before the first. */
     private volatile long tickedAt;
     /** Whether it runs: started and not stopped. Only then are the timers checked. */
     private volatile boolean running;
@@ -136,22 +145,22 @@ public final class Watchdog {
      * @param readHealth reads the whole health, which tells what it finds: for a catalog's staleness
      */
     public Watchdog(HealthMonitor health, Supplier<List<Sample>> parts, Runnable readHealth, Limits limits) {
-        this(health, parts, readHealth, Watchdog::deadlockedThreads, InstantSource.system(), limits);
+        this(health, parts, readHealth, Watchdog::deadlockedThreads, System::nanoTime, limits);
     }
 
-    /** With the deadlocks and the clock a test sets. */
+    /** With the deadlocks and the time a test sets. */
     Watchdog(
             HealthMonitor health,
             Supplier<List<Sample>> parts,
             Runnable readHealth,
             Supplier<List<String>> deadlocks,
-            InstantSource clock,
+            LongSupplier nanos,
             Limits limits) {
         this.health = health;
         this.parts = parts;
         this.readHealth = readHealth;
         this.deadlocks = deadlocks;
-        this.clock = clock;
+        this.nanos = nanos;
         this.limits = limits;
     }
 
@@ -168,7 +177,7 @@ public final class Watchdog {
                     1, Thread.ofPlatform().daemon().name("oddsfeed-timer").factory());
             started.setRemoveOnCancelPolicy(true);
             started.setExecuteExistingDelayedTasksAfterShutdownPolicy(false);
-            tickedAt = clock.millis();
+            tickedAt = nanos.getAsLong();
             running = true;
             long every = limits.tick().toNanos();
             ticks = started.scheduleWithFixedDelay(this::tickQuietly, every, every, TimeUnit.NANOSECONDS);
@@ -247,7 +256,7 @@ public final class Watchdog {
     /** One look, on the timer thread: the parts, the JVM's threads, the timers, then the whole health. */
     void tick() {
         beforeTick.run();
-        tickedAt = clock.millis();
+        tickedAt = nanos.getAsLong();
         // outside the lock: the JVM's search for a deadlock is no read of a flag
         List<String> deadlocked = deadlocks.get();
         tell(decide(deadlocked));
@@ -277,7 +286,7 @@ public final class Watchdog {
         deciding.lock();
         try {
             List<Sample> samples = parts.get();
-            long now = clock.millis();
+            long now = nanos.getAsLong();
             for (Sample sample : samples) {
                 var part =
                         followed.computeIfAbsent(new Key(sample.component(), sample.session()), key -> new Followed());
@@ -308,7 +317,7 @@ public final class Watchdog {
             if (running) {
                 // the next look was due a tick after the last began
                 long since = now - tickedAt;
-                var state = since - limits.tick().toMillis() > limits.queue().toMillis()
+                var state = since - limits.tick().toNanos() > limits.queue().toNanos()
                         ? HealthState.STALLED
                         : HealthState.HEALTHY;
                 if (state != timers) {
@@ -332,18 +341,20 @@ public final class Watchdog {
     private @Nullable String stall(Sample sample, Followed part, long now) {
         @Nullable String stall = null;
         long busySince = sample.busySince();
-        if (busySince > 0 && now - busySince > limits.callback().toMillis()) {
+        // by their difference: a reading of System.nanoTime may be negative
+        if (busySince != BusySince.IDLE && now - busySince > limits.callback().toNanos()) {
             stall = sample.name() + " has been in " + sample.busy() + " for " + seconds(now - busySince);
         }
         if (sample.queued() <= 0) {
             // nothing waits: not still, however long it takes nothing
             part.moved = sample.moved();
-            part.stillSince = -1;
-        } else if (sample.moved() != part.moved || part.stillSince < 0) {
+            part.still = false;
+        } else if (sample.moved() != part.moved || !part.still) {
             // it took something since the last look, or something waits since: still from now on, if at all
             part.moved = sample.moved();
+            part.still = true;
             part.stillSince = now;
-        } else if (now - part.stillSince >= limits.queue().toMillis() && stall == null) {
+        } else if (now - part.stillSince >= limits.queue().toNanos() && stall == null) {
             stall = sample.name() + " has " + sample.queued() + " waiting and has taken none for "
                     + seconds(now - part.stillSince);
         }
@@ -354,8 +365,8 @@ public final class Watchdog {
         notes.forEach(HealthMonitor.Noted::tell);
     }
 
-    private static String seconds(long millis) {
-        return (millis / 1000) + " s";
+    private static String seconds(long nanos) {
+        return TimeUnit.NANOSECONDS.toSeconds(nanos) + " s";
     }
 
     // ------------------------------------------------------------------ what it reads
@@ -407,7 +418,7 @@ public final class Watchdog {
                     0,
                     "the alive dispatcher",
                     "one alive",
-                    0,
+                    BusySince.IDLE,
                     alives.queued(),
                     alives.handled()));
         }

@@ -88,7 +88,7 @@ class RecoveryActorTest {
         ProducerStatusChange up = requireNonNull(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
         assertThat(up.cause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
         assertThat(producers.isProducerDown(PRE)).isFalse();
-        assertThat(actor.turnedAt()).isPositive();
+        assertThat(actor.turnedAt()).isNotZero();
     }
 
     @Test

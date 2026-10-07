@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.events;
 
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
+import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.recovery.ProducerStatusChange;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
@@ -138,8 +139,8 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
 
     private final Thread thread;
     private volatile boolean closed;
-    /** When the callback running now started, epoch millis, 0 between callbacks; for the watchdog. */
-    private volatile long busySince;
+    /** When the callback running now started, a {@link BusySince}; idle between callbacks; for the watchdog. */
+    private volatile long busySince = BusySince.IDLE;
 
     /**
      * With no sessions to name: the safety net's events and the sessions lagging are not delivered.
@@ -343,7 +344,7 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
 
     // ------------------------------------------------------------------ for the watchdog and getHealth()
 
-    /** When the callback running now started, epoch millis by the dispatcher's clock; 0 when none runs. */
+    /** When the callback running now started, a {@link BusySince}; {@link BusySince#IDLE} when none runs. */
     public long busySince() {
         return busySince;
     }
@@ -622,13 +623,13 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
             if (closed) {
                 return;
             }
-            busySince = Math.max(1, clock.millis());
+            busySince = BusySince.now();
             try {
                 call.run().run();
             } catch (Throwable e) {
                 failed(call.callback(), e);
             } finally {
-                busySince = 0;
+                busySince = BusySince.IDLE;
                 // an interrupt the client's code left would wake every later wait at once
                 Thread.interrupted();
             }

@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.dispatch;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
 import com.oddin.oddsfeedsdk.internal.message.Routes;
@@ -109,8 +110,8 @@ public final class SessionDispatcher implements AutoCloseable {
 
     private final Thread thread;
     private volatile boolean closed;
-    /** When the delivery handled now was taken, epoch millis, 0 between deliveries; for the watchdog. */
-    private volatile long busySince;
+    /** When the delivery handled now was taken, a {@link BusySince}; idle between deliveries; for the watchdog. */
+    private volatile long busySince = BusySince.IDLE;
 
     /**
      * @param id the feed's number for the session, for its thread's name
@@ -212,7 +213,7 @@ public final class SessionDispatcher implements AutoCloseable {
         return transport;
     }
 
-    /** When the delivery being handled was taken, epoch millis by the SDK's clock; 0 when none is. */
+    /** When the delivery being handled was taken, a {@link BusySince}; {@link BusySince#IDLE} when none is. */
     public long busySince() {
         return busySince;
     }
@@ -272,7 +273,7 @@ public final class SessionDispatcher implements AutoCloseable {
     /** One delivery, every step, then its acknowledgement; package-private for a test to drive. */
     void handle(RawDelivery delivery) {
         long takenAt = Math.max(1, pipeline.clock().millis());
-        busySince = takenAt;
+        busySince = BusySince.now();
         try {
             process(delivery, takenAt);
         } catch (Throwable e) {
@@ -281,7 +282,7 @@ public final class SessionDispatcher implements AutoCloseable {
         } finally {
             transport.ack(delivery);
             handled.incrementAndGet();
-            busySince = 0;
+            busySince = BusySince.IDLE;
             // an interrupt the client's code left would end the next wait at once
             Thread.interrupted();
         }

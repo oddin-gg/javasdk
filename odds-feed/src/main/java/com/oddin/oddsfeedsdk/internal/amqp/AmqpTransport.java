@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.amqp;
 
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.rabbitmq.client.Address;
 import com.rabbitmq.client.AddressResolver;
@@ -206,7 +207,7 @@ public final class AmqpTransport implements AutoCloseable {
                             .daemon()
                             .name("oddsfeed-amqp-consumer-", 0)
                             .factory(),
-                    clock);
+                    System::nanoTime);
             events.connecting();
         } finally {
             lock.unlock();
@@ -296,15 +297,15 @@ public final class AmqpTransport implements AutoCloseable {
     public ConsumerState consumerState() {
         ConsumerPool pool = consumers;
         return pool == null
-                ? new ConsumerState(0, 0, 0)
+                ? new ConsumerState(BusySince.IDLE, 0, 0)
                 : new ConsumerState(pool.busySince(), pool.waiting(), pool.taken());
     }
 
     /**
      * The consumer threads, for the watchdog.
      *
-     * @param busySince when the hand-off running longest began, epoch millis by the transport's
-     *     clock; 0 when none runs
+     * @param busySince when the hand-off running longest began, a {@link BusySince}; {@link
+     *     BusySince#IDLE} when none runs
      * @param waiting hand-offs waiting for a thread
      * @param taken hand-offs run to their end
      */
