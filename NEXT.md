@@ -559,7 +559,8 @@ and REST workers post facts to it; it decides and posts work out.
   `getLastProcessedMessageGenTimestamp()` keeps its meaning. A session closed while
   the feed runs no longer counts. Once the feed begins to close, the point only goes
   back, so what the client reads at shutdown does not depend on the order the sessions
-  close in. The façade tells the actor `closing()` before it closes any session, and the
+  close in; a gap of the producer's that opens after its last session has closed still
+  takes the point back. The façade tells the actor `closing()` before it closes any session, and the
   actor's own close does the same, then handles the essential facts already queued,
   for two seconds at most, before its machine closes: an unsubscribed alive among them
   still takes the point back, and so does one whose post was under way as the close came,

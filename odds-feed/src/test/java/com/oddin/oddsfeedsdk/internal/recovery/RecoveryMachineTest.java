@@ -546,6 +546,48 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aProducerGapAfterTheLastSessionClosedAtShutdownStillTakesThePointBack() {
+        long from = Harness.START.toEpochMilli() - Duration.ofHours(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(LIVE, from);
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        long lastSubscribed = feed.now();
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.live(1, PRE, Duration.ZERO);
+        Instant processed = Instant.ofEpochMilli(feed.now());
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(processed);
+
+        // the documented order: closing, every session closed, then what is still queued
+        feed.machine.closing();
+        feed.close(1);
+        assertThat(feed.timestampForRecovery(PRE)).as("the session closed").isEqualTo(processed);
+        feed.unsubscribed(PRE);
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("the producer's gap, opened after its last session closed")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+        feed.unsubscribed(LIVE);
+        assertThat(feed.timestampForRecovery(LIVE))
+                .as("a producer no session ever received keeps the client's start")
+                .isEqualTo(Instant.ofEpochMilli(from));
+    }
+
+    @Test
+    void aProducerGapAfterTheLastSessionClosedWhileTheFeedRunsChangesNothing() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.live(1, PRE, Duration.ZERO);
+        Instant processed = Instant.ofEpochMilli(feed.now());
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(processed);
+        feed.close(1);
+        feed.unsubscribed(PRE);
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("no session receives it: it keeps what it had")
+                .isEqualTo(processed);
+    }
+
+    @Test
     void aProducersFirstPointIsPublishedEvenOnceTheFeedIsClosing() {
         var feed = new Harness(Harness.withInitialSnapshotInterval(Duration.ofMinutes(30)));
         feed.open(1, MessageInterest.ALL);
