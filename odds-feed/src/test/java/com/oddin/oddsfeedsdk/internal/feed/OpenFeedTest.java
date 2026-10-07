@@ -4,7 +4,9 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
@@ -152,6 +154,44 @@ class OpenFeedTest {
                 assertThat(actor.counters().eventCallerGone()).isEqualTo(1);
             } finally {
                 open.close();
+                core.close();
+            }
+        }
+    }
+
+    @Test
+    void aCloseThatComesAsTheTransportOpensFailsTheStart() throws Exception {
+        try (var broker = FakeFeed.start();
+                var api = FakeRestServer.start()) {
+            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                    .selectEnvironment(broker.host(), api.apiHost(), broker.port())
+                    .setMessagingSslContext(TestTls.clientContext())
+                    .setAccessToken("token")
+                    .build();
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
+            try {
+                var open = OpenFeed.build(core, plan(core, false), configuration);
+                // the feed's close() as the transport finishes opening: its first half, then its second
+                var closer = new CompletableFuture<Boolean>();
+                open.afterTransportOpens = () -> {
+                    assertThat(broker.openConnections()).as("connected").isNotEmpty();
+                    open.stop();
+                    closer.completeAsync(() -> open.awaitStop(
+                            System.nanoTime() + Duration.ofSeconds(5).toNanos()));
+                };
+
+                assertThatThrownBy(open::start)
+                        .isInstanceOf(InitException.class)
+                        .hasMessage("Failed to open the feed: the feed was closed as it opened");
+                assertThat(closer.get(10, TimeUnit.SECONDS))
+                        .as("the close's wait")
+                        .isTrue();
+                long until = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+                while (!broker.openConnections().isEmpty() && System.nanoTime() < until) {
+                    Thread.sleep(50);
+                }
+                assertThat(broker.openConnections()).as("connections left").isEmpty();
+            } finally {
                 core.close();
             }
         }

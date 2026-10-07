@@ -81,6 +81,8 @@ public final class OpenFeed {
     private final ConnectionTee connection;
     /** A test's hook, run in a start just before the transport opens. */
     volatile Runnable beforeTransportOpens = () -> {};
+    /** A test's hook, run in a start once the transport has opened. */
+    volatile Runnable afterTransportOpens = () -> {};
 
     /** Guards {@link #state}, briefly: never held while the transport opens or a thread is waited for. */
     private final ReentrantLock lock = new ReentrantLock();
@@ -219,6 +221,12 @@ public final class OpenFeed {
                 throw closedAsItOpened(e);
             }
             throw new InitException("Failed to open the feed", e);
+        }
+        afterTransportOpens.run();
+        if (isClosed()) {
+            // a close came as the transport opened, and stopped what started: no open to report
+            close();
+            throw closedAsItOpened(null);
         }
     }
 
