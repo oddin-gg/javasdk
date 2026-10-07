@@ -1119,7 +1119,8 @@ final class RecoveryMachine {
      * Publishes each producer's resume point that moved, for {@link
      * Producer#getTimestampForRecovery()}: the actor calls it after every fact. Nothing before the
      * start, when the client's own start stands; a producer no session receives keeps what it had;
-     * once the feed is {@link #closing}, only a point that goes back.
+     * once the feed is {@link #closing}, only a point that goes back - and a gap of the producer's
+     * opened after its last session closed still takes it back.
      */
     void publishResumePoints() {
         if (!started) {
@@ -1127,6 +1128,13 @@ final class RecoveryMachine {
         }
         for (Track track : tracks.values()) {
             long point = resumePoint(track);
+            Gap gap = track.gap;
+            if (point == NO_POINT && closing && gap != null) {
+                // every session closed at shutdown, before what the producer's gap says they
+                // missed: the point the client keeps goes back to its start all the same; one
+                // never published stays so, since NO_POINT is below any point
+                point = Math.min(track.published, gap.from);
+            }
             if (point != NO_POINT
                     && point != track.published
                     && (!closing || track.published == NO_POINT || point < track.published)) {

@@ -272,6 +272,34 @@ class RecoveryActorTest {
     }
 
     @Test
+    void anUnsubscribedAliveAfterEverySessionClosedAtShutdownTakesThePointBack() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        long later = lastSubscribed + 10_000;
+        session.processed(PRE, later, later, 0);
+        awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
+
+        // the feed's order: closing, every session, then the actor; the alive comes meanwhile
+        actor.closing();
+        session.closed();
+        actor.alive(PRE, later, later, false);
+        actor.close();
+        assertThat(held.getTimestampForRecovery())
+                .as("the producer's gap from its last subscribed alive")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
     void aSessionsCloseQueuedWhenTheActorClosesMovesThePointNoFurther() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts ahead = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
