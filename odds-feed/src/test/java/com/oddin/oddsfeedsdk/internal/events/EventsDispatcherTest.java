@@ -36,10 +36,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.IntFunction;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -61,6 +64,10 @@ class EventsDispatcherTest {
     private final OddsFeedSession second = new OddsFeedSession() {};
     /** The sessions the dispatcher names, by the recovery actor's id. */
     private final Map<Integer, OddsFeedSession> sessions = Map.of(1, first, 2, second);
+    /** What the dispatcher names a session from; a test binds its own. */
+    private IntFunction<@Nullable OddsFeedSession> named = sessions::get;
+    /** The dispatcher's clock; a test sets its own. */
+    private InstantSource clock = InstantSource.system();
 
     private @Nullable EventsDispatcher dispatcher;
 
@@ -1010,6 +1017,61 @@ class EventsDispatcherTest {
                 .isFalse();
     }
 
+    /** The safety net's events and the lagging carry when they were reported, not when they were heard. */
+    @Test
+    void theSafetyNetAndLaggingCarryTheTimeTheyWereReported() throws InterruptedException {
+        var reported = Instant.parse("2026-10-07T10:00:00Z");
+        var now = new AtomicReference<>(reported);
+        clock = now::get;
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.safetyNetReset(1, PRODUCER, 1);
+        dispatcher.lagging(1, true);
+        now.set(reported.plus(Duration.ofMinutes(1)));
+
+        listener.release();
+        assertThat(listener.take(3))
+                .containsExactly(
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onSafetyNetEvent RESET oddsfeed-events",
+                        "onSessionLagChange true oddsfeed-events");
+        assertThat(requireNonNull(listener.safetyNet.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .at())
+                .isEqualTo(reported);
+        assertThat(requireNonNull(listener.lags.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .at())
+                .isEqualTo(reported);
+    }
+
+    /** The session is named as its event is delivered, so the feed can bind the sessions after the first report. */
+    @Test
+    void theSessionIsNamedWhenItsEventIsDelivered() throws InterruptedException {
+        var bound = new ConcurrentHashMap<Integer, OddsFeedSession>();
+        named = bound::get;
+        EventsDispatcher dispatcher = started(null);
+        listener.wedge();
+        dispatcher.up();
+        listener.awaitWedged();
+        dispatcher.lagging(1, true);
+        dispatcher.safetyNetReset(1, PRODUCER, 1);
+        bound.put(1, first);
+
+        listener.release();
+        assertThat(listener.take(3))
+                .containsExactly(
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onSessionLagChange true oddsfeed-events",
+                        "onSafetyNetEvent RESET oddsfeed-events");
+        assertThat(requireNonNull(listener.lags.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .session())
+                .isSameAs(first);
+        assertThat(requireNonNull(listener.safetyNet.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                        .session())
+                .isSameAs(first);
+    }
+
     /**
      * Behind a wedge, each session's lagging has a slot of its own: the newest replaces one still
      * queued, and another session's is not replaced by it.
@@ -1133,15 +1195,7 @@ class EventsDispatcherTest {
     }
 
     private EventsDispatcher dispatcher(@Nullable OddsFeedExtListener ext, int control, int telemetry, long bytes) {
-        var made = new EventsDispatcher(
-                listener,
-                ext,
-                producers::getProducer,
-                sessions::get,
-                InstantSource.system(),
-                control,
-                telemetry,
-                bytes);
+        var made = new EventsDispatcher(listener, ext, producers::getProducer, named, clock, control, telemetry, bytes);
         dispatcher = made;
         return made;
     }
