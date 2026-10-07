@@ -1,6 +1,6 @@
 # Java SDK 1.0 – design plan
 
-Status: draft, waiting for review.
+Status: the design `next` is built to, kept in step with it; section 13 logs each change.
 
 This document describes how we rebuild the Java SDK. The short version: same public
 API, same packages, a new group id, new insides. Pure Java 25, no Kotlin, no RxJava,
@@ -132,7 +132,9 @@ types in packages whose name contains `internal`.
 - Entity getters such as `match.getName(locale)` or `match.getCompetitors()` are
   synchronous and may fetch from REST when the cache is cold. They run on the caller's
   thread. A callback that touches a cold entity pays that latency on its own session
-  only. Clients who want zero latency in callbacks use the preload options in section 5.
+  only. An eager preload, which loads what a message names before its callback, is
+  planned with ticket 28 before 1.0.0; the release candidate does not have it, so a
+  callback's first read of an entity still pays the fetch.
   The same holds on the events dispatcher: a getter inside a producer-status callback
   delays other events, which the documentation of that listener says.
 - `ExceptionHandlingStrategy` keeps its meaning, getter by getter as 0.0.57 has it.
@@ -140,9 +142,9 @@ types in packages whose name contains `internal`.
   - Under `THROW` a failure reaches the caller as the exception 0.0.x threw there. An
     entity or catalog getter that cannot load what it reads throws
     `ItemNotFoundException`, with the API's `ApiException` as its cause. A manager
-    method that asks the API directly throws the `ApiException` itself: the schedules,
-    the live matches, the fixture changes, a sport's available tournaments, the void
-    reasons.
+    method that asks the API throws the `ApiException` itself: the schedules, the live
+    matches, the fixture changes, a sport's available tournaments (which 1.0 holds for 24
+    hours, KD-41), the void reasons.
   - Under `CATCH` the getter logs and returns null. A collection getter never returns a
     partial list: under `THROW` the first failed part fails it, under `CATCH` the whole
     collection is null.
@@ -150,8 +152,9 @@ types in packages whose name contains `internal`.
     tournaments and the market descriptions are an empty list when they cannot load,
     and a market description by id is null. A match's competitors are none under
     `CATCH`. A sport whose tournaments cannot load is left out of the active tournaments
-    under `CATCH`. An outcome's name and a match status description, which 0.0.x read
-    from what it held, are null when they cannot load, under `THROW` too.
+    under `CATCH`. An outcome description's name and a match status description, which
+    0.0.x read from what it held, are null when they cannot load, under `THROW` too. The
+    name of a feed message's outcome still throws under `THROW`, as in 0.0.x.
   - A member list is its entity's id list: a match's or a tournament's competitors, a
     competitor's players. It returns at once, as 0.0.x's lazy members did: the members'
     profiles start loading in the background, on the side-loads a message's preload
@@ -167,7 +170,8 @@ types in packages whose name contains `internal`.
   session of its `OddsFeed`: 0.0.x gives it the interest `ALL`, which the validation
   allows only for a single session, so replay has always run on an instance of its own.
 - Fixture-change deduplication across sessions stays with today's key: producer, event
-  id and change timestamp, remembered for one hour.
+  id and change timestamp, remembered for one hour. So a replay played again within the
+  hour on the same feed has its fixture changes dropped, on both lines.
 - Recovery messages are delivered to the client like any other message, on every
   session whose interest matches, as today.
 - Recovery methods keep returning the request id as a `Long`. A new status lookup by
@@ -176,7 +180,9 @@ types in packages whose name contains `internal`.
   most, then null. A replay feed runs no recovery and accepts none, nor does a closed one.
 - The feed starts lazily, as today: the first call of a manager getter or of
   `getSessionBuilder()` fetches whoami and the producer list (section 4, REST) and builds
-  the caches, catalogs and managers. One start runs at a time, and callers that come
+  the caches, catalogs and managers. 0.0.x fetched only whoami, once; 1.0 tries both again
+  within the startup deadline, 90 s by default, so with the API down a start takes that
+  long to fail (KD-36). One start runs at a time, and callers that come
   meanwhile wait for it. A failed start throws `InitException` ("Failed to init odds
   feed", the reason as its cause), keeps nothing, and the next call starts again. The
   managers work before `open()`; an event recovery asked for before it is not accepted
@@ -187,10 +193,12 @@ types in packages whose name contains `internal`.
   start it has nothing to release and logs nothing (KD-15). A closed feed does not start
   again.
 - `open()` is one-shot. After a fatal error the client closes the feed and creates a
-  new one. Same as today. Once `open()` has taken the sessions, a second call throws
-  `InitException` ("feed cannot already opened", 0.0.x's words), whatever came of the
-  first; only an `open()` without sessions ("Feed created without sessions") leaves the
-  feed as it was. It checks the interests before it disables any producer or connects.
+  new one, as today. Unlike today, that holds for an `open()` that failed too, which
+  0.0.x let the client call again (KD-34). Once `open()` has taken the sessions, a second
+  call throws `InitException` ("feed cannot already opened", 0.0.x's words), whatever
+  came of the first; only an `open()` without sessions ("Feed created without sessions")
+  leaves the feed as it was. It checks the interests before it disables any producer or
+  connects.
 - `close()` can be called at any time, more than once, and from a callback: it stops
   delivery, tells every thread to stop, then waits for all of them within one shutdown
   timeout of five seconds, not one per thread; it does not wait for the callback it is
@@ -264,13 +272,16 @@ to one of them:
 | Group | Count | Runs | Never runs |
 |---|---|---|---|
 | AMQP I/O | owned by the AMQP client | frame reading, heartbeats | anything of ours |
-| AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues; the alive hand-off | decode, build, cache writes, client code, anything blocking |
+| AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues; the alive hand-off; telling the recovery actor of a lost channel, without blocking | decode, build, cache writes, client code, anything blocking |
+| AMQP reconnect and reopen | virtual threads | the reconnect loop; reopening a lost channel | client code |
 | Session dispatcher | one thread per session | decode, build, cache write, client callback, ack, age sampling | nothing else |
 | Alive dispatcher | one thread | alive decode, clock offsets, posting liveness facts to the recovery actor | REST, client code |
 | Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second, paced by `System.nanoTime`, so a wall clock set back stops none of its ticks | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
 | Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, fatal errors, listener exceptions, API call events, recovery completion | message callbacks |
-| REST workers | virtual threads | HTTP calls, posting results back to whoever asked | client code |
-| Timers | one scheduled executor | scheduling only, each tick posts a message to an actor or a worker | blocking work, client code |
+| REST workers | virtual threads | HTTP calls, posting results back to whoever asked; an event recovery caller's answer, on a thread of its own | client code |
+| Side-loads | four virtual threads | background profile loads | client code |
+| Watchdog | one thread, from the feed's first start to its close | every 5 s: the stall checks, the JVM's deadlock search, a read of the health | blocking work, client code |
+| Keep-alive | one non-daemon thread, from `open()` to `close()` | nothing: it keeps the JVM up while the feed is open (section 3) | anything |
 
 Decision 10 in one sentence: client code runs on a session dispatcher or on the events
 dispatcher, nowhere else. The recovery actor in one sentence: nobody touches producer
@@ -310,7 +321,10 @@ itself would queue behind the wedge.
   acks. That hand-off holds at most a thousand alives and a megabyte of them; one with no
   room is dropped and counted. The producers' pace keeps it near empty, and a dropped
   alive costs the recovery actor a beat, not a wrong state: an unsubscribed producer says
-  so in every alive, and silence takes a producer down. A client's `SYSTEM_ALIVE_ONLY` session, if any, is an ordinary session and does
+  so in every alive, and silence takes a producer down. A lost alive channel counts
+  against no producer, since only alives went with it, and the transport opens it again;
+  if that takes longer than the maximum inactivity, silence takes the producers down. The
+  Go SDK counts it against every producer. A client's `SYSTEM_ALIVE_ONLY` session, if any, is an ordinary session and does
   not carry producer liveness: its dispatcher posts no facts, and the recovery actor gives
   it no lanes, so its channel's loss or its pace takes no producer down and no recovery
   waits for its `snapshot_complete`.
@@ -365,8 +379,11 @@ itself would queue behind the wedge.
   default 16, configurable. Nothing else can delay a recovery request behind it.
 - Every REST call runs under one deadline, the configured HTTP timeout, which covers
   permit wait, the call, and every retry. Retries happen only inside the deadline. A
-  getter that fetches therefore waits at most the HTTP timeout, and that is the number
-  the configuration option documents.
+  load therefore waits at most the HTTP timeout and a second, and that is the number the
+  configuration option documents. A getter can wait longer: it loads a second time when
+  the first write was refused as stale, and a fan-out waits up to twice the timeout and
+  three seconds, a long list more. Nothing remembers a failed load, so during an outage
+  every cold getter waits that long again; a backoff per key comes later.
 - A permit is held for one HTTP call only, never across a fan-out. A match load
   releases its permit before its competitor loads acquire theirs, so nested loads
   cannot hold every permit in parents while children wait.
@@ -577,7 +594,8 @@ and REST workers post facts to it; it decides and posts work out.
   `setProducerRecoveryFromTimestamp`. `Producer.getTimestampForRecovery()` reports it
   once the feed is open, as the actor publishes it after each fact, and the client's own
   value before; 0.0.x reported the last alive, which can be ahead of both (KD-28).
-  `getLastProcessedMessageGenTimestamp()` keeps its meaning. A session closed while
+  `getLastProcessedMessageGenTimestamp()` is moved by the client's sessions only, with
+  every message they process, not by the SDK's alive channel (KD-38). A session closed while
   the feed runs no longer counts. Once the feed begins to close, the point only goes
   back, so what the client reads at shutdown does not depend on the order the sessions
   close in; a gap of the producer's that opens after its last session has closed still
@@ -625,7 +643,7 @@ and REST workers post facts to it; it decides and posts work out.
   that opens is seeded with the producer's current recovery-from point and triggers a
   recovery for its interests, as today on `open()`; the producers it receives are down
   until that recovery completes.
-- Snapshot completion is tracked per message interest, as today: a producer is up
+- Snapshot completion is tracked per session, unlike today (KD-37): a producer is up
   again when every session that receives it and takes snapshot completions has seen
   its `snapshot_complete` (a low-priority session next to a high-priority one takes
   none). An event recovery completes the same way, and its completion reaches the
@@ -830,7 +848,7 @@ and REST workers post facts to it; it decides and posts work out.
   being deployed or a virtual host being written. Permanent means the reconnect loop
   stops and a fatal error event carries the broker's reason, with how many refusals
   over how long. The client's exit is `close()` and a
-  new `OddsFeed`; `open()` is one-shot, as today.
+  new `OddsFeed`; `open()` is one-shot (KD-34).
 - Broker resource limits (connections, queues) are transient. They are retried with a
   long backoff and surface as an error event each time, never as a silent hang.
 - `open()` is all or nothing. It creates the connection, the alive consumer and every
@@ -968,20 +986,23 @@ must never be silent again, but the SDK cannot unwedge client code.
 ## 5. New in 1.0
 
 Additive only, and every addition is on the differences list (section 3). All of it
-exists in the Go SDK already.
+exists in the Go SDK already. The release candidate has what this section does not mark
+as planned; the planned items come with tickets 27 and 28, before 1.0.0.
 
-- Entities: `Category` on tournaments, reference ids on matches and tournaments,
-  `Statistics` on match status, `IconPath` and `Abbreviation`, competitor ids on
-  tournaments, tournament ids on sports.
-- Getters: single `Sport`, `Tournament`, `Player` by id, `ProducersInScope`,
-  `ProducerStatus`, replay status, recovery status by request id, `getHealth()`.
-- Cache control: clear methods per entity type, reload of void reasons.
-- Configuration: default locale, preload locales, eager entity preload for messages,
-  HTTP timeout, startup deadline, prefetch, maximum message size, REST concurrency
-  limit, max inactivity, max recovery time, stale-message limit and window, exchange
-  names, shutdown timeout, API call logging, the broker connection's own TLS context
-  (`setMessagingSslContext`, for a truststore of the client's own or a proxy that
-  inspects TLS).
+- Entities, planned: an icon path on tournaments, competitor ids on tournaments,
+  tournament ids on sports. `Category` on tournaments, reference ids on matches and
+  tournaments, `Statistics` on match status and a settlement's void reason id and
+  parameters are not on the list: the schema does not declare them yet, so they come
+  after 1.0, once it does and the API is confirmed to send them.
+- Getters: recovery status by request id and `getHealth()`. Planned: single `Sport`,
+  `Tournament`, `Player` by id, `ProducersInScope`, `ProducerStatus`, replay status.
+- Cache control, planned: clear methods per entity type, reload of void reasons.
+- Configuration: HTTP timeout, startup deadline, prefetch, maximum message size, REST
+  concurrency limit, the broker connection's own TLS context (`setMessagingSslContext`,
+  for a truststore of the client's own or a proxy that inspects TLS). Planned: default
+  locale, preload locales, eager entity preload for messages, max inactivity, max
+  recovery time, stale-message limit and window, exchange names, shutdown timeout, API
+  call logging.
 - Events on the global listener, all as `default` methods: connection state changes
   (`onConnectionStateChange`), health events (`onHealthEvent`), listener and pipeline
   exceptions (`onCallbackFailure`), fatal errors (`onFatalError`), the safety net's resets
@@ -1001,7 +1022,9 @@ exists in the Go SDK already.
   runs.
 
 Things the Java SDK has and Go does not stay: multi-session with priority interests,
-`setSpecificEventsOnly`, raw API data callback.
+`setSpecificEventsOnly`, raw API data callback. Two readings differ from Go on purpose: a
+`liveodds` the API leaves out reads as `AVAILABLE`, as in 0.0.x, where Go reads it as not
+available; and a lost alive channel counts against no producer (section 4, Delivery).
 
 ---
 
@@ -1074,7 +1097,7 @@ Performance is a requirement, not a follow-up.
 - A benchmark harness in the repo: generated odds changes shaped like a live match's,
   run through decode, cache and entity build, with JMH. Budgets per message for time and
   allocation. Runs in CI as a regression check. It has a **cold scenario** as well: a
-  restart-shaped run where every entity is a miss and eager preload is on, against the
+  restart-shaped run where every entity is a miss and eager preload is on (ticket 28), against the
   fake REST server with realistic latency, with a budget on time-to-caught-up. The
   cold path is the one that decides whether a client trips the safety net after a
   restart.
@@ -1084,7 +1107,8 @@ Performance is a requirement, not a follow-up.
 - Cold path: parallel bounded fan-out for competitors and players, single-flight,
   under the data permit pool.
 - Outage: serve stale data while a refresh is failing, back off per locale. Never
-  collapse to one message per HTTP timeout.
+  collapse to one message per HTTP timeout. The catalogs do; the entity loads have no
+  backoff yet (section 4, REST).
 - JAXB's unmarshal cost, measured early: on the JDK's own parser three times a
   hand-written StAX reader's, on Woodstox about a sixth slower than it. The decoder reads with
   Woodstox, and the generated classes stay without a reader to maintain.
@@ -1202,7 +1226,7 @@ group by group.
 20. Entity façades and factories with parallel multi-locale loading and the
     partial-failure rule. Also the catalog façades and `SportsInfoManager`, the
     side-loads, the eager entity preload for messages, and the cross-cache deadlock
-    tests.
+    tests. The preload is built but nothing calls it yet; ticket 28 wires it.
 
     39. Player underage on the 1.0 line, as merged on `release/0.x`, and the API
         compatibility baseline moved to each new 0.x release.
@@ -1259,16 +1283,19 @@ group by group.
 ### Phase 3 – Parity and polish
 
 27. Field parity with the Go SDK, in small groups.
-28. Option and method parity. Includes the safety-net, inactivity, recovery-time and
-    shutdown-timeout options, the locale preload, and the 1.0-only test that pins
-    KD-17. The maximum recovery time keeps 0.0.x's default of 360 minutes.
+28. Option and method parity: the options and methods of section 5 the release candidate
+    does not have. Includes the safety-net, inactivity, recovery-time and
+    shutdown-timeout options, the eager entity preload for messages with its option, the
+    locale preload, and the 1.0-only test that pins KD-17. The maximum recovery time keeps
+    0.0.x's default of 360 minutes. Before 1.0.0, not in the release candidate.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
 31. README, examples, release notes and upgrade guide, integration guide with the
     onboarding checklist (distinct node ids, the operator's queue limit above prefetch,
     the per-session memory budget with the AMQP client's own buffer) and resuming after
-    a restart, FAQ update. The replay guide says that a replay run again within the
+    a restart, FAQ update. The upgrade guide takes its list from KNOWN-DIFFERENCES.md,
+    and says what a start with the API down costs (KD-36). The replay guide says that a replay run again within the
     hour has its fixture changes dropped as duplicates of the run before, by the
     fixture-change deduplication, in both lines.
 32. Sweep the Go and .NET SDK history for fixes to port, from Go SDK 1.4.0 (commit
@@ -1530,3 +1557,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   machine's own durations stay on the wall clock for now. The published resume point and a
   recovery's start are capped at the producer's now, so a timestamp from the producer's
   future moves neither past it; the tolerance on the checkpoints and watermarks follows.
+- 2026-10-08, documentation for the release candidate: KNOWN-DIFFERENCES.md is written against
+  0.0.58, the stale entries are corrected, and KD-34 to KD-41 name the differences no entry had,
+  the small ones grouped in KD-41. A producer clock that steps back keeps the code as merged; KD-28
+  and KD-33 say what it can miss. The eager entity preload is planned with ticket 28, before
+  1.0.0, and section 3 no longer tells clients to use it. Section 5 marks what the release
+  candidate has and what is planned before 1.0.0, and the fields the schema does not declare are
+  off it. Corrected here: a failed `open()` cannot be tried again, unlike 0.0.x; the start's
+  90 s with the API down; how long a getter can wait; the thread table; completion per session
+  and the processing delay.
