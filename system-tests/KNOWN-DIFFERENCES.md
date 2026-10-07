@@ -35,7 +35,9 @@ release behaved otherwise, the entry says so.
   the id `initiateEventOddsMessagesRecovery` returns, and the snapshot complete carrying that id
   arrives, but 0.0.x counts it only on sessions that are neither live-only nor prematch-only,
   while completing an event recovery needs a live-only or prematch-only snapshot complete for each
-  of the producer's scopes.
+  of the producer's scopes. By the source, the one exception is a producer listed `live|prematch`:
+  KD-18 leaves it with no scope, so it needs none, and on such a session its event recovery
+  completes.
 - **1.0:** Called once the snapshot complete of the request has been seen. Recovery completion is
   one of the events-dispatcher callbacks (NEXT.md section 4, Threads), and snapshot completion is
   tracked per message interest (section 4, Recovery and producers).
@@ -108,10 +110,16 @@ release behaved otherwise, the entry says so.
 
 - **0.0.x:** The recovery watchdog runs first 60 s after `open()`, then every 10 s. Its first run
   reports every producer without an alive in the last 20 s down with `ALIVE_INTERVAL_VIOLATION`,
-  including producers that were never up.
-- **1.0:** The first check is the maximum inactivity, 20 s by default, after `open()`, then every
-  second: a producer without an alive for longer is reported down with `ALIVE_INTERVAL_VIOLATION`,
-  one never up included. There is no minute of grace (NEXT.md section 4, Recovery and producers).
+  including producers that were never up. The processing-delay check waits the same minute: a
+  producer processed late during its first recovery goes up with `FIRST_RECOVERY_COMPLETED`, is
+  taken down by the next run, and comes back with `RETURNED_FROM_INACTIVITY`.
+- **1.0:** The checks run every second from the start of the recovery actor, just before the
+  connection opens, so a producer without an alive for longer than the maximum inactivity, a
+  fixed 20 s, is reported down with `ALIVE_INTERVAL_VIOLATION` just past 20 s, one never up
+  included. There is no minute of grace for the processing delay either: a producer processed late
+  during its first recovery stays down, now with `PROCESSING_QUEUE_DELAY_VIOLATION`, and comes up
+  with `FIRST_RECOVERY_COMPLETED` once its messages are on time (NEXT.md section 4, Recovery and
+  producers).
 - **Why:** Any scenario longer than a minute sees these status changes on top of what it drives;
   `ReconnectScenarioIT` stays under the minute because of it. A client hears of a silent producer
   20 s after `open()` rather than 60 s.
@@ -127,11 +135,16 @@ refusing it, so it is no difference (NEXT.md section 13, 2026-09-28).
 
 - **0.0.x:** Logs "Failed to process message" and hands the same message to
   `onUnparsableMessage`, as if the feed had sent something it could not read. The session goes
-  on.
+  on. The same catch hands it a message the SDK itself failed on after decoding it: a cache write
+  that threw, an event type in the routing key it does not know, an id that is not a URN.
 - **1.0:** The exception is caught, counted and reported through the listener-exception hook on
-  the global listener, flagged as coming from client code; the unparsable callback is only for
-  messages that did not decode (section 4, Delivery).
-- **Why:** A client bug shows up as a feed problem.
+  the global listener, `onCallbackFailure`, flagged as coming from client code. A failure of the
+  SDK's own after the decode, in the cache write or the build, goes to the same hook, flagged as
+  the SDK's, and reaches no session callback. The unparsable callback is only for a message that
+  did not decode, or was over the maximum message size (KD-41), which also reaches the hook
+  (section 4, Delivery).
+- **Why:** A client bug shows up as a feed problem. A client that counts unparsable messages to
+  see the SDK's own failures hears of them on the global listener instead.
 - **Pinned by:** `ThrowingCallbackScenarioIT.aCallbackThatThrowsDoesNotStopTheSession`
 - **Found:** by test against 0.0.56.
 
@@ -164,7 +177,10 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **1.0:** "Exclusive queues are always re-declared; whatever the broker buffered for the old
   queue is gone, and recovery covers it" (section 4, Connection). The test expects the producer
   to go down, another recovery request after the reconnect, starting where the session had got to
-  before the connection went, and the producer back up once that recovery completes.
+  before the connection went, and the producer back up once that recovery completes. An outage
+  longer than the maximum inactivity tells a producer down twice: with `OTHER` as the connection
+  goes, its cause `CONNECTION_LOST`, then with `ALIVE_INTERVAL_VIOLATION` once 20 s have passed
+  since its last alive.
 - **Why:** Messages lost with the old queue stay lost.
 - **Pinned by:** `ReconnectScenarioIT.afterAReconnectMessagesFlowAgainAndTheGapIsRecovered`
 - **Found:** by test against 0.0.56.
@@ -176,8 +192,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **1.0:** "A message from the same producer with an older timestamp does not write feed-owned
   fields. It is still built and delivered" (section 4, Caches and loaders, Ownership and
   ordering). A replay session's messages write in the order they come, as on 0.0.x: a match
-  played again repeats the timestamps of its last run. As on 0.0.x, a field the new run leaves
-  out, such as a winner or a score, keeps the last run's value until a message replaces it.
+  played again repeats the timestamps of its last run. As on 0.0.x, a winner or a score the new
+  run leaves out keeps the last run's value until a message replaces it; so do period scores and
+  whether a scoreboard is available, which 0.0.x emptied and set false (KD-39).
 - **Why:** Out-of-order delivery turns a score back.
 - **Pinned by:** `StaleFeedScenarioIT.anOlderMessageDoesNotReplaceTheStatusOfANewerOne`
 - **Found:** by test against 0.0.56.
@@ -199,10 +216,11 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   "Failed to close" at ERROR, with a provisioning error for "missing bookmaker detail": the timer
   it shuts down is only created at that point and needs the bookmaker details. By the source,
   what `close()` releases after the timer - the caches and the API client - is left as it is.
-- **1.0:** `open()` is all or nothing and closes whatever it created when a step fails; the
-  client's exit is `close()` and a new `OddsFeed` (section 4, Connection, and section 3, Behaviour
-  that stays). A failed start has released what it built, so that `close()` has nothing to
-  release and logs nothing; the test expects nothing logged by it.
+- **1.0:** A failed start keeps nothing, and the next call on the same feed starts it again
+  (KD-36). A failed `open()` closes whatever it created, and the feed cannot be opened again
+  (KD-34): the client's exit is then `close()` and a new `OddsFeed` (section 4, Connection, and
+  section 3, Behaviour that stays). A failed start has released what it built, so that `close()`
+  has nothing to release and logs nothing; the test expects nothing logged by it.
 - **Why:** Closing after a failure is what clients are told to do; it should not look like a
   second failure.
 - **Pinned by:** `StartupScenarioIT.withTheApiDownTheFeedDoesNotStart`
@@ -212,11 +230,18 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 
 - **0.0.x:** `open()` throws the AMQP client's `com.rabbitmq.client.AuthenticationFailureException`,
   not an SDK exception; its message carries the broker's `ACCESS_REFUSED`. The SDK tries once and
-  does not retry.
+  does not retry. That is when the client built no `SYSTEM_ALIVE_ONLY` session, as the test: the
+  SDK's own alive session opens first, outside the catch of the sessions' opens. With one, `open()`
+  throws `InitException("Failed to init feed")` with the AMQP client's exception as its cause. A
+  broker that cannot be reached fails the same way: the AMQP client's `IOException` itself, or
+  wrapped as above.
 - **1.0:** `open()` throws the SDK's `InitException`, saying the broker refused the login or the
-  virtual host, with the broker's reason as its cause and the access token taken out of both
-  (ticket 21). It tries once: `open()` is all or nothing. Once the feed is open, refusals while
-  reconnecting end it only after they have gone on for a minute, with a fatal event.
+  virtual host, or could not be reached (ticket 21). Its cause is a copy of the AMQP client's
+  exception, not the exception itself: an `IOException` whose message names the original class
+  and carries the broker's reason, with the access token taken out of both messages, so
+  `getCause() instanceof AuthenticationFailureException` no longer matches. It tries once:
+  `open()` is all or nothing. Once the feed is open, refusals while reconnecting end it only once
+  at least three have gone on for a whole minute with no connection in between, with a fatal event.
 - **Why:** A client catching the SDK's exceptions misses this one.
 - **Pinned by:** `StartupScenarioIT.aTokenTheBrokerRefusesStopsTheStart`
 - **Found:** by test against 0.0.56.
@@ -227,13 +252,15 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   mark the producer down with `PROCESSING_QUEUE_DELAY_VIOLATION` (from its first run, KD-7), but
   that asks for no recovery; the producer comes back up once messages are on time again.
 - **1.0:** The stale-message safety net (section 4, Recovery and producers): when the age of live
-  messages from a producer stays above the configured limit for the configured window, a recovery
-  from the oldest checkpoint, then the session's channel is replaced; capped at three resets per
-  session per cool-down, then the session is marked lagging.
+  messages from a producer stays above a fixed limit, two minutes, for a fixed window, one minute,
+  a recovery from the oldest checkpoint, then the session's channel is replaced; capped at three
+  resets per session per ten-minute cool-down, then the session is marked lagging. A reset tells
+  the producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, its cause `SAFETY_NET_RESET`. Ticket
+  28 makes the limit and the window settable.
 - **Why:** Past a point one snapshot is cheaper than working through the backlog.
 - **Pinned by:** none yet; the limit and window are 1.0 settings a test compiled against 0.0.x
   cannot set. To be pinned by a test on 1.0 only, with ticket 28's options; until then the rule
-  is covered by the recovery actor's unit tests, which come with ticket 24.
+  is covered by the recovery machine's unit tests (`SafetyNetTest`).
 - **Found:** by reading the source (`RecoveryManagerImpl.timerTick`, `systemSessionAliveReceived`).
 
 ## KD-18 A producer listed in both scopes has none
@@ -271,7 +298,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **1.0:** Home is the competitor qualified `home` and away the one qualified `away`, in whatever
   order the API lists them, for any format but a race (ticket 20). `getSportFormat()` still reads
   `esports` as `UNKNOWN`. A race, or a match without one competitor of each qualifier, has neither,
-  and both return null under either strategy: there is nothing that failed to load.
+  and both return null under either strategy: there is nothing that failed to load. A market or
+  outcome name that names home or away is filled in for an esports match too, where 0.0.x's
+  getter threw under `THROW` and the name with it.
 - **Why:** A summary listing away first swaps the teams, and every esports match has no home or
   away at all.
 - **Pinned by:** none; the fixtures the system tests use list home first, as a classic match.
@@ -303,8 +332,11 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   description is the one of the locales it holds.
 - **1.0:** The locales load side by side, and a getter of every locale fails as a whole when
   one fails: an `ItemNotFoundException` under `THROW`, null under `CATCH`. A match status
-  description is null. A getter of one locale is not affected (NEXT.md section 3, Behaviour
-  that stays: never a partial collection).
+  description is null (NEXT.md section 3, Behaviour that stays: never a partial collection). A
+  getter of one locale reads that locale only. When that locale fails while another is held, 0.0.x
+  returned null, even under `THROW`: it fell back to the held locale's entry, which has no value
+  in the asked one. 1.0 throws an `ItemNotFoundException` under `THROW`, and returns null under
+  `CATCH`.
 - **Why:** An answer from part of the locales reads as complete.
 - **Pinned by:** none; the system tests read every entity in one locale, but the unit tests
   pin it (`MatchViewTest`, `ProfileViewsTest`, `StatusDescriptionsTest`).
@@ -367,13 +399,16 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **0.0.x:** Every alive with `subscribed="0"` asks for a new recovery at once, which replaces
   the one in flight: an alive sent before the producer saw the request replaces it too, and so
   does every further alive while the producer stays unsubscribed. A producer silent for longer
-  than the maximum inactivity interrupts the recovery, and its next alive asks again.
+  than the maximum inactivity interrupts the recovery, and its next alive asks again. An
+  unsubscribed alive does not count as an alive, so a producer unsubscribed for longer than the
+  maximum inactivity is also reported down with `ALIVE_INTERVAL_VIOLATION`.
 - **1.0:** One recovery in flight per producer. An unsubscribed alive that arrives after the API
   accepted the recovery means the producer lost it: the recovery is given up, uncounted, and the
   next alive asks again, about one alive interval later. One that arrives before the API's
   answer joins the recovery, and one more is asked for once it completes. Silence gives the
   recovery up, and the next alive asks again, as in 0.0.x (NEXT.md section 4, Recovery and
-  producers).
+  producers). An unsubscribed alive counts as an alive, so it never leads to
+  `ALIVE_INTERVAL_VIOLATION`; the producer is down with `OTHER`, its cause `UNSUBSCRIBED`.
 - **Why:** A client that counts recovery requests, or watches their ids, sees fewer of them, and
   the new request ten seconds later than on 0.0.x.
 - **Pinned by:** none in the system tests; the recovery actor's unit tests pin it.
@@ -414,7 +449,10 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   old; the getter's documentation says to pass 0 then (NEXT.md section 4, Recovery and
   producers).
 - **Why:** Resuming from 0.0.x's value can miss messages without a word; resuming from 1.0's can
-  repeat some, and misses none. A client that reads the value to see whether the producer is
+  repeat some, and misses none while the producer's clock only moves forward. After the
+  producer's clock steps back the point stays at the newest stamp before the step, capped at the
+  producer's now (KD-33), so a restart can skip what was still queued from the stretch the clock
+  went back over. A client that reads the value to see whether the producer is
   alive sees it fall behind, or stand still while a gap is open.
 - **Pinned by:** `ProducerRecoveryScenarioIT.theRecoveryTimestampIsWhatTheSessionProcessedNotALaterAlive`,
   with a session in the callback of a message after the one it processed and an alive after
@@ -441,15 +479,20 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **0.0.x:** `initiateEventOddsMessagesRecovery` and `initiateEventStatefulMessagesRecovery`
   before `open()` send the request at once, after the feed's lazy start, and return its request
   id. No session's queue exists yet, so the messages the recovery sends reach no queue and are
-  lost, and nothing says so.
+  lost, and nothing says so. After `open()` every request is sent and its id returned.
 - **1.0:** Before `open()` both return null and log a warning; nothing is sent (section 3,
   Behaviour that stays: "an event recovery asked for before it is not accepted (null), since no
   queue exists yet for its messages"). The Go SDK refuses too, with an error saying the manager is
-  not open, which a caller may retry.
+  not open, which a caller may retry. After `open()` a request is refused, null at once, while
+  the connection is down or with 128 of the producer's event recoveries in flight. While a
+  session's channel is lost or being reset it is held, and sent only if the channel is back before
+  the caller's wait, the HTTP timeout and a second, ends; otherwise the caller gets null and it is
+  not sent. A request already on its way to the API when that wait ends can still be accepted:
+  the caller has null, and `onEventRecoveryCompleted` later names an id it never got.
 - **Why:** A request id the client keeps for a recovery whose messages can never arrive is a
   recovery it waits for in vain.
 - **Pinned by:** `BeforeOpenScenarioIT.anEventRecoveryAskedForBeforeOpenIsNotSent`
-- **Found:** by reading the source (`SDKRecoveryManagerImpl.makeEventRecovery`, `OddsFeed.open`).
+- **Found:** by reading the source (`RecoveryManagerImpl.makeEventRecovery`, `OddsFeed.open`).
 
 ## KD-31 Raw API data before open() does not reach the extended listener
 
@@ -459,9 +502,13 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **1.0:** The events dispatcher starts with the feed, on the first call that starts it, so the
   extended listener gets the raw data of every response from then on, before and after `open()`,
   and the global listener's `onApiCall` hears every call as it is made, as the Go SDK reports its
-  API events from the start. Additive: a client gets more, never less.
+  API events from the start. The raw data is handed over on the events thread, after the getter
+  has returned, where 0.0.x called the listener on the calling thread before it returned, and it
+  can be dropped: past 1,000 queued entries the oldest goes, and a response with no room under
+  32 MiB of queued raw data is dropped, each counted and logged (NEXT.md section 4, Threads).
 - **Why:** A client that logs or audits the raw API data misses what came before `open()`, the
-  start's own whoami and producer list among it.
+  start's own whoami and producer list among it. On 1.0 a client whose raw-data callback is slow
+  can miss responses, and one that reads them on the calling thread finds them elsewhere.
 - **Pinned by:** `BeforeOpenScenarioIT.rawApiDataBeforeOpenReachesTheExtendedListener`
 - **Found:** by reading the source (`OddsFeed.open`, `ApiClientImpl.subscribeForData`).
 
@@ -470,28 +517,40 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **0.0.x:** `setProducerRecoveryFromTimestamp` writes the timestamp into the producer list the
   managers loaded, and `open()` fetches the list again and replaces it, so a timestamp set before
   `open()` is lost: the first recovery asks for a full snapshot, or for the initial snapshot
-  interval when one is configured.
+  interval when one is configured. The same refetch enables every producer again, so one
+  disabled with `setProducerState` before `open()` is enabled. Set once the feed is open, the
+  timestamp is taken until the producer's first up: the next recovery starts from it, and
+  `getTimestampForRecovery` reports it.
 - **1.0:** The timestamp seeds every session's checkpoint at `open()`, and the first recovery
   starts from it, clamped to the producer's stateful recovery window (NEXT.md section 4,
-  Recovery and producers).
+  Recovery and producers). A producer disabled before `open()` stays disabled. Set once `open()`
+  has begun, the timestamp is ignored with a warning, and `getTimestampForRecovery` goes on
+  reporting the resume point.
 - **Why:** A client that persists the recovery point and passes it back after a restart gets a
-  full snapshot instead of what it missed.
-- **Pinned by:** `ProducerRecoveryScenarioIT.theRecoveryTimestampTheClientSetsIsWhereTheFirstRecoveryStarts`
+  full snapshot instead of what it missed. A client that set it just after `open()`, the way
+  around this on 0.0.x, now has to set it before.
+- **Pinned by:** `ProducerRecoveryScenarioIT.theRecoveryTimestampTheClientSetsIsWhereTheFirstRecoveryStarts`;
+  the producers' unit tests pin the warning (`ProducersTest`).
 - **Found:** by test against 0.0.57; the source (`OddsFeed.open`, `ProducerManagerImpl.open`)
   explains it.
 
 ## KD-33 A recovery after a producer gap starts from the last alive received, not the newest
 
 - **0.0.x:** When an alive says the producer is no longer subscribed, the recovery starts from the
-  timestamp of the last alive it received before.
+  timestamp of the last alive it received before. It records none while the producer is down, so
+  for a producer down for another reason, being processed late say, that is the last alive from
+  before it went down.
 - **1.0:** It starts from the newest subscribed alive by its timestamp, the running maximum, which
   says everything sent before it has been sent, but no later than the producer's now: the SDK's
   clock corrected by the offset measured on the producer's last alive (NEXT.md section 4,
-  Recovery and producers). The two differ only when a producer's clock goes back between alives;
-  then 1.0 starts later than 0.0.x, from the producer's now as it asks, but no later than what the
-  producer stamped before the step back.
+  Recovery and producers). With the producer up, the two differ only when its clock goes back
+  between alives. Then 1.0 starts later than 0.0.x, from the producer's now as it asks, but no
+  later than what the producer stamped before the step back, and misses what the producer
+  stamped between its last subscribed alive and that now: about one alive interval, never more
+  than the step back. For a producer that was down, 1.0 starts from a newer alive than 0.0.x.
 - **Why:** A producer's alives arrive in the order it sent them, so with a clock that only moves
-  forward the last received is the newest. A clock that steps back is the one case they part.
+  forward the last received is the newest. A clock that steps back is the one case they part
+  while the producer is up; 1.0 then misses a short stretch where 0.0.x asks for it again.
 - **Pinned by:** `ProducerRecoveryScenarioIT.aProducerWhoseClockWentBackRecoversFromTheNewestAliveCappedAtItsNowOn10`
 - **Found:** by test against 1.0, a scenario that stamped its first alive later than the ones after
   it; the 0.0.x side read in the source (`RecoveryManager.systemSessionAliveReceived`).
