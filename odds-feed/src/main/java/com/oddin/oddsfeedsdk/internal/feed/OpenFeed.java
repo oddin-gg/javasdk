@@ -20,6 +20,8 @@ import java.time.Duration;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -318,26 +320,39 @@ public final class OpenFeed {
                     producerId);
             return null;
         }
-        var reply = actor.recoverEvent(producerId, eventId, stateful);
+        return answer(actor.recoverEvent(producerId, eventId, stateful), answerWait, producerId, eventId);
+    }
+
+    /**
+     * The actor's answer, waited for up to {@code wait}. A wait that ends answers the reply with null
+     * for the actor - one still waiting for a session's channel, or still queued, is then never sent
+     * with an id this caller never got - unless the actor answered first, in the same instant: the
+     * caller then has what it answered, the id the request went out with.
+     */
+    static @Nullable Long answer(CompletableFuture<@Nullable Long> reply, Duration wait, long producerId, URN eventId) {
         try {
-            return reply.get(answerWait.toNanos(), TimeUnit.NANOSECONDS);
-        } catch (TimeoutException e) {
-            // answered for the actor: one still waiting for a session's channel, or still queued, is
-            // then never sent with an id this caller never got
-            reply.complete(null);
-            LOG.warn("Recovery of {} from producer {} not answered within {}", eventId, producerId, answerWait);
-        } catch (ExecutionException e) {
+            try {
+                return reply.get(wait.toNanos(), TimeUnit.NANOSECONDS);
+            } catch (TimeoutException e) {
+                if (reply.complete(null)) {
+                    LOG.warn("Recovery of {} from producer {} not answered within {}", eventId, producerId, wait);
+                    return null;
+                }
+                // the actor answered as the wait ended: complete(null) found the reply done
+                return reply.getNow(null);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return reply.complete(null) ? null : reply.getNow(null);
+            }
+        } catch (ExecutionException | CompletionException e) {
             Throwable cause = e.getCause();
             LOG.warn(
                     "Recovery of {} from producer {} not accepted: {}",
                     eventId,
                     producerId,
                     cause == null ? e.getMessage() : cause.getMessage());
-        } catch (InterruptedException e) {
-            reply.complete(null);
-            Thread.currentThread().interrupt();
+            return null;
         }
-        return null;
     }
 
     /** Where the event recovery with this request id is; null for none, and on a replay feed. */
