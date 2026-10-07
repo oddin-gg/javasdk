@@ -66,6 +66,8 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
     private final AtomicLong handled = new AtomicLong();
     private final Thread thread;
     private volatile boolean closed;
+    /** A test's hook, run in a hand-off just before the alive is queued. */
+    volatile Runnable beforeQueued = () -> {};
 
     /**
      * @param offsets where each producer's clock offset is kept, for the session dispatchers
@@ -100,7 +102,13 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
             }
             return;
         }
+        beforeQueued.run();
         alives.add(alive);
+        if (closed && alives.remove(alive)) {
+            // the close came between the look and the add, and its drain may be over
+            release(length);
+            return;
+        }
         LockSupport.unpark(thread);
     }
 
@@ -149,7 +157,7 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
                 return true;
             }
         } finally {
-            alives.clear();
+            dropQueued();
         }
         LOG.warn("The alive dispatcher did not stop in time");
         return false;
@@ -170,6 +178,15 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
                 unreadable(alive, e);
             }
             handled.incrementAndGet();
+        }
+    }
+
+    /** Drops the alives still queued, and gives back their room, so the queue reads empty once closed. */
+    private void dropQueued() {
+        RawDelivery alive = alives.poll();
+        while (alive != null) {
+            release(length(alive));
+            alive = alives.poll();
         }
     }
 
