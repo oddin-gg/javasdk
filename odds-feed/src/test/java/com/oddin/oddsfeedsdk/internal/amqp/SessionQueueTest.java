@@ -43,6 +43,19 @@ class SessionQueueTest {
     }
 
     @Test
+    void aClosedQueueDropsWhatItHeldAndTurnsAwayWhatComesLate() {
+        var queue = new SessionQueue(10);
+        queue.offer(delivery(0));
+        queue.offer(delivery(0));
+        queue.close();
+        assertThat(queue.size()).isZero();
+        assertThat(queue.offer(delivery(0))).isEqualTo(SessionQueue.Offer.CLOSED);
+        assertThat(queue.size()).isZero();
+        assertThat(queue.epochDiscards()).as("none of a replaced channel").isZero();
+        assertThat(queue.overflowed()).isZero();
+    }
+
+    @Test
     void anOlderEpochDoesNotLetOlderDeliveriesBackIn() {
         var queue = new SessionQueue(10);
         queue.removeEpochsBefore(3);

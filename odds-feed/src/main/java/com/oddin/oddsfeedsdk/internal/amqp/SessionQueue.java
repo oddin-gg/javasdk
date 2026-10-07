@@ -28,15 +28,20 @@ public final class SessionQueue {
     private final AtomicLong removed = new AtomicLong();
 
     private long oldestEpoch;
+    /** Whether its channel closed for good; changed under the lock. */
+    private boolean closed;
 
     public SessionQueue(int capacity) {
         this.deliveries = new ArrayBlockingQueue<>(capacity);
     }
 
-    /** Adds without waiting, unless it is full or the delivery comes from a replaced channel. */
+    /** Adds without waiting, unless it is full, closed, or the delivery comes from a replaced channel. */
     Offer offer(RawDelivery delivery) {
         lock.lock();
         try {
+            if (closed) {
+                return Offer.CLOSED;
+            }
             if (delivery.epoch() < oldestEpoch) {
                 stale.incrementAndGet();
                 return Offer.STALE;
@@ -57,7 +62,9 @@ public final class SessionQueue {
         /** refused for want of room: its channel is live, and it is acknowledged there */
         FULL,
         /** from a replaced channel, which is gone and took the delivery with it */
-        STALE
+        STALE,
+        /** after the channel closed for good, which took the delivery with it */
+        CLOSED
     }
 
     /** The next delivery, waiting at most {@code timeout}, or null. */
@@ -80,6 +87,21 @@ public final class SessionQueue {
                 }
                 return older;
             });
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Its channel closed for good: what it holds is dropped, and so is what comes late. Nobody takes
+     * from it any more, and a closed feed, which stays reachable for its health, would otherwise
+     * keep up to the prefetch of message bodies. The broker let them go with the channel.
+     */
+    void close() {
+        lock.lock();
+        try {
+            closed = true;
+            deliveries.clear();
         } finally {
             lock.unlock();
         }

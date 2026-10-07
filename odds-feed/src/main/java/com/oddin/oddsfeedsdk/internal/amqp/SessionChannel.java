@@ -297,12 +297,18 @@ final class SessionChannel implements SessionTransport {
         return signal != null && !signal.isInitiatedByApplication() && !signal.isHardError();
     }
 
-    /** Closes the channel for good: a reset or a reopen after this opens nothing. */
+    /**
+     * Closes the channel for good: a reset or a reopen after this opens nothing, and a session's
+     * queue drops what it holds.
+     */
     void close() {
         lock.lock();
         try {
             closed = true;
             closeChannel();
+            if (sink instanceof Sink.Queued(var queue, var _)) {
+                queue.close();
+            }
         } finally {
             lock.unlock();
         }
