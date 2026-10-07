@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -125,5 +126,29 @@ public final class RecoveryCounters {
     /** Facts the actor failed on; it goes on with the next. */
     public long factsFailed() {
         return factsFailed.get();
+    }
+
+    /** What it has counted so far, as {@code getHealth()} shows it; each counter read on its own. */
+    public FeedHealth.Recovery snapshot() {
+        return new FeedHealth.Recovery(
+                requested.get(),
+                reissued.get(),
+                failed.get(),
+                timedOut.get(),
+                abandoned.get(),
+                completed.get(),
+                unknownCompletions.get(),
+                unknownProducers.get(),
+                eventRequested.get(),
+                eventRefused.get(),
+                eventExpired.get(),
+                eventAbandoned.get(),
+                eventCallerGone.get(),
+                eventStatusesDropped.get(),
+                resets.get(),
+                resetDropped.get(),
+                resetRequestsFailed.get(),
+                factsDropped.get(),
+                factsFailed.get());
     }
 }
