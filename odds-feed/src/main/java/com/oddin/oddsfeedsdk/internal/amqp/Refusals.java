@@ -1,41 +1,42 @@
 package com.oddin.oddsfeedsdk.internal.amqp;
 
 import java.time.Duration;
-import java.time.Instant;
-import java.time.InstantSource;
-import org.jspecify.annotations.Nullable;
+import java.util.function.LongSupplier;
 
 /**
  * The refused logins since the last successful connection. Only refusals that have gone on for a
  * whole window, and at least a few of them, mean the refusal is for real: an auth backend being
  * deployed, a virtual host or its permissions being written, refuse for a while and then let the
- * same token in. Counted by the clock, not by attempts, which the backoff spaces closer at first.
- * Used under the transport's lock.
+ * same token in. Counted by the time, not by attempts, which the backoff spaces closer at first:
+ * by {@link System#nanoTime}, so a wall clock set forward makes no refusal fatal early, nor one set
+ * back postpones it. Used under the transport's lock.
  */
 final class Refusals {
 
     private final int enough;
-    private final Duration window;
-    private final InstantSource clock;
-    private @Nullable Instant first;
+    private final long windowNanos;
+    /** {@link System#nanoTime}, or a test's. */
+    private final LongSupplier nanos;
+    /** When the first was counted, by {@link #nanos}; meaningless while {@link #count} is 0. */
+    private long first;
+
     private int count;
 
-    Refusals(int enough, Duration window, InstantSource clock) {
+    Refusals(int enough, Duration window, LongSupplier nanos) {
         this.enough = enough;
-        this.window = window;
-        this.clock = clock;
+        this.windowNanos = window.toNanos();
+        this.nanos = nanos;
     }
 
     /** Counts one; true once there are enough and they have gone on for the window. */
     boolean refusedTooOften() {
-        Instant now = clock.instant();
-        Instant since = first;
-        if (since == null) {
-            since = now;
+        long now = nanos.getAsLong();
+        if (count == 0) {
             first = now;
         }
         count++;
-        return count >= enough && !Duration.between(since, now).minus(window).isNegative();
+        // by difference only, as nanoTime is read
+        return count >= enough && now - first >= windowNanos;
     }
 
     /** How many were counted since the last successful connection. */
@@ -45,13 +46,11 @@ final class Refusals {
 
     /** How long they have gone on. */
     Duration span() {
-        Instant since = first;
-        return since == null ? Duration.ZERO : Duration.between(since, clock.instant());
+        return count == 0 ? Duration.ZERO : Duration.ofNanos(nanos.getAsLong() - first);
     }
 
     /** A connection succeeded: the count starts again. */
     void clear() {
-        first = null;
         count = 0;
     }
 }
