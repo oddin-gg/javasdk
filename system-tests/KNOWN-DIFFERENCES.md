@@ -156,8 +156,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   not lead to a recovery, so what was sent while the connection was down is not recovered -
   unless the watchdog (KD-7) takes the producer down first.
 - **1.0:** "Exclusive queues are always re-declared; whatever the broker buffered for the old
-  queue is gone, and recovery covers it" (section 4, Connection). The test expects another
-  recovery request after the reconnect.
+  queue is gone, and recovery covers it" (section 4, Connection). The test expects the producer
+  to go down, another recovery request after the reconnect, starting where the session had got to
+  before the connection went, and the producer back up once that recovery completes.
 - **Why:** Messages lost with the old queue stay lost.
 - **Pinned by:** `ReconnectScenarioIT.afterAReconnectMessagesFlowAgainAndTheGapIsRecovered`
 - **Found:** by test against 0.0.56.
@@ -375,7 +376,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   `PROCESSING_QUEUE_DELAY_VIOLATION`, which asks for no recovery, and it stays down.
 - **1.0:** The transport opens such a channel again, tells the session of the loss and of the
   new channel, and recovery covers what the old queue held, once the new one is bound (NEXT.md
-  section 4, Connection, and Recovery and producers).
+  section 4, Connection, and Recovery and producers). The test expects the producer to go down,
+  the second recovery to start where the session had got to before the loss, and the producer
+  back up once that recovery completes.
 - **Why:** A session that silently stops receiving keeps its producers up with stale state,
   and once the watchdog notices, down for good: only a restart brings them back.
 - **Pinned by:** `ReconnectScenarioIT.afterTheBrokerTakesTheSessionsQueueMessagesFlowAgainAndTheGapIsRecovered`
@@ -400,9 +403,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Why:** Resuming from 0.0.x's value can miss messages without a word; resuming from 1.0's can
   repeat some, and misses none. A client that reads the value to see whether the producer is
   alive sees it fall behind, or stand still while a gap is open.
-- **Pinned by:** none in the system tests yet: a scenario on both lines needs the 1.0 feed's
-  recovery, which the feed does not run yet. The recovery machine's and the producers' unit
-  tests pin it.
+- **Pinned by:** `ProducerRecoveryScenarioIT.theRecoveryTimestampIsWhatTheSessionProcessedNotALaterAlive`,
+  with a session in the callback of a message after the one it processed and an alive after
+  both; the recovery machine's and the producers' unit tests pin the rest.
 - **Found:** in the source (`ProducerImpl.timestampForRecovery`,
   `ProducerRecoveryData.systemAliveReceived`).
 
@@ -448,3 +451,18 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   start's own whoami and producer list among it.
 - **Pinned by:** `BeforeOpenScenarioIT.rawApiDataBeforeOpenReachesTheExtendedListener`
 - **Found:** by reading the source (`OddsFeed.open`, `ApiClientImpl.subscribeForData`).
+
+## KD-32 A recovery-from timestamp set before open() is forgotten
+
+- **0.0.x:** `setProducerRecoveryFromTimestamp` writes the timestamp into the producer list the
+  managers loaded, and `open()` fetches the list again and replaces it, so a timestamp set before
+  `open()` is lost: the first recovery asks for a full snapshot, or for the initial snapshot
+  interval when one is configured.
+- **1.0:** The timestamp seeds every session's checkpoint at `open()`, and the first recovery
+  starts from it, clamped to the producer's stateful recovery window (NEXT.md section 4,
+  Recovery and producers).
+- **Why:** A client that persists the recovery point and passes it back after a restart gets a
+  full snapshot instead of what it missed.
+- **Pinned by:** `ProducerRecoveryScenarioIT.theRecoveryTimestampTheClientSetsIsWhereTheFirstRecoveryStarts`
+- **Found:** by test against 0.0.57; the source (`OddsFeed.open`, `ProducerManagerImpl.open`)
+  explains it.

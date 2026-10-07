@@ -45,9 +45,11 @@ public enum KnownDifference {
     CLOSE_IS_REPORTED_AS_CONNECTION_DOWN("KD-23", true),
     AMERICAN_ODDS_FROM_2_ARE_WRONG("KD-24", true),
     LOST_CHANNEL_IS_NOT_OPENED_AGAIN("KD-27", true),
+    RECOVERY_TIMESTAMP_RUNS_AHEAD("KD-28", true),
     SESSION_BUILT_AFTER_OPEN_RECEIVES_NOTHING("KD-29", true),
     EVENT_RECOVERY_BEFORE_OPEN_IS_SENT("KD-30", true),
-    RAW_API_DATA_ONLY_ONCE_OPEN("KD-31", true);
+    RAW_API_DATA_ONLY_ONCE_OPEN("KD-31", true),
+    RECOVERY_FROM_SET_BEFORE_OPEN_IS_FORGOTTEN("KD-32", true);
 
     /** The SDK lines a scenario can run against. */
     public enum Line {
