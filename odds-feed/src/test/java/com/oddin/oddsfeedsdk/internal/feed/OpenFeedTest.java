@@ -27,6 +27,8 @@ import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
@@ -115,6 +117,41 @@ class OpenFeedTest {
                         .as("the actor running as the transport opens")
                         .isTrue();
             } finally {
+                core.close();
+            }
+        }
+    }
+
+    @Test
+    void anEventRecoverysCallerWaitsForTheHttpTimeoutAndASecondAtMost() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                    .selectEnvironment("127.0.0.1", api.apiHost(), 1)
+                    .setAccessToken("token")
+                    .setHttpClientTimeout(Duration.ofSeconds(1))
+                    .build();
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
+            var open = OpenFeed.build(core, plan(core, false), configuration);
+            try {
+                // the actor never started: nothing answers
+                long asked = System.nanoTime();
+                var answer =
+                        CompletableFuture.supplyAsync(() -> open.recoverEvent(2, URN.parse("od:match:198314"), false));
+                assertThat(answer.get(10, TimeUnit.SECONDS)).as("not answered").isNull();
+                assertThat(Duration.ofNanos(System.nanoTime() - asked))
+                        .as("the caller's wait")
+                        .isBetween(Duration.ofSeconds(2), Duration.ofMillis(3_500));
+
+                // the request the caller gave up on is not made once the actor runs
+                var actor = requireNonNull(open.actor());
+                actor.start();
+                long until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+                while (actor.counters().eventCallerGone() == 0 && System.nanoTime() < until) {
+                    Thread.sleep(10);
+                }
+                assertThat(actor.counters().eventCallerGone()).isEqualTo(1);
+            } finally {
+                open.close();
                 core.close();
             }
         }

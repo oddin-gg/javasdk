@@ -297,7 +297,9 @@ public final class OpenFeed {
         try {
             return reply.get(answerWait.toNanos(), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
-            // the actor may still make the request; the caller has no id to look it up by
+            // answered for the actor: one still waiting for a session's channel, or still queued, is
+            // then never sent with an id this caller never got
+            reply.complete(null);
             LOG.warn("Recovery of {} from producer {} not answered within {}", eventId, producerId, answerWait);
         } catch (ExecutionException e) {
             Throwable cause = e.getCause();
@@ -307,6 +309,7 @@ public final class OpenFeed {
                     producerId,
                     cause == null ? e.getMessage() : cause.getMessage());
         } catch (InterruptedException e) {
+            reply.complete(null);
             Thread.currentThread().interrupt();
         }
         return null;
