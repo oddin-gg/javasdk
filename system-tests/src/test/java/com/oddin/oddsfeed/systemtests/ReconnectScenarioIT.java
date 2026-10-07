@@ -7,6 +7,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.FeedMessages;
+import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.fakes.RecordedRequest;
 import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.Received;
@@ -35,6 +37,10 @@ class ReconnectScenarioIT {
     private static final String ODDS_CHANGE = "feed/odds_change/odds_change_markets_only.xml";
     private static final String PREMATCH_RECOVERY = "/v1/pre/recovery/initiate_request";
 
+    /** A live odds change from producer 1, carrying no request id, so not a recovery's. */
+    private static final String LIVE_ODDS_CHANGE = Fixtures.replace(
+            FeedMessages.fromProducer(Fixtures.read(ODDS_CHANGE), 2, 1), " request_id=\"2049987833\"", "");
+
     /**
      * The connection drops and comes back: the SDK reports it down, logs in again, and messages
      * reach the listener again. A producer that was up before the drop has missed whatever was sent
@@ -47,16 +53,15 @@ class ReconnectScenarioIT {
                 FakeFeed feed = FakeFeed.start();
                 Sdk sdk = Sdk.against(rest, feed)) {
             Received received = sdk.open(MessageInterest.ALL);
-            long beforeFirstAlive = System.currentTimeMillis();
             feed.publish(alive(1, true));
             feed.publish(snapshotComplete(
                     1, requestId(rest.awaitRequest("POST", PREMATCH_RECOVERY).parameter("request_id"))));
             assertThat(sdk.events().nextProducerStatus(1).isDown())
                     .as("down after the first recovery")
                     .isFalse();
+            long processedAt = processedLive(sdk, feed, received);
             int loginsBefore = feed.logins().size();
 
-            long lostAt = System.currentTimeMillis();
             feed.pause();
             assertThat(sdk.events().awaitConnectionDown(Duration.ofSeconds(30)))
                     .as("the SDK reports the connection down while the broker is paused")
@@ -105,7 +110,7 @@ class ReconnectScenarioIT {
                     },
                     () -> {
                         feed.publish(alive(1, true));
-                        recoveredFromWhereTheSessionWas(sdk, rest, feed, beforeFirstAlive, lostAt);
+                        recoveredFromWhereTheSessionWas(sdk, rest, feed, processedAt);
                     });
         }
     }
@@ -125,7 +130,6 @@ class ReconnectScenarioIT {
                 FakeFeed feed = FakeFeed.start();
                 Sdk sdk = Sdk.against(rest, feed)) {
             Received received = sdk.open(MessageInterest.ALL);
-            long beforeFirstAlive = System.currentTimeMillis();
             feed.publish(alive(1, true));
             feed.publish(snapshotComplete(
                     1, requestId(rest.awaitRequest("POST", PREMATCH_RECOVERY).parameter("request_id"))));
@@ -134,10 +138,10 @@ class ReconnectScenarioIT {
                     .isFalse();
             feed.publishFixture(ODDS_CHANGE);
             received.next(OddsChange.class);
+            long processedAt = processedLive(sdk, feed, received);
             var queues = feed.sessionQueues();
             assertThat(queues).as("the session's queue").hasSize(1);
 
-            long lostAt = System.currentTimeMillis();
             feed.deleteSessionQueues();
             assertThat(feed.sessionQueues())
                     .as("session queues once the session's is deleted")
@@ -183,19 +187,43 @@ class ReconnectScenarioIT {
                                 .as("an odds change after the queue was deleted")
                                 .isPresent();
                         feed.publish(alive(1, true));
-                        recoveredFromWhereTheSessionWas(sdk, rest, feed, beforeFirstAlive, lostAt);
+                        recoveredFromWhereTheSessionWas(sdk, rest, feed, processedAt);
                     });
         }
     }
 
     /**
-     * On 1.0, after the session's queue lost what it held: producer 1 went down, its second recovery
-     * starts where the session had got to before the loss - no earlier than the first alive, which
-     * it processed, and no later than the loss - and the snapshot complete of that recovery brings
-     * the producer back.
+     * A live odds change of producer 1, stamped now, published and processed: the last message the
+     * session processes before the loss. On 1.0 it waits until the recovery has taken it, as the
+     * producer's recovery timestamp shows, so the loss cannot overtake it.
+     *
+     * @return its timestamp
      */
-    private static void recoveredFromWhereTheSessionWas(
-            Sdk sdk, FakeRestServer rest, FakeFeed feed, long beforeFirstAlive, long lostAt)
+    private static long processedLive(Sdk sdk, FakeFeed feed, Received received) throws InterruptedException {
+        long processedAt = System.currentTimeMillis();
+        feed.publishAsIs(stampedAt(LIVE_ODDS_CHANGE, processedAt));
+        received.next(OddsChange.class);
+        if (KnownDifference.lineUnderTest() == KnownDifference.Line.NEXT) {
+            var producers = sdk.oddsFeed().getProducerManager();
+            long deadline = System.nanoTime() + Received.DELIVERY.toNanos();
+            while (!Instant.ofEpochMilli(processedAt)
+                            .equals(producers.getProducer(1).getTimestampForRecovery())
+                    && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+            assertThat(producers.getProducer(1).getTimestampForRecovery())
+                    .as("the recovery timestamp once the live odds change is processed")
+                    .isEqualTo(Instant.ofEpochMilli(processedAt));
+        }
+        return processedAt;
+    }
+
+    /**
+     * On 1.0, after the session's queue lost what it held: producer 1 went down, its second recovery
+     * starts at the session's checkpoint, the live message it processed last before the loss, and
+     * the snapshot complete of that recovery brings the producer back.
+     */
+    private static void recoveredFromWhereTheSessionWas(Sdk sdk, FakeRestServer rest, FakeFeed feed, long processedAt)
             throws InterruptedException {
         List<RecordedRequest> recoveries = rest.awaitRequests("POST", PREMATCH_RECOVERY, 2);
         assertThat(recoveries).as("recovery requests of producer 1").hasSizeGreaterThanOrEqualTo(2);
@@ -207,8 +235,8 @@ class ReconnectScenarioIT {
                 .as("where the second recovery starts; none would mean a full snapshot")
                 .isNotNull();
         assertThat(Long.parseLong(second.parameter("after")))
-                .as("where the second recovery starts: where the session had got to before the loss")
-                .isBetween(beforeFirstAlive, lostAt);
+                .as("where the second recovery starts: the session's checkpoint before the loss")
+                .isEqualTo(processedAt);
 
         feed.publish(snapshotComplete(1, requestId(second.parameter("request_id"))));
         ProducerStatus back = sdk.events().nextProducerStatus(1);
