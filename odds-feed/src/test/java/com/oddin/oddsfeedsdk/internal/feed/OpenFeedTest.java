@@ -262,6 +262,68 @@ class OpenFeedTest {
         }
     }
 
+    @Test
+    void anOpenFeedKeepsOneNonDaemonThreadFromItsStartToItsClose() throws Exception {
+        try (var broker = FakeFeed.start();
+                var api = FakeRestServer.start()) {
+            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                    .selectEnvironment(broker.host(), api.apiHost(), broker.port())
+                    .setMessagingSslContext(TestTls.clientContext())
+                    .setAccessToken("token")
+                    .build();
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
+            try {
+                var before = Thread.getAllStackTraces().keySet();
+                var open = OpenFeed.build(core, plan(core, false), configuration);
+                assertThat(nonDaemonFeedThreads(before)).as("built").isEmpty();
+                open.start();
+                Set<Thread> started = nonDaemonFeedThreads(before);
+                assertThat(started)
+                        .as("open: the one thread that keeps the JVM up during an outage")
+                        .extracting(Thread::getName)
+                        .containsExactly("oddsfeed-keep-alive");
+
+                open.close();
+                assertThat(started).as("closed").noneMatch(Thread::isAlive);
+                assertThat(nonDaemonFeedThreads(before)).isEmpty();
+            } finally {
+                core.close();
+            }
+        }
+    }
+
+    @Test
+    void aStartThatFailsEndsTheNonDaemonThreadItStarted() {
+        try (var api = FakeRestServer.start()) {
+            var configuration = configuration(api);
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
+            try {
+                var before = Thread.getAllStackTraces().keySet();
+                var open = OpenFeed.build(core, plan(core, false), configuration);
+                var started = new CompletableFuture<Set<Thread>>();
+                open.beforeTransportOpens = () -> started.complete(nonDaemonFeedThreads(before));
+
+                // no broker listens: the transport cannot open, and the start closes what it started
+                assertThatThrownBy(open::start).isInstanceOf(InitException.class);
+                assertThat(started.getNow(Set.of()))
+                        .as("as the transport opened")
+                        .extracting(Thread::getName)
+                        .containsExactly("oddsfeed-keep-alive");
+                assertThat(started.getNow(Set.of())).as("once the start failed").noneMatch(Thread::isAlive);
+            } finally {
+                core.close();
+            }
+        }
+    }
+
+    /** The feed's live non-daemon threads not among {@code before}. */
+    private static Set<Thread> nonDaemonFeedThreads(Set<Thread> before) {
+        return Thread.getAllStackTraces().keySet().stream()
+                .filter(thread -> !before.contains(thread) && thread.isAlive() && !thread.isDaemon())
+                .filter(thread -> thread.getName().startsWith("oddsfeed"))
+                .collect(Collectors.toSet());
+    }
+
     private static Sessions.Plan plan(FeedCore core, boolean replay) {
         var sessions = new SessionRegistry(null);
         var builder = sessions.builder().setListener(new Silent());

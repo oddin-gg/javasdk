@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.feed;
 
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.AmqpSettings;
 import com.oddin.oddsfeedsdk.internal.amqp.AmqpTransport;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
@@ -22,6 +23,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -35,7 +37,8 @@ import org.slf4j.LoggerFactory;
  * SDK's own alive dispatcher and the recovery actor - neither for a replay feed, which runs no
  * recovery, as in 0.0.x. Built without a thread or a connection, then started once; closed once, by
  * the feed or by a start that fails. The events dispatcher it reports to is the feed's, running
- * since the feed started, and stays when an open fails, with the managers.
+ * since the feed started, and stays when an open fails, with the managers. From the start to the
+ * close it keeps one non-daemon thread, so the JVM does not end while the feed is open.
  *
  * <p>The actor hears of the connection from the transport itself, before the events dispatcher
  * does, of the alives from the alive dispatcher, of each session's messages from its dispatcher, and
@@ -84,6 +87,16 @@ public final class OpenFeed {
     private final ConnectionTee connection;
     /** What the recovery actor tells of its events, in turn; null for a replay feed; for a test. */
     private final @Nullable RecoveryTee recoveryTee;
+    /** Ends {@link #keepAlive}: counted down once the close has waited for the rest. */
+    private final CountDownLatch released = new CountDownLatch(1);
+    /**
+     * The feed's one non-daemon thread, from the start to the close, as 0.0.x's executors were: every
+     * other thread of the feed is a daemon or a virtual thread, and the broker client's own, which is
+     * not, is gone while the connection is down, so a client whose {@code main} returned after {@code
+     * open()} would otherwise end during an outage.
+     */
+    private final Thread keepAlive =
+            Thread.ofPlatform().daemon(false).name("oddsfeed-keep-alive").unstarted(this::keepAlive);
     /** A test's hook, run in a start just before the transport opens. */
     volatile Runnable beforeTransportOpens = () -> {};
     /** A test's hook, run in a start once the transport has opened. */
@@ -216,6 +229,7 @@ public final class OpenFeed {
                 throw closedAsItOpened(null);
             }
             state = State.STARTED;
+            keepAlive.start();
             if (alives != null) {
                 alives.start();
             }
@@ -289,20 +303,30 @@ public final class OpenFeed {
      * handles the facts they posted, then the connection, all within {@code deadline}, by {@link
      * System#nanoTime}; a dispatcher called from a session's own callback is not waited for. The
      * connection closes last, so the actor, closing, hears of no loss its close makes; it cuts an
-     * open under way short, too. The events dispatcher is the feed's to stop and wait for.
+     * open under way short, too. The feed's non-daemon thread ends last. The events dispatcher is the
+     * feed's to stop and wait for.
      *
      * @return whether every thread ended in time
      */
     public boolean awaitStop(long deadline) {
-        var stopped = alives == null || alives.awaitStop(deadline);
-        for (SessionDispatcher session : sessions) {
-            stopped &= session.awaitStop(deadline);
+        try {
+            var stopped = alives == null || alives.awaitStop(deadline);
+            for (SessionDispatcher session : sessions) {
+                stopped &= session.awaitStop(deadline);
+            }
+            if (actor != null) {
+                stopped &= actor.close(deadline);
+            }
+            transport.close();
+            return stopped;
+        } finally {
+            // last, so the JVM stays up until the connection has closed, and whatever came before
+            // failed; it ends at once
+            released.countDown();
+            if (keepAlive.isAlive()) {
+                Joins.uninterruptibly(keepAlive, deadline);
+            }
         }
-        if (actor != null) {
-            stopped &= actor.close(deadline);
-        }
-        transport.close();
-        return stopped;
     }
 
     /**
@@ -362,6 +386,19 @@ public final class OpenFeed {
         }
         EventRecoveryStatus status = actor.recoveryStatus(requestId);
         return status == null ? null : status.toPublic();
+    }
+
+    /** Until the close: only that ends it, not an interrupt, so the JVM stays up while the feed is open. */
+    private void keepAlive() {
+        var ended = false;
+        while (!ended) {
+            try {
+                released.await();
+                ended = true;
+            } catch (InterruptedException e) {
+                // the close, not an interrupt, ends it
+            }
+        }
     }
 
     /** Closes it all, within the shutdown timeout: for a start that fails, which keeps nothing of it. */
