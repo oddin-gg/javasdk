@@ -367,6 +367,7 @@ class MatchCachesTest {
         assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
                 .isEqualTo("Team Alpha vs Team Gamma");
         assertThat(before.get(10, TimeUnit.SECONDS).get(NAME, Locale.ENGLISH)).isEqualTo("Team Alpha vs Team Gamma");
+        assertThat(caches.discardedFetches()).as("the match from before").isEqualTo(1);
     }
 
     @Test
@@ -387,6 +388,9 @@ class MatchCachesTest {
         assertThat(match == null || match.get(NAME, Locale.ENGLISH) == null)
                 .as("nor its fill of the match")
                 .isTrue();
+        assertThat(caches.discardedFetches())
+                .as("the fixture and its fill of the match")
+                .isEqualTo(2);
     }
 
     @Test

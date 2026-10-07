@@ -56,6 +56,8 @@ public final class EntityCache<K> {
     private final AtomicLong forgotten = new AtomicLong();
 
     private final AtomicLong forgottenForRoom = new AtomicLong();
+    /** Fetch results not written, since the entry changed under them or their loader gave them up. */
+    private final AtomicLong discarded = new AtomicLong();
     /**
      * Shared by the writes, held alone by a clear: a write that has passed its check finishes before
      * the clear looks at the entries, and every write after it sees the clear.
@@ -201,6 +203,9 @@ public final class EntityCache<K> {
         } finally {
             clearing.readLock().unlock();
         }
+        if (!written[0]) {
+            discarded.incrementAndGet();
+        }
         return written[0];
     }
 
@@ -227,6 +232,9 @@ public final class EntityCache<K> {
             });
         } finally {
             clearing.readLock().unlock();
+        }
+        if (!applied[0]) {
+            discarded.incrementAndGet();
         }
         return applied[0];
     }
@@ -281,6 +289,15 @@ public final class EntityCache<K> {
      */
     public long forgottenForRoom() {
         return forgottenForRoom.get();
+    }
+
+    /**
+     * Fetch results thrown away as stale: the entry was invalidated, cleared or dropped since the
+     * fetch started, or its loader abandoned it. The reader reads the entry again; for {@code
+     * getHealth()}.
+     */
+    public long discarded() {
+        return discarded.get();
     }
 
     /** The generation of the key's last invalidation as remembered, 0 for none; for a test. */
