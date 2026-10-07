@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.session;
 
+import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.OddsFeedSessionBuilder;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
@@ -69,6 +70,21 @@ public final class SessionRegistry {
         lock.lock();
         try {
             return open;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * The session with this id, once {@link #open} has taken it: what the recovery actor's events
+     * name their session from. Null for any other id, and before.
+     */
+    public @Nullable OddsFeedSession session(int id) {
+        lock.lock();
+        try {
+            return open && id >= 1 && id <= sessions.size()
+                    ? sessions.get(id - 1).session()
+                    : null;
         } finally {
             lock.unlock();
         }

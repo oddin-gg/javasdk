@@ -9,6 +9,7 @@ import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.session.SessionRegistry;
 import com.oddin.oddsfeedsdk.internal.session.Sessions;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -34,7 +35,7 @@ class OpenFeedTest {
     void closedBeforeItStartsItStartsNoThreadAndConnectsNowhere() {
         try (var api = FakeRestServer.start()) {
             var configuration = configuration(api);
-            var core = FeedCore.start(configuration, new Quiet(), null, client -> {});
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
             try {
                 var sessions = new SessionRegistry(null);
                 sessions.builder()
