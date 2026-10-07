@@ -7,6 +7,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
@@ -64,7 +65,13 @@ class OddsFeedTest {
                         .isEqualTo("Team Alpha vs Team Beta");
                 assertThat(feed.getMarketDescriptionManager().getMarketDescriptions())
                         .isNotEmpty();
-                assertThat(feed.getReplayManager().getReplayList()).isNotNull();
+                assertThat(feed.getReplayManager().getReplayList())
+                        .as("each id of the replay list a match, named in the default locale")
+                        .singleElement()
+                        .isInstanceOfSatisfying(Match.class, match -> {
+                            assertThat(match.getId()).isEqualTo(MATCH);
+                            assertThat(match.getName(Locale.ENGLISH)).isEqualTo("Team Alpha vs Team Beta");
+                        });
                 assertThat(feed.getRecoveryManager().initiateEventOddsMessagesRecovery(1, MATCH))
                         .as("not accepted before the feed opens")
                         .isNull();

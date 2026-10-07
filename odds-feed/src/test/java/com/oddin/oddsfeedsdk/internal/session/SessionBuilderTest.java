@@ -197,6 +197,13 @@ class SessionBuilderTest {
         registry.open();
 
         assertThatThrownBy(builder::build).hasMessage("Message interest not specified");
+        var withoutAListener = registry.builder().setMessageInterest(MessageInterest.LIVE_ONLY);
+        assertThatThrownBy(withoutAListener::build)
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Listener not specified");
+        assertThatThrownBy(withoutAListener::buildReplay)
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessage("Listener not specified");
     }
 
     @Test
