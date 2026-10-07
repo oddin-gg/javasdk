@@ -15,6 +15,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The names of one market of one message, and of its outcomes, as 0.0.x made them. Nothing is read
@@ -25,7 +27,8 @@ import org.jspecify.annotations.Nullable;
  * <ul>
  *   <li>A market's name is its description's, with each {@code {specifier}} filled in with the
  *       market's value for it: {@code home} and {@code away} as the match's competitor's name, and in
- *       a {@code player_props} market a player id as the player's name.
+ *       a {@code player_props} market a player id as the player's name, or as the id when the
+ *       player cannot be read, whatever the strategy.
  *   <li>An outcome's name is its description's; one the description does not list, of a market whose
  *       outcomes are players or competitors, is the player's or competitor's name. The outcome named
  *       {@code home} or {@code away} is the match's competitor's name.
@@ -35,6 +38,7 @@ import org.jspecify.annotations.Nullable;
  */
 final class MarketNames {
 
+    private static final Logger LOG = LoggerFactory.getLogger(MarketNames.class);
     private static final String PLAYER_PROPS = "player_props";
     /** A {@code {specifier}} in a name's template; the innermost, when braces nest. */
     private static final Pattern PLACEHOLDER = Pattern.compile("\\{([^{}]*)}");
@@ -173,7 +177,11 @@ final class MarketNames {
         return competitor == null ? null : competitor.getName(locale);
     }
 
-    /** A player id as the player's name, anything else as it is. */
+    /**
+     * A player id as the player's name, anything else as it is. A player that cannot be read stays
+     * its id under either strategy, as in 0.0.x, whose player cache answered a failed load with none:
+     * the market keeps a name because of one player.
+     */
     private String playerName(String value, Locale locale) {
         URN id;
         try {
@@ -184,7 +192,13 @@ final class MarketNames {
         if (!URN.TypePlayer.equals(id.getType())) {
             return value;
         }
-        String name = naming.entities().player(id, List.of(locale)).getName(locale);
+        String name;
+        try {
+            name = naming.entities().player(id, List.of(locale)).getName(locale);
+        } catch (RuntimeException notRead) {
+            LOG.debug("The name of {} could not be read; the market names it by its id", id, notRead);
+            return value;
+        }
         return name == null ? value : name;
     }
 }
