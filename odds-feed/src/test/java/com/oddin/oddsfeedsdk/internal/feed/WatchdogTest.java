@@ -28,7 +28,9 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -37,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -66,15 +69,26 @@ class WatchdogTest {
     /** What the watchdog's search finds deadlocked; a test sets it. */
     private volatile List<String> deadlocked = List.of();
 
+    /** Every watchdog a test makes, stopped and waited for after it, however it ends. */
+    private final List<Watchdog> made = new CopyOnWriteArrayList<>();
+    /** The timer threads alive before the test: those of no watchdog of this test. */
+    private final Set<Thread> timersBefore = timerThreads();
+
     private final AtomicInteger readings = new AtomicInteger();
-    private final Watchdog watchdog = new Watchdog(
-            health, () -> samples, readings::incrementAndGet, () -> deadlocked, clock::nanos, Watchdog.Limits.DEFAULT);
+    private final Watchdog watchdog = made(new Watchdog(
+            health, () -> samples, readings::incrementAndGet, () -> deadlocked, clock::nanos, Watchdog.Limits.DEFAULT));
 
     @AfterEach
     void close() {
-        watchdog.stop();
-        watchdog.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS));
         heard.release();
+        for (Watchdog each : made) {
+            each.stop();
+        }
+        for (Watchdog each : made) {
+            assertThat(each.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                    .as("a watchdog's timer thread ended after its test")
+                    .isTrue();
+        }
         events.close();
     }
 
@@ -279,13 +293,13 @@ class WatchdogTest {
 
     @Test
     void aTickOverdueStallsTheTimersOnAReadAndTheNextTickMakesThemHealthy() throws InterruptedException {
-        var timed = new Watchdog(
+        var timed = made(new Watchdog(
                 health,
                 List::of,
                 () -> {},
                 List::of,
                 clock::nanos,
-                new Watchdog.Limits(Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofMinutes(10)));
+                new Watchdog.Limits(Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofMinutes(10))));
         events.start();
         timed.recheck();
         timed.start();
@@ -317,13 +331,13 @@ class WatchdogTest {
 
     @Test
     void aWatchdogStoppedWithItsTimersStalledLeavesThemHealthyAndTheOtherPartsAsFound() throws InterruptedException {
-        var timed = new Watchdog(
+        var timed = made(new Watchdog(
                 health,
                 () -> samples,
                 () -> {},
                 List::of,
                 clock::nanos,
-                new Watchdog.Limits(Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofMinutes(10)));
+                new Watchdog.Limits(Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofMinutes(10))));
         events.start();
         timed.start();
         samples = List.of(session(clock.nanos(), 0, 7));
@@ -358,13 +372,13 @@ class WatchdogTest {
     @Test
     void aReadFindsTheWatchdogsOwnThreadWedgedAndItsTickReturningTellsItHealthy() throws InterruptedException {
         var ticked = new AtomicInteger();
-        var timed = new Watchdog(
+        var timed = made(new Watchdog(
                 health,
                 List::of,
                 ticked::incrementAndGet,
                 List::of,
                 System::nanoTime,
-                new Watchdog.Limits(Duration.ofHours(1), Duration.ofMillis(300), Duration.ofMillis(50)));
+                new Watchdog.Limits(Duration.ofHours(1), Duration.ofMillis(300), Duration.ofMillis(50))));
         events.start();
         timed.start();
         awaitAtLeast(ticked, 3);
@@ -404,7 +418,7 @@ class WatchdogTest {
     void aLookThatFailsEndsNoLaterLook() throws InterruptedException {
         var failed = new AtomicInteger();
         var ticked = new AtomicInteger();
-        var timed = new Watchdog(
+        var timed = made(new Watchdog(
                 health,
                 () -> {
                     if (failed.getAndIncrement() == 0) {
@@ -415,7 +429,7 @@ class WatchdogTest {
                 ticked::incrementAndGet,
                 List::of,
                 System::nanoTime,
-                new Watchdog.Limits(Duration.ofHours(1), Duration.ofHours(1), Duration.ofMillis(20)));
+                new Watchdog.Limits(Duration.ofHours(1), Duration.ofHours(1), Duration.ofMillis(20))));
         timed.start();
         try {
             awaitAtLeast(ticked, 2);
@@ -427,9 +441,34 @@ class WatchdogTest {
 
     @Test
     void aWatchdogStartsOnceAndNotAfterItsStop() throws InterruptedException {
+        var ticked = new AtomicInteger();
+        var timed = made(new Watchdog(
+                health,
+                List::of,
+                ticked::incrementAndGet,
+                List::of,
+                System::nanoTime,
+                new Watchdog.Limits(Duration.ofHours(1), Duration.ofHours(1), Duration.ofMillis(200))));
+        timed.start();
+        long first = System.nanoTime();
+        timed.start();
+        assertThat(timerThreadsOfThisTest())
+                .as("one timer thread for two starts")
+                .hasSize(1);
+        awaitAtLeast(ticked, 3);
+        long took = System.nanoTime() - first;
+        assertThat(ticked.get())
+                .as("ticks of one schedule only, in %s ms", TimeUnit.NANOSECONDS.toMillis(took))
+                .isLessThanOrEqualTo((int) (took / Duration.ofMillis(200).toNanos()) + 1);
+        timed.stop();
+        assertThat(timed.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                .isTrue();
+        timed.start();
+        assertThat(timerThreadsOfThisTest()).as("no start after a stop").isEmpty();
+
         watchdog.stop();
         watchdog.start();
-        assertThat(threadAlive()).as("no start after a stop").isFalse();
+        assertThat(timerThreadsOfThisTest()).as("no start after a stop").isEmpty();
         assertThat(watchdog.awaitStop(System.nanoTime())).as("never started").isTrue();
     }
 
@@ -540,9 +579,27 @@ class WatchdogTest {
                 new FeedHealth.Events(0, 0, 0, 0));
     }
 
-    private static boolean threadAlive() {
+    /** A watchdog this test made, stopped and waited for after the test. */
+    private Watchdog made(Watchdog watchdog) {
+        made.add(watchdog);
+        return watchdog;
+    }
+
+    /** Whether a timer thread of this test's watchdogs is alive: one alive before the test is not. */
+    private boolean threadAlive() {
+        return !timerThreadsOfThisTest().isEmpty();
+    }
+
+    private Set<Thread> timerThreadsOfThisTest() {
+        var now = timerThreads();
+        now.removeAll(timersBefore);
+        return now;
+    }
+
+    private static Set<Thread> timerThreads() {
         return Thread.getAllStackTraces().keySet().stream()
-                .anyMatch(thread -> thread.getName().equals("oddsfeed-timer") && thread.isAlive());
+                .filter(thread -> thread.getName().equals("oddsfeed-timer") && thread.isAlive())
+                .collect(Collectors.toCollection(HashSet::new));
     }
 
     private static void awaitAtLeast(AtomicInteger count, int times) throws InterruptedException {
