@@ -46,9 +46,9 @@ jobs:
   build:
     name: Build and test
     needs: check
+    # next.yml runs pull requests' code too, and reads nothing but this repository
     permissions:
       contents: read
-      packages: read
     # the branch CI on the checked commit, at the tag's version: what is published passed it
     uses: ./.github/workflows/next.yml
     with:

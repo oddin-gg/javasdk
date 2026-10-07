@@ -34,10 +34,7 @@
           "with": {
             "cache": "maven",
             "distribution": "corretto",
-            "java-version": "25",
-            "server-id": "oddin-github",
-            "server-password": "GITHUB_TOKEN",
-            "server-username": "GITHUB_ACTOR"
+            "java-version": "25"
           }
         },
         {
@@ -45,17 +42,11 @@
           "run": "props=.mvn/wrapper/maven-wrapper.properties\n# mvnw reads the file line by line and keeps the last value of each key, while a\n# pattern check is happy with any line. Appending a second pair would have passed\n# every check below while the wrapper fetched from somewhere else entirely.\nfor key in distributionUrl distributionSha256Sum; do\n  if [ \"$(grep -c \"^$key=\" \"$props\")\" != \"1\" ]; then\n    echo \"$props must set $key exactly once\" >&2\n    exit 1\n  fi\ndone\ngrep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' \"$props\"\n# a digest proves only that the download was not altered in flight; this says whose\n# download it is, so repointing the URL cannot pass by carrying its own matching digest\ngrep -Eq '^distributionUrl=https://repo\\.maven\\.apache\\.org/maven2/org/apache/maven/apache-maven/[0-9.]+/apache-maven-[0-9.]+-bin\\.zip$' \"$props\"\nsed -i 's/^distributionSha256Sum=.*/distributionSha256Sum=0000000000000000000000000000000000000000000000000000000000000000/' \\\n  \"$props\"\nset +e\nMAVEN_USER_HOME=\"$(mktemp -d)\" ./mvnw -v >wrapper.log 2>&1\nstatus=$?\nset -e\ncat wrapper.log\ngit checkout -- \"$props\"\nif [ \"$status\" -eq 0 ]; then\n  echo \"the wrapper ran Maven from a distribution that failed its checksum\" >&2\n  exit 1\nfi\nif ! grep -q 'Failed to validate Maven distribution SHA-256' wrapper.log; then\n  echo \"the wrapper failed, but not on the checksum - this check proved nothing\" >&2\n  exit 1\nfi\nrm -f wrapper.log\ngrep -Eq '^distributionSha256Sum=[0-9a-f]{64}$' \"$props\"\n"
         },
         {
-          "env": {
-            "GITHUB_ACTOR": "${{ github.actor }}",
-            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}"
-          },
           "name": "Fetch the SDK and check it, before Maven resolves anything",
           "run": "./scripts/fetch-sdk.sh"
         },
         {
           "env": {
-            "GITHUB_ACTOR": "${{ github.actor }}",
-            "GITHUB_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
             "REVISION": "${{ inputs.revision }}"
           },
           "name": "Build and test",
@@ -196,7 +187,6 @@
     }
   },
   "permissions": {
-    "contents": "read",
-    "packages": "read"
+    "contents": "read"
   }
 }

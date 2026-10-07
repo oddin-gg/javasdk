@@ -19,9 +19,11 @@ on:
         type: string
         required: true
 
+# Read only, and no packages: the build job runs a pull request's code, a fork's included, so
+# whatever its token can read that code can take. The legacy SDK comes from its public GitHub
+# release instead (scripts/fetch-sdk.sh), and release-workflow-test.sh refuses packages here.
 permissions:
   contents: read
-  packages: read
 
 jobs:
   build:
@@ -64,16 +66,14 @@ jobs:
           java-version: '25'
           distribution: 'corretto'
           cache: 'maven'
-          # Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
-          server-id: oddin-github
-          server-username: GITHUB_ACTOR
-          server-password: GITHUB_TOKEN
+          # No server for the packages registry: the step below puts the legacy SDK into the local
+          # repository from its public release, and an SDK it did not put there fails the build.
 
       - name: Check the wrapper refuses a tampered distribution
-        # mvnw is vendored here, so a change to it could quietly drop the digest check, and this
-        # job hands the build a token. Point the wrapper at a wrong digest with an empty cache and
-        # require it to give up before Maven starts. A failure for any other reason - no network,
-        # no Java, no disk - does not count, so the checksum message itself has to appear.
+        # mvnw is vendored here, so a change to it could quietly drop the digest check. Point the
+        # wrapper at a wrong digest with an empty cache and require it to give up before Maven
+        # starts. A failure for any other reason - no network, no Java, no disk - does not count,
+        # so the checksum message itself has to appear.
         run: |
           props=.mvn/wrapper/maven-wrapper.properties
           # mvnw reads the file line by line and keeps the last value of each key, while a
@@ -110,19 +110,15 @@ jobs:
 
       - name: Fetch the SDK and check it, before Maven resolves anything
         # The same script the README tells developers to run, so both paths get the verified
-        # artifacts into the local repository before anything can resolve or execute them.
+        # artifacts into the local repository before anything can resolve or execute them. It
+        # downloads from the public GitHub release, so it gets no token.
         run: ./scripts/fetch-sdk.sh
-        env:
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and test
         # no revision outside a release: the build keeps the version in the POM
         run: ./mvnw --batch-mode --no-transfer-progress ${REVISION:+-Drevision=$REVISION} verify
         env:
           REVISION: ${{ inputs.revision }}
-          GITHUB_ACTOR: ${{ github.actor }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Check the integration tests ran
         # BuildWiringIT is an *IT, so it cannot notice the failsafe binding disappearing from
@@ -181,7 +177,7 @@ jobs:
     # skipped, and one that passes fails this job until its line is removed.
     name: System tests against 1.0
     runs-on: ubuntu-latest
-    # checkout is all it needs: the 1.0 run reads nothing from the packages registry
+    # checkout is all it needs, like the build job
     permissions:
       contents: read
     steps:
@@ -206,8 +202,8 @@ jobs:
           java-version: '25'
           distribution: 'corretto'
           # No server for the packages registry, and no Maven cache: the build job fills the shared
-          # cache from the registry with its token, so a restored cache would hide a 1.0
-          # dependency that came from there. Without either, such a dependency fails here.
+          # cache, the legacy SDK included, so a restored cache could hand the 1.0 run a dependency
+          # it should have built or fetched itself. Without either, such a dependency fails here.
 
       - name: Build the SDK and run the system tests against it
         # The SDK as the reactor packages it (-am), shaded jar and all. Its unit tests and their

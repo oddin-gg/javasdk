@@ -4,8 +4,7 @@
       "name": "Build and test",
       "needs": "check",
       "permissions": {
-        "contents": "read",
-        "packages": "read"
+        "contents": "read"
       },
       "uses": "./.github/workflows/next.yml",
       "with": {

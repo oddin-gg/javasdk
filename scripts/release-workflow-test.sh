@@ -12,7 +12,9 @@
 # - publish restores no cache, and checks the tag again before the upload, as github-release
 #   does before the release, which runs whenever publish succeeded;
 # - each job has the permissions it needs and no more, next.yml read only; the version comes
-#   from the check job; the two secret steps run exactly their commands.
+#   from the check job; the two secret steps run exactly their commands;
+# - next.yml, which runs pull requests' code, forks' included, holds contents: read and nothing
+#   else - no packages - names no registry server and hands no step the job token.
 #
 # The jobs' if: conditions are evaluated over every combination of results, not compared as
 # text. On top of the rules, the whole of release.yml is compared with its pinned form,
@@ -255,7 +257,7 @@ check(-1 < index("github-release", "release-tag-check.sh") < (RELEASE_STEPS or [
 # Job permissions: no more than each job needs. In next.yml, which runs on the tag too, read only.
 EXPECTED_PERMISSIONS = {
     "check": {"contents": "read", "pull-requests": "read"},
-    "build": {"contents": "read", "packages": "read"},
+    "build": {"contents": "read"},
     "publish": {"contents": "read"},
     "github-release": {"contents": "write"},
 }
@@ -333,6 +335,22 @@ for path in sorted(seen):
         keys = [k for k in with_ if k == "cache" or k.startswith("cache-") or k.startswith("server-")]
         check(not keys, "%s > system-tests-next must restore no cache and name no registry server: %s"
               % (where, ", ".join(keys)))
+    # next.yml runs every pull request's code, a fork's included, and a token in reach of that code
+    # is the fork's: contents: read and nothing else (the legacy SDK comes from its public release),
+    # no registry server for Maven to authenticate to, and no step given the job token
+    next_workflow = load(path)
+    check(next_workflow.get("permissions") == {"contents": "read"},
+          "%s must grant contents: read and nothing else, not %r" % (where, next_workflow.get("permissions")))
+    for name, job_def in next_workflow.get("jobs", {}).items():
+        permissions = job_def.get("permissions")
+        check(permissions in (None, {"contents": "read"}),
+              "%s > %s must hold contents: read and nothing else, not %r" % (where, name, permissions))
+        for step in job_def.get("steps", []):
+            servers = sorted(k for k in (step.get("with") or {}) if k.startswith("server-"))
+            check(not servers, "%s > %s must name no registry server: %s" % (where, name, ", ".join(servers)))
+        tokens = [e.strip() for e in expressions(job_def)
+                  if re.search(r"\bsecrets\.GITHUB_TOKEN\b|\bgithub\.token\b", e)]
+        check(not tokens, "%s > %s must not hand its steps the job token: %s" % (where, name, "; ".join(tokens)))
     # and the whole of next.yml against its pinned form, as release.yml below
     actual_next = json.dumps(load(path), indent=2, sort_keys=True) + "\n"
     pinned_next = open(pinned_next_path).read()
@@ -594,13 +612,12 @@ breaks release.yml replace '      commit: ${{ needs.check.outputs.commit }}
 breaks release.yml replace '      commit: ${{ needs.check.outputs.commit }}
 ' '      commit: ${{ github.ref }}
 ' "build must pass revision: \${{ needs.check.outputs.version }} and commit: \${{ needs.check.outputs.commit }}"
-breaks release.yml replace '    permissions:
+build_permissions='    permissions:
       contents: read
-      packages: read
-' '    permissions:
-      contents: write
-      packages: read
-' "build's permissions must be"
+    # the branch CI'
+breaks release.yml replace "$build_permissions" "${build_permissions/read/write}" "build's permissions must be"
+breaks release.yml replace "$build_permissions" "${build_permissions/read/read
+      packages: read}" "build's permissions must be"
 
 # the pinned form catches what no rule names
 breaks release.yml replace '    timeout-minutes: 90
@@ -782,16 +799,17 @@ breaks release.yml replace "$release_tag_step" "${release_tag_step/needs.check.o
   "github-release: the tag check's COMMIT must be"
 
 # next.yml, which release.yml calls
-breaks next.yml replace 'permissions:
+next_top='permissions:
   contents: read
-  packages: read
-' 'permissions:
-  contents: read
-  packages: read
 
-env:
-  LEAK: ${{ secrets.MAVEN_GPG_KEY }}
-' "./.github/workflows/next.yml must not read secrets outside its jobs"
+jobs:
+'
+breaks next.yml replace "$next_top" "${next_top%jobs:
+}env:
+  LEAK: \${{ secrets.MAVEN_GPG_KEY }}
+
+jobs:
+" "./.github/workflows/next.yml must not read secrets outside its jobs"
 breaks next.yml replace '    name: Build & Test
 ' '    name: Build & Test
     environment: maven-central
@@ -822,13 +840,38 @@ breaks next.yml replace '    name: Build & Test
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
 ' ".github/workflows/next.yml > build must check out \${{ inputs.commit }}, not None"
-breaks next.yml replace 'permissions:
-  contents: read
-  packages: read
-' 'permissions:
-  contents: read
-  packages: write
-' "./.github/workflows/next.yml's permissions must be read-only"
+breaks next.yml replace "$next_top" "${next_top/read/read
+  packages: write}" "./.github/workflows/next.yml's permissions must be read-only"
+
+# next.yml without a package token: none at the top, on a job, or handed to a step, and no
+# registry server for Maven to authenticate to
+breaks next.yml replace "$next_top" "${next_top/read/read
+  packages: read}" "./.github/workflows/next.yml must grant contents: read and nothing else"
+breaks next.yml replace "$next_top" "${next_top#*read
+}" "./.github/workflows/next.yml must grant contents: read and nothing else, not None"
+breaks next.yml replace '    name: Build & Test
+' '    name: Build & Test
+    permissions:
+      contents: read
+      packages: read
+' "./.github/workflows/next.yml > build must hold contents: read and nothing else"
+breaks next.yml replace '    name: Wrapper checksum (Windows)
+' '    name: Wrapper checksum (Windows)
+    permissions: read-all
+' "./.github/workflows/next.yml > wrapper-windows must hold contents: read and nothing else"
+breaks next.yml replace "          cache: 'maven'
+" "          cache: 'maven'
+          server-id: oddin-github
+          server-username: GITHUB_ACTOR
+          server-password: GITHUB_TOKEN
+" "./.github/workflows/next.yml > build must name no registry server: server-id, server-password, server-username"
+for token in 'secrets.GITHUB_TOKEN' 'github.token'; do
+  breaks next.yml replace '        run: ./scripts/fetch-sdk.sh
+' "        run: ./scripts/fetch-sdk.sh
+        env:
+          GITHUB_TOKEN: \${{ $token }}
+" "./.github/workflows/next.yml > build must not hand its steps the job token: $token"
+done
 for read in 'secrets.MAVEN_GPG_KEY' "secrets['MAVEN_GPG_KEY']" "secrets[format('MAVEN_{0}', 'GPG_KEY')]" 'toJSON(secrets)'; do
   breaks next.yml replace '          REVISION: ${{ inputs.revision }}
 ' "          REVISION: \${{ inputs.revision }}
