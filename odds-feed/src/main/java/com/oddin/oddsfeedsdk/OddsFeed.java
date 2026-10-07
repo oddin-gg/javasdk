@@ -24,6 +24,7 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
+import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
@@ -124,11 +125,22 @@ public final class OddsFeed {
             @Nullable OddsFeedExtListener extListener,
             Watchdog.Limits limits,
             HealthMonitor.Log log) {
+        this(listener, configuration, extListener, limits, log, HealthMonitor.CATALOG_STALE_LIMIT);
+    }
+
+    /** With the watchdog's limits, the health's log and the catalogs' stale limit a test sets. */
+    OddsFeed(
+            GlobalEventsListener listener,
+            OddsFeedConfiguration configuration,
+            @Nullable OddsFeedExtListener extListener,
+            Watchdog.Limits limits,
+            HealthMonitor.Log log,
+            Duration catalogStaleLimit) {
         requireNonNull(listener, "listener");
         this.configuration = requireNonNull(configuration, "configuration");
         this.sessions = new SessionRegistry(extListener);
         this.events = events(listener, extListener);
-        this.health = new HealthMonitor(events, sessions::session, log);
+        this.health = new HealthMonitor(events, sessions::session, catalogStaleLimit, log);
         this.watchdog = new Watchdog(health, () -> Watchdog.parts(events, running()), this::read, limits);
     }
 

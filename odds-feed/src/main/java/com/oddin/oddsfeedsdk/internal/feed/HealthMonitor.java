@@ -96,6 +96,18 @@ public final class HealthMonitor implements RecoveryEvents {
         this(events, sessions, InstantSource.system(), CATALOG_STALE_LIMIT, log);
     }
 
+    /**
+     * @param catalogStaleLimit how long a catalog serves a value stale before it is degraded; a
+     *     test's, as {@link #CATALOG_STALE_LIMIT} is fixed until the options make it settable
+     */
+    public HealthMonitor(
+            EventsDispatcher events,
+            IntFunction<@Nullable OddsFeedSession> sessions,
+            Duration catalogStaleLimit,
+            Log log) {
+        this(events, sessions, InstantSource.system(), catalogStaleLimit, log);
+    }
+
     /** With the clock and the catalogs' limit a test sets. */
     HealthMonitor(
             EventsDispatcher events,
