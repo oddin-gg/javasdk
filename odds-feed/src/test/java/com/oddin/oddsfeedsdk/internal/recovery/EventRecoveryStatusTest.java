@@ -14,6 +14,7 @@ import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.concurrent.CompletableFuture;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
@@ -63,10 +64,29 @@ class EventRecoveryStatusTest {
     void oneNoSessionTakesSnapshotCompletesForCompletesWhenTheApiAcceptsIt() {
         feed.open(new SessionInfo(1, MessageInterest.LOW_PRIORITY_ONLY, false));
         feed.start();
-        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(PRE);
+        assertThat(reply).isNotDone();
         Outbox.Call call = feed.calls.getLast();
+        // the caller reads the status as soon as the future says the API took it
+        CompletableFuture<EventRecoveryStatus.State> read =
+                reply.thenApply(id -> status(call).state());
         feed.accept(call);
+        assertThat(read).isCompletedWithValue(COMPLETED);
         assertThat(status(call).state()).isEqualTo(COMPLETED);
+    }
+
+    @Test
+    void aCallerToldWithTheLastSnapshotCompleteReadsItCompleted() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        Outbox.Call call = feed.calls.getLast();
+        CompletableFuture<EventRecoveryStatus.State> read =
+                reply.thenApply(id -> status(call).state());
+        // the snapshot complete before the API's answer: it says the API took it, and completes it
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        assertThat(reply).isCompletedWithValue(call.requestId());
+        assertThat(read).isCompletedWithValue(COMPLETED);
     }
 
     @Test
