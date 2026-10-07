@@ -171,16 +171,21 @@ types in packages whose name contains `internal`.
 - Recovery messages are delivered to the client like any other message, on every
   session whose interest matches, as today.
 - Recovery methods keep returning the request id as a `Long`. A new status lookup by
-  request id is added next to them, not instead of them.
+  request id is added next to them, not instead of them. As in 0.0.x the caller's thread
+  waits for the API's answer, once the feed is open: for the HTTP timeout and a second at
+  most, then null. A replay feed runs no recovery and accepts none, nor does a closed one.
 - The feed starts lazily, as today: the first call of a manager getter or of
   `getSessionBuilder()` fetches whoami and the producer list (section 4, REST) and builds
   the caches, catalogs and managers. One start runs at a time, and callers that come
   meanwhile wait for it. A failed start throws `InitException` ("Failed to init odds
   feed", the reason as its cause), keeps nothing, and the next call starts again. The
   managers work before `open()`; an event recovery asked for before it is not accepted
-  (null), since no queue exists yet for its messages. `close()` releases what the start
-  built and cuts a start under way short; after a failed start it has nothing to release
-  and logs nothing (KD-15). A closed feed does not start again.
+  (null), since no queue exists yet for its messages. The events dispatcher is the feed's,
+  started with its first start and kept by one that fails, so the client's events never run
+  on two threads at once, and `close()` waits for a callback a failed start left running.
+  `close()` releases what the start built and cuts a start under way short; after a failed
+  start it has nothing to release and logs nothing (KD-15). A closed feed does not start
+  again.
 - `open()` is one-shot. After a fatal error the client closes the feed and creates a
   new one. Same as today. Once `open()` has taken the sessions, a second call throws
   `InitException` ("feed cannot already opened", 0.0.x's words), whatever came of the
@@ -191,7 +196,11 @@ types in packages whose name contains `internal`.
   timeout of five seconds, not one per thread; it does not wait for the callback it is
   called from, nor for an `open()` under way, which then fails and closes what it
   started. A callback still running at the deadline is left to end on its own daemon
-  thread, and the log says so.
+  thread, and the log says so. The order: the recovery actor is told the feed is closing,
+  then every dispatcher is told to stop and each session's close is posted to the actor;
+  the dispatchers are waited for, then the actor, which handles what is queued within what
+  is left of the deadline, then the connection closes, so the actor hears of no loss the
+  close makes.
 - Delivery is at most once, as today. Exclusive queues die with the connection, so an
   unacknowledged message is never redelivered. The gap is closed by recovery, not by
   redelivery. Acking late buys backpressure, not at-least-once.
@@ -1154,6 +1163,8 @@ group by group.
     At shutdown it tells the actor `closing()` before closing any session.
     Once the system tests run against 1.0, the KD-12 and KD-27 scenarios also check the
     second recovery's `after` and the producer going down and back up.
+    The recovery runs in the feed, and the whole system-test suite passes against 1.0 as
+    well as 0.0.57, in CI; `getHealth()` and the watchdog remain.
 
     42. Concurrency stress suite on the assembled SDK, in CI.
 
@@ -1376,3 +1387,10 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   repeated replay run) and 41 (the initial snapshot interval on the producer's clock).
 - 2026-10-06, sessions after `open()`: `build()` throws instead of returning a session
   that never receives anything (section 3, difference 7; KD-29).
+- 2026-10-07, ticket 26: the recovery actor runs in the feed, and every system test passes
+  against 1.0; the list of scenarios 1.0 did not pass yet is empty and kept. The feed's
+  events dispatcher outlives a failed start, so a retried start never delivers beside a
+  callback of the failed one. A system test stamped a later alive earlier than the first;
+  1.0 resumes from the newest subscribed alive by its timestamp, 0.0.x from the last one
+  received, which differ only when a producer's clock goes back. A recovery-from timestamp
+  set before `open()` starts the first recovery on 1.0; 0.0.x forgets it (KD-32).
