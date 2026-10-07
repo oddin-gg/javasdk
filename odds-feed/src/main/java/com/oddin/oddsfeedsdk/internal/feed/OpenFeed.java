@@ -8,7 +8,9 @@ import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
 import com.oddin.oddsfeedsdk.internal.dispatch.Pipeline;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
-import com.oddin.oddsfeedsdk.internal.recovery.AliveFacts;
+import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
+import com.oddin.oddsfeedsdk.internal.recovery.RecoverySettings;
+import com.oddin.oddsfeedsdk.internal.recovery.SessionFacts;
 import com.oddin.oddsfeedsdk.internal.session.Sessions;
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
 import java.time.Duration;
@@ -20,13 +22,15 @@ import org.jspecify.annotations.Nullable;
 
 /**
  * What {@code open()} adds to the feed: the broker connection, a dispatcher per session, and the
- * SDK's own alive dispatcher - none for a replay feed. Built without a thread or a connection, then
- * started once; closed once, by the feed or by a start that fails. The events dispatcher it reports
- * to is the feed's, running since the feed started, and stays when an open fails, with the managers.
+ * SDK's own alive dispatcher and the recovery actor - neither for a replay feed, which runs no
+ * recovery, as in 0.0.x. Built without a thread or a connection, then started once; closed once, by
+ * the feed or by a start that fails. The events dispatcher it reports to is the feed's, running
+ * since the feed started, and stays when an open fails, with the managers.
  *
- * <p>Producers are not followed yet: the alives reach no recovery, and the sessions post no facts,
- * so every producer stays as the producer list had it. The recovery actor joins where the comments
- * below say.
+ * <p>The actor hears of the connection from the transport itself, before the events dispatcher
+ * does, of the alives from the alive dispatcher, of each session's messages from its dispatcher, and
+ * of each session's channel from the transport. It starts before the transport opens and asks for
+ * nothing before the transport's first up, which comes once every session's queue is bound.
  */
 public final class OpenFeed {
 
@@ -42,9 +46,6 @@ public final class OpenFeed {
      */
     public static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
 
-    /** Where the alives go until the recovery actor takes them: nowhere. */
-    private static final AliveFacts NO_RECOVERY = (producer, generatedAt, receivedAt, subscribed) -> {};
-
     private enum State {
         BUILT,
         STARTED,
@@ -54,16 +55,33 @@ public final class OpenFeed {
     private final AmqpTransport transport;
     private final List<SessionDispatcher> sessions;
     private final @Nullable AliveDispatcher alives;
+    /** Null for a replay feed. */
+    private final @Nullable RecoveryActor actor;
+    /** Each session's facts, as the actor took them; none for a replay feed. */
+    private final List<SessionFacts> facts;
+    /** What the transport tells of the connection, in turn; for a test. */
+    private final ConnectionTee connection;
+    /** A test's hook, run in a start just before the transport opens. */
+    volatile Runnable beforeTransportOpens = () -> {};
 
     /** Guards {@link #state}, briefly: never held while the transport opens or a thread is waited for. */
     private final ReentrantLock lock = new ReentrantLock();
 
     private State state = State.BUILT;
 
-    private OpenFeed(AmqpTransport transport, List<SessionDispatcher> sessions, @Nullable AliveDispatcher alives) {
+    private OpenFeed(
+            AmqpTransport transport,
+            List<SessionDispatcher> sessions,
+            @Nullable AliveDispatcher alives,
+            @Nullable RecoveryActor actor,
+            List<SessionFacts> facts,
+            ConnectionTee connection) {
         this.transport = transport;
         this.sessions = List.copyOf(sessions);
         this.alives = alives;
+        this.actor = actor;
+        this.facts = List.copyOf(facts);
+        this.connection = connection;
     }
 
     /**
@@ -83,11 +101,18 @@ public final class OpenFeed {
                 core.offsets(),
                 core.events(),
                 InstantSource.system());
-        // a replay feed runs no recovery, so it needs no liveness of its own, as in 0.0.x; the
-        // recovery actor takes the alives here
-        var alives = replay ? null : new AliveDispatcher(decoder, core.offsets(), NO_RECOVERY);
-        // the recovery actor goes first here, the events dispatcher after it
-        ConnectionEvents connection = new ConnectionTee(List.of(core.events()));
+        // a replay feed runs no recovery, so it needs no liveness of its own, as in 0.0.x
+        var actor = replay
+                ? null
+                : new RecoveryActor(
+                        core.producers(),
+                        RecoverySettings.from(configuration),
+                        core.api(),
+                        new RecoveryTee(List.of(core.events())),
+                        core.fetches());
+        var alives = actor == null ? null : new AliveDispatcher(decoder, core.offsets(), actor);
+        // the actor first, so a producer's state follows the connection before the client hears of it
+        var connection = new ConnectionTee(actor == null ? List.of(core.events()) : List.of(actor, core.events()));
         var nodeId = configuration.getSdkNodeId();
         var transport = new AmqpTransport(
                 AmqpSettings.of(
@@ -98,11 +123,18 @@ public final class OpenFeed {
                 connection,
                 alives);
         var dispatchers = new ArrayList<SessionDispatcher>();
+        var facts = new ArrayList<SessionFacts>();
         for (Sessions.Planned planned : plan.sessions()) {
             var spec = planned.spec();
-            // bound to the session's facts once the recovery actor has them, before the transport opens
             var channel = new LateChannelEvents();
             var session = transport.addSession(planned.routingKeys(), channel);
+            @Nullable SessionFacts told = null;
+            if (actor != null) {
+                // the actor makes the session's side from its transport; bound before the transport opens
+                told = actor.openSession(planned.info(), session);
+                channel.bind(told);
+                facts.add(told);
+            }
             dispatchers.add(new SessionDispatcher(
                     spec.id(),
                     spec.session(),
@@ -110,17 +142,18 @@ public final class OpenFeed {
                     spec.listener(),
                     spec.extListener(),
                     session,
-                    null,
+                    told,
                     spec.replay(),
                     pipeline));
         }
-        return new OpenFeed(transport, dispatchers, alives);
+        return new OpenFeed(transport, dispatchers, alives, actor, facts, connection);
     }
 
     /**
-     * Starts the dispatchers, then opens the transport: every queue is
-     * consumed by the time a message can arrive. All or nothing: when any of it fails, or the feed
-     * closes meanwhile, everything started is closed again before this throws.
+     * Starts the dispatchers and the recovery actor, then opens the transport: every queue is
+     * consumed by the time a message can arrive, and the actor hears the transport's first up. All
+     * or nothing: when any of it fails, or the feed closes meanwhile, everything started is closed
+     * again before this throws.
      *
      * @throws InitException when the broker cannot be reached or refuses, or the feed closed as it
      *     opened
@@ -139,11 +172,15 @@ public final class OpenFeed {
                 alives.start();
             }
             sessions.forEach(SessionDispatcher::start);
+            if (actor != null) {
+                // before the transport tells it anything; a loss told before replaces no recovery point
+                actor.start();
+            }
         } finally {
             lock.unlock();
         }
-        // the recovery actor starts here, before the transport tells it anything
         try {
+            beforeTransportOpens.run();
             transport.open();
         } catch (RuntimeException e) {
             boolean closedMeanwhile = isClosed();
@@ -159,8 +196,11 @@ public final class OpenFeed {
     }
 
     /**
-     * The first half of closing: no delivery from now on, and every thread told to stop. Returns at
-     * once; {@link #awaitStop} waits. Closing again, or racing a start, does nothing more.
+     * The first half of closing: no delivery from now on, and every thread told to stop - the
+     * recovery actor first that the feed is closing, then the sessions, which close one by one
+     * without moving the resume points it publishes forward. Returns at once; {@link #awaitStop}
+     * waits, then closes the actor and the connection. Closing again, or racing a start, does
+     * nothing more.
      *
      * @return whether this call closed it, rather than an earlier one
      */
@@ -176,31 +216,38 @@ public final class OpenFeed {
         if (was == State.CLOSED) {
             return false;
         }
-        // the recovery actor is told it is closing here, before any session closes: closing them one
-        // by one must not move the resume point it publishes; it closes itself after them
-        // cuts an open under way short, too
-        transport.close();
+        if (actor != null) {
+            // before any session closes: closing them one by one must not move a resume point forward
+            actor.closing();
+        }
         if (was == State.STARTED) {
             if (alives != null) {
                 alives.stop();
             }
             sessions.forEach(SessionDispatcher::stop);
         }
+        facts.forEach(SessionFacts::closed);
         return true;
     }
 
     /**
-     * The second half: waits for the dispatchers to end, all within {@code deadline}, by {@link
-     * System#nanoTime}; one called from a session's own callback is not waited for. The events
-     * dispatcher is the feed's to close, before this.
+     * The second half: waits for the dispatchers to end, then closes the recovery actor, which
+     * handles the facts they posted, then the connection, all within {@code deadline}, by {@link
+     * System#nanoTime}; a dispatcher called from a session's own callback is not waited for. The
+     * connection closes last, so the actor, closing, hears of no loss its close makes; it cuts an
+     * open under way short, too. The events dispatcher is the feed's to stop and wait for.
      *
-     * @return whether every dispatcher ended in time
+     * @return whether every thread ended in time
      */
     public boolean awaitStop(long deadline) {
         var stopped = alives == null || alives.awaitStop(deadline);
         for (SessionDispatcher session : sessions) {
             stopped &= session.awaitStop(deadline);
         }
+        if (actor != null) {
+            stopped &= actor.close(deadline);
+        }
+        transport.close();
         return stopped;
     }
 
@@ -209,6 +256,17 @@ public final class OpenFeed {
         var deadline = System.nanoTime() + SHUTDOWN_TIMEOUT.toNanos();
         stop();
         awaitStop(deadline);
+    }
+
+    /** The recovery actor, null for a replay feed; for a test. */
+    @Nullable
+    RecoveryActor actor() {
+        return actor;
+    }
+
+    /** Who the transport tells of the connection, in the order it tells them; for a test. */
+    List<ConnectionEvents> toldOfTheConnection() {
+        return connection.told();
     }
 
     private boolean isClosed() {

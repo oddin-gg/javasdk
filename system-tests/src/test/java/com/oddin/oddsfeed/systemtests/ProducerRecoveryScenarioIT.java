@@ -45,7 +45,9 @@ class ProducerRecoveryScenarioIT {
                 FakeFeed feed = FakeFeed.start();
                 Sdk sdk = Sdk.against(rest, feed)) {
             sdk.open(MessageInterest.ALL);
-            feed.publish(alive(1, true));
+            // every alive stamped in the order a producer sends them, the first before the others
+            long lastAliveWhileUp = System.currentTimeMillis() - 2_000;
+            feed.publishAsIs(stampedAt(alive(1, true), lastAliveWhileUp - 1_000));
             feed.publish(snapshotComplete(
                     1,
                     requestId(rest.awaitRequests("POST", PREMATCH_RECOVERY, 1).getFirst())));
@@ -54,7 +56,6 @@ class ProducerRecoveryScenarioIT {
                     .isFalse();
 
             // stamped a second apart, so the recovery point says which of the two alives it came from
-            long lastAliveWhileUp = System.currentTimeMillis() - 2_000;
             long unsubscribedAt = lastAliveWhileUp + 1_000;
             feed.publishAsIs(stampedAt(alive(1, true), lastAliveWhileUp));
             feed.publishAsIs(stampedAt(alive(1, false), unsubscribedAt));

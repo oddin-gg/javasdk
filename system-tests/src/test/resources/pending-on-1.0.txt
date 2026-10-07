@@ -7,14 +7,4 @@
 # com.oddin.oddsfeed.systemtests. A reason may follow, after whitespace and "#".
 # The list shrinks as the feed comes together, and goes once it is empty.
 
-ProducerRecoveryScenarioIT#aProducerThatWentDownRecoversFromTheLastAliveItSawWhileUp  # the feed runs no recovery yet
-ProducerRecoveryScenarioIT#anUnsubscribedAliveForAProducerStillDownIsNotReported  # the feed runs no recovery yet
-
-ProducerStatusScenarioIT#anAliveSayingTheProducerIsNoLongerSubscribedTakesItDown  # the feed runs no recovery yet
-ProducerStatusScenarioIT#anAliveStartsARecoveryAndItsSnapshotCompleteBringsTheProducerUp  # the feed runs no recovery yet
-ProducerStatusScenarioIT#theSnapshotCompleteOfAnEventRecoveryCompletesIt  # the feed runs no recovery yet
-
-ReconnectScenarioIT#afterAReconnectMessagesFlowAgainAndTheGapIsRecovered  # the feed runs no recovery yet
-ReconnectScenarioIT#afterTheBrokerTakesTheSessionsQueueMessagesFlowAgainAndTheGapIsRecovered  # the feed runs no recovery yet
-
-RestOutageScenarioIT#aRecoveryRequestTheApiRefusedIsAskedForAgain  # the feed runs no recovery yet
+ProducerStatusScenarioIT#theSnapshotCompleteOfAnEventRecoveryCompletesIt  # the feed asks the API for no event recovery yet

@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.feed;
 
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -24,7 +25,9 @@ import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
+import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
@@ -63,6 +66,69 @@ class OpenFeedTest {
                 core.close();
             }
         }
+    }
+
+    @Test
+    void theRecoveryActorHearsOfTheConnectionBeforeTheClientAndAReplayFeedRunsNone() {
+        try (var api = FakeRestServer.start()) {
+            var configuration = configuration(api);
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
+            try {
+                var live = OpenFeed.build(core, plan(core, false), configuration);
+                assertThat(live.toldOfTheConnection())
+                        .as("told of the connection, in turn")
+                        .hasSize(2)
+                        .satisfies(told -> assertThat(told.getFirst()).isSameAs(live.actor()))
+                        .satisfies(told -> assertThat(told.getLast()).isSameAs(core.events()));
+                live.close();
+
+                var replay = OpenFeed.build(core, plan(core, true), configuration);
+                assertThat(replay.actor()).as("a replay feed's recovery").isNull();
+                assertThat(replay.toldOfTheConnection()).containsExactly(core.events());
+                replay.close();
+            } finally {
+                core.close();
+            }
+        }
+    }
+
+    @Test
+    void theRecoveryActorRunsBeforeTheTransportOpens() {
+        try (var api = FakeRestServer.start()) {
+            var configuration = configuration(api);
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
+            try {
+                var open = OpenFeed.build(core, plan(core, false), configuration);
+                var actor = requireNonNull(open.actor());
+                var turned = new AtomicBoolean();
+                open.beforeTransportOpens = () -> {
+                    long until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+                    while (actor.turns() == 0 && System.nanoTime() < until) {
+                        Thread.onSpinWait();
+                    }
+                    turned.set(actor.turns() > 0);
+                };
+
+                // no broker listens: the transport cannot open, and the start closes what it started
+                assertThatThrownBy(open::start).isInstanceOf(InitException.class);
+                assertThat(turned)
+                        .as("the actor running as the transport opens")
+                        .isTrue();
+            } finally {
+                core.close();
+            }
+        }
+    }
+
+    private static Sessions.Plan plan(FeedCore core, boolean replay) {
+        var sessions = new SessionRegistry(null);
+        var builder = sessions.builder().setListener(new Silent());
+        if (replay) {
+            builder.buildReplay();
+        } else {
+            builder.setMessageInterest(MessageInterest.ALL).build();
+        }
+        return Sessions.plan(sessions.open(), core.producers().getAvailableProducers(), null);
     }
 
     private static OddsFeedConfiguration configuration(FakeRestServer api) {
