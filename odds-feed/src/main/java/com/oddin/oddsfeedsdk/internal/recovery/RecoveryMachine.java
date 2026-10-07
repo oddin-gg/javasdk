@@ -189,11 +189,13 @@ final class RecoveryMachine {
 
     /**
      * A session closed: it leaves the checkpoints and the completions at once, so a recovery that
-     * waited only for it completes.
+     * waited only for it completes. Once the feed is {@link #closing}, which is when the sessions
+     * close, it leaves the checkpoints only: a recovery or an event recovery it was waiting for has
+     * not completed - an event recovery fails as the machine closes - and no producer is up for it.
      */
     void sessionClosed(int id) {
         SessionState session = sessions.remove(id);
-        if (session == null) {
+        if (session == null || closing) {
             return;
         }
         long now = now();
