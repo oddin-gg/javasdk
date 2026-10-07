@@ -23,6 +23,11 @@ final class ConnectionTee implements ConnectionEvents {
         this.told = List.copyOf(told);
     }
 
+    /** Who it tells, in order. */
+    List<ConnectionEvents> told() {
+        return told;
+    }
+
     @Override
     public void connecting() {
         tell("connecting", ConnectionEvents::connecting);
