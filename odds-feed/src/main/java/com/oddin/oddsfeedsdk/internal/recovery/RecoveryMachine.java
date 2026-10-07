@@ -877,7 +877,8 @@ final class RecoveryMachine {
 
     /**
      * Where a recovery starts: the oldest open gap, clamped to the producer's stateful recovery
-     * window; for none, 0.0.x's initial snapshot interval when set, else 0 for a full snapshot.
+     * window and capped at the producer's now; for none, 0.0.x's initial snapshot interval when
+     * set, else 0 for a full snapshot.
      */
     private long after(Track track, long now) {
         long after = track.gap == null ? Long.MAX_VALUE : track.gap.from;
@@ -893,7 +894,17 @@ final class RecoveryMachine {
             after = Math.max(
                     after, now - track.offset - Duration.ofMinutes(window).toMillis());
         }
-        return after;
+        return capped(track, after, now);
+    }
+
+    /**
+     * {@code point}, but no later than the producer's now - the SDK's, corrected by the offset of
+     * the producer's last alive: a timestamp from the producer's future, a component's fast clock
+     * or a bad value, moves neither a recovery nor a resume point past what the producer has sent.
+     * A point of 0, a full snapshot, or none stays as it is.
+     */
+    private static long capped(Track track, long point, long now) {
+        return point > 0 ? Math.min(point, now - track.offset) : point;
     }
 
     private void accepted(Track track, Active active, long now) {
@@ -1139,12 +1150,14 @@ final class RecoveryMachine {
      * Producer#getTimestampForRecovery()}: the actor calls it after every fact. Nothing before the
      * start, when the client's own start stands; a producer no session receives keeps what it had;
      * once the feed is {@link #closing}, only a point that goes back - and a gap of the producer's
-     * opened after its last session closed still takes it back.
+     * opened after its last session closed still takes it back. Each is capped at the producer's
+     * now, so a client that persists it never resumes from the producer's future.
      */
     void publishResumePoints() {
         if (!started) {
             return;
         }
+        long now = now();
         for (Track track : tracks.values()) {
             long point = resumePoint(track);
             Gap gap = track.gap;
@@ -1154,6 +1167,7 @@ final class RecoveryMachine {
                 // never published stays so, since NO_POINT is below any point
                 point = Math.min(track.published, gap.from);
             }
+            point = capped(track, point, now);
             if (point != NO_POINT
                     && point != track.published
                     && (!closing || track.published == NO_POINT || point < track.published)) {
