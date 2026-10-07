@@ -73,6 +73,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * never taken for a stray one.
      */
     static final int ISSUED_KEPT = 10_000;
+    /**
+     * How long close(deadline) waits for the thread past a deadline already spent: enough for the
+     * fact being handled to end and the points to be taken back, which take microseconds.
+     */
+    static final Duration CLOSE_FLOOR = Duration.ofMillis(200);
     /** How long close() waits for the actor's thread to end, unless given a deadline. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
     /**
@@ -406,7 +411,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     /**
      * {@link #close()} within {@code deadline}, by {@link System#nanoTime}: the feed's one shutdown
      * deadline, which its sessions have had their share of. The facts queued are handled until then
-     * at most; those left take the points back, as when their time is up.
+     * at most; those left take the points back, as when their time is up. It waits {@link
+     * #CLOSE_FLOOR} at least, even past the deadline, for the thread to end, so the published points
+     * are final when it returns: past the deadline the thread only takes them back and closes the
+     * machine.
      *
      * @return whether the actor has ended
      */
@@ -423,7 +431,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
         LockSupport.unpark(thread);
         try {
-            if (thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())))) {
+            if (thread.join(Duration.ofNanos(Math.max(CLOSE_FLOOR.toNanos(), deadline - System.nanoTime())))) {
                 return true;
             }
         } catch (InterruptedException e) {

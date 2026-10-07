@@ -295,6 +295,48 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aCloseWhoseDeadlineHasPassedReturnsOnceThePointsAreTakenBack() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        long later = lastSubscribed + 10_000;
+
+        // the actor busy with a fact a little while, another queued behind it, as the feed's close
+        // comes with its deadline spent on wedged sessions
+        var entered = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        session.processed(PRE, later, later, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        session.channelReopened();
+        assertThat(actor.close(System.nanoTime()))
+                .as("ended, the deadline spent")
+                .isTrue();
+
+        // read at once, as a client persisting it after close() does
+        assertThat(held.getTimestampForRecovery())
+                .as("the last subscribed alive, the fallback for the fact left unhandled")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
     void aCloseWithADeadlineWaitsForTheActorUntilThenAndNoLonger() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
