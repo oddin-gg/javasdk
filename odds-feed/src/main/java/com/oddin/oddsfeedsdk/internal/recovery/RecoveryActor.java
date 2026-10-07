@@ -65,7 +65,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private static final int REQUESTS_PER_TURN = 1_000;
     /** How often a reset's worker looks whether the session's channel is open again. */
     private static final long REOPEN_POLL_MILLIS = 100;
-    /** How long close() waits for the actor's thread to end. */
+    /** How long close() waits for the actor's thread to end, unless given a deadline. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
     /**
      * How long the actor, closing, spends at most on the essential facts already queued: well
@@ -103,6 +103,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final AtomicReference<Lifecycle> lifecycle = new AtomicReference<>(Lifecycle.NEW);
 
     private volatile boolean closed;
+    /** The deadline of the close, by {@link System#nanoTime}; null before it. */
+    private volatile @Nullable Long closeBy;
     /** When the actor last began a turn, epoch millis; for the watchdog. */
     private volatile long turnedAt;
     /** A test's hook, run before each take from the samples, after the look at the essential facts. */
@@ -360,19 +362,40 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      */
     @Override
     public void close() {
+        close(System.nanoTime() + CLOSE_WAIT.toNanos());
+    }
+
+    /**
+     * {@link #close()} within {@code deadline}, by {@link System#nanoTime}: the feed's one shutdown
+     * deadline, which its sessions have had their share of. The facts queued are handled until then
+     * at most; those left take the points back, as when their time is up.
+     *
+     * @return whether the actor has ended
+     */
+    public boolean close(long deadline) {
+        // read by the thread once it sees the close
+        closeBy = deadline;
         closed = true;
         if (lifecycle.getAndSet(Lifecycle.CLOSED) == Lifecycle.NEW) {
             closeMachine();
-        } else if (thread.isAlive()) {
-            LockSupport.unpark(thread);
-            try {
-                if (!thread.join(CLOSE_WAIT)) {
-                    LOG.warn("The recovery actor did not stop within {}", CLOSE_WAIT);
-                }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            return true;
         }
+        if (!thread.isAlive()) {
+            return true;
+        }
+        LockSupport.unpark(thread);
+        try {
+            if (thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())))) {
+                return true;
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (!thread.isAlive()) {
+            return true;
+        }
+        LOG.warn("The recovery actor did not stop in time");
+        return false;
     }
 
     /**
@@ -471,7 +494,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * facts queued when the close came are handled, and the resume points they move published - a
      * session's close among them moves none forward. One of them can open a gap - an unsubscribed
      * alive, say - that takes the point back, and a client reads the point at shutdown to resume
-     * from. Within {@link #FINISH_WAIT}; nothing goes out to the workers any more, and nothing posted
+     * from. Within {@link #FINISH_WAIT}, and the close's deadline; nothing goes out to the workers any more, and nothing posted
      * after the close is taken, since posting is refused once closed. The samples are dropped: one
      * could only move a point forward.
      *
@@ -483,6 +506,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      */
     private boolean finishEssential() {
         long deadline = System.nanoTime() + finishWait.toNanos();
+        Long by = closeBy;
+        if (by != null && by - deadline < 0) {
+            deadline = by;
+        }
         // an essential fact posted before the close is queued once none is counted; one still
         // counted when the time is up is one this cannot handle
         while (posting.get() > 0) {

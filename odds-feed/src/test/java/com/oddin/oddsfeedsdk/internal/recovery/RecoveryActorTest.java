@@ -201,6 +201,93 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aCloseWhoseDeadlineHasPassedLeavesWhatIsQueuedToTheFallback() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        long later = lastSubscribed + 10_000;
+
+        // the feed's shutdown deadline spent on its sessions: the actor's own time to finish is
+        // cut to it, so what is queued is left to the fallback
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        session.processed(PRE, later, later, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        session.channelReopened();
+        long closing = System.nanoTime();
+        assertThat(actor.close(closing))
+                .as("ended by a deadline already passed")
+                .isFalse();
+        assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                .as("the close, which waits no longer than its deadline")
+                .isLessThan(Duration.ofSeconds(1));
+        release.countDown();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.running() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+
+        assertThat(actor.running()).isFalse();
+        assertThat(held.getTimestampForRecovery())
+                .as("the last subscribed alive, the fallback for a fact left unhandled")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
+    void aCloseWithADeadlineWaitsForTheActorUntilThenAndNoLonger() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.ChannelLost) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        session.channelLost();
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        try {
+            long closing = System.nanoTime();
+            assertThat(actor.close(closing + Duration.ofMillis(300).toNanos()))
+                    .as("ended, while held in a fact")
+                    .isFalse();
+            assertThat(Duration.ofNanos(System.nanoTime() - closing))
+                    .as("the close, with a deadline of 300 ms")
+                    .isBetween(Duration.ofMillis(250), Duration.ofSeconds(2));
+        } finally {
+            release.countDown();
+        }
+        assertThat(actor.close(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                .as("ended, once let go")
+                .isTrue();
+    }
+
+    @Test
     void aGapQueuedWhenTheCloseComesTakesThePointBackBeforeTheActorEnds() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
