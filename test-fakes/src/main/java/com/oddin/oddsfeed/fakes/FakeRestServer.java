@@ -79,6 +79,9 @@ public final class FakeRestServer implements AutoCloseable {
     private final List<RecordedRequest> requests = new CopyOnWriteArrayList<>();
     private final Map<String, Script> overrides = new ConcurrentHashMap<>();
     private volatile Reply outage;
+    /** Per method and path, the outage replies answered to their last byte. */
+    private final Map<String, AtomicInteger> outageAnswers = new ConcurrentHashMap<>();
+
     private final AtomicInteger inFlight = new AtomicInteger();
     /** Requests come and not answered to their last byte: what the client can still be waiting on. */
     private final AtomicInteger unanswered = new AtomicInteger();
@@ -137,6 +140,26 @@ public final class FakeRestServer implements AutoCloseable {
     /** Back to the routes and overrides. */
     public void endOutage() {
         outage = null;
+    }
+
+    /**
+     * The outage replies to this method and path, once there are at least {@code count} of them,
+     * each answered to its last byte, so the client has it; waiting up to ten seconds. For a test
+     * that ends the outage only once a call has had all its refusals.
+     *
+     * @throws AssertionError if fewer are answered
+     */
+    public int awaitOutageAnswers(String method, String path, int count) throws InterruptedException {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        var answered = outageAnswers.computeIfAbsent(method + " " + path, _ -> new AtomicInteger());
+        while (answered.get() < count) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError(
+                        answered.get() + " of " + count + " outage replies to " + method + " " + path + " within 10 s");
+            }
+            Thread.sleep(20);
+        }
+        return answered.get();
     }
 
     /**
@@ -249,13 +272,18 @@ public final class FakeRestServer implements AutoCloseable {
         inFlight.incrementAndGet();
         mostInFlight.accumulateAndGet(unanswered.incrementAndGet(), Math::max);
         var answering = new Answering();
+        String answeredDown = null;
         try (exchange) {
             String method = exchange.getRequestMethod();
             String path = exchange.getRequestURI().getPath();
             requests.add(
                     new RecordedRequest(method, path, exchange.getRequestURI().getRawQuery(), headers(exchange)));
 
-            Reply reply = answer(method, path);
+            Reply down = outage;
+            Reply reply = down != null ? down : answer(method, path);
+            if (down != null) {
+                answeredDown = method + " " + path;
+            }
             if (reply.delay().isPositive()) {
                 try {
                     Thread.sleep(reply.delay());
@@ -298,6 +326,12 @@ public final class FakeRestServer implements AutoCloseable {
             out.write(body, body.length / 2, body.length - body.length / 2);
         } finally {
             answering.answered();
+            if (answeredDown != null) {
+                // after the exchange is closed: the client has the whole reply
+                outageAnswers
+                        .computeIfAbsent(answeredDown, _ -> new AtomicInteger())
+                        .incrementAndGet();
+            }
             // in this order, so whoever sees nothing in flight also sees when it finished
             lastFinishedAt = System.nanoTime();
             inFlight.decrementAndGet();
@@ -317,10 +351,6 @@ public final class FakeRestServer implements AutoCloseable {
     }
 
     private Reply answer(String method, String path) {
-        Reply down = outage;
-        if (down != null) {
-            return down;
-        }
         Script override = overrides.get(path);
         if (override != null) {
             return override.next();

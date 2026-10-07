@@ -132,8 +132,8 @@ class RestOutageScenarioIT {
                                 .as("the HTTP client's attempts of the refused recovery")
                                 .extracting(request -> request.parameter("request_id"))
                                 .containsOnly(refused);
-                        // the last attempt's 503 is chosen as it arrives; let it go out first
-                        Thread.sleep(200);
+                        // ended only once the client has had every one of those refusals
+                        rest.awaitOutageAnswers("POST", PREMATCH_RECOVERY, 3);
                         rest.endOutage();
                         // the backoff is the recovery actor's to choose; it has to fit in this wait
                         assertThat(reissueWhileAlive(rest, feed, refused, Duration.ofSeconds(30)))
