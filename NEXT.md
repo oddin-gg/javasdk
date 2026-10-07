@@ -646,8 +646,9 @@ and REST workers post facts to it; it decides and posts work out.
   still coming; a lost
   `snapshot_complete` - the Go SDK saw one on the test environment, on a bound and
   consuming queue - costs minutes, not the maximum recovery time. Five minutes is the
-  Go SDK's deadline (recoveries completed there in 83 to 139 s); 0.0.x and the .NET SDK
-  have none and wait out the maximum recovery time (KD-25). That time stays the bound on
+  Go SDK's deadline (recoveries completed there in 83 to 139 s), and 0.0.58's, checked
+  there at each alive; 0.0.57 and older and the .NET SDK have none and wait out the
+  maximum recovery time (KD-25). That time stays the bound on
   a recovery that keeps coming, and on event recoveries. Ticket 28 makes it a public
   option; its default stays 0.0.x's 360 minutes.
 - Recovery that the API does not accept, or that times out (either deadline), is
@@ -1027,11 +1028,11 @@ Three layers. No ticket is done without its tests.
    fire, entity values, locale handling, invalidation on fixture change, producer down
    and recovery, reconnect, REST outage, REST down at startup, authentication failure,
    stale feed, a callback that throws, replay, exception strategy. They run against
-   0.0.57 first, so we know each test actually tests something. Then they run against
+   0.0.58 first, so we know each test actually tests something. Then they run against
    1.0.0. Same tests, one version property. CI runs the suite twice, once per version,
    and the 1.0.0 run asserts the loaded jar's version through the telemetry getter, so
    a misconfigured build can never pass by silently testing the downloaded old jar.
-   Resolving 0.0.57 needs a GitHub Packages token; CI has one.
+   Resolving 0.0.58 needs a GitHub Packages token; CI has one.
 2. **Unit and concurrency tests with every ticket.** Golden decode tests for every
    message and endpoint from the schema fixtures. Cache tests: expiry per locale,
    eviction, locale marks, clear, tombstones and generations, authoritative versus
@@ -1297,7 +1298,7 @@ Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 4
 - **Timeline.** Two weeks went to the hotfix already. If the schedule slips, the
   release candidate goes out later, not with fewer tests.
 - **Silent behaviour differences.** Clients depend on things we do not know about.
-  The system tests against 0.0.57 are our best defence. Release candidates to clients
+  The system tests against 0.0.58 are our best defence. Release candidates to clients
   are the second.
 - **Generated names.** Keeping the old class names through bindings works where the
   schema type maps one to one. Where the aligned schema changed a shape, the class
