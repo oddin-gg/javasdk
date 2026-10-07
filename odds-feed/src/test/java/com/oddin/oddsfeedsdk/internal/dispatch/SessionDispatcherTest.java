@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -539,6 +540,56 @@ class SessionDispatcherTest {
         assertThat(transport.acked).as("acknowledged").isEmpty();
         assertThat(facts.facts).as("facts posted").isEmpty();
         assertThat(dispatcher.handled()).isZero();
+    }
+
+    @Test
+    void anInterruptedCloseStillWaitsForTheCallbackAndKeepsTheInterrupt() throws InterruptedException {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        listener.onOdds = message -> {
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        dispatcher.start();
+        var releaser = Thread.ofVirtual().unstarted(() -> {
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            release.countDown();
+        });
+        try {
+            Queues.offer(
+                    transport.queue(),
+                    delivery(
+                            Fixtures.read(ODDS_CHANGE).getBytes(StandardCharsets.UTF_8),
+                            FakeFeed.routingKey(Fixtures.read(ODDS_CHANGE))));
+            assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+            releaser.start();
+            dispatcher.stop();
+            Thread.currentThread().interrupt();
+            boolean ended;
+            boolean interrupted;
+            try {
+                ended = dispatcher.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS));
+            } finally {
+                interrupted = Thread.interrupted();
+            }
+            assertThat(ended).as("ended, though the closer was interrupted").isTrue();
+            assertThat(interrupted).as("the closer's interrupt kept").isTrue();
+            assertThat(transport.acked)
+                    .as("the message the callback had, acknowledged")
+                    .hasSize(1);
+        } finally {
+            release.countDown();
+            dispatcher.close();
+        }
     }
 
     // ---- helpers

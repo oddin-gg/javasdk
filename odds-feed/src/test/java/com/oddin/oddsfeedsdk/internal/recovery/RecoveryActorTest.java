@@ -357,6 +357,54 @@ class RecoveryActorTest {
     }
 
     @Test
+    void anInterruptedCloseStillWaitsUntilThePointsAreTakenBackAndKeepsTheInterrupt() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long lastSubscribed = System.currentTimeMillis();
+        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        long later = lastSubscribed + 10_000;
+
+        // as above, but the closing thread interrupted - an executor shutting down now, say
+        var entered = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    Thread.sleep(50);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        session.processed(PRE, later, later, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        session.channelReopened();
+        Thread.currentThread().interrupt();
+        boolean ended;
+        boolean interrupted;
+        try {
+            ended = actor.close(System.nanoTime());
+        } finally {
+            interrupted = Thread.interrupted();
+        }
+        assertThat(ended)
+                .as("ended, the deadline spent and the closer interrupted")
+                .isTrue();
+        assertThat(interrupted).as("the closer's interrupt kept").isTrue();
+        assertThat(held.getTimestampForRecovery())
+                .as("the last subscribed alive, the fallback for the fact left unhandled")
+                .isEqualTo(Instant.ofEpochMilli(lastSubscribed));
+    }
+
+    @Test
     void aCloseWithADeadlineWaitsForTheActorUntilThenAndNoLonger() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);

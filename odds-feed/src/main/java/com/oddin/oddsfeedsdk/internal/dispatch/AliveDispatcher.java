@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.dispatch;
 
+import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.recovery.AliveFacts;
 import com.oddin.oddsfeedsdk.internal.xml.DecodeException;
@@ -137,22 +138,18 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
 
     /**
      * Waits for the thread to end after a {@link #stop}, until {@code deadline}, by {@link
-     * System#nanoTime}, then drops the alives still queued; says so in the log when it does not end.
+     * System#nanoTime}, an interrupt notwithstanding, then drops the alives still queued; says so in
+     * the log when it does not end.
      *
      * @return whether the thread has ended
      */
     public boolean awaitStop(long deadline) {
         try {
-            if (!thread.isAlive() || thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())))) {
+            if (!thread.isAlive() || Joins.uninterruptibly(thread, deadline)) {
                 return true;
             }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
         } finally {
             alives.clear();
-        }
-        if (!thread.isAlive()) {
-            return true;
         }
         LOG.warn("The alive dispatcher did not stop in time");
         return false;
