@@ -39,6 +39,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
@@ -247,18 +248,20 @@ class OddsFeedWatchdogTest {
                 feed.open();
                 var actor = requireNonNull(OpenFeeds.actor(requireNonNull(feed.running())));
                 var once = new AtomicBoolean(true);
-                long wedgedFrom = System.nanoTime();
+                var wedgedAt = new AtomicLong();
                 // the next fact it takes - a tick, at the latest, within a second - does not end
                 Actors.beforeHandle(actor, () -> {
                     if (once.compareAndSet(true, false)) {
+                        wedgedAt.set(System.nanoTime());
                         entered.countDown();
                         await(release);
                     }
                 });
                 assertThat(entered.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
-                assertThat(part(feed, HealthComponent.RECOVERY).busySince() - wedgedFrom)
-                        .as("the turn it is wedged in, begun since the hook was set, by System.nanoTime")
-                        .isBetween(0L, System.nanoTime() - wedgedFrom);
+                // the turn it is wedged in may have begun before the hook was set, with an earlier fact
+                assertThat(wedgedAt.get() - part(feed, HealthComponent.RECOVERY).busySince())
+                        .as("the turn it is wedged in, begun before the fact it is wedged on, by System.nanoTime")
+                        .isBetween(0L, WAIT.toNanos());
 
                 var stalled = heard.next(HealthComponent.RECOVERY);
                 assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
