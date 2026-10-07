@@ -126,7 +126,7 @@ public final class AmqpTransport implements AutoCloseable {
         this.exchange = exchange;
         this.events = new Guarded(events);
         this.clock = clock;
-        this.refusals = new Refusals(REFUSALS, refusalWindow, clock);
+        this.refusals = new Refusals(REFUSALS, refusalWindow, System::nanoTime);
         this.alive = alives == null
                 ? null
                 : channel(
