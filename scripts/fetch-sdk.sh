@@ -11,11 +11,15 @@
 # that a substituted jar could have influenced by the time it runs.
 #
 # Safe to run at any time: it verifies what is already there and downloads only what is missing
-# or wrong. Needs a GitHub token with read:packages.
+# or wrong. The files come from the version's public GitHub release, which needs no token: each
+# 0.0.x release from 0.0.56 on carries the jar and POM, copied from the packages registry. Only a
+# version whose release has no such file (0.0.54) falls back to the registry, which needs a
+# GitHub token with read:packages in GITHUB_TOKEN; without one the script says so and stops. The
+# digests are checked whichever served the file.
 #
 # The coordinates and the local repository come from Maven itself, so they are the ones the build
 # will use: to test another SDK version, pass the same override to both, e.g.
-#   MAVEN_ARGS=-Dsdk.version=0.0.54 ./scripts/fetch-sdk.sh && ./mvnw verify -Dsdk.version=0.0.54
+#   MAVEN_ARGS=-Dsdk.version=0.0.57 ./scripts/fetch-sdk.sh && ./mvnw verify -Dsdk.version=0.0.57
 # (Maven reads MAVEN_ARGS itself, so a settings file with its own localRepository works too.)
 set -euo pipefail
 
@@ -55,11 +59,25 @@ digest() {
 
 path=$(echo "$group" | tr . /)/odds-feed/$version
 dir=$repository/$path
-base=https://maven.pkg.github.com/oddin-gg/javasdk/$path
+release=https://github.com/oddin-gg/javasdk/releases/download/v$version
+registry=https://maven.pkg.github.com/oddin-gg/javasdk/$path
 mkdir -p "$dir"
 
+# get <url> <file> [token]: the HTTP status, with the body in file. https only, redirects included
+# (a release file redirects to GitHub's storage). The token, when there is one, goes to curl as a
+# config file on stdin, never on its command line, where any process could read it.
+get() {
+  local auth=()
+  if [ -n "${3:-}" ]; then
+    auth=(--config -)
+  fi
+  curl -sSL --proto '=https' --proto-redir '=https' --retry 3 "${auth[@]}" \
+      -o "$2" -w '%{http_code}' "$1" <<<"${3:+user = \"${GITHUB_ACTOR:-x}:$3\"}"
+}
+
 for kind in jar pom; do
-  file=$dir/odds-feed-$version.$kind
+  name=odds-feed-$version.$kind
+  file=$dir/$name
   expected=$(sed -n "s/^$version\.$kind=//p" "$checksums")
   if [ -z "$expected" ]; then
     echo "no digest recorded for $group:odds-feed:$version ($kind) in $checksums" >&2
@@ -72,20 +90,33 @@ for kind in jar pom; do
     continue
   fi
 
-  if [ -z "${GITHUB_TOKEN:-}" ]; then
-    echo "need GITHUB_TOKEN (a GitHub token with read:packages) to fetch $base/odds-feed-$version.$kind" >&2
+  source=$release/$name
+  status=$(get "$source" "$file.part") || status="no response"
+  if [ "$status" = 404 ]; then
+    # no such file on the release: the registry, which only a token can read
+    source=$registry/$name
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
+      rm -f "$file.part"
+      echo "the v$version GitHub release has no $name; fetching it from the packages registry" >&2
+      echo "instead needs GITHUB_TOKEN (a GitHub token with read:packages): $source" >&2
+      exit 1
+    fi
+    status=$(get "$source" "$file.part" "$GITHUB_TOKEN") || status="no response"
+  fi
+  if [ "$status" != 200 ]; then
+    rm -f "$file.part"
+    echo "could not fetch $source (status: $status)" >&2
     exit 1
   fi
-  curl -fsSL -u "${GITHUB_ACTOR:-x}:$GITHUB_TOKEN" "$base/odds-feed-$version.$kind" -o "$file.part"
 
   actual=$(digest "$file.part")
   if [ "$actual" != "$expected" ]; then
     rm -f "$file.part"
-    echo "$kind for $group:odds-feed:$version does not match the recorded digest" >&2
+    echo "$kind for $group:odds-feed:$version from $source does not match the recorded digest" >&2
     echo "  expected $expected" >&2
     echo "  got      $actual" >&2
     exit 1
   fi
   mv "$file.part" "$file"
-  echo "fetched $kind  $file"
+  echo "fetched $kind  $file  (from $source)"
 done

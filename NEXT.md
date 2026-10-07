@@ -1085,7 +1085,8 @@ Three layers. No ticket is done without its tests.
    1.0.0. Same tests, one version property. CI runs the suite twice, once per version,
    and the 1.0.0 run asserts the loaded jar's version through the telemetry getter, so
    a misconfigured build can never pass by silently testing the downloaded old jar.
-   Resolving 0.0.58 needs a GitHub Packages token; CI has one.
+   0.0.58 comes from its public GitHub release, checked against pinned digests, with no
+   token.
 2. **Unit and concurrency tests with every ticket.** Golden decode tests for every
    message and endpoint from the schema fixtures. Cache tests: expiry per locale,
    eviction, locale marks, clear, tombstones and generations, authoritative versus

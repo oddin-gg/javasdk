@@ -36,9 +36,9 @@
       Note the other direction: Central is asked for odds-feed first as well. The 0.0.x group id
       is com.oddin.oddsfeed, which we cannot claim on Central - it is verified against a domain
       that is not ours - so this cannot be closed by registering it. BuildWiringIT pins the jar
-      and POM digests instead, and CI fetches both from the registry before Maven resolves
-      anything. 1.0 publishes under gg.oddin.oddsfeed, which we can claim, and the question
-      goes away with it.
+      and POM digests instead, and scripts/fetch-sdk.sh puts both, checked, into the local
+      repository before Maven resolves anything. 1.0 publishes under gg.oddin.oddsfeed, which we
+      can claim, and the question goes away with it.
     -->
     <repository>
       <id>central</id>
@@ -50,8 +50,12 @@
     <!--
       Published 0.0.x releases live in GitHub Packages, which needs a token even for reads.
       Declared here, not in the parent, so it covers only the module that needs it.
-      Locally: a <server> with id "oddin-github" in ~/.m2/settings.xml, the same id the client setup guide uses (any GitHub token with read:packages).
-      CI: setup-java writes the same server entry from GITHUB_TOKEN.
+      Nothing is read from it once scripts/fetch-sdk.sh has run: the script takes the jar and POM
+      from the version's public GitHub release, with no token, and Maven then finds them in the
+      local repository. CI runs it first and gives Maven no credentials for this server, so an
+      SDK the script did not put there fails the build instead of coming from here. Without the
+      script: a <server> with id "oddin-github" in ~/.m2/settings.xml, the same id the client
+      setup guide uses (any GitHub token with read:packages).
     -->
     <repository>
       <id>oddin-github</id>

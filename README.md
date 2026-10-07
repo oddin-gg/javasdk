@@ -4,16 +4,19 @@ Java SDK
 > **Java SDK 1.0 is being built on the `next` branch.** The design is in [NEXT.md](NEXT.md).
 > The new build is Maven: run `./scripts/fetch-sdk.sh` once, then `./mvnw verify` from the repo
 > root. The script puts the published SDK the system tests run against into your local Maven
-> repository and checks it against the digests this repo records; running the build without it
-> still works, but leaves the check to the tests instead of doing it first. The build needs
-> JDK 25, `unzip` (the wrapper checks the distribution against a pinned checksum, and that pin
-> is the zip's) and a GitHub token with `read:packages` - in `GITHUB_TOKEN` for the script, and
-> in `~/.m2/settings.xml` under the server id `oddin-github` for Maven, the same id clients use.
+> repository and checks it against the digests this repo records. It downloads the SDK from its
+> public GitHub release, so it needs no token; only a version whose release carries no jar
+> (0.0.54) needs a GitHub token with `read:packages` in `GITHUB_TOKEN`, and the script then reads
+> it from the packages registry. Running the build without the script leaves Maven to fetch the
+> SDK from that registry - with the same token in `~/.m2/settings.xml` under the server id
+> `oddin-github`, the id clients use - and the check to the tests instead of doing it first. The
+> build needs JDK 25 and `unzip` (the wrapper checks the distribution against a pinned checksum,
+> and that pin is the zip's).
 > The system tests also need Docker: they run the feed's message broker in a container through
 > Testcontainers (with colima, see Testcontainers' notes on `DOCKER_HOST` and
 > `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`). To run them against another published SDK, give
-> the script and Maven the same version: `MAVEN_ARGS=-Dsdk.version=0.0.54 ./scripts/fetch-sdk.sh`,
-> then `./mvnw verify -Dsdk.version=0.0.54`. To run them against the 1.0 SDK this build makes,
+> the script and Maven the same version: `MAVEN_ARGS=-Dsdk.version=0.0.57 ./scripts/fetch-sdk.sh`,
+> then `./mvnw verify -Dsdk.version=0.0.57`. To run them against the 1.0 SDK this build makes,
 > add `-Dsdk.next` (any value, it only has to be set): `./mvnw verify -Dsdk.next`, or
 > `./mvnw verify -Dsdk.next -pl system-tests -am` for just the system tests and what they need -
 > `-am` matters, as the tests need odds-feed packaged in the same run, not resolved from
