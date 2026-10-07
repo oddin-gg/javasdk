@@ -194,11 +194,12 @@ class ProducerRecoveryScenarioIT {
 
     /**
      * A producer whose clock went back between two alives: 0.0.x recovers from the last alive it
-     * received, 1.0 from the newest by its timestamp, which says everything before it was sent
-     * (KD-33). With a clock that only goes forward, as in the scenario above, the two are the same.
+     * received; 1.0 from the newest by its timestamp, which says everything before it was sent, but
+     * no later than the producer's now, its clock as its last alive measured it (KD-33). With a
+     * clock that only goes forward, as in the scenario above, they are the same.
      */
     @Test
-    void aProducerWhoseClockWentBackRecoversFromTheNewestAliveOn10() throws InterruptedException {
+    void aProducerWhoseClockWentBackRecoversFromTheNewestAliveCappedAtItsNowOn10() throws InterruptedException {
         try (FakeRestServer rest = FakeRestServer.start();
                 FakeFeed feed = FakeFeed.start();
                 Sdk sdk = Sdk.against(rest, feed)) {
@@ -214,8 +215,10 @@ class ProducerRecoveryScenarioIT {
 
             // the producer's clock two seconds back, then it says it is no longer subscribed
             long lastReceived = newest - 2_000;
+            long unsubscribedAt = lastReceived + 500;
+            long published = System.currentTimeMillis();
             feed.publishAsIs(stampedAt(alive(1, true), lastReceived));
-            feed.publishAsIs(stampedAt(alive(1, false), lastReceived + 500));
+            feed.publishAsIs(stampedAt(alive(1, false), unsubscribedAt));
             assertThat(sdk.events().nextProducerStatus(1).isDown())
                     .as("down after the unsubscribed alive")
                     .isTrue();
@@ -227,9 +230,14 @@ class ProducerRecoveryScenarioIT {
                     () -> assertThat(Long.parseLong(after))
                             .as("where the recovery after the down starts: the last alive received")
                             .isEqualTo(lastReceived),
+                    // the producer's now as it asks: the unsubscribed alive's stamp, and the time
+                    // since it arrived
                     () -> assertThat(Long.parseLong(after))
-                            .as("where the recovery after the down starts: the newest alive")
-                            .isEqualTo(newest));
+                            .as("where the recovery after the down starts: the newest alive, capped at"
+                                    + " the producer's now")
+                            .isBetween(
+                                    unsubscribedAt,
+                                    Math.min(newest, unsubscribedAt + System.currentTimeMillis() - published)));
         }
     }
 
