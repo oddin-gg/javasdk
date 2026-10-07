@@ -15,10 +15,13 @@ import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.ApiCallEvent;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
+import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
+import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -83,6 +86,40 @@ class OddsFeedTest {
                 feed.close();
             }
             assertThat(api.requests("GET", WHOAMI)).as("one start").hasSize(1);
+        }
+    }
+
+    @Test
+    void theHealthStartsNothingAndHasTheEventsAndTheCatalogsOnceTheFeedHasStarted() {
+        try (var api = FakeRestServer.start()) {
+            var feed = feedAgainst(api);
+            try {
+                var before = feed.getHealth();
+                assertThat(before.components()).as("no part yet").isEmpty();
+                assertThat(before.state()).isEqualTo(HealthState.HEALTHY);
+                assertThat(before.catalogs()).isEmpty();
+                assertThat(before.sessions()).isEmpty();
+                assertThat(api.requests("GET", WHOAMI))
+                        .as("the health starts nothing")
+                        .isEmpty();
+
+                feed.getMarketDescriptionManager().getMarketDescriptions();
+                var started = feed.getHealth();
+                assertThat(started.components())
+                        .containsExactly(
+                                Map.entry(HealthComponent.EVENTS, HealthState.HEALTHY),
+                                Map.entry(HealthComponent.CATALOGS, HealthState.HEALTHY));
+                assertThat(started.catalogs()).hasSize(4);
+                assertThat(started.sessions()).as("none before the feed opens").isEmpty();
+                assertThat(started.transport().connected()).isFalse();
+                assertThat(started.counters()).containsEntry("catalog.market_descriptions.state", 0L);
+                api.awaitQuiet();
+            } finally {
+                feed.close();
+            }
+            assertThat(feed.getHealth().components())
+                    .as("read once closed too")
+                    .containsOnlyKeys(HealthComponent.EVENTS, HealthComponent.CATALOGS);
         }
     }
 

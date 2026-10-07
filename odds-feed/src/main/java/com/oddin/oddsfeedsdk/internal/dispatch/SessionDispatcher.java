@@ -89,6 +89,7 @@ public final class SessionDispatcher implements AutoCloseable {
     /** How long close() waits for a callback to end; a feed closing gives every session one deadline instead. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
 
+    private final int id;
     private final OddsFeedSession session;
     private final MessageInterest interest;
     private final OddsFeedListener listener;
@@ -131,6 +132,7 @@ public final class SessionDispatcher implements AutoCloseable {
             @Nullable SessionFacts facts,
             boolean replay,
             Pipeline pipeline) {
+        this.id = id;
         this.session = session;
         this.interest = interest;
         this.listener = listener;
@@ -194,6 +196,21 @@ public final class SessionDispatcher implements AutoCloseable {
     }
 
     // ------------------------------------------------------------------ for the watchdog and getHealth()
+
+    /** The feed's number for the session. */
+    public int id() {
+        return id;
+    }
+
+    /** What the session's callbacks are given. */
+    public OddsFeedSession session() {
+        return session;
+    }
+
+    /** The session's channel and queue, whose counters are the session's too. */
+    public SessionTransport transport() {
+        return transport;
+    }
 
     /** When the delivery being handled was taken, epoch millis by the SDK's clock; 0 when none is. */
     public long busySince() {

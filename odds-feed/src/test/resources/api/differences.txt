@@ -61,6 +61,7 @@ deprecated | mq/entities/CompetitorOutcomeOdds.getTeam ()Lcom/oddin/oddsfeedsdk/
 # ---- new in 1.0
 
 added | OddsFeed.getSdkVersion ()Ljava/lang/String; | the version the SDK reports to the API and the broker, for a client to log
+added | OddsFeed.getHealth ()Lcom/oddin/oddsfeedsdk/subscribe/FeedHealth; | the feed's health and its counters, read without waiting for the feed
 added | config/OddsFeedConfiguration.getAmqpPrefetch ()I | how many unacknowledged messages the broker hands a session
 added | config/OddsFeedConfiguration.getMaxMessageSize ()I | the largest message body decoded
 added | config/OddsFeedConfiguration.getMessagingSslContext ()Ljavax/net/ssl/SSLContext; | the TLS context the broker's certificate is checked with

@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.feed;
 
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
 import com.oddin.oddsfeedsdk.internal.catalog.MatchStatusDescriptions;
 import com.oddin.oddsfeedsdk.internal.catalog.VoidReasons;
@@ -22,7 +23,9 @@ import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.replay.Replay;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.Startup;
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -159,6 +162,28 @@ public record FeedCore(
                 new Replay(api, id -> entities.match(id, inDefaultLocale), strategy),
                 new FixtureChanges(),
                 new ClockOffsets(producers));
+    }
+
+    /**
+     * How each catalog is doing, for {@code getHealth()}: the market descriptions and their variants,
+     * the void reasons and the match statuses, in that order.
+     */
+    public List<CatalogHealth> catalogs() {
+        var all = new ArrayList<CatalogHealth>(markets.health());
+        all.add(voidReasons.health());
+        all.add(statuses.health());
+        return all;
+    }
+
+    /** What the entity caches and their background loads have counted, for {@code getHealth()}. */
+    public FeedHealth.Caches caches() {
+        return new FeedHealth.Caches(
+                sideLoads.dropped(),
+                sideLoads.failed(),
+                matches.discardedFetches() + profiles.discardedFetches(),
+                matches.invalidationsForgotten() + profiles.invalidationsForgotten(),
+                matches.liveStatesDropped(),
+                fixtureChanges.evicted());
     }
 
     /**

@@ -13,12 +13,14 @@ import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.feed.FeedCore;
+import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
 import com.oddin.oddsfeedsdk.internal.feed.OpenFeed;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.session.SessionRegistry;
 import com.oddin.oddsfeedsdk.internal.session.SessionSpec;
 import com.oddin.oddsfeedsdk.internal.session.Sessions;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
 import java.util.List;
@@ -66,6 +68,9 @@ public final class OddsFeed {
      */
     private final EventsDispatcher events;
 
+    /** What {@link #getHealth} reads, and what tells a part's change of health; for the feed's life. */
+    private final HealthMonitor health;
+
     /** The event recoveries, over whatever the feed is when they are asked for. */
     private final RecoveryManager recovery = new FeedRecovery();
     /** Held by the one start under way, so callers that come meanwhile wait for it, not start again. */
@@ -96,6 +101,7 @@ public final class OddsFeed {
         this.configuration = requireNonNull(configuration, "configuration");
         this.sessions = new SessionRegistry(null);
         this.events = events(listener, null);
+        this.health = new HealthMonitor(events, sessions::session);
     }
 
     public OddsFeed(
@@ -104,6 +110,7 @@ public final class OddsFeed {
         this.configuration = requireNonNull(configuration, "configuration");
         this.sessions = new SessionRegistry(requireNonNull(extListener, "extListener"));
         this.events = events(listener, extListener);
+        this.health = new HealthMonitor(events, sessions::session);
     }
 
     /**
@@ -175,6 +182,29 @@ public final class OddsFeed {
     }
 
     /**
+     * The feed's health now: its state, the state of each part, and the counters of what the SDK
+     * deliberately gives up, for a health check or a metrics exporter. Cheap, and safe from any
+     * thread, a callback included: it reads counters and flags, never waits for the feed, and does
+     * not start it. Before the feed starts it has no part and counts nothing; once started it has the
+     * events and the catalogs, and once open the consumer and the sessions, and the alives and the
+     * recovery unless it is a replay feed. Once closed it still reads what the feed counted.
+     *
+     * <p>A change it finds is also told to {@code onHealthEvent}, until the feed closes: a catalog that
+     * has served a value stale for an hour or more is found when the health is read. A session's
+     * lagging is told as it changes. New in 1.0.
+     */
+    public FeedHealth getHealth() {
+        @Nullable OpenFeed run;
+        state.lock();
+        try {
+            run = running;
+        } finally {
+            state.unlock();
+        }
+        return health.health(core, run);
+    }
+
+    /**
      * Opens the feed for the sessions built so far: starts the feed if it has not started, checks
      * the sessions' interests combine, disables the producers no session asks for, then connects to
      * the broker and starts delivering. All or nothing: when a step fails, what it started is
@@ -208,7 +238,7 @@ public final class OddsFeed {
         var producers = core.producers();
         var plan = Sessions.plan(specs, producers.getAvailableProducers(), configuration.getSdkNodeId());
         plan.disabledProducers().forEach(id -> producers.setProducerState(id, false));
-        var run = OpenFeed.build(core, plan, configuration);
+        var run = OpenFeed.build(core, plan, configuration, health);
         state.lock();
         try {
             if (closed) {

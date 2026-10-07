@@ -25,6 +25,11 @@ final class RecoveryTee implements RecoveryEvents {
         this.told = List.copyOf(told);
     }
 
+    /** Who it tells, in order. */
+    List<RecoveryEvents> told() {
+        return told;
+    }
+
     @Override
     public void producerStatus(ProducerStatusChange change) {
         tell("producerStatus", events -> events.producerStatus(change));

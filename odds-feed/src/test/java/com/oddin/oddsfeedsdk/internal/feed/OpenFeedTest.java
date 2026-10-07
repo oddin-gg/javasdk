@@ -78,17 +78,22 @@ class OpenFeedTest {
             var configuration = configuration(api);
             var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
             try {
-                var live = OpenFeed.build(core, plan(core, false), configuration);
+                var health = new HealthMonitor(core.events(), id -> null);
+                var live = OpenFeed.build(core, plan(core, false), configuration, health);
                 assertThat(live.toldOfTheConnection())
                         .as("told of the connection, in turn")
                         .hasSize(2)
                         .satisfies(told -> assertThat(told.getFirst()).isSameAs(live.actor()))
                         .satisfies(told -> assertThat(told.getLast()).isSameAs(core.events()));
+                assertThat(live.toldOfTheRecovery())
+                        .as("told of the recovery's events, the client first")
+                        .containsExactly(core.events(), health);
                 live.close();
 
-                var replay = OpenFeed.build(core, plan(core, true), configuration);
+                var replay = OpenFeed.build(core, plan(core, true), configuration, health);
                 assertThat(replay.actor()).as("a replay feed's recovery").isNull();
                 assertThat(replay.toldOfTheConnection()).containsExactly(core.events());
+                assertThat(replay.toldOfTheRecovery()).isEmpty();
                 replay.close();
             } finally {
                 core.close();

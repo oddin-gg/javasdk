@@ -10,6 +10,7 @@ import com.oddin.oddsfeedsdk.internal.dispatch.Pipeline;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
 import com.oddin.oddsfeedsdk.internal.recovery.EventRecoveryStatus;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
+import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoverySettings;
 import com.oddin.oddsfeedsdk.internal.recovery.SessionFacts;
 import com.oddin.oddsfeedsdk.internal.session.Sessions;
@@ -79,6 +80,8 @@ public final class OpenFeed {
     private final Duration answerWait;
     /** What the transport tells of the connection, in turn; for a test. */
     private final ConnectionTee connection;
+    /** What the recovery actor tells of its events, in turn; null for a replay feed; for a test. */
+    private final @Nullable RecoveryTee recoveryTee;
     /** A test's hook, run in a start just before the transport opens. */
     volatile Runnable beforeTransportOpens = () -> {};
     /** A test's hook, run in a start once the transport has opened. */
@@ -96,7 +99,8 @@ public final class OpenFeed {
             @Nullable RecoveryActor actor,
             List<SessionFacts> facts,
             Duration answerWait,
-            ConnectionTee connection) {
+            ConnectionTee connection,
+            @Nullable RecoveryTee recoveryTee) {
         this.transport = transport;
         this.sessions = List.copyOf(sessions);
         this.alives = alives;
@@ -104,13 +108,23 @@ public final class OpenFeed {
         this.facts = List.copyOf(facts);
         this.answerWait = answerWait;
         this.connection = connection;
+        this.recoveryTee = recoveryTee;
+    }
+
+    /** With a health of its own; for a test. */
+    static OpenFeed build(FeedCore core, Sessions.Plan plan, OddsFeedConfiguration configuration) {
+        return build(core, plan, configuration, new HealthMonitor(core.events(), id -> null));
     }
 
     /**
      * Builds what the plan says over what the feed's start built: a transport on the feed's exchange,
      * or the replay one for a replay feed, with each session's queue added; nothing started.
+     *
+     * @param health the feed's health, told of the recovery's events after the events dispatcher: it
+     *     keeps the sessions' lagging
      */
-    public static OpenFeed build(FeedCore core, Sessions.Plan plan, OddsFeedConfiguration configuration) {
+    public static OpenFeed build(
+            FeedCore core, Sessions.Plan plan, OddsFeedConfiguration configuration, HealthMonitor health) {
         var replay = plan.replay();
         var decoder = FeedDecoder.lenient(configuration.getMaxMessageSize());
         var pipeline = new Pipeline(
@@ -124,13 +138,15 @@ public final class OpenFeed {
                 core.events(),
                 InstantSource.system());
         // a replay feed runs no recovery, so it needs no liveness of its own, as in 0.0.x
-        var actor = replay
+        // the client hears of a session lagging before the health tells of it
+        var recoveryEvents = replay ? null : new RecoveryTee(List.of(core.events(), health));
+        var actor = recoveryEvents == null
                 ? null
                 : new RecoveryActor(
                         core.producers(),
                         RecoverySettings.from(configuration),
                         core.api(),
-                        new RecoveryTee(List.of(core.events())),
+                        recoveryEvents,
                         core.fetches());
         var alives = actor == null ? null : new AliveDispatcher(decoder, core.offsets(), actor);
         // the actor first, so a producer's state follows the connection before the client hears of it
@@ -175,7 +191,8 @@ public final class OpenFeed {
                 actor,
                 facts,
                 configuration.getHttpClientTimeout().plus(ANSWER_MARGIN),
-                connection);
+                connection,
+                recoveryEvents);
     }
 
     /**
@@ -343,6 +360,27 @@ public final class OpenFeed {
     @Nullable
     RecoveryActor actor() {
         return actor;
+    }
+
+    /** The broker connection; for the health. */
+    AmqpTransport transport() {
+        return transport;
+    }
+
+    /** The SDK's alive dispatcher, null for a replay feed; for the health. */
+    @Nullable
+    AliveDispatcher alives() {
+        return alives;
+    }
+
+    /** A dispatcher per session, in the order the sessions were built; for the health. */
+    List<SessionDispatcher> sessions() {
+        return sessions;
+    }
+
+    /** Who the recovery actor tells of its events, in order; empty for a replay feed; for a test. */
+    List<RecoveryEvents> toldOfTheRecovery() {
+        return recoveryTee == null ? List.of() : recoveryTee.told();
     }
 
     /** Who the transport tells of the connection, in the order it tells them; for a test. */
