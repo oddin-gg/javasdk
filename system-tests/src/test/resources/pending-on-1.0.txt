@@ -5,6 +5,5 @@
 #
 # One test per line, as Class#method, or a class for all of its tests; the class relative to
 # com.oddin.oddsfeed.systemtests. A reason may follow, after whitespace and "#".
-# The list shrinks as the feed comes together, and goes once it is empty.
-
-ProducerStatusScenarioIT#theSnapshotCompleteOfAnEventRecoveryCompletesIt  # the feed asks the API for no event recovery yet
+# Empty since the feed runs its recovery: every scenario passes on 1.0. Kept for a scenario written
+# ahead of the 1.0 behaviour it checks, which then lands listed here and leaves with that behaviour.
