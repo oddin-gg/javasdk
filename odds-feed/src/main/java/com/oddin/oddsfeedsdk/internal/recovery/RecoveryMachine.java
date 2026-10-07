@@ -619,13 +619,15 @@ final class RecoveryMachine {
         if (event != null && event.producerId == producerId) {
             if (event.awaited.contains(id)) {
                 event.seen.add(id);
-                CompletableFuture<@Nullable Long> reply = replies.remove(requestId);
-                if (reply != null) {
-                    // a snapshot complete says the API took the request: the caller hears so now
-                    outbox.reply(reply, requestId);
-                }
                 if (event.seen.containsAll(event.awaited)) {
+                    // its status ends before a caller still waiting hears the API took it
                     eventCompleted(event);
+                } else {
+                    CompletableFuture<@Nullable Long> reply = replies.remove(requestId);
+                    if (reply != null) {
+                        // a snapshot complete says the API took the request: the caller hears so now
+                        outbox.reply(reply, requestId);
+                    }
                 }
             }
             return;
@@ -643,11 +645,12 @@ final class RecoveryMachine {
         if (reply != null) {
             EventRecovery event = eventRecoveries.get(requestId);
             if (failure == null) {
-                outbox.reply(reply, requestId);
                 if (event != null && event.awaited.isEmpty()) {
-                    // no session takes snapshot completes: nothing would ever complete it
+                    // no session takes snapshot completes: nothing would ever complete it. Its
+                    // status ends first: a caller that reads it once the future completes sees it ended
                     eventCompleted(event);
                 }
+                outbox.reply(reply, requestId);
             } else {
                 EventRecovery refused = eventRecoveries.remove(requestId);
                 if (refused != null) {
