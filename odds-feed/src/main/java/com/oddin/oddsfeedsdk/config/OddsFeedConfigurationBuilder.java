@@ -125,7 +125,9 @@ public final class OddsFeedConfigurationBuilder {
 
     /**
      * The longest an API call takes, from waiting for its turn through every retry. 30 seconds
-     * unless set. New in 1.0.
+     * unless set. The feed's watch over its own threads finds a callback stalled only past twice
+     * this and 5 seconds, 30 seconds at least, so a callback waiting on a slow API is no stall.
+     * New in 1.0.
      *
      * @throws IllegalArgumentException unless it is positive
      */

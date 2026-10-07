@@ -105,35 +105,38 @@ public final class OddsFeed {
     private boolean closed;
 
     public OddsFeed(GlobalEventsListener listener, OddsFeedConfiguration configuration) {
-        this(listener, configuration, null, Watchdog.Limits.DEFAULT, HealthMonitor.Log.SLF4J);
+        this(listener, configuration, null, null, HealthMonitor.Log.SLF4J);
     }
 
     public OddsFeed(
             GlobalEventsListener listener, OddsFeedConfiguration configuration, OddsFeedExtListener extListener) {
-        this(
-                listener,
-                configuration,
-                requireNonNull(extListener, "extListener"),
-                Watchdog.Limits.DEFAULT,
-                HealthMonitor.Log.SLF4J);
+        this(listener, configuration, requireNonNull(extListener, "extListener"), null, HealthMonitor.Log.SLF4J);
     }
 
-    /** With the watchdog's limits and the health's log a test sets. */
+    /**
+     * With the watchdog's limits and the health's log a test sets.
+     *
+     * @param limits the watchdog's limits; null for those of the configuration's HTTP timeout
+     */
     OddsFeed(
             GlobalEventsListener listener,
             OddsFeedConfiguration configuration,
             @Nullable OddsFeedExtListener extListener,
-            Watchdog.Limits limits,
+            Watchdog.@Nullable Limits limits,
             HealthMonitor.Log log) {
         this(listener, configuration, extListener, limits, log, HealthMonitor.CATALOG_STALE_LIMIT);
     }
 
-    /** With the watchdog's limits, the health's log and the catalogs' stale limit a test sets. */
+    /**
+     * With the watchdog's limits, the health's log and the catalogs' stale limit a test sets.
+     *
+     * @param limits the watchdog's limits; null for those of the configuration's HTTP timeout
+     */
     OddsFeed(
             GlobalEventsListener listener,
             OddsFeedConfiguration configuration,
             @Nullable OddsFeedExtListener extListener,
-            Watchdog.Limits limits,
+            Watchdog.@Nullable Limits limits,
             HealthMonitor.Log log,
             Duration catalogStaleLimit) {
         requireNonNull(listener, "listener");
@@ -141,7 +144,11 @@ public final class OddsFeed {
         this.sessions = new SessionRegistry(extListener);
         this.events = events(listener, extListener);
         this.health = new HealthMonitor(events, sessions::session, catalogStaleLimit, log);
-        this.watchdog = new Watchdog(health, () -> Watchdog.parts(events, running()), this::read, limits);
+        this.watchdog = new Watchdog(
+                health,
+                () -> Watchdog.parts(events, running()),
+                this::read,
+                limits != null ? limits : Watchdog.Limits.forHttpTimeout(configuration.getHttpClientTimeout()));
     }
 
     /**
@@ -223,8 +230,10 @@ public final class OddsFeed {
      * watch stopped is not one wedged.
      *
      * <p>From its start to its close the feed watches its own threads, every 5 seconds: a part that
-     * has been in one callback for more than 30 seconds, or whose queue has not moved for 30 seconds
-     * while not empty, is stalled, and so are the JVM's threads while a deadlock holds some; each is
+     * has been in one callback, or whose queue has not moved while not empty, for longer than the
+     * SDK itself can wait for the API in one getter - twice the HTTP client timeout and 5 seconds,
+     * 30 seconds at least: 65 seconds for the default timeout - is stalled, so a slow API is no
+     * stall, and so are the JVM's threads while a deadlock holds some; each is
      * healthy again once that ends. A catalog that has served a value stale for an hour or more is
      * degraded, and a session lagging. Each change is logged - a stall as an error - and told to
      * {@code onHealthEvent}, until the feed closes; a session's lagging as it changes. The feed never
