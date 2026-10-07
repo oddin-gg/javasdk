@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.random.RandomGenerator;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -48,7 +49,9 @@ import org.slf4j.LoggerFactory;
  * are bounded the same way. The actor takes the essential facts first, then the requests, then the
  * samples, and the lesser queues yield as soon as an essential fact waits, so nothing posted after
  * an essential fact is handled before it, and a flood of samples holds up nothing else. It looks at
- * the time at least every {@link RecoverySettings#tick()}.
+ * the time at least every {@link RecoverySettings#tick()}, paced by {@link System#nanoTime}: a wall
+ * clock set back neither stops its ticks nor parks it for the step, so the watchdog never takes an
+ * idle actor for a wedged one.
  *
  * <p>The requests go to REST workers, never run here, and their answers come back as facts. A
  * safety-net reset runs on a worker too, since replacing a channel talks to the broker, and always
@@ -98,8 +101,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final Queue<Fact> samples;
     private final RecoveryRequests api;
     private final Executor workers;
-    private final InstantSource clock;
-    private final long tickMillis;
+    /** What paces the turns: {@link System#nanoTime}, or a test's. */
+    private final LongSupplier nanos;
+
+    private final long tickNanos;
     /** The sessions' channels, for the safety net's resets; written by the actor's thread only. */
     private final Map<Integer, SessionTransport> transports = new ConcurrentHashMap<>();
     /**
@@ -191,14 +196,44 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             RandomGenerator random,
             int controlCapacity,
             int sampleCapacity) {
+        this(
+                producers,
+                settings,
+                api,
+                events,
+                workers,
+                clock,
+                System::nanoTime,
+                random,
+                controlCapacity,
+                sampleCapacity);
+    }
+
+    /**
+     * With the clock, what paces the turns, the random ids and the queue sizes a test sets.
+     *
+     * @param clock the machine's time: the producers' timestamps and its durations
+     * @param nanos what paces the turns, a {@link System#nanoTime}
+     */
+    RecoveryActor(
+            Producers producers,
+            RecoverySettings settings,
+            RecoveryRequests api,
+            RecoveryEvents events,
+            Executor workers,
+            InstantSource clock,
+            LongSupplier nanos,
+            RandomGenerator random,
+            int controlCapacity,
+            int sampleCapacity) {
         this.counters = new RecoveryCounters();
         this.producers = producers;
         this.control = new ArrayBlockingQueue<>(controlCapacity);
         this.samples = new ArrayBlockingQueue<>(sampleCapacity);
         this.api = api;
         this.workers = workers;
-        this.clock = clock;
-        this.tickMillis = Math.max(1, settings.tick().toMillis());
+        this.nanos = nanos;
+        this.tickNanos = Math.max(1, settings.tick().toNanos());
         this.statuses = new EventRecoveryStatuses(clock, counters);
         this.machine = new RecoveryMachine(
                 producers, settings, new Work(), new Guarded(events), clock, counters, statuses, random);
@@ -502,7 +537,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         // whether the loop ran: a close that came before it did not wait for this thread
         boolean ran = false;
         try {
-            long nextTick = clock.millis();
+            // by difference only, as nanoTime is read
+            long nextTick = nanos.getAsLong();
             while (!closed) {
                 ran = true;
                 turnedAt = BusySince.now();
@@ -510,13 +546,13 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 boolean worked = drainEssential();
                 worked |= drainLesser(control, REQUESTS_PER_TURN, beforeRequestPoll);
                 worked |= drainLesser(samples, SAMPLES_PER_TURN, beforeSamplePoll);
-                long now = clock.millis();
-                if (now >= nextTick) {
+                long now = nanos.getAsLong();
+                if (now - nextTick >= 0) {
                     handle(new Fact.Tick());
-                    nextTick = now + tickMillis;
+                    nextTick = now + tickNanos;
                 }
                 if (!worked && essential.isEmpty() && control.isEmpty() && samples.isEmpty() && !closed) {
-                    LockSupport.parkNanos(this, TimeUnit.MILLISECONDS.toNanos(Math.max(1, nextTick - now)));
+                    LockSupport.parkNanos(this, Math.max(1, nextTick - now));
                 }
             }
         } catch (Throwable e) {

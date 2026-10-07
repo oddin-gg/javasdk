@@ -40,6 +40,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -74,6 +75,7 @@ class RecoveryActorTest {
     void anAliveLeadsToARequestOnAWorkerAndItsSnapshotCompleteToTheProducerUp() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        long started = System.nanoTime();
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
@@ -88,7 +90,49 @@ class RecoveryActorTest {
         ProducerStatusChange up = requireNonNull(statuses.poll(WAIT_SECONDS, TimeUnit.SECONDS));
         assertThat(up.cause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
         assertThat(producers.isProducerDown(PRE)).isFalse();
-        assertThat(actor.turnedAt()).isNotZero();
+        assertThat(actor.turnedAt() - started)
+                .as("a turn begun since the start, by System.nanoTime")
+                .isBetween(0L, System.nanoTime() - started);
+    }
+
+    @Test
+    void aWallClockSetBackStopsNeitherTheTicksNorTheTurns() throws InterruptedException {
+        var clock = new MovableClock(Instant.now());
+        var actor = new RecoveryActor(
+                producers,
+                settings(),
+                api,
+                events(),
+                workers,
+                clock,
+                new Random(1),
+                RecoveryActor.CONTROL_CAPACITY,
+                RecoveryActor.SAMPLE_CAPACITY);
+        this.actor = actor;
+        var ticks = new AtomicInteger();
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Tick) {
+                ticks.incrementAndGet();
+            }
+        };
+        actor.start();
+        awaitTicks(ticks, 1);
+
+        // an hour back, with nothing posted to wake the actor: its ticks of 10 ms go on
+        clock.advance(Duration.ofHours(-1));
+        long stepped = System.nanoTime();
+        awaitTicks(ticks, ticks.get() + 5);
+        assertThat(actor.turnedAt() - stepped)
+                .as("a turn begun since the step, by System.nanoTime")
+                .isBetween(0L, System.nanoTime() - stepped);
+    }
+
+    private static void awaitTicks(AtomicInteger ticks, int count) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (ticks.get() < count && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat(ticks.get()).as("the actor's ticks").isGreaterThanOrEqualTo(count);
     }
 
     @Test
@@ -1177,14 +1221,16 @@ class RecoveryActorTest {
             throws InterruptedException, ExecutionException, TimeoutException {
         var broken = new AtomicBoolean();
         var ended = new CountDownLatch(1);
-        InstantSource clock = () -> {
+        // what paces the loop, read outside any fact's handling
+        LongSupplier nanos = () -> {
             if (broken.get()) {
                 ended.countDown();
-                throw new AssertionError("a broken clock");
+                throw new AssertionError("a broken ticker");
             }
-            return java.time.Instant.now();
+            return System.nanoTime();
         };
-        var actor = new RecoveryActor(producers, settings(), api, events(), workers, clock, new Random(1), 10, 10);
+        var actor = new RecoveryActor(
+                producers, settings(), api, events(), workers, InstantSource.system(), nanos, new Random(1), 10, 10);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
