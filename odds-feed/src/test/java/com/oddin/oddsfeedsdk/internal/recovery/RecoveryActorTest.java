@@ -367,7 +367,7 @@ class RecoveryActorTest {
         session.processed(PRE, later, later, 0);
         awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
 
-        // the unsubscribed alive's post has looked at the close, and not offered yet, as it comes
+        // the unsubscribed alive has looked at the close, its slot not filled nor its fact queued
         var looked = new CountDownLatch(1);
         var offer = new CountDownLatch(1);
         actor.beforeEssentialOffer = () -> {
