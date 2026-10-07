@@ -80,6 +80,9 @@ public final class FakeRestServer implements AutoCloseable {
     private final Map<String, Script> overrides = new ConcurrentHashMap<>();
     private volatile Reply outage;
     private final AtomicInteger inFlight = new AtomicInteger();
+    /** Requests come and not answered to their last byte: what the client can still be waiting on. */
+    private final AtomicInteger unanswered = new AtomicInteger();
+
     private final AtomicInteger mostInFlight = new AtomicInteger();
     private volatile long lastFinishedAt = System.nanoTime();
 
@@ -144,7 +147,12 @@ public final class FakeRestServer implements AutoCloseable {
         return List.copyOf(requests);
     }
 
-    /** The most requests the fake was answering at the same time, since it started. */
+    /**
+     * The most requests the fake was answering at the same time, since it started: each from its
+     * arrival to just before the last byte of its answer. Not to the end of its handling, which goes
+     * on after the client has the whole answer: a client that sends its next request only once it
+     * has the last one's answer is never seen with two.
+     */
     public int mostInFlight() {
         return mostInFlight.get();
     }
@@ -238,7 +246,9 @@ public final class FakeRestServer implements AutoCloseable {
     }
 
     private void handle(HttpExchange exchange) throws IOException {
-        mostInFlight.accumulateAndGet(inFlight.incrementAndGet(), Math::max);
+        inFlight.incrementAndGet();
+        mostInFlight.accumulateAndGet(unanswered.incrementAndGet(), Math::max);
+        var answering = new Answering();
         try (exchange) {
             String method = exchange.getRequestMethod();
             String path = exchange.getRequestURI().getPath();
@@ -257,12 +267,17 @@ public final class FakeRestServer implements AutoCloseable {
             byte[] body = reply.body().getBytes(UTF_8);
             exchange.getResponseHeaders().set("Content-Type", "application/xml");
             reply.headers().forEach(exchange.getResponseHeaders()::set);
-            exchange.sendResponseHeaders(reply.status(), body.length == 0 ? -1 : body.length);
             if (body.length == 0) {
+                answering.answered();
+                exchange.sendResponseHeaders(reply.status(), -1);
                 return;
             }
+            exchange.sendResponseHeaders(reply.status(), body.length);
             if (!reply.stall().isPositive() && !reply.cutOff()) {
-                exchange.getResponseBody().write(body);
+                OutputStream out = exchange.getResponseBody();
+                out.write(body, 0, body.length - 1);
+                answering.answered();
+                out.write(body, body.length - 1, 1);
                 return;
             }
             // the headers and half the body, then a pause or a dropped connection
@@ -270,6 +285,7 @@ public final class FakeRestServer implements AutoCloseable {
             out.write(body, 0, body.length / 2);
             out.flush();
             if (reply.cutOff()) {
+                answering.answered();
                 throw new IOException("the fake cut the answer off");
             }
             try {
@@ -278,11 +294,25 @@ public final class FakeRestServer implements AutoCloseable {
                 Thread.currentThread().interrupt();
                 return;
             }
+            answering.answered();
             out.write(body, body.length / 2, body.length - body.length / 2);
         } finally {
+            answering.answered();
             // in this order, so whoever sees nothing in flight also sees when it finished
             lastFinishedAt = System.nanoTime();
             inFlight.decrementAndGet();
+        }
+    }
+
+    /** A request's count among the unanswered, taken off once. */
+    private final class Answering {
+        private boolean answered;
+
+        void answered() {
+            if (!answered) {
+                answered = true;
+                unanswered.decrementAndGet();
+            }
         }
     }
 
