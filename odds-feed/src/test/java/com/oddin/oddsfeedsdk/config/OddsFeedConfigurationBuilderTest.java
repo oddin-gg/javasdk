@@ -5,7 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.OddsFeed;
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.Test;
 
 /** The builder keeps 0.0.x's hosts and defaults. */
@@ -165,6 +167,44 @@ class OddsFeedConfigurationBuilderTest {
                 .hasMessageContaining("environment");
     }
 
+    /** 0.0.x's Kotlin setters checked each argument, so a null threw at the call, not later. */
+    @Test
+    void aNullArgumentIsANullPointerExceptionAtOnceAndChangesNothing() {
+        var builder = builder().selectProduction().setAccessToken("token");
+        List<ThrowingCallable> nulls = List.of(
+                () -> builder.selectProduction(nullValue()),
+                () -> builder.selectIntegration(nullValue()),
+                () -> builder.selectTest(nullValue()),
+                () -> builder.selectEnvironment(nullValue(), "api.local"),
+                () -> builder.selectEnvironment("mq.local", nullValue()),
+                () -> builder.selectEnvironment(nullValue(), "api.local", 5671),
+                () -> builder.selectEnvironment("mq.local", nullValue(), 5671),
+                () -> builder.setAccessToken(nullValue()),
+                () -> builder.setExceptionHandlingStrategy(nullValue()),
+                () -> builder.setInitialSnapshotRecoveryInterval(nullValue()),
+                () -> builder.setHttpClientTimeout(nullValue()),
+                () -> builder.setStartupTimeout(nullValue()),
+                () -> builder.setMessagingSslContext(nullValue()));
+        for (int i = 0; i < nulls.size(); i++) {
+            assertThatThrownBy(nulls.get(i)).as("setter %d", i).isInstanceOf(NullPointerException.class);
+        }
+        assertThatThrownBy(() -> new Environment(nullValue(), "api.local", 5671))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new Environment("mq.local", nullValue(), 5671))
+                .isInstanceOf(NullPointerException.class);
+
+        OddsFeedConfiguration configuration = builder.build();
+        assertThat(configuration.getAccessToken()).isEqualTo("token");
+        assertThat(configuration.getSelectedEnvironment())
+                .isEqualTo(new Environment("mq.oddin.gg", "api-mq.oddin.gg", 5672));
+        assertThat(configuration.getExceptionHandlingStrategy())
+                .as("not CATCH by a null")
+                .isEqualTo(ExceptionHandlingStrategy.THROW);
+        assertThat(configuration.getInitialSnapshotRecoveryInterval()).isNull();
+        assertThat(configuration.getHttpClientTimeout()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(configuration.getMessagingSslContext()).isNull();
+    }
+
     @Test
     void theCompanionHandsOutTheSameBuilder() {
         assertThat(OddsFeed.Companion.getOddsFeedConfigurationBuilder())
@@ -173,6 +213,12 @@ class OddsFeedConfigurationBuilderTest {
 
     private static OddsFeedConfigurationBuilder builder() {
         return OddsFeed.getOddsFeedConfigurationBuilder();
+    }
+
+    /** A null where the API says there is none, as a careless caller passes it. */
+    @SuppressWarnings({"NullAway", "TypeParameterUnusedInFormals"})
+    private static <T> T nullValue() {
+        return null;
     }
 
     private static Environment environment(OddsFeedConfigurationBuilder builder) {

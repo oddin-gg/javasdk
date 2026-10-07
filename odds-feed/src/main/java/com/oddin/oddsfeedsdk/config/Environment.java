@@ -1,5 +1,7 @@
 package com.oddin.oddsfeedsdk.config;
 
+import static java.util.Objects.requireNonNull;
+
 import java.util.Objects;
 import org.jspecify.annotations.Nullable;
 
@@ -10,8 +12,8 @@ public final class Environment {
     private final int messagingPort;
 
     public Environment(String messagingHost, String apiHost, int messagingPort) {
-        this.messagingHost = messagingHost;
-        this.apiHost = apiHost;
+        this.messagingHost = requireNonNull(messagingHost, "messagingHost");
+        this.apiHost = requireNonNull(apiHost, "apiHost");
         this.messagingPort = messagingPort;
     }
 
