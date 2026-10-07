@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
@@ -150,6 +151,59 @@ class OddsFeedTest {
             } finally {
                 feed.close();
             }
+        }
+    }
+
+    @Test
+    void aStartThatFailsDoesNotWaitForAnEventsCallbackThatWaitsForTheStart() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            // the start fails on the producer list, a second after its call of whoami is reported
+            api.respond(PRODUCERS, Reply.of(403, FORBIDDEN).after(Duration.ofSeconds(1)));
+            var holder = new CompletableFuture<OddsFeed>();
+            var asked = new AtomicBoolean();
+            var answered = new CountDownLatch(1);
+            var feed = new OddsFeed(
+                    new GlobalEventsListener() {
+                        @Override
+                        public void onProducerStatusChange(ProducerStatus producerStatus) {}
+
+                        @Override
+                        public void onConnectionDown() {}
+
+                        @Override
+                        public void onEventRecoveryCompleted(URN eventId, long requestId) {}
+
+                        @Override
+                        public void onApiCall(ApiCallEvent call) {
+                            if (!asked.compareAndSet(false, true)) {
+                                return;
+                            }
+                            // waits for the start under way, whose lock it needs
+                            try {
+                                holder.join().getProducerManager();
+                            } catch (InitException failedToo) {
+                                // the start it waited for failed, and so did the one it made
+                            } finally {
+                                answered.countDown();
+                            }
+                        }
+                    },
+                    configurationAgainst(api));
+            holder.complete(feed);
+            Set<Thread> before = Thread.getAllStackTraces().keySet();
+            try {
+                long starting = System.nanoTime();
+                assertThatThrownBy(feed::getBookMakerDetail).isInstanceOf(InitException.class);
+                assertThat(Duration.ofNanos(System.nanoTime() - starting))
+                        .as("a failed start, with a callback waiting for it")
+                        .isLessThan(Duration.ofSeconds(3));
+                assertThat(answered.await(WAIT.toSeconds(), TimeUnit.SECONDS))
+                        .as("the callback went on once the start had failed")
+                        .isTrue();
+            } finally {
+                feed.close();
+            }
+            awaitNoThreadsBut(before);
         }
     }
 

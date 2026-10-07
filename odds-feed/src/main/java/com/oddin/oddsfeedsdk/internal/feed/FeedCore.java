@@ -78,7 +78,9 @@ public record FeedCore(
 
     /**
      * Asks the API who the bookmaker is and which producers there are, within the startup timeout,
-     * then builds the rest, which asks nothing yet. Whatever it built is closed again when it fails.
+     * then builds the rest, which asks nothing yet. Whatever it built is closed again when it fails;
+     * the events dispatcher is told to stop and not waited for, since a callback on its thread may be
+     * waiting for this very start, through a manager getter it calls.
      *
      * @param starting given the REST client before the first call, so a feed closed meanwhile can cut
      *     the start short by closing the client
@@ -120,7 +122,8 @@ public record FeedCore(
             if (fetches != null) {
                 fetches.shutdownNow();
             }
-            events.close();
+            // told, not waited for: the caller holds the start's lock, which a callback may wait for
+            events.stop();
             throw e;
         }
     }
