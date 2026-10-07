@@ -850,7 +850,10 @@ turns into a timeout with a counter instead of a silent hang. A dispatcher insid
 callback for longer than the configured limit, an executor whose queue has not moved
 while non-empty, or a reported deadlock produces a loud log line, a health event on the
 global listener (`onHealthEvent`: the component, its previous and new `HealthState`, a
-reason), and a state change in `getHealth()`.
+reason), and a state change in `getHealth()`. The states are `HEALTHY`, `DEGRADED`
+(working, with a quality the design deliberately gives up, such as a catalog served stale
+or a session lagging) and `STALLED` (something the watchdog found not moving, which the
+feed cannot unblock; the remedy is `close()` and a new feed).
 
 `getHealth()` exposes the counters for every degradation the design deliberately
 allows: dropped side-loads, catalogs served stale and for how long, unparsable

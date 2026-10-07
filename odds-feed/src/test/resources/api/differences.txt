@@ -95,7 +95,7 @@ added | subscribe/SafetyNetEvent | what the safety net did about a session too f
 added | subscribe/SafetyNetEvent$Kind | a reset made, or a recovery request the API refused
 added | subscribe/SessionLagChange | a session lagging, or caught up again
 added | subscribe/HealthEvent | a change of a part of the feed's health
-added | subscribe/HealthState | healthy, degraded or unhealthy
+added | subscribe/HealthState | healthy, degraded or stalled
 added | subscribe/HealthComponent | the parts of the feed whose health the SDK watches
 
 # An event recovery's status by its request id, as the Go SDK keeps it.
