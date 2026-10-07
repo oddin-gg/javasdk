@@ -570,7 +570,8 @@ and REST workers post facts to it; it decides and posts work out.
   recovery starts from the oldest open gap: after a lost connection, the oldest
   checkpoint among the sessions that receive the producer. A gap keeps its start until
   a recovery that covers it completes. A client-supplied recovery-from timestamp
-  (existing setter) seeds every session's checkpoint at `open()`. To resume after a
+  (existing setter) seeds every session's checkpoint at `open()`; set once `open()` has
+  begun, it is ignored with a warning (0.0.x took it until the first up). To resume after a
   restart, a client persists the producer's resume point, the oldest of its open gaps'
   starts and its sessions' checkpoints, and passes it back through
   `setProducerRecoveryFromTimestamp`. `Producer.getTimestampForRecovery()` reports it

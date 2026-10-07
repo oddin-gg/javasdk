@@ -20,6 +20,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Date;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -209,6 +210,30 @@ class ProducersTest {
         assertThat(producers.recoveryFrom(99L))
                 .as("a producer the list does not have")
                 .isZero();
+    }
+
+    /** The feed reads the starts as it opens: one set after would be lost without a word. */
+    @Test
+    void aRecoveryStartSetOnceTheFeedHasBegunToOpenIsIgnoredWithAWarning() {
+        var warnings = new ArrayList<String>();
+        var producers = new Producers(client.fetchProducers(), InstantSource.fixed(NOW), warnings::add);
+        long saved = NOW.minus(Duration.ofHours(1)).toEpochMilli();
+        producers.setProducerRecoveryFromTimestamp(1L, saved);
+        assertThat(warnings).as("before open()").isEmpty();
+
+        producers.opened();
+        long later = NOW.minus(Duration.ofMinutes(5)).toEpochMilli();
+        producers.setProducerRecoveryFromTimestamp(1L, later);
+        assertThat(producers.recoveryFrom(1L)).as("what the feed read stays").isEqualTo(saved);
+        assertThat(producer(producers, 1L).getTimestampForRecovery()).isEqualTo(Instant.ofEpochMilli(saved));
+        assertThat(warnings)
+                .containsExactly("setProducerRecoveryFromTimestamp(1, " + later + ") after open() is ignored: the"
+                        + " feed read where each producer's recovery starts as it opened. Set it before open().");
+        assertThatThrownBy(() -> producers.setProducerRecoveryFromTimestamp(1L, 1))
+                .as("refused as before")
+                .isInstanceOf(IllegalArgumentException.class);
+        producers.setProducerRecoveryFromTimestamp(99L, later);
+        assertThat(warnings).as("a producer the list does not have, as before").hasSize(1);
     }
 
     @Test
