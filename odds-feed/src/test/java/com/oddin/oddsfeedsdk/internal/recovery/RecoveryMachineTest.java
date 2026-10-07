@@ -641,6 +641,26 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void factsLeftUnhandledAtTheCloseKeepAPointAlreadyBehindTheLastSubscribedAlive() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.live(1, PRE, Duration.ZERO);
+        Instant processed = Instant.ofEpochMilli(feed.now());
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(processed);
+        // a subscribed alive on the alive channel, ahead of what the session processed
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.alive(PRE);
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(processed);
+
+        feed.machine.closing();
+        feed.machine.unhandledAtClose();
+        // read as the actor leaves it: nothing publishes after the fallback
+        assertThat(requireNonNull(feed.producers.getProducer(PRE)).getTimestampForRecovery())
+                .as("the published point, older than the last subscribed alive")
+                .isEqualTo(processed);
+    }
+
+    @Test
     void aGapOlderThanTheCheckpointHoldsTheResumePointUntilItsRecoveryCompletes() {
         var feed = Harness.upWith(MessageInterest.ALL);
         feed.clock.advance(Duration.ofMinutes(1));
