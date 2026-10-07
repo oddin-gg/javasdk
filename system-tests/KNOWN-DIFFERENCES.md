@@ -148,8 +148,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   the API refuses, with no backoff and no cap. The producer stays down meanwhile. 0.0.57 and
   older asked again only once the maximum recovery time, 360 minutes by default, had passed.
 - **1.0:** Re-issued with backoff, at most three times in a row, re-armed after ten minutes or
-  when an alive arrives after a gap (section 4, Recovery and producers). The test allows 30 s for
-  the second request.
+  when an alive arrives after a gap (section 4, Recovery and producers). The test keeps the API
+  down through the HTTP client's own attempts of the first request, which carry its request id,
+  and allows 30 s for a request with a new one.
 - **Why:** A short API outage at the wrong moment keeps a producer down for five minutes on
   0.0.58, for hours on 0.0.57 and older.
 - **Pinned by:** `RestOutageScenarioIT.aRecoveryRequestTheApiRefusedIsAskedForAgain`

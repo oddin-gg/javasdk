@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.RecordedRequest;
 import com.oddin.oddsfeed.systemtests.support.KnownDifference;
 import com.oddin.oddsfeed.systemtests.support.Received;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
@@ -16,6 +17,7 @@ import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import java.time.Duration;
 import java.util.Locale;
+import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -102,7 +104,9 @@ class RestOutageScenarioIT {
      * A recovery request the API refuses leaves the producer down. 0.0.x marks the recovery as
      * started anyway and asks again only five minutes after the request (0.0.57 and older once the
      * maximum recovery time had passed, six hours by default), so the alives that arrive after the
-     * API is back change nothing for now. 1.0 re-issues it with backoff.
+     * API is back change nothing for now. 1.0 re-issues it with backoff: a new request, with a new
+     * request id. The API stays down through the HTTP client's own retries of the first call, which
+     * carry its id, so only the re-issue can be the request that follows.
      */
     @Test
     void aRecoveryRequestTheApiRefusedIsAskedForAgain() throws InterruptedException {
@@ -112,17 +116,34 @@ class RestOutageScenarioIT {
             sdk.open(MessageInterest.ALL);
             rest.startOutage(503);
             feed.publish(alive(1, true));
-            rest.awaitRequest("POST", PREMATCH_RECOVERY);
-            rest.endOutage();
+            String refused = rest.awaitRequest("POST", PREMATCH_RECOVERY).parameter("request_id");
+            assertThat(refused).as("request id of the refused recovery").isNotBlank();
 
             KnownDifference.FAILED_RECOVERY_IS_NOT_RETRIED.expect(
-                    () -> assertThat(recoveriesWhileAlive(rest, feed, Duration.ofSeconds(3)))
-                            .as("recovery requests of producer 1, with an alive every second after the outage")
-                            .isEqualTo(1),
-                    // the backoff is the recovery actor's to choose; it has to fit in this wait
-                    () -> assertThat(recoveriesWhileAlive(rest, feed, Duration.ofSeconds(30)))
-                            .as("recovery requests of producer 1, with an alive every second after the outage")
-                            .isGreaterThanOrEqualTo(2));
+                    () -> {
+                        rest.endOutage();
+                        assertThat(recoveriesWhileAlive(rest, feed, Duration.ofSeconds(3)))
+                                .as("recovery requests of producer 1, with an alive every second after the outage")
+                                .isEqualTo(1);
+                    },
+                    () -> {
+                        // the call's own attempts, all of them refused: one request, sent again
+                        assertThat(rest.awaitRequests("POST", PREMATCH_RECOVERY, 3))
+                                .as("the HTTP client's attempts of the refused recovery")
+                                .extracting(request -> request.parameter("request_id"))
+                                .containsOnly(refused);
+                        // the last attempt's 503 is chosen as it arrives; let it go out first
+                        Thread.sleep(200);
+                        rest.endOutage();
+                        // the backoff is the recovery actor's to choose; it has to fit in this wait
+                        assertThat(reissueWhileAlive(rest, feed, refused, Duration.ofSeconds(30)))
+                                .as("a recovery request of producer 1 after the refused one's, with an alive"
+                                        + " every second after the outage")
+                                .hasValueSatisfying(reissue -> assertThat(reissue.parameter("request_id"))
+                                        .as("its request id")
+                                        .isNotBlank()
+                                        .isNotEqualTo(refused));
+                    });
             assertThat(sdk.oddsFeed().getProducerManager().isProducerDown(1))
                     .as("producer 1 down, without a completed recovery")
                     .isTrue();
@@ -141,5 +162,24 @@ class RestOutageScenarioIT {
             Thread.sleep(Duration.ofSeconds(1));
         }
         return rest.requests("POST", PREMATCH_RECOVERY).size();
+    }
+
+    /**
+     * The first recovery request of producer 1 with a request id other than {@code refused}, sending
+     * it an alive every second for up to {@code wait}; empty when none arrives.
+     */
+    private static Optional<RecordedRequest> reissueWhileAlive(
+            FakeRestServer rest, FakeFeed feed, String refused, Duration wait) throws InterruptedException {
+        long deadline = System.nanoTime() + wait.toNanos();
+        while (true) {
+            Optional<RecordedRequest> reissue = rest.requests("POST", PREMATCH_RECOVERY).stream()
+                    .filter(request -> !refused.equals(request.parameter("request_id")))
+                    .findFirst();
+            if (reissue.isPresent() || System.nanoTime() > deadline) {
+                return reissue;
+            }
+            feed.publish(alive(1, true));
+            Thread.sleep(Duration.ofSeconds(1));
+        }
     }
 }
