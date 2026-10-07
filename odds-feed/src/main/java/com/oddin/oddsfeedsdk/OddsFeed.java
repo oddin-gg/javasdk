@@ -360,6 +360,11 @@ public final class OddsFeed {
         }
     }
 
+    /** The client's events; for a test. */
+    EventsDispatcher events() {
+        return events;
+    }
+
     /** What {@link #open} added and {@link #close} is to stop; for a test. */
     @Nullable
     OpenFeed running() {
