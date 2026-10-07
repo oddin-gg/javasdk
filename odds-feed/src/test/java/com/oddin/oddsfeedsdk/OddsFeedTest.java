@@ -90,7 +90,7 @@ class OddsFeedTest {
     }
 
     @Test
-    void theHealthStartsNothingAndHasTheEventsAndTheCatalogsOnceTheFeedHasStarted() {
+    void theHealthStartsNothingAndHasTheEventsTheCatalogsAndTheWatchOnceTheFeedHasStarted() {
         try (var api = FakeRestServer.start()) {
             var feed = feedAgainst(api);
             try {
@@ -108,6 +108,8 @@ class OddsFeedTest {
                 assertThat(started.components())
                         .containsExactly(
                                 Map.entry(HealthComponent.EVENTS, HealthState.HEALTHY),
+                                Map.entry(HealthComponent.TIMERS, HealthState.HEALTHY),
+                                Map.entry(HealthComponent.THREADS, HealthState.HEALTHY),
                                 Map.entry(HealthComponent.CATALOGS, HealthState.HEALTHY));
                 assertThat(started.catalogs()).hasSize(4);
                 assertThat(started.sessions()).as("none before the feed opens").isEmpty();
@@ -119,7 +121,11 @@ class OddsFeedTest {
             }
             assertThat(feed.getHealth().components())
                     .as("read once closed too")
-                    .containsOnlyKeys(HealthComponent.EVENTS, HealthComponent.CATALOGS);
+                    .containsOnlyKeys(
+                            HealthComponent.EVENTS,
+                            HealthComponent.TIMERS,
+                            HealthComponent.THREADS,
+                            HealthComponent.CATALOGS);
         }
     }
 
@@ -380,8 +386,9 @@ class OddsFeedTest {
             requireNonNull(started.getSportsInfoManager().getMatch(MATCH)).getName(Locale.ENGLISH);
             api.awaitQuiet();
             assertThat(feedThreads(before))
-                    .as("the REST client's and the events dispatcher's, while the feed runs, never opened")
-                    .contains("oddsfeed-events");
+                    .as(
+                            "the REST client's, the events dispatcher's and the watchdog's, while the feed runs, never opened")
+                    .contains("oddsfeed-events", "oddsfeed-timer");
             started.close();
 
             api.respond(WHOAMI, 403, FORBIDDEN);

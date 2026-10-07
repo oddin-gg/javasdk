@@ -246,6 +246,9 @@ public final class HealthMonitor implements RecoveryEvents {
         if (started) {
             found.put(new Part(HealthComponent.EVENTS, 0), watchedOnly(HealthComponent.EVENTS));
             found.put(new Part(HealthComponent.CATALOGS, 0), catalogsFound(catalogs));
+            // the watchdog's own, which starts with the feed
+            found.put(new Part(HealthComponent.TIMERS, 0), watchedOnly(HealthComponent.TIMERS));
+            found.put(new Part(HealthComponent.THREADS, 0), watchedOnly(HealthComponent.THREADS));
         }
         if (opened) {
             found.put(new Part(HealthComponent.CONSUMER, 0), watchedOnly(HealthComponent.CONSUMER));
@@ -261,7 +264,7 @@ public final class HealthMonitor implements RecoveryEvents {
             found.put(part, sessionFound);
             sessionsFound.add(withState(session, sessionFound.state()));
         }
-        // a part only the watch knows, such as the timers, is one the feed has once it is watched
+        // a part the watch found before the feed had it is one the feed has once it is watched
         watched.forEach((part, watch) -> found.putIfAbsent(part, watch));
 
         var components = new EnumMap<HealthComponent, HealthState>(HealthComponent.class);

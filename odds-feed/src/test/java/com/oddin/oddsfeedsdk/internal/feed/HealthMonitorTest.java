@@ -249,7 +249,12 @@ class HealthMonitorTest {
                 List.of(),
                 caches(),
                 noEvents());
-        assertThat(started.components()).containsOnlyKeys(HealthComponent.EVENTS, HealthComponent.CATALOGS);
+        assertThat(started.components())
+                .containsOnlyKeys(
+                        HealthComponent.EVENTS,
+                        HealthComponent.TIMERS,
+                        HealthComponent.THREADS,
+                        HealthComponent.CATALOGS);
 
         var replay = health.assess(
                 health.nextReading(),
@@ -267,6 +272,8 @@ class HealthMonitorTest {
                 .containsOnlyKeys(
                         HealthComponent.EVENTS,
                         HealthComponent.CATALOGS,
+                        HealthComponent.TIMERS,
+                        HealthComponent.THREADS,
                         HealthComponent.CONSUMER,
                         HealthComponent.SESSION);
 
@@ -290,6 +297,8 @@ class HealthMonitorTest {
                         Map.entry(HealthComponent.ALIVES, HealthState.HEALTHY),
                         Map.entry(HealthComponent.RECOVERY, HealthState.STALLED),
                         Map.entry(HealthComponent.EVENTS, HealthState.HEALTHY),
+                        Map.entry(HealthComponent.TIMERS, HealthState.HEALTHY),
+                        Map.entry(HealthComponent.THREADS, HealthState.HEALTHY),
                         Map.entry(HealthComponent.CATALOGS, HealthState.DEGRADED));
         assertThat(live.state()).as("the worst").isEqualTo(HealthState.STALLED);
     }
@@ -365,7 +374,12 @@ class HealthMonitorTest {
             var core = FeedCore.start(configuration, events, client -> {});
             try {
                 var notOpen = health.health(core, null);
-                assertThat(notOpen.components()).containsOnlyKeys(HealthComponent.EVENTS, HealthComponent.CATALOGS);
+                assertThat(notOpen.components())
+                        .containsOnlyKeys(
+                                HealthComponent.EVENTS,
+                                HealthComponent.TIMERS,
+                                HealthComponent.THREADS,
+                                HealthComponent.CATALOGS);
                 assertThat(notOpen.catalogs())
                         .extracting(FeedHealth.Catalog::name)
                         .containsExactly(
@@ -394,6 +408,8 @@ class HealthMonitorTest {
                                     HealthComponent.ALIVES,
                                     HealthComponent.RECOVERY,
                                     HealthComponent.EVENTS,
+                                    HealthComponent.TIMERS,
+                                    HealthComponent.THREADS,
                                     HealthComponent.CATALOGS);
                     assertThat(open.sessions())
                             .extracting(FeedHealth.Session::id)
@@ -433,6 +449,8 @@ class HealthMonitorTest {
                                     HealthComponent.CONSUMER,
                                     HealthComponent.SESSION,
                                     HealthComponent.EVENTS,
+                                    HealthComponent.TIMERS,
+                                    HealthComponent.THREADS,
                                     HealthComponent.CATALOGS);
                 } finally {
                     replay.close();
@@ -528,7 +546,8 @@ class HealthMonitorTest {
         return new FeedHealth.Events(0, 0, 0, 0);
     }
 
-    private static final class Silent implements OddsFeedListener {
+    /** A session listener that does nothing; for the tests of this package. */
+    static final class Silent implements OddsFeedListener {
         @Override
         public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {}
 

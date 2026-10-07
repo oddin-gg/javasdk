@@ -12,7 +12,7 @@ public enum HealthComponent {
     RECOVERY,
     /** The thread that runs the callbacks of the feed as a whole, this listener's. */
     EVENTS,
-    /** The SDK's timers. */
+    /** The SDK's timer thread, which runs its watch over the others. */
     TIMERS,
     /** The JVM's threads, for a deadlock among them. */
     THREADS,
