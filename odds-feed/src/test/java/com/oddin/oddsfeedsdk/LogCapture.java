@@ -1,0 +1,46 @@
+package com.oddin.oddsfeedsdk;
+
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import java.util.List;
+import org.slf4j.LoggerFactory;
+
+/**
+ * What one class of the SDK logs at WARN or above while it is open, for a test to check what the
+ * client would read; the unit tests log nothing otherwise.
+ */
+public final class LogCapture implements AutoCloseable {
+
+    private final Logger logger;
+    private final ListAppender<ILoggingEvent> appender = new ListAppender<>();
+
+    private LogCapture(Class<?> source) {
+        logger = (Logger) LoggerFactory.getLogger(source);
+        appender.start();
+        logger.addAppender(appender);
+        logger.setLevel(Level.WARN);
+    }
+
+    public static LogCapture of(Class<?> source) {
+        return new LogCapture(source);
+    }
+
+    /** "LEVEL message" for each line, oldest first. */
+    public List<String> lines() {
+        // AppenderBase.doAppend adds to the list holding the appender's own lock
+        synchronized (appender) {
+            return appender.list.stream()
+                    .map(event -> event.getLevel() + " " + event.getFormattedMessage())
+                    .toList();
+        }
+    }
+
+    @Override
+    public void close() {
+        logger.setLevel(null);
+        logger.detachAppender(appender);
+        appender.stop();
+    }
+}

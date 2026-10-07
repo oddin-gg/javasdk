@@ -1,0 +1,5 @@
+<!-- The unit tests log nothing, as with no logging backend; LogCapture turns on the logger it reads. -->
+<configuration>
+  <statusListener class="ch.qos.logback.core.status.NopStatusListener"/>
+  <root level="OFF"/>
+</configuration>

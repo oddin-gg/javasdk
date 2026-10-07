@@ -16,7 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Consumer;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.UnaryOperator;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -40,9 +40,10 @@ public final class Producers implements ProducerManager {
 
     private final Map<Long, AtomicReference<ProducerState>> producers;
     private final InstantSource clock;
-    private final Consumer<String> warnings;
+    /** Held by a recovery start's check and write, and by {@link #opened}, so none lands after it. */
+    private final ReentrantLock recoveryStarts = new ReentrantLock();
     /** Whether the feed has begun to open, and so reads, or has read, the recovery starts. */
-    private volatile boolean opened;
+    private boolean opened;
 
     public Producers(RAProducers list) {
         this(list, InstantSource.system());
@@ -50,13 +51,7 @@ public final class Producers implements ProducerManager {
 
     /** With the clock the producers' delays and the recovery window are read by. */
     public Producers(RAProducers list, InstantSource clock) {
-        this(list, clock, LOG::warn);
-    }
-
-    /** With where a warning goes, for a test to read. */
-    Producers(RAProducers list, InstantSource clock, Consumer<String> warnings) {
         this.clock = clock;
-        this.warnings = warnings;
         var byId = new LinkedHashMap<Long, AtomicReference<ProducerState>>();
         for (RAProducer producer : list.getProducer()) {
             byId.put(
@@ -143,9 +138,9 @@ public final class Producers implements ProducerManager {
 
     /**
      * Where recovery of this producer starts, epoch millis, 0 for a full snapshot. The feed reads
-     * it as it opens; once {@code open()} has begun, a call changes nothing and logs a warning.
-     * 0.0.x took it until the producer's first up, and a client could set it just after {@code
-     * open()}.
+     * it as it opens: a call either lands before {@link #opened}, and so before the feed reads it,
+     * or, from then on, changes nothing and logs a warning. 0.0.x took it until the producer's
+     * first up, and a client could set it just after {@code open()}.
      *
      * @throws IllegalArgumentException when it is further back than the producer's stateful recovery
      *     window, with 0.0.x's message
@@ -156,32 +151,47 @@ public final class Producers implements ProducerManager {
         if (state == null) {
             return;
         }
-        if (timestamp != 0) {
-            int window = state.get().statefulRecoveryWindowInMinutes();
-            long requested = clock.millis() - timestamp;
-            if (requested > Duration.ofMinutes(window).toMillis()) {
-                throw new IllegalArgumentException(String.format(
-                        "Last received message timestamp can not be more than '%s' minutes ago, producerId:%s"
-                                + " timestamp:%s (max recovery = '%s' minutes ago)",
-                        window, producerId, timestamp, window));
+        boolean ignored;
+        recoveryStarts.lock();
+        try {
+            if (timestamp != 0) {
+                int window = state.get().statefulRecoveryWindowInMinutes();
+                long requested = clock.millis() - timestamp;
+                if (requested > Duration.ofMinutes(window).toMillis()) {
+                    throw new IllegalArgumentException(String.format(
+                            "Last received message timestamp can not be more than '%s' minutes ago, producerId:%s"
+                                    + " timestamp:%s (max recovery = '%s' minutes ago)",
+                            window, producerId, timestamp, window));
+                }
             }
+            ignored = opened;
+            if (!ignored) {
+                state.updateAndGet(s -> s.withRecoveryFrom(timestamp));
+            }
+        } finally {
+            recoveryStarts.unlock();
         }
-        if (opened) {
-            warnings.accept(String.format(
-                    "setProducerRecoveryFromTimestamp(%s, %s) after open() is ignored: the feed read where each"
+        if (ignored) {
+            LOG.warn(
+                    "setProducerRecoveryFromTimestamp({}, {}) after open() is ignored: the feed read where each"
                             + " producer's recovery starts as it opened. Set it before open().",
-                    producerId, timestamp));
-            return;
+                    producerId,
+                    timestamp);
         }
-        state.updateAndGet(s -> s.withRecoveryFrom(timestamp));
     }
 
     /**
      * The feed has begun to open, and reads the recovery starts: {@link
-     * #setProducerRecoveryFromTimestamp} changes nothing from now on.
+     * #setProducerRecoveryFromTimestamp} changes nothing from now on. Returns once a set under way
+     * has landed, so the feed reads it.
      */
     public void opened() {
-        opened = true;
+        recoveryStarts.lock();
+        try {
+            opened = true;
+        } finally {
+            recoveryStarts.unlock();
+        }
     }
 
     /**
