@@ -27,7 +27,9 @@ import org.openjdk.jmh.runner.options.TimeValue;
  * {@link #TIME_FLOOR_US}: below it the runner's noise weighs as much as the code.
  *
  * <p>JMH forks a JVM of its own for the measurement, with its own options, so the coverage agent
- * the build gives the tests does not run inside it.
+ * the build gives the tests does not run inside it. Its runner, here, would take a lock in {@code
+ * /tmp} shared by every build on the machine and fail when another holds it; the build runs it
+ * with {@code jmh.ignoreLock}, so builds side by side do not fail one another.
  *
  * <p>The build runs only the benchmarks with a budget. {@code -Dbenchmarks.include=DecodeBenchmark}
  * runs the comparison with the other decoders too, and {@code -Dbenchmarks.iterations=10} measures

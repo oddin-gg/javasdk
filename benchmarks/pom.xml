@@ -87,6 +87,22 @@
           </compilerArgs>
         </configuration>
       </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <!--
+              JMH's runner, in this test JVM, takes a lock on java.io.tmpdir/jmh.lock - /tmp, shared by
+              every build on the machine - and fails at once when another run holds it, so two builds
+              at the same time failed one another. Without it they measure side by side, as they would
+              with a tmpdir per build; the budgets hold either way: the allocation hardly moves with
+              load, and the time budget is generous enough for a shared runner.
+            -->
+            <jmh.ignoreLock>true</jmh.ignoreLock>
+          </systemPropertyVariables>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 </project>
