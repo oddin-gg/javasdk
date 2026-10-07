@@ -7,10 +7,12 @@ import com.oddin.oddsfeedsdk.internal.rest.RecoveryRequests;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.InstantSource;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -65,6 +67,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private static final int REQUESTS_PER_TURN = 1_000;
     /** How often a reset's worker looks whether the session's channel is open again. */
     private static final long REOPEN_POLL_MILLIS = 100;
+    /**
+     * How many of the request ids it asked for the actor remembers: far more than can be in flight,
+     * a recovery per producer and 128 event recoveries each, so a snapshot complete one awaits is
+     * never taken for a stray one.
+     */
+    static final int ISSUED_KEPT = 10_000;
     /** How long close() waits for the actor's thread to end, unless given a deadline. */
     private static final Duration CLOSE_WAIT = Duration.ofSeconds(5);
     /**
@@ -94,6 +102,20 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final Map<Long, AliveSlot> alives = new ConcurrentHashMap<>();
 
     private final Producers producers;
+
+    /**
+     * The request ids the actor has asked for, the last {@link #ISSUED_KEPT}: a snapshot complete of
+     * any other is one no recovery of this feed awaits, and is dropped as it is posted. Written by
+     * the actor's thread only, read by any.
+     */
+    private final Set<Long> issued = ConcurrentHashMap.newKeySet();
+    /** The same ids, oldest first, for taking the oldest out; the actor's thread only. */
+    private final ArrayDeque<Long> issuedOrder = new ArrayDeque<>();
+    /**
+     * The snapshot completes queued and not handled yet, one per session, producer and request: the
+     * same one again meanwhile would change nothing, and is not queued twice.
+     */
+    private final Set<Fact.SnapshotComplete> completesQueued = ConcurrentHashMap.newKeySet();
 
     private final Thread thread;
     /**
@@ -198,7 +220,23 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
             @Override
             public void snapshotComplete(long producerId, long requestId) {
-                postEssential(new Fact.SnapshotComplete(id, producerId, requestId));
+                // essential facts are never dropped, so a flood of them is stopped here: one of a
+                // request this feed never asked for completes nothing, and one queued already is
+                // all the actor needs of it
+                if (!issued.contains(requestId)) {
+                    long stray = counters.unknownCompletions.incrementAndGet();
+                    if (stray == 1 || stray % 1_000 == 0) {
+                        LOG.warn(
+                                "A snapshot complete of request {}, which this feed did not ask for, is dropped; {} so far",
+                                requestId,
+                                stray);
+                    }
+                    return;
+                }
+                var complete = new Fact.SnapshotComplete(id, producerId, requestId);
+                if (completesQueued.add(complete) && !postEssential(complete)) {
+                    completesQueued.remove(complete);
+                }
             }
 
             @Override
@@ -627,8 +665,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     machine.processed(session, producer, generated, taken, requestId);
                 case Fact.SessionAlive(var session, var producer, var generated, var taken, var subscribed) ->
                     machine.sessionAlive(session, producer, generated, taken, subscribed);
-                case Fact.SnapshotComplete(var session, var producer, var requestId) ->
+                case Fact.SnapshotComplete(var session, var producer, var requestId) -> {
+                    completesQueued.remove(fact);
                     machine.snapshotComplete(session, producer, requestId);
+                }
                 case Fact.ChannelLost(var session) -> machine.channelLost(session);
                 case Fact.ChannelReopened(var session) -> machine.channelReopened(session);
                 case Fact.Connection(var up) -> {
@@ -674,6 +714,13 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
 
         @Override
         public void request(Call call) {
+            // remembered before it goes out, so its snapshot complete, which can only come after, is known
+            if (issued.add(call.requestId())) {
+                issuedOrder.addLast(call.requestId());
+                if (issuedOrder.size() > ISSUED_KEPT) {
+                    issued.remove(issuedOrder.removeFirst());
+                }
+            }
             if (closed) {
                 // the facts the actor finishes as it closes: no answer would be taken any more
                 return;

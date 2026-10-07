@@ -201,6 +201,48 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aFloodOfSnapshotCompletesQueuesOneOfEachTheFeedAskedForAndNoneOfTheRest() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        Request first = api.next();
+
+        // the actor held, so nothing it is posted is taken meanwhile
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.ChannelReopened) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        session.channelReopened();
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        try {
+            for (int i = 0; i < 100_000; i++) {
+                session.snapshotComplete(PRE, first.requestId() + 1 + i);
+                session.snapshotComplete(PRE, first.requestId());
+            }
+            assertThat(actor.queued())
+                    .as("essential facts queued: the one snapshot complete the recovery awaits")
+                    .isEqualTo(1);
+            assertThat(actor.counters().unknownCompletions())
+                    .as("dropped, of requests the feed never asked for")
+                    .isEqualTo(100_000);
+        } finally {
+            release.countDown();
+        }
+        awaitUp(PRE);
+    }
+
+    @Test
     void aCloseWhoseDeadlineHasPassedLeavesWhatIsQueuedToTheFallback() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
