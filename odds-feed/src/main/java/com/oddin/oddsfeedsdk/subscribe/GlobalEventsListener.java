@@ -24,7 +24,9 @@ public interface GlobalEventsListener {
     /**
      * The broker connection was lost; the feed reconnects on its own. Not called when the feed itself
      * closes the connection. When several changes of the connection are queued behind a slow
-     * callback, this is still called once for the loss among them.
+     * callback, this is still called once for the loss among them. It says nothing yet of the
+     * producers: as in 0.0.x, they may read as up while it runs; a producer the loss takes down is
+     * told through {@link #onProducerStatusChange}.
      */
     void onConnectionDown();
 
