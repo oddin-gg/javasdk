@@ -1,0 +1,404 @@
+package com.oddin.oddsfeedsdk.internal.feed;
+
+import com.oddin.oddsfeedsdk.OddsFeedSession;
+import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
+import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
+import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
+import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
+import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
+import com.oddin.oddsfeedsdk.internal.recovery.RecoveryCounters;
+import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
+import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
+import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
+import com.oddin.oddsfeedsdk.subscribe.HealthState;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.InstantSource;
+import java.util.ArrayList;
+import java.util.EnumMap;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.IntFunction;
+import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The feed's health: what {@code getHealth()} reads, and where a part's change of health is told
+ * from, to the log and to {@code onHealthEvent}. One per {@code OddsFeed}, for its whole life.
+ *
+ * <p>A part's state comes from what it is now - a session lagging, as the recovery actor last told,
+ * or a catalog serving a value stale for {@link #CATALOG_STALE_LIMIT} or more - and from what the
+ * SDK's own watch found of it, through {@link #watched}; the worse of the two. A session's lagging
+ * is told as the actor tells it; a catalog's staleness is found when the health is read. Each
+ * reading takes a number before it reads, and a reading older than one told already tells nothing,
+ * so two readings that race cannot tell an older state after a newer one.
+ *
+ * <p>Cheap and safe for concurrent use: a reading reads counters and flags, never waits for a thread
+ * of the feed, and holds a lock only to compare what it found with what was told.
+ */
+public final class HealthMonitor implements RecoveryEvents {
+
+    private static final Logger LOG = LoggerFactory.getLogger(HealthMonitor.class);
+
+    /**
+     * How long a catalog serves a value stale, its refreshes failing, before it counts as degraded;
+     * fixed until the options make it settable.
+     */
+    public static final Duration CATALOG_STALE_LIMIT = Duration.ofHours(1);
+
+    private final EventsDispatcher events;
+    private final IntFunction<@Nullable OddsFeedSession> sessions;
+    private final InstantSource clock;
+    private final Duration catalogStaleLimit;
+
+    /** The sessions lagging, by the feed's number, as the recovery actor last told. */
+    private final Set<Integer> lagging = ConcurrentHashMap.newKeySet();
+    /** What the SDK's own watch last found of each part it watches; none until it finds something. */
+    private final Map<Part, Found> watched = new ConcurrentHashMap<>();
+    /** Taken by every reading before it reads. */
+    private final AtomicLong readings = new AtomicLong();
+
+    /** Held to compare what a reading found with what was told, and to tell the change. */
+    private final ReentrantLock telling = new ReentrantLock();
+    /** The state last told of each part; a part not in it was healthy. Guarded by {@link #telling}. */
+    private final Map<Part, HealthState> told = new HashMap<>();
+    /** The newest reading told; guarded by {@link #telling}. */
+    private long toldReading;
+
+    /**
+     * @param events where a change is told; the feed's, which drops it once stopped
+     * @param sessions what a session's change names its session from, by the feed's number for it
+     */
+    public HealthMonitor(EventsDispatcher events, IntFunction<@Nullable OddsFeedSession> sessions) {
+        this(events, sessions, InstantSource.system(), CATALOG_STALE_LIMIT);
+    }
+
+    /** With the clock and the catalogs' limit a test sets. */
+    HealthMonitor(
+            EventsDispatcher events,
+            IntFunction<@Nullable OddsFeedSession> sessions,
+            InstantSource clock,
+            Duration catalogStaleLimit) {
+        this.events = events;
+        this.sessions = sessions;
+        this.clock = clock;
+        this.catalogStaleLimit = catalogStaleLimit;
+    }
+
+    // ------------------------------------------------------------------ what changes a part's state
+
+    /** The recovery actor's word on a session, on its thread: told at once when it changes the state. */
+    @Override
+    public void lagging(int session, boolean lagging) {
+        if (lagging) {
+            this.lagging.add(session);
+        } else {
+            this.lagging.remove(session);
+        }
+        long reading = nextReading();
+        var part = new Part(HealthComponent.SESSION, session);
+        tell(reading, Map.of(part, worse(laggingFound(session), watched.get(part), false)));
+    }
+
+    /**
+     * What the SDK's own watch found of a part: told at once when it changes the part's state. A
+     * part it watches is one the feed has from then on.
+     *
+     * @param session the feed's number for the session, for {@link HealthComponent#SESSION}; ignored
+     *     for the other parts
+     * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS}, whose state is their own
+     */
+    public void watched(HealthComponent component, int session, HealthState state, String reason) {
+        if (component == HealthComponent.CATALOGS) {
+            throw new IllegalArgumentException("the catalogs' state is their own");
+        }
+        var part = new Part(component, component == HealthComponent.SESSION ? session : 0);
+        var found = new Found(state, reason);
+        watched.put(part, found);
+        long reading = nextReading();
+        var derived = component == HealthComponent.SESSION ? laggingFound(session) : null;
+        tell(reading, Map.of(part, worse(derived, found, true)));
+    }
+
+    // ------------------------------------------------------------------ getHealth()
+
+    /**
+     * The health of the feed as it is now, and any change it finds told.
+     *
+     * @param core what the feed's start built; null before it has started
+     * @param run what its open built; null before it opens, or after an open that failed
+     */
+    public FeedHealth health(@Nullable FeedCore core, @Nullable OpenFeed run) {
+        long reading = nextReading();
+        var sessionHealth = new ArrayList<FeedHealth.Session>();
+        @Nullable RecoveryActor actor = null;
+        var transport = new FeedHealth.Transport(false, 0);
+        var aliveHealth = new FeedHealth.Alives(0, 0, 0, 0);
+        if (run != null) {
+            run.sessions().forEach(dispatcher -> sessionHealth.add(session(dispatcher)));
+            actor = run.actor();
+            transport = new FeedHealth.Transport(
+                    run.transport().connectionOpen(), run.transport().reconnects());
+            AliveDispatcher alives = run.alives();
+            if (alives != null) {
+                aliveHealth =
+                        new FeedHealth.Alives(alives.queued(), alives.handled(), alives.dropped(), alives.unreadable());
+            }
+        }
+        return assess(
+                reading,
+                core != null,
+                run != null,
+                actor != null,
+                transport,
+                aliveHealth,
+                sessionHealth,
+                (actor == null ? new RecoveryCounters() : actor.counters()).snapshot(),
+                core == null ? List.of() : core.catalogs(),
+                core == null ? new FeedHealth.Caches(0, 0, 0, 0, 0, 0) : core.caches(),
+                new FeedHealth.Events(
+                        events.controlDropped(),
+                        events.telemetryDropped(),
+                        events.rawDataDropped(),
+                        events.callbackFailures()));
+    }
+
+    /**
+     * The health from what a reading read, each part's state found and any change told.
+     *
+     * @param started whether the feed has started: its events and catalogs are parts from then on
+     * @param opened whether it is open: its consumer and sessions are parts from then on
+     * @param recovers whether it runs a recovery, as a feed that is no replay feed does once open:
+     *     its alives and recovery are parts from then on
+     */
+    FeedHealth assess(
+            long reading,
+            boolean started,
+            boolean opened,
+            boolean recovers,
+            FeedHealth.Transport transport,
+            FeedHealth.Alives alives,
+            List<FeedHealth.Session> sessionHealth,
+            FeedHealth.Recovery recovery,
+            List<CatalogHealth> catalogs,
+            FeedHealth.Caches caches,
+            FeedHealth.Events eventHealth) {
+        var found = new LinkedHashMap<Part, Found>();
+        if (started) {
+            found.put(new Part(HealthComponent.EVENTS, 0), watchedOnly(HealthComponent.EVENTS));
+            found.put(new Part(HealthComponent.CATALOGS, 0), catalogsFound(catalogs));
+        }
+        if (opened) {
+            found.put(new Part(HealthComponent.CONSUMER, 0), watchedOnly(HealthComponent.CONSUMER));
+        }
+        if (recovers) {
+            found.put(new Part(HealthComponent.ALIVES, 0), watchedOnly(HealthComponent.ALIVES));
+            found.put(new Part(HealthComponent.RECOVERY, 0), watchedOnly(HealthComponent.RECOVERY));
+        }
+        var sessionsFound = new ArrayList<FeedHealth.Session>();
+        for (FeedHealth.Session session : sessionHealth) {
+            var part = new Part(HealthComponent.SESSION, session.id());
+            var sessionFound = worse(laggingFound(session.lagging(), session.id()), watched.get(part), false);
+            found.put(part, sessionFound);
+            sessionsFound.add(withState(session, sessionFound.state()));
+        }
+        // a part only the watch knows, such as the timers, is one the feed has once it is watched
+        watched.forEach((part, watch) -> found.putIfAbsent(part, watch));
+
+        var components = new EnumMap<HealthComponent, HealthState>(HealthComponent.class);
+        if (opened) {
+            components.put(HealthComponent.SESSION, HealthState.HEALTHY);
+        }
+        found.forEach((part, state) -> components.merge(part.component(), state.state(), HealthMonitor::worst));
+        var state = components.values().stream().reduce(HealthState.HEALTHY, HealthMonitor::worst);
+
+        var catalogHealth = catalogs.stream()
+                .map(catalog -> new FeedHealth.Catalog(
+                        catalog.name(),
+                        stale(catalog) ? HealthState.DEGRADED : HealthState.HEALTHY,
+                        catalog.servedStale(),
+                        catalog.staleFor(),
+                        catalog.failedFetches(),
+                        catalog.failing(),
+                        catalog.evictedForRoom()))
+                .toList();
+        tell(reading, found);
+        return new FeedHealth(
+                state,
+                components,
+                transport,
+                alives,
+                sessionsFound,
+                recovery,
+                catalogHealth,
+                caches,
+                eventHealth,
+                clock.instant());
+    }
+
+    /** A new reading's number, after every one taken before: taken before the reading reads. */
+    long nextReading() {
+        return readings.incrementAndGet();
+    }
+
+    /** Whether the session is lagging, as the recovery actor last told; for a reading. */
+    boolean lagging(int session) {
+        return lagging.contains(session);
+    }
+
+    // ------------------------------------------------------------------ what a reading finds
+
+    private FeedHealth.Session session(SessionDispatcher dispatcher) {
+        var transport = dispatcher.transport();
+        var queue = transport.queue();
+        int id = dispatcher.id();
+        return new FeedHealth.Session(
+                id,
+                dispatcher.session(),
+                // found by assess, with the watch's word
+                HealthState.HEALTHY,
+                lagging(id),
+                queue.size(),
+                queue.overflowed(),
+                queue.epochDiscards(),
+                transport.skippedAcks(),
+                dispatcher.handled(),
+                dispatcher.unparsable(),
+                dispatcher.oversized(),
+                dispatcher.sdkFailures(),
+                dispatcher.callbackFailures(),
+                dispatcher.unknownProducers(),
+                dispatcher.repeatedFixtureChanges());
+    }
+
+    private Found laggingFound(int session) {
+        return laggingFound(lagging(session), session);
+    }
+
+    private static Found laggingFound(boolean lagging, int session) {
+        return lagging
+                ? new Found(
+                        HealthState.DEGRADED,
+                        "session " + session + " is lagging: it fell behind with the safety net's resets spent")
+                : new Found(HealthState.HEALTHY, "session " + session + " is keeping up");
+    }
+
+    private Found catalogsFound(List<CatalogHealth> catalogs) {
+        @Nullable CatalogHealth stalest = null;
+        for (CatalogHealth catalog : catalogs) {
+            if (stale(catalog) && (stalest == null || catalog.staleFor().compareTo(stalest.staleFor()) > 0)) {
+                stalest = catalog;
+            }
+        }
+        if (stalest == null) {
+            return new Found(
+                    HealthState.HEALTHY,
+                    "no catalog has served a value stale for " + hours(catalogStaleLimit) + " or more");
+        }
+        return new Found(
+                HealthState.DEGRADED,
+                "the " + stalest.name() + " have served a value stale for " + hours(stalest.staleFor())
+                        + ", its refreshes failing");
+    }
+
+    private boolean stale(CatalogHealth catalog) {
+        return catalog.staleFor().compareTo(catalogStaleLimit) >= 0;
+    }
+
+    private Found watchedOnly(HealthComponent component) {
+        Found watch = watched.get(new Part(component, 0));
+        return watch == null ? new Found(HealthState.HEALTHY, "healthy") : watch;
+    }
+
+    /** The worse of the two; on a tie, the one the caller says changed. */
+    private static Found worse(@Nullable Found derived, @Nullable Found watch, boolean watchChanged) {
+        if (derived == null) {
+            return watch == null ? new Found(HealthState.HEALTHY, "healthy") : watch;
+        }
+        if (watch == null) {
+            return derived;
+        }
+        int compared = watch.state().compareTo(derived.state());
+        return compared > 0 || (compared == 0 && watchChanged) ? watch : derived;
+    }
+
+    private static HealthState worst(HealthState one, HealthState other) {
+        return one.compareTo(other) >= 0 ? one : other;
+    }
+
+    private static String hours(Duration duration) {
+        return duration.toHours() + " h " + duration.toMinutesPart() + " min";
+    }
+
+    private static FeedHealth.Session withState(FeedHealth.Session session, HealthState state) {
+        return new FeedHealth.Session(
+                session.id(),
+                session.session(),
+                state,
+                session.lagging(),
+                session.queueDepth(),
+                session.queueOverflows(),
+                session.epochDiscards(),
+                session.skippedAcks(),
+                session.handled(),
+                session.unparsable(),
+                session.oversized(),
+                session.pipelineFailures(),
+                session.callbackFailures(),
+                session.unknownProducers(),
+                session.repeatedFixtureChanges());
+    }
+
+    // ------------------------------------------------------------------ telling
+
+    /**
+     * Tells each part whose state differs from the one told last, unless a newer reading has told
+     * already: what this one read may be older than what that one did.
+     */
+    private void tell(long reading, Map<Part, Found> found) {
+        var changes = new ArrayList<HealthEvent>();
+        telling.lock();
+        try {
+            if (reading < toldReading) {
+                return;
+            }
+            toldReading = reading;
+            Instant at = clock.instant();
+            found.forEach((part, now) -> {
+                HealthState was = told.getOrDefault(part, HealthState.HEALTHY);
+                if (was == now.state()) {
+                    return;
+                }
+                told.put(part, now.state());
+                var session = part.component() == HealthComponent.SESSION ? sessions.apply(part.session()) : null;
+                var change = new HealthEvent(part.component(), session, was, now.state(), now.reason(), at);
+                // under the lock, so the client hears the changes in the order they were told
+                events.health(change);
+                changes.add(change);
+            });
+        } finally {
+            telling.unlock();
+        }
+        for (HealthEvent change : changes) {
+            if (change.state().compareTo(change.previous()) > 0) {
+                LOG.warn("The feed's {} went {}: {}", change.component(), change.state(), change.reason());
+            } else {
+                LOG.info("The feed's {} is {} now: {}", change.component(), change.state(), change.reason());
+            }
+        }
+    }
+
+    /** A part of the feed: one session, or a part that is no session, numbered 0. */
+    private record Part(HealthComponent component, int session) {}
+
+    /** A state found, and why. */
+    private record Found(HealthState state, String reason) {}
+}
