@@ -190,13 +190,13 @@ class FeedDecoderTest {
                 .hasMessageContaining("processing instruction");
     }
 
+    /** 256, seven times the widest element of the schemas: what they add is skipped, not refused. */
     @Test
-    void anElementMayCarryTheMostAttributesAndNoMore() throws DecodeException {
-        assertThat(lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES) + "</alive>")))
-                .isInstanceOf(OFAlive.class);
-        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES + 1) + "</alive>")))
+    void anElementMayCarryTwoHundredFiftySixAttributesAndNoMore() throws DecodeException {
+        assertThat(lenient.decode(bytes(ROOT + attributes(256) + "</alive>"))).isInstanceOf(OFAlive.class);
+        assertThatThrownBy(() -> lenient.decode(bytes(ROOT + attributes(257) + "</alive>")))
                 .isInstanceOf(DecodeException.class)
-                .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTES));
+                .hasMessageContaining("256");
     }
 
     /**
@@ -211,6 +211,7 @@ class FeedDecoderTest {
         }
         String wide = Fixtures.read("feed/odds_change/odds_change_soccer_scoreboard.xml")
                 .replace("<scoreboard ", "<scoreboard" + added + " ");
+        assertThat(wide).as("the scoreboard widened").contains("<scoreboard new_stat_0=\"0\"", "new_stat_149=\"149\"");
         var change = (OFOddsChange) lenient.decode(bytes(wide));
         var scoreboard =
                 requireNonNull(requireNonNull(change.getSportEventStatus()).getScoreboard());
