@@ -56,7 +56,10 @@ public final class ProfileCaches {
     /** Tournaments and sports each, which no option sizes. */
     static final long SIZE = 10_000;
 
-    /** How long a competitor, a player or a sport is fresh, as in 0.0.x. */
+    /**
+     * How long a competitor, a player or a sport is fresh: 0.0.x's age for a competitor and a player.
+     * 0.0.x kept the sport list for good and asked for a sport's tournaments on every call.
+     */
     static final Duration PROFILE_AGE = Duration.ofHours(24);
 
     /** How long a tournament is fresh, as in 0.0.x. */

@@ -163,6 +163,11 @@ public final class OddsFeedConfigurationBuilder {
     /**
      * How many unacknowledged messages the broker hands each session. 200 unless set. New in 1.0.
      *
+     * <p>A session holds at most this many messages, so its memory is at most this times the
+     * {@linkplain #setMaxMessageSize maximum message size}, and one oversized body more while the
+     * AMQP client reads it. A queue length limit the broker's operator sets must be above this
+     * prefetch: the broker otherwise drops the oldest ready messages, which nothing in the SDK sees.
+     *
      * @throws IllegalArgumentException unless it is 1 to 10 000; the broker reads 0 as unlimited
      */
     public OddsFeedConfigurationBuilder setAmqpPrefetch(int prefetch) {
@@ -175,7 +180,10 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     /**
-     * The largest message body decoded, in bytes. 1 MiB unless set. New in 1.0.
+     * The largest message body decoded, in bytes. 1 MiB unless set. New in 1.0. A larger one is not
+     * decoded: it is reported as unparsable, and to the global listener's {@code onCallbackFailure}.
+     * The AMQP client reads a body of up to 64 MiB, or this and 1 MiB if more, before the SDK sees
+     * its size, so an oversized message is counted rather than closing the connection.
      *
      * @throws IllegalArgumentException unless it is at least 1
      */
