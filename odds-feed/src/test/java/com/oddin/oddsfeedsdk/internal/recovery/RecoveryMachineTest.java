@@ -546,6 +546,19 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aProducersFirstPointIsPublishedEvenOnceTheFeedIsClosing() {
+        var feed = new Harness(Harness.withInitialSnapshotInterval(Duration.ofMinutes(30)));
+        feed.open(1, MessageInterest.ALL);
+        feed.machine.start();
+        // closing before anything was published: the first point still goes out
+        feed.machine.closing();
+        assertThat(feed.timestampForRecovery(PRE))
+                .as("the initial interval's start, not the client's none")
+                .isEqualTo(
+                        Instant.ofEpochMilli(feed.now() - Duration.ofMinutes(30).toMillis()));
+    }
+
+    @Test
     void factsLeftUnhandledAtTheCloseTakeThePointBackToTheLastSubscribedAliveOrAFullSnapshot() {
         long from = feed.now() - Duration.ofHours(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(LIVE, from);
