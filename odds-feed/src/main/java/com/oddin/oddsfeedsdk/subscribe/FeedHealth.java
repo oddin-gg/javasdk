@@ -20,8 +20,9 @@ import java.util.Map;
  * <p>A part is {@link HealthState#DEGRADED} while it works with a quality the SDK gave up: a session
  * lagging, with the safety net's resets spent, or a catalog that has served a value stale, its
  * refreshes failing, for an hour or more. It is {@link HealthState#STALLED} when the SDK's own watch finds it not
- * moving: in one callback for more than 30 seconds, with a queue that has not moved for 30 seconds,
- * or held by a deadlock; it is healthy again once that ends. The feed's state is the worst of its
+ * moving: in one callback, or with a queue that has not moved, for longer than the SDK itself can
+ * wait for the API in one getter - twice the HTTP client timeout and 5 seconds, 30 seconds at
+ * least - or held by a deadlock; it is healthy again once that ends. The feed's state is the worst of its
  * parts'. Each change is also told to {@code GlobalEventsListener.onHealthEvent}.
  *
  * @param state the worst of the parts' states; healthy when there is none yet

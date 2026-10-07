@@ -46,7 +46,7 @@ import org.junit.jupiter.api.Test;
 /**
  * The feed's watchdog over a real broker: a wedged callback is found stalled, logged once and told,
  * and healthy again once it returns; the watchdog ends with the feed. With limits of seconds, not
- * the default 30 s.
+ * those of the HTTP timeout.
  */
 class OddsFeedWatchdogTest {
 
@@ -272,6 +272,39 @@ class OddsFeedWatchdogTest {
                 release.countDown();
                 feed.close();
             }
+        }
+    }
+
+    @Test
+    void theWatchdogsLimitsFollowTheConfiguredHttpTimeout() {
+        for (var timeout : List.of(Duration.ofSeconds(30), Duration.ofMinutes(2))) {
+            // never started: no host is reached
+            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                    .selectEnvironment("broker.example.invalid", "api.example.invalid")
+                    .setAccessToken("token")
+                    .setHttpClientTimeout(timeout)
+                    .build();
+            var feed = new OddsFeed(new Heard(), configuration);
+            try {
+                assertThat(feed.watchdog().limits())
+                        .as("for an HTTP timeout of %s", timeout)
+                        .isEqualTo(Watchdog.Limits.forHttpTimeout(timeout));
+            } finally {
+                feed.close();
+            }
+        }
+        var defaults = new OddsFeed(
+                new Heard(),
+                OddsFeed.getOddsFeedConfigurationBuilder()
+                        .selectEnvironment("broker.example.invalid", "api.example.invalid")
+                        .setAccessToken("token")
+                        .build());
+        try {
+            assertThat(defaults.watchdog().limits().callback())
+                    .as("the default timeout of 30 s")
+                    .isEqualTo(Duration.ofSeconds(65));
+        } finally {
+            defaults.close();
         }
     }
 

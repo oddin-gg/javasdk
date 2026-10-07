@@ -76,7 +76,7 @@ class WatchdogTest {
 
     private final AtomicInteger readings = new AtomicInteger();
     private final Watchdog watchdog = made(new Watchdog(
-            health, () -> samples, readings::incrementAndGet, () -> deadlocked, clock::nanos, Watchdog.Limits.DEFAULT));
+            health, () -> samples, readings::incrementAndGet, () -> deadlocked, clock::nanos, Watchdog.Limits.FLOOR));
 
     @AfterEach
     void close() {
@@ -130,6 +130,56 @@ class WatchdogTest {
         assertThat(sessionState()).isEqualTo(HealthState.HEALTHY);
         assertThat(logged).containsExactly(stalled, healthy);
         assertThat(readings).as("the whole health read at each look").hasValue(8);
+    }
+
+    @Test
+    void theLimitsSitAboveTheLongestTheSdkItselfWaitsForTheApi() {
+        assertThat(Watchdog.Limits.forHttpTimeout(Duration.ofSeconds(30)))
+                .as("the default HTTP timeout")
+                .isEqualTo(new Watchdog.Limits(Duration.ofSeconds(65), Duration.ofSeconds(65), Duration.ofSeconds(5)));
+        assertThat(Watchdog.Limits.forHttpTimeout(Duration.ofSeconds(5)))
+                .as("a short timeout keeps the floor")
+                .isEqualTo(Watchdog.Limits.FLOOR);
+        for (var timeout :
+                List.of(Duration.ofMillis(1), Duration.ofSeconds(12), Duration.ofSeconds(13), Duration.ofMinutes(2))) {
+            // a read loads twice at most, each load waiting the timeout and a second, and the
+            // read a second more
+            Duration longestWait = timeout.plusSeconds(1).multipliedBy(2).plusSeconds(1);
+            var limits = Watchdog.Limits.forHttpTimeout(timeout);
+            assertThat(limits.callback())
+                    .as("the callback limit for a timeout of %s", timeout)
+                    .isGreaterThan(longestWait)
+                    .isGreaterThanOrEqualTo(Duration.ofSeconds(30));
+            assertThat(limits.queue()).isEqualTo(limits.callback());
+            assertThat(limits.tick()).isEqualTo(Duration.ofSeconds(5));
+        }
+    }
+
+    @Test
+    void withAnHttpTimeoutOf30sACallbackWaitingOnASlowApiIsNoStall() throws InterruptedException {
+        var watched = made(new Watchdog(
+                health,
+                () -> samples,
+                () -> {},
+                () -> deadlocked,
+                clock::nanos,
+                Watchdog.Limits.forHttpTimeout(Duration.ofSeconds(30))));
+        events.start();
+        // a callback reading a match the API is slow to load: two loads of 31 s, and a second more
+        samples = List.of(session(clock.nanos(), 3, 7));
+        watched.tick();
+        clock.advance(Duration.ofSeconds(63));
+        watched.tick();
+        clock.advance(SECOND);
+        watched.tick();
+        heard.nothingMore("in one callback, its queue still, for 64 s, under the limit of 65 s");
+        assertThat(sessionState()).isEqualTo(HealthState.HEALTHY);
+
+        clock.advance(Duration.ofSeconds(2));
+        watched.tick();
+        var stalled = heard.next();
+        assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
+        assertThat(stalled.reason()).isEqualTo("session 1 has been in one message for 66 s");
     }
 
     @Test
@@ -235,7 +285,7 @@ class WatchdogTest {
     @Test
     void aDeadlockOnLocksStallsTheThreadsUntilItEnds() throws InterruptedException {
         var real = new Watchdog(
-                health, List::of, () -> {}, Watchdog::deadlockedThreads, clock::nanos, Watchdog.Limits.DEFAULT);
+                health, List::of, () -> {}, Watchdog::deadlockedThreads, clock::nanos, Watchdog.Limits.FLOOR);
         events.start();
         real.tick();
         heard.nothingMore("no deadlock");
@@ -739,7 +789,7 @@ class WatchdogTest {
                     change -> System.out.println(change.component() + " " + change.previous() + " -> " + change.state()
                             + ": " + change.reason()));
             var watchdog = new Watchdog(
-                    health, List::of, () -> {}, Watchdog::deadlockedThreads, System::nanoTime, Watchdog.Limits.DEFAULT);
+                    health, List::of, () -> {}, Watchdog::deadlockedThreads, System::nanoTime, Watchdog.Limits.FLOOR);
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
             while (Watchdog.deadlockedThreads().size() < 2 && System.nanoTime() < deadline) {
                 Thread.sleep(10);

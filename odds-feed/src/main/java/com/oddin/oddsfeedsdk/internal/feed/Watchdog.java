@@ -56,7 +56,7 @@ public final class Watchdog {
     private static final Logger LOG = LoggerFactory.getLogger(Watchdog.class);
 
     /**
-     * The limits and the tick, fixed until the options make them settable.
+     * The limits and the tick, derived from the HTTP timeout until the options make them settable.
      *
      * @param callback how long a part may be in one callback - a session's, the events thread's, a
      *     consumer thread's hand-off, the recovery actor's turn - before it is stalled
@@ -65,9 +65,36 @@ public final class Watchdog {
      * @param tick how often the watchdog looks
      */
     public record Limits(Duration callback, Duration queue, Duration tick) {
-        /** The defaults: 30 s, 30 s, and a look every 5 s. */
-        public static final Limits DEFAULT =
+        /** The limits at their floor: 30 s, 30 s, and a look every 5 s. */
+        public static final Limits FLOOR =
                 new Limits(Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofSeconds(5));
+
+        /**
+         * How much longer than its deadline a caller waits for one of the SDK's loads, as the
+         * loaders and an event recovery's caller do.
+         */
+        static final Duration LOAD_MARGIN = Duration.ofSeconds(1);
+
+        /** How far the limits stay above the longest the SDK itself waits for the API. */
+        static final Duration ABOVE = Duration.ofSeconds(2);
+
+        /**
+         * The limits for a feed whose API calls take at most {@code httpTimeout}: a callback and a
+         * queue standing still are stalled only past the longest the SDK itself waits for the API in
+         * one getter - a read that loads twice at most, each load waiting the timeout and its
+         * margin, and the read's own margin over both: {@code 2 × (timeout + 1 s) + 1 s} - and
+         * {@link #ABOVE} more, so {@code max(30 s, 2 × timeout + 5 s)}: 65 s for the default
+         * timeout of 30 s. A slow API is then no stall: the remedy a stall calls for, a new feed,
+         * would not speed it up. A look every 5 s.
+         */
+        public static Limits forHttpTimeout(Duration httpTimeout) {
+            Duration longestWait = httpTimeout.plus(LOAD_MARGIN).multipliedBy(2).plus(LOAD_MARGIN);
+            Duration limit = longestWait.plus(ABOVE);
+            if (limit.compareTo(FLOOR.callback()) < 0) {
+                limit = FLOOR.callback();
+            }
+            return new Limits(limit, limit, FLOOR.tick());
+        }
     }
 
     /**
@@ -162,6 +189,11 @@ public final class Watchdog {
         this.deadlocks = deadlocks;
         this.nanos = nanos;
         this.limits = limits;
+    }
+
+    /** The limits it looks with; for a test. */
+    public Limits limits() {
+        return limits;
     }
 
     // ------------------------------------------------------------------ life

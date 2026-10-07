@@ -908,8 +908,13 @@ what was counted.
 The defaults, fixed until ticket 28 makes them options: a catalog that has served a value
 stale for an hour or more is `DEGRADED`, found when the health is read (by `getHealth()`,
 and by the watchdog's tick, so no reader is needed); a session is `DEGRADED` while the
-recovery actor reports it lagging, told at once. The watchdog's limits: a callback running
-for more than 30 s and a queue not moving for 30 s are `STALLED`, checked every 5 s. Each
+recovery actor reports it lagging, told at once. The watchdog's limits sit above the SDK's
+own waits, so a slow API is no stall: a callback running, or a queue not moving, for longer
+than the longest the SDK itself waits for the API in one getter - a read loads twice at
+most, each load waiting the HTTP timeout and the loaders' 1 s margin, and the read 1 s more,
+`2 × (timeout + 1 s) + 1 s` - and 2 s more is `STALLED`: `max(30 s, 2 × timeout + 5 s)`,
+65 s for the default timeout of 30 s, checked every 5 s. Ticket 28's options cannot set a
+timeout above the limit, since the limit follows the timeout. Each
 change of a part's state is logged - a stall as an error, a degradation as a warning, a
 part getting better as information - and told to `onHealthEvent`, through a slot per part
 (per session for a session's) in the events dispatcher's control queue: behind a slow
@@ -938,8 +943,8 @@ queue empty, ends that. The JVM's deadlocks come from
 `ThreadMXBean.findDeadlockedThreads()`, which sees monitors and locks alike, once a tick
 only, since the search takes the JVM to a safepoint; the reason names the threads. The
 watchdog cannot see its own thread wedge, so `getHealth()` looks at the parts again on
-the caller's thread, and finds the timers `STALLED` when the next tick is more than 30 s
-late; the tick that returns tells them healthy. The looks decide under one lock that only
+the caller's thread, and finds the timers `STALLED` when the next tick is later than the
+queue's limit; the tick that returns tells them healthy. The looks decide under one lock that only
 reads counters and flags, and note what they decide there, in order; what is logged is
 logged out of it. A look that throws is logged and the next one runs. Not watched yet:
 the connection being down is not a degradation of its own (a pending decision;
@@ -1507,3 +1512,7 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   what they hold when their channels close, and the alive queue's counters read empty once
   closed. The sessions closing at shutdown neither complete a recovery nor bring a producer up.
   One non-daemon thread keeps the JVM up from `open()` to `close()`, as 0.0.x's executors did.
+- 2026-10-07, ticket 26, the watchdog's limits after the final review: the callback and queue
+  limits follow the HTTP timeout, `max(30 s, 2 × timeout + 5 s)` (65 s for the default 30 s),
+  so a callback whose read waits on a slow API - up to `2 × (timeout + 1 s) + 1 s` - is not
+  reported `STALLED`, whose remedy, a new feed, would not help.
