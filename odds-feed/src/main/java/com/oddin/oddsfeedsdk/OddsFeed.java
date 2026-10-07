@@ -207,7 +207,8 @@ public final class OddsFeed {
      * not start it. Before the feed starts it has no part and counts nothing; once started it has the
      * events, the catalogs, the timers and the JVM's threads, and once open the consumer and the
      * sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
-     * what the feed counted.
+     * what the feed counted, and each part as the watch last found it, but the timers healthy: a
+     * watch stopped is not one wedged.
      *
      * <p>From its start to its close the feed watches its own threads, every 5 seconds: a part that
      * has been in one callback for more than 30 seconds, or whose queue has not moved for 30 seconds

@@ -316,6 +316,46 @@ class WatchdogTest {
     }
 
     @Test
+    void aWatchdogStoppedWithItsTimersStalledLeavesThemHealthyAndTheOtherPartsAsFound() throws InterruptedException {
+        var timed = new Watchdog(
+                health,
+                () -> samples,
+                () -> {},
+                List::of,
+                clock::nanos,
+                new Watchdog.Limits(Duration.ofSeconds(30), Duration.ofSeconds(30), Duration.ofMinutes(10)));
+        events.start();
+        timed.start();
+        samples = List.of(session(clock.nanos(), 0, 7));
+        clock.advance(Duration.ofMinutes(11));
+        timed.recheck();
+        assertThat(heard.drain())
+                .extracting(HealthEvent::component, HealthEvent::state)
+                .containsExactlyInAnyOrder(
+                        tuple(HealthComponent.SESSION, HealthState.STALLED),
+                        tuple(HealthComponent.TIMERS, HealthState.STALLED));
+
+        timed.stop();
+        var healthy = heard.next();
+        assertThat(healthy.component()).isEqualTo(HealthComponent.TIMERS);
+        assertThat(healthy.previous()).isEqualTo(HealthState.STALLED);
+        assertThat(healthy.state()).isEqualTo(HealthState.HEALTHY);
+        assertThat(healthy.reason()).isEqualTo("the watchdog stopped");
+        assertThat(read().components())
+                .as("a watchdog stopped is not one wedged")
+                .containsEntry(HealthComponent.TIMERS, HealthState.HEALTHY);
+        assertThat(sessionState()).as("the session as last found").isEqualTo(HealthState.STALLED);
+
+        timed.stop();
+        clock.advance(Duration.ofHours(1));
+        timed.recheck();
+        heard.nothingMore("stopped again, read again: nothing changed");
+        assertThat(read().components()).containsEntry(HealthComponent.TIMERS, HealthState.HEALTHY);
+        assertThat(timed.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                .isTrue();
+    }
+
+    @Test
     void aReadFindsTheWatchdogsOwnThreadWedgedAndItsTickReturningTellsItHealthy() throws InterruptedException {
         var ticked = new AtomicInteger();
         var timed = new Watchdog(
