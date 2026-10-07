@@ -1,9 +1,11 @@
 package com.oddin.oddsfeedsdk.internal.xml;
 
 import static com.oddin.oddsfeedsdk.internal.xml.XmlFixtures.bytes;
+import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFAlive;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlement;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFBetSettlementMarket;
@@ -189,12 +191,31 @@ class FeedDecoderTest {
     }
 
     @Test
-    void anElementMayCarrySixtyFourAttributesAndNoMore() throws DecodeException {
+    void anElementMayCarryTheMostAttributesAndNoMore() throws DecodeException {
         assertThat(lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES) + "</alive>")))
                 .isInstanceOf(OFAlive.class);
         assertThatThrownBy(() -> lenient.decode(bytes(ROOT + attributes(XmlReader.MAX_ATTRIBUTES + 1) + "</alive>")))
                 .isInstanceOf(DecodeException.class)
                 .hasMessageContaining(String.valueOf(XmlReader.MAX_ATTRIBUTES));
+    }
+
+    /**
+     * A scoreboard a newer schema has widened well past today's 35 attributes: what the SDK does
+     * not know is skipped, as 0.0.x skipped it, and the message still decodes.
+     */
+    @Test
+    void aScoreboardFarWiderThanTheSchemasStillDecodes() throws DecodeException {
+        var added = new StringBuilder();
+        for (int i = 0; i < 150; i++) {
+            added.append(" new_stat_").append(i).append("=\"").append(i).append('"');
+        }
+        String wide = Fixtures.read("feed/odds_change/odds_change_soccer_scoreboard.xml")
+                .replace("<scoreboard ", "<scoreboard" + added + " ");
+        var change = (OFOddsChange) lenient.decode(bytes(wide));
+        var scoreboard =
+                requireNonNull(requireNonNull(change.getSportEventStatus()).getScoreboard());
+        assertThat(scoreboard.getHomeGoals()).isEqualTo(1);
+        assertThat(scoreboard.getTime()).isEqualTo(65);
     }
 
     @Test
@@ -360,13 +381,14 @@ class FeedDecoderTest {
         return body.toString();
     }
 
+    /** Declarations of one namespace: one each of another would also take a name each. */
     private static String mixed(int attributes, int declarations) {
         var tag = new StringBuilder("<x");
         for (int i = 0; i < attributes; i++) {
             tag.append(" a").append(i).append("=\"1\"");
         }
         for (int i = 0; i < declarations; i++) {
-            tag.append(" xmlns:p").append(i).append("=\"u").append(i).append('"');
+            tag.append(" xmlns:p").append(i).append("=\"u\"");
         }
         return tag.append("/>").toString();
     }
@@ -374,7 +396,7 @@ class FeedDecoderTest {
     private static String declarations(int count) {
         var tag = new StringBuilder("<x");
         for (int i = 0; i < count; i++) {
-            tag.append(" xmlns:p").append(i).append("=\"u").append(i).append('"');
+            tag.append(" xmlns:p").append(i).append("=\"u\"");
         }
         return tag.append("/>").toString();
     }
