@@ -249,7 +249,9 @@ public final class OddsFeed {
      * the broker and starts delivering. All or nothing: when a step fails, what it started is
      * closed again, nothing is left running or connected, and this throws; the managers stay, until
      * {@link #close}. One-shot, as in 0.0.x: once the sessions are taken, a second call throws,
-     * whatever came of the first; the client closes the feed and makes a new one.
+     * whatever came of the first; the client closes the feed and makes a new one. From the open to
+     * the close the feed keeps one non-daemon thread, as 0.0.x did, so the JVM does not exit while
+     * the feed is open, not even while it reconnects; a feed that is never closed keeps it running.
      *
      * @throws IllegalStateException without a session, with 0.0.x's message; the feed can then still
      *     be opened once one is built
