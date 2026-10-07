@@ -65,6 +65,9 @@ class AmqpTransportTest {
         SessionTransport session = transport.addSession(allKeys());
         transport.open();
         assertThat(events.events).containsExactly("connecting", "up");
+        assertThat(transport.reconnects())
+                .as("the first connect is no reconnect")
+                .isZero();
 
         assertThat(feed().publishFixture(ODDS_CHANGE)).isTrue();
         RawDelivery change = next(session);
@@ -185,7 +188,11 @@ class AmqpTransportTest {
                 .as("the old channel's deliveries are out")
                 .isZero();
         session.ack(old);
-        assertThat(((SessionChannel) session).skippedAcks()).isEqualTo(1);
+        assertThat(session.skippedAcks()).isEqualTo(1);
+        assertThat(session.queue().epochDiscards())
+                .as("the one still queued when the channel was replaced")
+                .isEqualTo(1);
+        assertThat(transport.reconnects()).as("a reset is no reconnect").isZero();
 
         feed().publishFixture(ODDS_CHANGE);
         assertThat(next(session).epoch()).isEqualTo(before + 1);
@@ -203,6 +210,8 @@ class AmqpTransportTest {
         events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
         assertThat(events.events).containsSubsequence("connecting", "up", "down", "recovering", "up");
         assertThat(session.epoch()).isGreaterThan(before);
+        assertThat(transport.reconnects()).isEqualTo(1);
+        assertThat(transport.connectionOpen()).isTrue();
 
         feed().publishFixture(ODDS_CHANGE);
         assertThat(next(session).epoch()).isEqualTo(session.epoch());
@@ -353,6 +362,9 @@ class AmqpTransportTest {
         events.await(e -> e.equals("up") && events.count("up") == 3, WAIT);
         assertThat(events.events)
                 .containsExactly("connecting", "up", "down", "recovering", "up", "down", "recovering", "up");
+        assertThat(transport.reconnects())
+                .as("each connection made again counted once")
+                .isEqualTo(2);
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
     }
 

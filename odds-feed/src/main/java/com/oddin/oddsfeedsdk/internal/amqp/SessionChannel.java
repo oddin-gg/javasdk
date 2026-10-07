@@ -283,8 +283,8 @@ final class SessionChannel implements SessionTransport {
         reopening.set(false);
     }
 
-    /** Acknowledgements skipped because their channel was gone. */
-    long skippedAcks() {
+    @Override
+    public long skippedAcks() {
         return skippedAcks.get();
     }
 

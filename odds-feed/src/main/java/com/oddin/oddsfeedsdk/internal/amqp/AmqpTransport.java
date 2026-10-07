@@ -23,6 +23,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
 import javax.net.ssl.SSLContext;
@@ -77,6 +78,8 @@ public final class AmqpTransport implements AutoCloseable {
     private final AtomicBoolean opened = new AtomicBoolean();
     /** Whether a reconnect is under way; package-private for a test to hold one off. */
     final AtomicBoolean reconnecting = new AtomicBoolean();
+    /** Connections made again after a loss, each told up. */
+    private final AtomicLong reconnects = new AtomicLong();
 
     private @Nullable ExecutorService consumers;
     private volatile @Nullable Connection connection;
@@ -279,10 +282,15 @@ public final class AmqpTransport implements AutoCloseable {
                 Failure.describe(cause, settings.accessToken()));
     }
 
-    /** Whether the connection is there and open. */
-    boolean connectionOpen() {
+    /** Whether the connection is there and open; for {@code getHealth()}. */
+    public boolean connectionOpen() {
         Connection now = connection;
         return now != null && now.isOpen();
+    }
+
+    /** Connections made again after a loss; for {@code getHealth()}. */
+    public long reconnects() {
+        return reconnects.get();
     }
 
     boolean isClosed() {
@@ -502,6 +510,7 @@ public final class AmqpTransport implements AutoCloseable {
                     return;
                 }
                 refusals.clear();
+                reconnects.incrementAndGet();
                 events.up();
                 reconnecting.set(false);
                 reopenWhatWasLost();
