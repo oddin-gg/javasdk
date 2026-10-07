@@ -50,7 +50,8 @@ class OddsFeedWatchdogTest {
     private static final Duration WAIT = Duration.ofSeconds(20);
     /**
      * Past the recovery actor's turn of a second, which it begins however idle: the limits a test
-     * sets stay above it.
+     * sets stay above it. A machine under load can still stretch an idle turn past them, so a test
+     * reads what was logged of the part it wedges only.
      */
     private static final Watchdog.Limits LIMITS =
             new Watchdog.Limits(Duration.ofSeconds(2), Duration.ofSeconds(2), Duration.ofMillis(100));
@@ -97,14 +98,14 @@ class OddsFeedWatchdogTest {
                 assertThat(health.sessions().getFirst().state()).isEqualTo(HealthState.STALLED);
                 // a few more looks, which find it still stalled
                 Thread.sleep(500);
-                assertThat(logged).as("logged once").containsExactly(stalled);
+                assertThat(logged(HealthComponent.SESSION, 1)).as("logged once").containsExactly(stalled);
 
                 release.countDown();
                 var healthy = heard.next(HealthComponent.SESSION);
                 assertThat(healthy.state()).isEqualTo(HealthState.HEALTHY);
                 assertThat(healthy.reason()).isEqualTo("session 1 moves again");
                 assertThat(feed.getHealth().sessions().getFirst().state()).isEqualTo(HealthState.HEALTHY);
-                assertThat(logged).containsExactly(stalled, healthy);
+                assertThat(logged(HealthComponent.SESSION, 2)).containsExactly(stalled, healthy);
                 api.awaitQuiet();
             } finally {
                 release.countDown();
@@ -139,15 +140,16 @@ class OddsFeedWatchdogTest {
                 var health =
                         awaitHealth(feed, read -> read.components().get(HealthComponent.EVENTS) == HealthState.STALLED);
                 assertThat(health.state()).isEqualTo(HealthState.STALLED);
-                assertThat(logged).singleElement().satisfies(stalled -> {
+                assertThat(logged(HealthComponent.EVENTS, 1)).singleElement().satisfies(stalled -> {
                     assertThat(stalled.component()).isEqualTo(HealthComponent.EVENTS);
                     assertThat(stalled.reason()).startsWith("the events thread has been in one callback for ");
                 });
 
                 release.countDown();
                 awaitHealth(feed, read -> read.components().get(HealthComponent.EVENTS) == HealthState.HEALTHY);
-                assertThat(logged).hasSize(2);
-                assertThat(logged.getLast().state()).isEqualTo(HealthState.HEALTHY);
+                assertThat(logged(HealthComponent.EVENTS, 2))
+                        .extracting(HealthEvent::state)
+                        .containsExactly(HealthState.STALLED, HealthState.HEALTHY);
                 api.awaitQuiet();
             } finally {
                 release.countDown();
@@ -231,6 +233,24 @@ class OddsFeedWatchdogTest {
                 .setAccessToken("token")
                 .build();
         return new OddsFeed(listener, configuration, null, LIMITS, logged::add);
+    }
+
+    /**
+     * What was logged of the component, once it has {@code count} lines or {@link #WAIT} has passed:
+     * the health shows a change before the thread that tells it has logged it.
+     */
+    private List<HealthEvent> logged(HealthComponent component, int count) throws InterruptedException {
+        long until = System.nanoTime() + WAIT.toNanos();
+        var of = loggedOf(component);
+        while (of.size() < count && System.nanoTime() < until) {
+            Thread.sleep(20);
+            of = loggedOf(component);
+        }
+        return of;
+    }
+
+    private List<HealthEvent> loggedOf(HealthComponent component) {
+        return logged.stream().filter(event -> event.component() == component).toList();
     }
 
     private static FeedHealth awaitHealth(OddsFeed feed, Predicate<FeedHealth> ready) throws InterruptedException {
