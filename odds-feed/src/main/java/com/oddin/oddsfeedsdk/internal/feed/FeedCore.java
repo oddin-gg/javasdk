@@ -22,13 +22,10 @@ import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.replay.Replay;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.Startup;
-import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
-import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -36,13 +33,13 @@ import org.slf4j.LoggerFactory;
 
 /**
  * What a feed is made of before it opens: who the bookmaker is, the producers, the REST client, the
- * caches and catalogs, the managers over them, the message factory, and the events dispatcher,
- * started first, so the client hears of every API call as it is made, the start's own included, as
- * the Go SDK tells them. One per {@code OddsFeed}, built on the first call that needs it and closed
- * with the feed.
+ * caches and catalogs, the managers over them and the message factory, reporting to the feed's
+ * events dispatcher, started first, so the client hears of every API call as it is made, the
+ * start's own included, as the Go SDK tells them. One per {@code OddsFeed}, built on the first call
+ * that needs it and closed with the feed.
  *
- * @param fetches where the loads and the fan-outs run: virtual threads
- * @param events the client's events, delivered from the start on
+ * @param fetches where the loads, the fan-outs and the recovery requests run: virtual threads
+ * @param events the client's events, delivered from the start on: the feed's, not closed with this
  */
 public record FeedCore(
         ApiClient api,
@@ -78,31 +75,22 @@ public record FeedCore(
 
     /**
      * Asks the API who the bookmaker is and which producers there are, within the startup timeout,
-     * then builds the rest, which asks nothing yet. Whatever it built is closed again when it fails;
-     * the events dispatcher is told to stop and not waited for, since a callback on its thread may be
-     * waiting for this very start, through a manager getter it calls.
+     * then builds the rest, which asks nothing yet. Whatever it built is closed again when it fails.
      *
+     * @param events the feed's events dispatcher, which the REST client reports to: the feed's own,
+     *     started before and kept across the starts, so a start that fails leaves no thread of its
+     *     own and a callback on it, which may be waiting for this very start, is never waited for
      * @param starting given the REST client before the first call, so a feed closed meanwhile can cut
      *     the start short by closing the client
      * @throws InitException when the API does not answer both in time, refuses the access token, or
      *     answers without what the feed needs
      */
     public static FeedCore start(
-            OddsFeedConfiguration configuration,
-            GlobalEventsListener listener,
-            @Nullable OddsFeedExtListener extListener,
-            Consumer<ApiClient> starting) {
-        // the client reports to the dispatcher, which names producers from the list the client fetches
-        var listed = new AtomicReference<@Nullable Producers>();
-        var events = new EventsDispatcher(listener, extListener, id -> {
-            Producers producers = listed.get();
-            return producers == null ? null : producers.getProducer(id);
-        });
+            OddsFeedConfiguration configuration, EventsDispatcher events, Consumer<ApiClient> starting) {
         var api = new ApiClient(configuration, events);
         @Nullable ExecutorService fetches = null;
         @Nullable SideLoads sideLoads = null;
         try {
-            events.start();
             starting.accept(api);
             var startup = Startup.fetch(api, configuration.getStartupTimeout());
             var bookmaker = Bookmaker.from(startup.bookmaker());
@@ -110,7 +98,6 @@ public record FeedCore(
                 LOG.warn("Access token will expire soon ({})", bookmaker.expireAt());
             }
             var producers = new Producers(startup.producers());
-            listed.set(producers);
             fetches = Executors.newVirtualThreadPerTaskExecutor();
             sideLoads = new SideLoads(SIDE_LOAD_CAPACITY, SIDE_LOAD_WORKERS, configuration.getHttpClientTimeout());
             return assemble(configuration, api, events, bookmaker, producers, fetches, sideLoads);
@@ -122,8 +109,6 @@ public record FeedCore(
             if (fetches != null) {
                 fetches.shutdownNow();
             }
-            // told, not waited for: the caller holds the start's lock, which a callback may wait for
-            events.stop();
             throw e;
         }
     }
@@ -178,13 +163,13 @@ public record FeedCore(
 
     /**
      * Releases what {@link #start} built: the REST client first, so a call under way ends at once
-     * and a load behind it starts none, then the loads and the events dispatcher.
+     * and a load behind it starts none, then the loads. Waits for nothing; the events dispatcher is
+     * the feed's to stop.
      */
     @Override
     public void close() {
         api.close();
         sideLoads.close();
         fetches.shutdownNow();
-        events.close();
     }
 }

@@ -26,6 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
@@ -208,6 +209,58 @@ class OddsFeedTest {
     }
 
     @Test
+    void aStartThatFailsAndTheNextTellTheClientOnOneThread() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            api.respond(WHOAMI, 403, FORBIDDEN);
+            var threads = new LinkedBlockingQueue<Thread>();
+            var feed = new OddsFeed(apiCalls(call -> threads.add(Thread.currentThread())), configurationAgainst(api));
+            try {
+                assertThatThrownBy(feed::getBookMakerDetail).isInstanceOf(InitException.class);
+                var failed = threads.poll(WAIT.toSeconds(), TimeUnit.SECONDS);
+                assertThat(failed).as("the failed start's call, told").isNotNull();
+
+                api.respond(WHOAMI, 200, Fixtures.read("rest/whoami/bookmaker_details.xml"));
+                feed.getBookMakerDetail();
+                var next = threads.poll(WAIT.toSeconds(), TimeUnit.SECONDS);
+                assertThat(next)
+                        .as("the next start's call, told on the thread that told the failed one's")
+                        .isSameAs(failed);
+                api.awaitQuiet();
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    void closingWaitsForACallbackOfAStartThatFailed() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            api.respond(WHOAMI, 403, FORBIDDEN);
+            var entered = new CountDownLatch(1);
+            var returned = new AtomicBoolean();
+            var feed = new OddsFeed(
+                    apiCalls(call -> {
+                        if (entered.getCount() == 0) {
+                            return;
+                        }
+                        entered.countDown();
+                        try {
+                            Thread.sleep(Duration.ofSeconds(1));
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                        }
+                        returned.set(true);
+                    }),
+                    configurationAgainst(api));
+            assertThatThrownBy(feed::getBookMakerDetail).isInstanceOf(InitException.class);
+            assertThat(entered.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+
+            feed.close();
+            assertThat(returned).as("the callback returned before close() did").isTrue();
+        }
+    }
+
+    @Test
     void callersThatComeAtOnceStartTheFeedOnce() throws Exception {
         try (var api = FakeRestServer.start()) {
             api.respond(
@@ -302,6 +355,25 @@ class OddsFeedTest {
 
             awaitNoThreadsBut(before);
         }
+    }
+
+    /** A listener that hears only the API calls, each with {@code call}. */
+    private static GlobalEventsListener apiCalls(Consumer<ApiCallEvent> call) {
+        return new GlobalEventsListener() {
+            @Override
+            public void onProducerStatusChange(ProducerStatus producerStatus) {}
+
+            @Override
+            public void onConnectionDown() {}
+
+            @Override
+            public void onEventRecoveryCompleted(URN eventId, long requestId) {}
+
+            @Override
+            public void onApiCall(ApiCallEvent apiCall) {
+                call.accept(apiCall);
+            }
+        };
     }
 
     private static OddsFeed feedAgainst(FakeRestServer api) {

@@ -5,10 +5,12 @@ import static java.util.Objects.requireNonNull;
 import com.oddin.oddsfeedsdk.api.BookmakerDetail;
 import com.oddin.oddsfeedsdk.api.MarketDescriptionManager;
 import com.oddin.oddsfeedsdk.api.SportsInfoManager;
+import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
+import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.feed.FeedCore;
 import com.oddin.oddsfeedsdk.internal.feed.OpenFeed;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
@@ -74,13 +76,21 @@ public final class OddsFeed {
     @SuppressWarnings("VariableNameSameAsType") // the name is the compatibility
     public static final Companion Companion = new Companion();
 
-    private final GlobalEventsListener listener;
     private final OddsFeedConfiguration configuration;
-    private final @Nullable OddsFeedExtListener extListener;
     private final SessionRegistry sessions;
+
+    /**
+     * The client's events, from the first start on: one thread for every start the feed makes, so a
+     * start that fails leaves no callback running beside the next one's, and the feed's close waits
+     * for it.
+     */
+    private final EventsDispatcher events;
 
     /** Held by the one start under way, so callers that come meanwhile wait for it, not start again. */
     private final ReentrantLock starting = new ReentrantLock();
+
+    /** Whether the first start has started the events dispatcher; guarded by {@link #starting}. */
+    private boolean eventsStarted;
 
     /** Guards the fields below, briefly: {@link #close} never waits for a start, nor for an open. */
     private final ReentrantLock state = new ReentrantLock();
@@ -100,18 +110,31 @@ public final class OddsFeed {
     private boolean closed;
 
     public OddsFeed(GlobalEventsListener listener, OddsFeedConfiguration configuration) {
-        this.listener = requireNonNull(listener, "listener");
+        requireNonNull(listener, "listener");
         this.configuration = requireNonNull(configuration, "configuration");
-        this.extListener = null;
         this.sessions = new SessionRegistry(null);
+        this.events = events(listener, null);
     }
 
     public OddsFeed(
             GlobalEventsListener listener, OddsFeedConfiguration configuration, OddsFeedExtListener extListener) {
-        this.listener = requireNonNull(listener, "listener");
+        requireNonNull(listener, "listener");
         this.configuration = requireNonNull(configuration, "configuration");
-        this.extListener = requireNonNull(extListener, "extListener");
-        this.sessions = new SessionRegistry(extListener);
+        this.sessions = new SessionRegistry(requireNonNull(extListener, "extListener"));
+        this.events = events(listener, extListener);
+    }
+
+    /**
+     * Not started yet. Its producers and sessions are looked up as an event is delivered: the
+     * producers once the feed has started, the sessions once it has opened.
+     */
+    private EventsDispatcher events(GlobalEventsListener listener, @Nullable OddsFeedExtListener extListener) {
+        return new EventsDispatcher(listener, extListener, this::producer, sessions::session);
+    }
+
+    private @Nullable Producer producer(long id) {
+        FeedCore built = core;
+        return built == null ? null : built.producers().getProducer(id);
     }
 
     public static OddsFeedConfigurationBuilder getOddsFeedConfigurationBuilder() {
@@ -254,11 +277,14 @@ public final class OddsFeed {
         } finally {
             state.unlock();
         }
+        var deadline = System.nanoTime() + OpenFeed.SHUTDOWN_TIMEOUT.toNanos();
         if (built == null && calling == null && run == null) {
-            // never started, or its start failed and released what it built: nothing to say
+            // never started, or its start failed and released what it built: nothing to say, but a
+            // callback of the failed start's may still run
+            events.stop();
+            events.awaitStop(deadline);
             return;
         }
-        var deadline = System.nanoTime() + OpenFeed.SHUTDOWN_TIMEOUT.toNanos();
         if (calling != null) {
             calling.close();
         }
@@ -267,13 +293,14 @@ public final class OddsFeed {
             run.stop();
         }
         if (built != null) {
-            // the REST client first, so a callback waiting on a call returns at once; the events
-            // dispatcher last, which waits for its own thread
+            // the REST client, so a callback waiting on a call returns at once
             built.close();
         }
+        events.stop();
         if (run != null) {
             run.awaitStop(deadline);
         }
+        events.awaitStop(deadline);
         LOG.debug("Odds feed closed");
     }
 
@@ -297,8 +324,12 @@ public final class OddsFeed {
             if (isClosed()) {
                 throw closedBeforeStart();
             }
+            if (!eventsStarted) {
+                events.start();
+                eventsStarted = true;
+            }
             try {
-                built = FeedCore.start(configuration, listener, extListener, this::startingWith);
+                built = FeedCore.start(configuration, events, this::startingWith);
             } catch (InitException e) {
                 throw e;
             } catch (RuntimeException e) {
