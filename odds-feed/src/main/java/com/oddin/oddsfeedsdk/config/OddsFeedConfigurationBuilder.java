@@ -1,11 +1,17 @@
 package com.oddin.oddsfeedsdk.config;
 
+import static java.util.Objects.requireNonNull;
+
 import java.time.Duration;
 import java.util.Locale;
 import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
 
-/** Builds a feed's configuration: an environment and an access token are required, the rest has defaults. */
+/**
+ * Builds a feed's configuration: an environment and an access token are required, the rest has
+ * defaults. Every setter throws a {@link NullPointerException} for a null argument at once, as
+ * 0.0.x's did.
+ */
 public final class OddsFeedConfigurationBuilder {
 
     private static final int DEFAULT_MESSAGING_PORT = 5672;
@@ -37,6 +43,7 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     public OddsFeedConfigurationBuilder selectProduction(Region region) {
+        requireNonNull(region, "region");
         return select("mq." + region.getHost() + "oddin.gg", "api-mq." + region.getHost() + "oddin.gg");
     }
 
@@ -45,6 +52,7 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     public OddsFeedConfigurationBuilder selectIntegration(Region region) {
+        requireNonNull(region, "region");
         return select(
                 "mq.integration." + region.getHost() + "oddin.gg",
                 "api-mq.integration." + region.getHost() + "oddin.gg");
@@ -55,6 +63,7 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     public OddsFeedConfigurationBuilder selectTest(Region region) {
+        requireNonNull(region, "region");
         return select(
                 "mq-test.integration." + region.getHost() + "oddin.dev",
                 "api-mq-test.integration." + region.getHost() + "oddin.dev");
@@ -74,7 +83,7 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     public OddsFeedConfigurationBuilder setAccessToken(String accessToken) {
-        this.accessToken = accessToken;
+        this.accessToken = requireNonNull(accessToken, "accessToken");
         return this;
     }
 
@@ -85,12 +94,12 @@ public final class OddsFeedConfigurationBuilder {
 
     public OddsFeedConfigurationBuilder setExceptionHandlingStrategy(
             ExceptionHandlingStrategy exceptionHandlingStrategy) {
-        this.exceptionHandlingStrategy = exceptionHandlingStrategy;
+        this.exceptionHandlingStrategy = requireNonNull(exceptionHandlingStrategy, "exceptionHandlingStrategy");
         return this;
     }
 
     public OddsFeedConfigurationBuilder setInitialSnapshotRecoveryInterval(Duration interval) {
-        this.initialSnapshotRecoveryInterval = interval;
+        this.initialSnapshotRecoveryInterval = requireNonNull(interval, "interval");
         return this;
     }
 
@@ -182,7 +191,7 @@ public final class OddsFeedConfigurationBuilder {
      * name are always checked; 0.0.x trusted any certificate. New in 1.0.
      */
     public OddsFeedConfigurationBuilder setMessagingSslContext(SSLContext context) {
-        this.messagingSslContext = context;
+        this.messagingSslContext = requireNonNull(context, "context");
         return this;
     }
 
@@ -201,7 +210,7 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     private static Duration positive(Duration duration, String what) {
-        if (!duration.isPositive()) {
+        if (!requireNonNull(duration, what).isPositive()) {
             throw new IllegalArgumentException(what + " must be positive, was " + duration);
         }
         return duration;
