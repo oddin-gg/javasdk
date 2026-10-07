@@ -8,7 +8,9 @@ import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
+import com.oddin.oddsfeedsdk.internal.feed.OpenFeeds;
 import com.oddin.oddsfeedsdk.internal.feed.Watchdog;
+import com.oddin.oddsfeedsdk.internal.recovery.Actors;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.BetSettlement;
@@ -34,6 +36,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
@@ -225,6 +228,54 @@ class OddsFeedWatchdogTest {
     }
 
     @Test
+    void aRecoveryActorWedgedInOneTurnIsFoundStalledUntilItMovesAgain() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var heard = new Heard();
+            var feed = feedAgainst(api, heard);
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            try {
+                feed.getSessionBuilder()
+                        .setListener(new Wedged(new CountDownLatch(1), new CountDownLatch(0)))
+                        .setMessageInterest(MessageInterest.ALL)
+                        .build();
+                feed.open();
+                var actor = requireNonNull(OpenFeeds.actor(requireNonNull(feed.running())));
+                var once = new AtomicBoolean(true);
+                long wedgedFrom = System.nanoTime();
+                // the next fact it takes - a tick, at the latest, within a second - does not end
+                Actors.beforeHandle(actor, () -> {
+                    if (once.compareAndSet(true, false)) {
+                        entered.countDown();
+                        await(release);
+                    }
+                });
+                assertThat(entered.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+                assertThat(part(feed, HealthComponent.RECOVERY).busySince() - wedgedFrom)
+                        .as("the turn it is wedged in, begun since the hook was set, by System.nanoTime")
+                        .isBetween(0L, System.nanoTime() - wedgedFrom);
+
+                var stalled = heard.next(HealthComponent.RECOVERY);
+                assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
+                assertThat(stalled.reason()).startsWith("the recovery actor has been in one turn for ");
+                var health = feed.getHealth();
+                assertThat(health.state()).isEqualTo(HealthState.STALLED);
+                assertThat(health.components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
+
+                release.countDown();
+                var healthy = heard.next(HealthComponent.RECOVERY);
+                assertThat(healthy.state()).isEqualTo(HealthState.HEALTHY);
+                assertThat(healthy.reason()).isEqualTo("the recovery actor moves again");
+                awaitHealth(feed, now -> now.components().get(HealthComponent.RECOVERY) == HealthState.HEALTHY);
+                api.awaitQuiet();
+            } finally {
+                release.countDown();
+                feed.close();
+            }
+        }
+    }
+
+    @Test
     void theWatchdogReadsEachPartsBusySinceQueueAndCountFromWhatTheOpenBuilt() throws Exception {
         try (var api = FakeRestServer.start()) {
             var feed = feedAgainst(api, new Heard());
@@ -249,6 +300,7 @@ class OddsFeedWatchdogTest {
                 assertThat(before.queued()).isZero();
                 assertThat(before.busySince()).isZero();
 
+                long published = System.nanoTime();
                 for (int i = 0; i < 3; i++) {
                     assertThat(feedBroker.publishFixture(ODDS_CHANGE)).isTrue();
                 }
@@ -256,7 +308,9 @@ class OddsFeedWatchdogTest {
                 var wedged = awaitPart(feed, HealthComponent.SESSION, part -> part.queued() == 2);
                 var session = feed.getHealth().sessions().getFirst();
                 assertThat(wedged.session()).isEqualTo(session.id());
-                assertThat(wedged.busySince()).as("in the first odds change").isNotZero();
+                assertThat(wedged.busySince() - published)
+                        .as("in the first odds change, since it was published, by System.nanoTime")
+                        .isBetween(0L, System.nanoTime() - published);
                 assertThat(wedged.queued()).isEqualTo(session.queueDepth());
                 assertThat(wedged.moved()).as("the alive only").isOne().isEqualTo(session.handled());
 
