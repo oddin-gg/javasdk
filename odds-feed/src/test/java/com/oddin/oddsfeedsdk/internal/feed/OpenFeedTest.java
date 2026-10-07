@@ -31,8 +31,11 @@ import java.time.Duration;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /** What open() adds, closed before it starts: it then starts nothing. */
@@ -162,6 +165,63 @@ class OpenFeedTest {
                 core.close();
             }
         }
+    }
+
+    @Test
+    void aCallerWhoseWaitEndsAsTheActorAnswersHasTheIdTheRequestWentOutWith() {
+        var match = URN.parse("od:match:198314");
+        assertThat(OpenFeed.answer(answeredAsTheWaitEnds(reply -> reply.complete(7L)), Duration.ZERO, 2, match))
+                .as("answered in the instant the wait ended")
+                .isEqualTo(7L);
+        assertThat(OpenFeed.answer(
+                        answeredAsTheWaitEnds(reply -> reply.completeExceptionally(new IllegalStateException("no"))),
+                        Duration.ZERO,
+                        2,
+                        match))
+                .as("refused in that instant")
+                .isNull();
+
+        var unanswered = new CompletableFuture<@Nullable Long>();
+        assertThat(OpenFeed.answer(unanswered, Duration.ofMillis(10), 2, match)).isNull();
+        assertThat(unanswered.complete(9L)).as("answered null for the actor").isFalse();
+        assertThat(unanswered.getNow(9L)).isNull();
+
+        Thread.currentThread().interrupt();
+        try {
+            assertThat(OpenFeed.answer(new CompletableFuture<>(), Duration.ofSeconds(10), 2, match))
+                    .isNull();
+            assertThat(OpenFeed.answer(answeredAsTheWaitIsInterrupted(), Duration.ofSeconds(10), 2, match))
+                    .as("answered as the caller was interrupted")
+                    .isEqualTo(8L);
+            assertThat(Thread.currentThread().isInterrupted())
+                    .as("the interrupt kept")
+                    .isTrue();
+        } finally {
+            Thread.interrupted();
+        }
+    }
+
+    /** A reply the actor answers in the instant the caller's wait times out, before it answers for it. */
+    private static CompletableFuture<@Nullable Long> answeredAsTheWaitEnds(
+            Consumer<CompletableFuture<@Nullable Long>> answer) {
+        return new CompletableFuture<>() {
+            @Override
+            public @Nullable Long get(long timeout, TimeUnit unit) throws TimeoutException {
+                answer.accept(this);
+                throw new TimeoutException();
+            }
+        };
+    }
+
+    /** A reply the actor answers in the instant the caller's wait is interrupted. */
+    private static CompletableFuture<@Nullable Long> answeredAsTheWaitIsInterrupted() {
+        return new CompletableFuture<>() {
+            @Override
+            public @Nullable Long get(long timeout, TimeUnit unit) throws InterruptedException {
+                complete(8L);
+                throw new InterruptedException();
+            }
+        };
     }
 
     @Test
