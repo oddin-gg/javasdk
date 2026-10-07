@@ -195,12 +195,23 @@ types in packages whose name contains `internal`.
   delivery, tells every thread to stop, then waits for all of them within one shutdown
   timeout of five seconds, not one per thread; it does not wait for the callback it is
   called from, nor for an `open()` under way, which then fails and closes what it
-  started. A callback still running at the deadline is left to end on its own daemon
+  started. An interrupt does not cut short the wait for the sessions, the alive
+  dispatcher and the recovery actor, so the resume points are final when `close()` returns;
+  it is set again before it does. A callback still running at the deadline is left to end on its own daemon
   thread, and the log says so. The order: the recovery actor is told the feed is closing,
   then every dispatcher is told to stop and each session's close is posted to the actor;
   the dispatchers are waited for, then the actor, which handles what is queued within what
   is left of the deadline, then the connection closes, so the actor hears of no loss the
-  close makes.
+  close makes, and the sessions' queues drop what they still hold.
+- Once `close()` has begun, no message reaches a session's listener, as in 0.0.x: a
+  message a session's thread takes from then on is dropped unacknowledged, with nothing
+  told to the recovery, and the resume point covers it. The sessions closing at shutdown
+  complete no recovery and bring no producer up.
+- From `open()` to `close()` the feed keeps one non-daemon thread, `oddsfeed-keep-alive`,
+  as 0.0.x's executors were non-daemon: every other thread of the SDK is a daemon or a
+  virtual thread, so without it a client whose `main` returned after `open()` would exit
+  when the connection drops. A start that fails ends it, and so does `close()`, last; a
+  feed that is never closed keeps the JVM running, as in 0.0.x.
 - Delivery is at most once, as today. Exclusive queues die with the connection, so an
   unacknowledged message is never redelivered. The gap is closed by recovery, not by
   redelivery. Acking late buys backpressure, not at-least-once.
@@ -1484,3 +1495,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   An event recovery whose caller's wait ends in the instant the actor answers returns the id
   the request went out with, not null. The benchmark run takes no machine-wide JMH lock, so
   two builds at once no longer fail each other.
+- 2026-10-07, ticket 26, close hardening after the final review: a session's thread that takes
+  a message once `close()` has begun drops it unacknowledged, so nothing reaches a listener
+  after that, as in 0.0.x and the Go SDK. The waits of the close for the sessions, the alive
+  dispatcher and the recovery actor go on through an interrupt, the actor's 200 ms floor
+  included, so an interrupted closer still reads final resume points. The sessions' queues drop
+  what they hold when their channels close, and the alive queue's counters read empty once
+  closed. The sessions closing at shutdown neither complete a recovery nor bring a producer up.
+  One non-daemon thread keeps the JVM up from `open()` to `close()`, as 0.0.x's executors did.
