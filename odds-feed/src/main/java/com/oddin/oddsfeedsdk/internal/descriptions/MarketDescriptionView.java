@@ -60,8 +60,8 @@ final class MarketDescriptionView implements MarketDescription {
     @Deprecated
     @Override
     @SuppressWarnings("InlineMeSuggester") // the interface's method, which a caller calls
-    public @Nullable Integer getRefId() {
-        return null;
+    public Integer getRefId() {
+        return 0;
     }
 
     @Override

@@ -28,8 +28,8 @@ class FeedMarket implements Market {
     @Deprecated
     @SuppressWarnings("InlineMeSuggester") // a getter of the public API, not a call to inline
     @Override
-    public @Nullable Integer getRefId() {
-        return null;
+    public Integer getRefId() {
+        return 0;
     }
 
     /** A new map on each call, in the feed's order, which the client may change: the market keeps its own. */
