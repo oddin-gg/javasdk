@@ -303,6 +303,35 @@ class MessageFactoryTest {
                         "Player $1 ${x} \\ to score");
     }
 
+    /** 0.0.x's player cache answered a failed load with no player, so the market kept the id. */
+    @Test
+    void aPlayerPropsMarketNamesAPlayerThatCannotBeReadByItsIdUnderEitherStrategy() throws Exception {
+        for (var strategy : ExceptionHandlingStrategy.values()) {
+            world.close();
+            world = MessageWorld.start(strategy);
+            world.api.respond(MARKETS, 200, markets("""
+                    <market id="3" name="{player} to score" groups="all|player_props"/>
+                    """));
+            world.api.respond(
+                    "/v1/sports/en/competitors/od:competitor:47215/profile",
+                    200,
+                    Fixtures.read("rest/competitor/competitor_profile_no_players.xml")
+                            .replace("od:competitor:47214", "od:competitor:47215"));
+            // players no competitor profile lists: one the API fails, one it answers with no profile
+            world.api.respond("/v1/sports/en/players/od:player:9002/profile", 500, "down");
+            world.api.respond("/v1/sports/en/players/od:player:9003/profile", 200, "not a profile");
+            var change = (OddsChange<?>) world.build(oddsChange("""
+                    <market id="3" specifiers="player=od:player:9002" status="1"/>
+                    <market id="3" specifiers="player=od:player:9003" status="1"/>
+                    <market id="3" specifiers="player=od:player:9001" status="1"/>
+                    """));
+            assertThat(change.getMarkets())
+                    .extracting(Market::getName)
+                    .as("under %s", strategy)
+                    .containsExactly("od:player:9002 to score", "od:player:9003 to score", "Player One to score");
+        }
+    }
+
     @Test
     void anOutcomeTheDescriptionDoesNotListIsThePlayerOrCompetitorOfAMarketOfThem() throws Exception {
         world.api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:770", 200, markets("""
