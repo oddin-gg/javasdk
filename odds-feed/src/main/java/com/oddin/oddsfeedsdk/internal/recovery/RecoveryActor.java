@@ -36,7 +36,7 @@ import org.slf4j.LoggerFactory;
  * The recovery actor: one thread that owns all producer and recovery state, and runs the {@link
  * RecoveryMachine} over the facts the rest of the feed posts. Nobody else touches that state, so it
  * needs no lock; whoever posts only puts a fact in a queue and returns, never waiting. The AMQP
- * consumer thread never posts here at all: the dispatchers do.
+ * consumer thread posts only a lost channel, without blocking; the dispatchers post the rest.
  *
  * <p>Three queues. The essential facts - sessions opening and closing, the start, the connection,
  * the alives, snapshot completes, lost and reopened channels, the API's answers and finished resets - are never

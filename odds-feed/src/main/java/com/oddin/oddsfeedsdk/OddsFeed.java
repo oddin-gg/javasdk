@@ -37,9 +37,12 @@ import org.slf4j.LoggerFactory;
  * <p>The feed starts as 0.0.x started it, on the first call of a manager getter or of {@link
  * #getSessionBuilder}: it asks the API who the bookmaker is and which producers there are, within
  * the startup timeout, and builds the managers. That happens once, however many threads call at
- * once. When it fails the call throws an {@link InitException} saying "Failed to init odds feed",
- * with the reason as its cause, and the next call tries again. The managers work before the feed
- * opens; {@link #close} releases what the start built.
+ * once. It tries again until the startup timeout, three HTTP timeouts unless set, so with the API
+ * down a start takes that long to fail. When it fails the call throws an {@link InitException}
+ * saying "Failed to init odds feed", with the reason as its cause, and the next call tries again.
+ * The managers work before the feed opens; {@link #close} releases what the start built. The
+ * feed's events thread and the watch over its threads stay from its first start to its close, so a
+ * feed the client gives up on is closed.
  *
  * <p>Sessions are built before {@link #open}, which connects to the broker and starts delivering to
  * them, once: see {@link #open} and {@link #close}.
@@ -257,8 +260,9 @@ public final class OddsFeed {
      * the sessions' interests combine, disables the producers no session asks for, then connects to
      * the broker and starts delivering. All or nothing: when a step fails, what it started is
      * closed again, nothing is left running or connected, and this throws; the managers stay, until
-     * {@link #close}. One-shot, as in 0.0.x: once the sessions are taken, a second call throws,
-     * whatever came of the first; the client closes the feed and makes a new one. From the open to
+     * {@link #close}. One-shot: once the sessions are taken, a second call throws, whatever came of
+     * the first, where 0.0.x let a failed open be tried again; the client closes the feed and makes
+     * a new one. From the open to
      * the close the feed keeps one non-daemon thread, as 0.0.x did, so the JVM does not exit while
      * the feed is open, not even while it reconnects; a feed that is never closed keeps it running.
      *
