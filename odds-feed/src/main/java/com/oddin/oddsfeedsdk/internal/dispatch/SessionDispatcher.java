@@ -4,6 +4,7 @@ import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.internal.BusySince;
+import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
 import com.oddin.oddsfeedsdk.internal.message.Routes;
@@ -173,9 +174,9 @@ public final class SessionDispatcher implements AutoCloseable {
 
     /**
      * Waits for the thread to end after a {@link #stop}, until {@code deadline}, by {@link
-     * System#nanoTime}; says so in the log when it does not. From the session's own thread - one of
-     * its callbacks closing the feed - it does not wait, as that would wait for itself: the thread
-     * ends once the callback returns and its message is acknowledged.
+     * System#nanoTime}, an interrupt notwithstanding; says so in the log when it does not. From the
+     * session's own thread - one of its callbacks closing the feed - it does not wait, as that would
+     * wait for itself: the thread ends once the callback returns and its message is acknowledged.
      *
      * @return whether the thread has ended, or is the caller's own and ends next
      */
@@ -183,14 +184,7 @@ public final class SessionDispatcher implements AutoCloseable {
         if (Thread.currentThread().equals(thread) || !thread.isAlive()) {
             return true;
         }
-        try {
-            if (thread.join(Duration.ofNanos(Math.max(0, deadline - System.nanoTime())))) {
-                return true;
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        if (!thread.isAlive()) {
+        if (Joins.uninterruptibly(thread, deadline)) {
             return true;
         }
         LOG.warn("The dispatcher of {} did not stop in time: a callback still runs", thread);

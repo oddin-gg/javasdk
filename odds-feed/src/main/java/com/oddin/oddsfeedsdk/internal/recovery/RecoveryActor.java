@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
 import com.oddin.oddsfeedsdk.internal.BusySince;
+import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
@@ -420,7 +421,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * at most; those left take the points back, as when their time is up. It waits {@link
      * #CLOSE_FLOOR} at least, even past the deadline, for the thread to end, so the published points
      * are final when it returns: past the deadline the thread only takes them back and closes the
-     * machine.
+     * machine. An interrupt does not cut the wait short, and is set again before this returns.
      *
      * @return whether the actor has ended
      */
@@ -436,14 +437,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             return true;
         }
         LockSupport.unpark(thread);
-        try {
-            if (thread.join(Duration.ofNanos(Math.max(CLOSE_FLOOR.toNanos(), deadline - System.nanoTime())))) {
-                return true;
-            }
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-        if (!thread.isAlive()) {
+        long now = System.nanoTime();
+        long floor = CLOSE_FLOOR.toNanos();
+        if (Joins.uninterruptibly(thread, deadline - now < floor ? now + floor : deadline)) {
             return true;
         }
         LOG.warn("The recovery actor did not stop in time");
