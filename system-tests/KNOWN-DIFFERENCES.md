@@ -621,8 +621,10 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   accepted it (NEXT.md section 4, Recovery and producers).
 - **Why:** A producer reported up while one of its sessions is still behind tells that session's
   client a state it does not have yet. On 1.0 the producer comes up later, once all are done.
-- **Pinned by:** none in the system tests; the recovery machine's unit tests pin it
-  (`RecoveryMachineTest`'s `aProducerIsUpOnceEverySessionThatReceivesItHasSeenItsSnapshotComplete`).
+- **Pinned by:** none in the system tests: `MultiSessionScenarioIT` runs two sessions, but each
+  producer goes to one of them, where the two lines agree. The recovery machine's unit tests
+  pin it (`RecoveryMachineTest`'s
+  `aProducerIsUpOnceEverySessionThatReceivesItHasSeenItsSnapshotComplete`).
 - **Found:** by reading the source (`ProducerRecoveryData.validateSnapshotComplete`,
   `snapshotValidationNeeded`).
 
