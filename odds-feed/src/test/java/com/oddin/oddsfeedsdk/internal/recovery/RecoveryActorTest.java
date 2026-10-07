@@ -92,6 +92,26 @@ class RecoveryActorTest {
     }
 
     @Test
+    void whatWaitsForTheActorIsCountedForTheWatchdogUntilItIsTaken() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        int before = actor.pending();
+        actor.up();
+        actor.down("the broker went away");
+        assertThat(actor.pending()).as("two facts posted before the start").isEqualTo(before + 2);
+        assertThat(actor.turns()).isZero();
+        assertThat(actor.turnedAt()).as("no turn yet").isZero();
+
+        actor.start();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while ((actor.pending() > 0 || actor.turns() < 2) && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat(actor.pending()).isZero();
+        assertThat(actor.turns()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
     void theActorPublishesTheResumePointAsTheFactsMoveIt() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);

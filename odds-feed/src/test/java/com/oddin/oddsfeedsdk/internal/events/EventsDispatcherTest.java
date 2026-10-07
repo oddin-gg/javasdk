@@ -313,6 +313,38 @@ class EventsDispatcherTest {
         assertThat(dispatcher.busySince()).isZero();
     }
 
+    @Test
+    void behindAWedgedCallbackTheWatchdogSeesTheQueueStandStillAndThenMove() throws InterruptedException {
+        EventsDispatcher dispatcher = started(null);
+        assertThat(dispatcher.queued()).isZero();
+        assertThat(dispatcher.delivered()).isZero();
+        listener.wedge();
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:1"), 1);
+        listener.awaitWedged();
+        dispatcher.eventRecoveryCompleted(PRODUCER, URN.parse("od:match:2"), 2);
+        dispatcher.up();
+        dispatcher.called(call(200, null));
+        assertThat(dispatcher.queued())
+                .as("a control event, a slot's and a telemetry event behind the wedge")
+                .isEqualTo(3);
+        assertThat(dispatcher.delivered()).as("none returned yet").isZero();
+
+        listener.release();
+        assertThat(listener.take(4))
+                .containsExactly(
+                        "onEventRecoveryCompleted od:match:1 1",
+                        "onEventRecoveryCompleted od:match:2 2",
+                        "onConnectionStateChange UP null 0 PT0S",
+                        "onApiCall");
+        // counted once its callbacks return
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (dispatcher.delivered() < 4 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        assertThat(dispatcher.delivered()).isEqualTo(4);
+        assertThat(dispatcher.queued()).isZero();
+    }
+
     /**
      * The design review's case: a wedged status callback, the control queue filling up behind it. The
      * newest status of the producer still reaches the client once it catches up, in place of the ones

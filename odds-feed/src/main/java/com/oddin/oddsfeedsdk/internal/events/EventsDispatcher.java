@@ -133,6 +133,8 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private final long telemetryByteBudget;
     private final AtomicLong rawDataDropped = new AtomicLong();
     private final AtomicLong callbackFailures = new AtomicLong();
+    /** Events delivered, every callback of each run; for the watchdog. */
+    private final AtomicLong delivered = new AtomicLong();
 
     private final Thread thread;
     private volatile boolean closed;
@@ -344,6 +346,19 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     /** When the callback running now started, epoch millis by the dispatcher's clock; 0 when none runs. */
     public long busySince() {
         return busySince;
+    }
+
+    /**
+     * Events waiting to be delivered: the control events, the slots that hold one, and the
+     * telemetry; for the watchdog.
+     */
+    public int queued() {
+        return controlSize.get() + slots.size() + telemetry.size();
+    }
+
+    /** Events delivered; for the watchdog: a queue that does not move while this does not either is wedged. */
+    public long delivered() {
+        return delivered.get();
     }
 
     /** Control events dropped for want of room. */
@@ -595,6 +610,14 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     }
 
     private void deliver(Event event) {
+        try {
+            call(event);
+        } finally {
+            delivered.incrementAndGet();
+        }
+    }
+
+    private void call(Event event) {
         for (Call call : event.calls()) {
             if (closed) {
                 return;
