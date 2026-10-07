@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.recovery;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.ProducerStatusCause;
 import java.time.Instant;
 import java.util.Arrays;
@@ -83,5 +84,34 @@ class PublicTypesTest {
                         startedAt,
                         endedAt,
                         "no snapshot complete"));
+    }
+
+    @Test
+    void theHealthsSnapshotHasEachCounterInItsOwnPlace() {
+        var counters = new RecoveryCounters();
+        counters.requested.set(1);
+        counters.reissued.set(2);
+        counters.failed.set(3);
+        counters.timedOut.set(4);
+        counters.abandoned.set(5);
+        counters.completed.set(6);
+        counters.unknownCompletions.set(7);
+        counters.unknownProducers.set(8);
+        counters.eventRequested.set(9);
+        counters.eventRefused.set(10);
+        counters.eventExpired.set(11);
+        counters.eventAbandoned.set(12);
+        counters.eventCallerGone.set(13);
+        counters.eventStatusesDropped.set(14);
+        counters.resets.set(15);
+        counters.resetDropped.set(16);
+        counters.resetRequestsFailed.set(17);
+        counters.factsDropped.set(18);
+        counters.factsFailed.set(19);
+
+        assertThat(counters.snapshot())
+                .isEqualTo(new FeedHealth.Recovery(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19));
+        assertThat(new RecoveryCounters().snapshot())
+                .isEqualTo(new FeedHealth.Recovery(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
     }
 }

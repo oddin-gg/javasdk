@@ -97,6 +97,14 @@ added | subscribe/SessionLagChange | a session lagging, or caught up again
 added | subscribe/HealthEvent | a change of a part of the feed's health
 added | subscribe/HealthState | healthy, degraded or stalled
 added | subscribe/HealthComponent | the parts of the feed whose health the SDK watches
+added | subscribe/FeedHealth | the feed's health: its state, each part's, and the counters of what the SDK gives up
+added | subscribe/FeedHealth$Transport | the broker connection's health
+added | subscribe/FeedHealth$Alives | the SDK's alive consumer's health
+added | subscribe/FeedHealth$Session | one session's health: its queue, its lag and its counters
+added | subscribe/FeedHealth$Recovery | the recoveries' and the safety net's counters
+added | subscribe/FeedHealth$Catalog | one catalog's health: served stale, and for how long
+added | subscribe/FeedHealth$Caches | the entity caches' and their background loads' counters
+added | subscribe/FeedHealth$Events | the feed's own callbacks' thread's counters
 
 # An event recovery's status by its request id, as the Go SDK keeps it.
 added | RecoveryManager.getEventRecoveryStatus (J)Lcom/oddin/oddsfeedsdk/api/entities/EventRecoveryStatus; | an event recovery's status by its request id, kept five minutes after it ends
