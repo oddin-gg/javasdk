@@ -476,7 +476,10 @@ class RecoveryActorTest {
 
     @Test
     void aResetTheClosingActorDecidesOnIsNotMade() throws InterruptedException {
-        RecoveryActor actor = actor(settings(Harness.settings().firstReissueBackoff(), Duration.ZERO));
+        var handed = new Handed(workers);
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), handed);
+        this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
         actor.up();
@@ -517,6 +520,7 @@ class RecoveryActorTest {
             Thread.sleep(10);
         }
         assertThat(actor.queued()).as("both answers queued").isEqualTo(2);
+        int before = handed.tasks.get();
 
         // the close comes; the answers, handled as the actor ends, would have the channel replaced
         Thread closer = Thread.ofPlatform().start(actor::close);
@@ -526,9 +530,11 @@ class RecoveryActorTest {
         release.countDown();
         closer.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
         assertThat(actor.running()).isFalse();
-        assertThat(transport.resets.await(300, TimeUnit.MILLISECONDS))
-                .as("a reset made")
-                .isFalse();
+        assertThat(handed.tasks.get())
+                .as("tasks handed to the workers as the actor closed")
+                .isEqualTo(before);
+        assertThat(transport.resets.getCount()).as("resets made").isEqualTo(1);
+        assertThat(transport.epoch.get()).isZero();
         assertThat(actor.counters().resets()).isZero();
     }
 
@@ -1972,6 +1978,22 @@ class RecoveryActorTest {
             long requestId,
             @Nullable Instant after,
             String thread) {}
+
+    /** Workers that count the tasks handed to them, then run them on the workers given. */
+    private static final class Handed implements Executor {
+        final AtomicInteger tasks = new AtomicInteger();
+        private final Executor workers;
+
+        Handed(Executor workers) {
+            this.workers = workers;
+        }
+
+        @Override
+        public void execute(Runnable task) {
+            tasks.incrementAndGet();
+            workers.execute(task);
+        }
+    }
 
     /** A clock that moves only when the test moves it. */
     private static final class MovableClock implements InstantSource {
