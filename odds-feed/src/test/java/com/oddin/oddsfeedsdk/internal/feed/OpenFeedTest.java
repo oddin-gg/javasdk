@@ -188,8 +188,13 @@ class OpenFeedTest {
 
         Thread.currentThread().interrupt();
         try {
-            assertThat(OpenFeed.answer(new CompletableFuture<>(), Duration.ofSeconds(10), 2, match))
+            var abandoned = new CompletableFuture<@Nullable Long>();
+            assertThat(OpenFeed.answer(abandoned, Duration.ofSeconds(10), 2, match))
                     .isNull();
+            assertThat(abandoned.complete(9L))
+                    .as("answered null for the actor, as the caller was interrupted")
+                    .isFalse();
+            assertThat(abandoned.getNow(9L)).isNull();
             assertThat(OpenFeed.answer(answeredAsTheWaitIsInterrupted(), Duration.ofSeconds(10), 2, match))
                     .as("answered as the caller was interrupted")
                     .isEqualTo(8L);
