@@ -67,8 +67,13 @@ class ReconnectScenarioIT {
                     .as("the SDK reports the connection down while the broker is paused")
                     .isTrue();
             feed.resume();
+            // from here an alive every second, as the producer sends them: a reconnect that takes
+            // longer than the alive interval must not read as the producer gone silent before it
             long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
-            while (feed.logins().size() == loginsBefore && System.nanoTime() < deadline) {
+            for (int i = 0; feed.logins().size() == loginsBefore && System.nanoTime() < deadline; i++) {
+                if (i % 5 == 0) {
+                    feed.publish(alive(1, true));
+                }
                 Thread.sleep(200);
             }
             assertThat(feed.logins())
@@ -80,6 +85,7 @@ class ReconnectScenarioIT {
             Optional<?> afterReconnect = Optional.empty();
             deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
             while (afterReconnect.isEmpty() && System.nanoTime() < deadline) {
+                feed.publish(alive(1, true));
                 feed.publishFixture(ODDS_CHANGE);
                 afterReconnect = received.poll(OddsChange.class, Duration.ofSeconds(1));
             }
