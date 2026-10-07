@@ -152,6 +152,25 @@ class SideLoadsTest {
     }
 
     @Test
+    void aLoadForIdleWorkersThatThrowsGivesItsPlaceBack() throws InterruptedException {
+        var ran = new CountDownLatch(1);
+        // two workers: one idle load at a time
+        try (var sideLoads = new SideLoads(10, 2, BUDGET)) {
+            sideLoads.offerWhenIdle(_ -> {
+                throw new IllegalStateException("the API said no");
+            });
+            sideLoads.offerWhenIdle(_ -> {
+                throw new ExceptionInInitializerError("a binding did not load");
+            });
+            sideLoads.offerWhenIdle(_ -> ran.countDown());
+            assertThat(ran.await(5, TimeUnit.SECONDS))
+                    .as("the idle loads after the two that threw ran")
+                    .isTrue();
+            assertThat(sideLoads.failed()).isEqualTo(2);
+        }
+    }
+
+    @Test
     void aLoadThatSwallowsTheCloseDoesNotKeepItsWorker() throws InterruptedException {
         var running = new CountDownLatch(1);
         var sideLoads = new SideLoads(10, 1, BUDGET);

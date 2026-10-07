@@ -487,6 +487,22 @@ class ProfileViewsTest {
     }
 
     @Test
+    void aMemberWhoseWarmUpFailedIsQueuedAgainByALaterList() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
+            var loads = new java.util.concurrent.atomic.AtomicInteger();
+            Entities.WarmLoad<String> load = (member, locale, deadline) -> {
+                loads.incrementAndGet();
+                throw new IllegalStateException("the API said no");
+            };
+            world.entities.warmEach(List.of("one"), List.of(EN), (member, locale) -> false, load);
+            waitFor(() -> world.sideLoads.failed() == 1);
+            world.entities.warmEach(List.of("one"), List.of(EN), (member, locale) -> false, load);
+            waitFor(() -> world.sideLoads.failed() == 2);
+            assertThat(loads.get()).as("not left marked as under way").isEqualTo(2);
+        }
+    }
+
+    @Test
     void thePerLocaleMapsAreANewOneTheCallerCanChange() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             Competitor competitor = world.entities.competitor(COMPETITOR, List.of(EN));
