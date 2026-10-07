@@ -1159,6 +1159,62 @@ class RecoveryMachineTest {
         assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.RECOVERY_COMPLETED);
     }
 
+    @Test
+    void sessionsClosingAtShutdownCompleteNoRecoveryAndBringNoProducerUp() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        // one session has its snapshot complete, the other's is still coming as the feed closes
+        feed.machine.snapshotComplete(1, PRE, recovery.requestId());
+        int told = feed.statuses.size();
+
+        feed.machine.closing();
+        feed.close(2);
+        feed.close(1);
+        assertThat(feed.producers.isProducerDown(PRE)).as("never recovered").isTrue();
+        assertThat(feed.counters.completed()).as("completions").isZero();
+        assertThat(feed.statuses).as("status changes").hasSize(told);
+    }
+
+    @Test
+    void aProducerDownOnlyForASessionsGapStaysDownAsTheFeedCloses() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        feed.clock.advance(Duration.ofMinutes(1));
+        feed.open(2, MessageInterest.PREMATCH_ONLY);
+        feed.alive(PRE);
+        feed.refuse(feed.lastSnapshot(PRE));
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+        int told = feed.statuses.size();
+
+        feed.machine.closing();
+        feed.close(2);
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+        assertThat(feed.statuses).as("status changes").hasSize(told);
+    }
+
+    @Test
+    void anEventRecoveryASessionClosingAtShutdownWasAllThatWaitedForDoesNotComplete()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        CompletableFuture<@Nullable Long> reply = feed.recoverEvent(LIVE);
+        Outbox.Call call = feed.calls.getLast();
+        feed.accept(call);
+        assertThat(done(reply)).isEqualTo(call.requestId());
+        assertThat(feed.events)
+                .as("accepted, its snapshot complete still coming")
+                .isEmpty();
+
+        feed.machine.closing();
+        feed.close(1);
+        assertThat(feed.events).as("events told").isEmpty();
+    }
+
     // ---- asking again
 
     @Test
