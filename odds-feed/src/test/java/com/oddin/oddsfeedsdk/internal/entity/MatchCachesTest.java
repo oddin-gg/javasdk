@@ -371,6 +371,24 @@ class MatchCachesTest {
     }
 
     @Test
+    void aLiveStateWhoseReloadAFixtureChangeRefusedIsLoadedOnceMore() throws Exception {
+        api.respond(SUMMARY_EN, Reply.of(200, SUMMARY).after(Duration.ofMillis(500)), Reply.of(200, SUMMARY));
+        Future<@Nullable LiveValues> reading = threads.submit(() -> caches.live(MATCH));
+        api.awaitRequest("GET", SUMMARY_EN);
+        caches.fixtureChange(MATCH);
+        LiveValues live = reading.get(10, TimeUnit.SECONDS);
+        assertThat(api.requests("GET", SUMMARY_EN))
+                .as("the reload from before the change, then the second")
+                .hasSize(2);
+        assertThat(caches.discardedFetches()).as("the summary from before").isEqualTo(1);
+        assertThat(live).as("the second load's live state").isNotNull();
+        assertThat(requireNonNull(live).get(WINNER_ID)).isNotNull();
+        assertThat(requireNonNull(caches.cachedLive(MATCH)).get(WINNER_ID))
+                .as("what it wrote")
+                .isEqualTo(live.get(WINNER_ID));
+    }
+
+    @Test
     void aFixtureFetchedBeforeAFixtureChangeWritesNothing() throws Exception {
         api.respond(
                 FIXTURE_EN,
