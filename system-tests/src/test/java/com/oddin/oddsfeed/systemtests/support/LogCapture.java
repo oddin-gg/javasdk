@@ -34,6 +34,23 @@ public final class LogCapture implements AutoCloseable {
         }
     }
 
+    /** "LEVEL logger: message" for everything, at any level, from loggers under this prefix. */
+    public List<String> everythingFrom(String loggerPrefix) {
+        synchronized (appender) {
+            return appender.list.stream()
+                    .filter(event -> event.getLoggerName().startsWith(loggerPrefix))
+                    .map(event -> event.getLevel() + " " + event.getLoggerName() + ": " + event.getFormattedMessage())
+                    .toList();
+        }
+    }
+
+    /** Forgets what was logged so far, for a test to check only what comes next. */
+    public void clear() {
+        synchronized (appender) {
+            appender.list.clear();
+        }
+    }
+
     @Override
     public void close() {
         root.detachAppender(appender);

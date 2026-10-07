@@ -211,7 +211,20 @@ public final class OddsFeed {
         } finally {
             state.unlock();
         }
-        run.start();
+        try {
+            run.start();
+        } catch (RuntimeException e) {
+            // it closed what it started; there is nothing open for close() to stop
+            state.lock();
+            try {
+                if (running == run) {
+                    running = null;
+                }
+            } finally {
+                state.unlock();
+            }
+            throw e;
+        }
         LOG.info("Odds feed opened with {} session(s)", specs.size());
     }
 
@@ -221,9 +234,9 @@ public final class OddsFeed {
      * way, which then fails. Waits for the feed's threads within one shutdown timeout, five seconds,
      * for all of them together; a callback still running then is left to end on its own and said so
      * in the log. From one of the feed's own callbacks it does not wait for that callback. Closing
-     * twice does nothing more, and closing a feed whose start failed has nothing to release. Once
-     * closed, the feed does not start or open again; the managers it had already handed out stay,
-     * closed.
+     * twice does nothing more, and closing a feed whose start failed has nothing to release and logs
+     * nothing. Once closed, the feed does not start or open again; the managers it had already handed
+     * out stay, closed.
      */
     public void close() {
         @Nullable FeedCore built;
@@ -240,6 +253,10 @@ public final class OddsFeed {
             run = running;
         } finally {
             state.unlock();
+        }
+        if (built == null && calling == null && run == null) {
+            // never started, or its start failed and released what it built: nothing to say
+            return;
         }
         var deadline = System.nanoTime() + OpenFeed.SHUTDOWN_TIMEOUT.toNanos();
         if (calling != null) {
@@ -322,6 +339,17 @@ public final class OddsFeed {
             }
             core = built;
             return true;
+        } finally {
+            state.unlock();
+        }
+    }
+
+    /** What {@link #open} added and {@link #close} is to stop; for a test. */
+    @Nullable
+    OpenFeed running() {
+        state.lock();
+        try {
+            return running;
         } finally {
             state.unlock();
         }
