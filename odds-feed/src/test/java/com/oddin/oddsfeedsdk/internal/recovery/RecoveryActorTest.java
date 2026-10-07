@@ -118,11 +118,23 @@ class RecoveryActorTest {
 
     @Test
     void aTickThatFindsTheProducerSilentTakesThePointBackToItsLastSubscribedAlive() throws InterruptedException {
-        RecoveryActor actor = actor(withInactivity(Duration.ofSeconds(2), null));
+        // the actor's clock moves only when the test moves it, so nothing goes silent before then
+        var clock = new MovableClock(Instant.parse("2026-10-07T12:00:00Z"));
+        var actor = new RecoveryActor(
+                producers,
+                settings(),
+                api,
+                events(),
+                workers,
+                clock,
+                new Random(1),
+                RecoveryActor.CONTROL_CAPACITY,
+                RecoveryActor.SAMPLE_CAPACITY);
+        this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
         actor.up();
-        long lastSubscribed = System.currentTimeMillis();
+        long lastSubscribed = clock.millis();
         actor.alive(PRE, lastSubscribed, lastSubscribed, true);
         Request first = api.next();
         session.snapshotComplete(PRE, first.requestId());
@@ -133,6 +145,7 @@ class RecoveryActorTest {
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
 
         // nothing more is posted: only the actor's ticks see the producer silent
+        clock.advance(Harness.settings().maxInactivity().plusSeconds(1));
         awaitTimestampForRecovery(
                 held,
                 Instant.ofEpochMilli(lastSubscribed)::equals,
@@ -1776,6 +1789,24 @@ class RecoveryActorTest {
             long requestId,
             @Nullable Instant after,
             String thread) {}
+
+    /** A clock that moves only when the test moves it. */
+    private static final class MovableClock implements InstantSource {
+        private volatile Instant now;
+
+        MovableClock(Instant start) {
+            this.now = start;
+        }
+
+        @Override
+        public Instant instant() {
+            return now;
+        }
+
+        void advance(Duration by) {
+            now = now.plus(by);
+        }
+    }
 
     /** An API that records each request, accepts it or refuses it. */
     private static final class Api implements RecoveryRequests {
