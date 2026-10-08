@@ -1009,6 +1009,55 @@ dispatcher is reported; the client's remedy is `close()` and a new `OddsFeed`, a
 `close()` uses the shutdown timeout so a wedged callback cannot block shutdown. A stall
 must never be silent again, but the SDK cannot unwedge client code.
 
+### Logging
+
+The SDK logs through SLF4J and nothing else: the client picks the backend and the levels.
+A logger is named after its class, so a client turns one class or one package up or down.
+Normal traffic is quiet: an hour of it logs state changes at INFO and nothing per message.
+
+Levels:
+
+- INFO: a state change. The feed opened, a producer up or down, a recovery started, ended
+  or given up, a session caught up, a part of the feed back to healthy. The opt-in API
+  call log is the one exception, one line per attempt, off unless the client asks.
+- WARN: something the client may need to act on, or should know is lost: a dropped
+  message, a queue full, a failed preload, a part of the feed degraded. A warning that can
+  repeat is throttled.
+- ERROR: a part that stalled, or client code that threw. Also throttled when it can repeat.
+- DEBUG: the detail behind a warning, the stack of a failure, and what happens per
+  request. Nothing here is needed to run the feed.
+
+Throttling: a failure that can repeat per message, per call or per tick is logged at WARN
+or ERROR the first time and then once in a thousand, with the count so far in the line
+(`..., 2000 so far`). The others go to DEBUG, with their stack. Some are limited by time
+instead: the first, then at most one a minute.
+
+Secrets: the access token is redacted from the failures the SDK logs, the message and the
+stack alike. It travels only in a request header, so no URL the SDK logs holds it.
+
+Logger names, all under `com.oddin.oddsfeedsdk`. Turn a package to DEBUG to see more of
+its area; the classes below are the ones to start with.
+
+| Area | Package | Classes worth knowing |
+|---|---|---|
+| Feed | `com.oddin.oddsfeedsdk` and `.internal.feed` | `OddsFeed` (open and close), `OpenFeed`, `FeedCore` (startup), `HealthMonitor` (health changes), `Watchdog`, `ConnectionTee`, `RecoveryTee` (client listeners that throw) |
+| Broker connection | `.internal.amqp` | `AmqpTransport` (connection, reopening, listeners), also the name of the AMQP client's own reports |
+| Recovery | `.internal.recovery` | `RecoveryMachine` (each recovery, producer up and down, the safety net), `RecoveryActor`, `EventRecoveryStatuses` |
+| Delivery | `.internal.dispatch` and `.internal.events` | `SessionDispatcher` (a session's messages and callbacks), `AliveDispatcher`, `EventsDispatcher` (global callbacks) |
+| REST | `.internal.rest` | `RestTransport` (the API call log) |
+| Messages and names | `.internal.message` | `MessageFactory`, `MarketNames`, `Naming` |
+| Entities and catalogs | `.internal.entity` and `.internal.descriptions` | `Entities`, `MatchCaches` (the eager preload), `SportsInfo`, `Strategy` (what the exception strategy turns into null) |
+| Producers | `.internal.producer` | `Producers` |
+| Replay | `.internal.replay` | `Replay` |
+
+To see the connection and the recoveries as they go, set `com.oddin.oddsfeedsdk.internal.amqp`
+and `com.oddin.oddsfeedsdk.internal.recovery` to DEBUG. To see each REST call, turn on API
+call logging with `setApiCallLogging(true)`: one INFO line per attempt.
+
+The system test `QuietTrafficScenarioIT` stands in for the hour: it sends a few hundred
+messages over three matches and checks that what is logged at INFO or above is a state
+change from a short list, and nothing else.
+
 ---
 
 ## 5. New in 1.0
@@ -1336,7 +1385,8 @@ group by group.
     the void reasons; the default locale, the preload locales and the eager entity preload.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
-30. Logging cleanup. Noisy logs are a client complaint.
+30. Logging cleanup, done: levels and throttling, one wording, and the logger names in
+    section 4, Logging. Noisy logs were a client complaint.
 31. README, examples, release notes and upgrade guide, integration guide with the
     onboarding checklist (distinct node ids, the operator's queue limit above prefetch,
     the per-session memory budget with the AMQP client's own buffer) and resuming after
