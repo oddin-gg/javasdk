@@ -5,6 +5,7 @@ import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
+import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
@@ -55,6 +56,8 @@ import org.slf4j.LoggerFactory;
 public final class Watchdog {
 
     private static final Logger LOG = LoggerFactory.getLogger(Watchdog.class);
+    /** How often a look that fails is logged with its stack: at most once in this long. */
+    private static final Duration LOOK_FAILURE_INTERVAL = Duration.ofMinutes(1);
 
     /**
      * The limits and the tick, as the configuration has them: the limits derived from the HTTP
@@ -117,6 +120,8 @@ public final class Watchdog {
     private final Supplier<List<String>> deadlocks;
     /** {@link System#nanoTime}, or a test's. */
     private final LongSupplier nanos;
+    /** The looks that failed, a line at most a minute: a look that fails every tick would otherwise log every tick. */
+    private final Throttle lookFailures = new Throttle();
 
     private final Limits limits;
 
@@ -280,7 +285,11 @@ public final class Watchdog {
             tick();
         } catch (RuntimeException | Error e) {
             // a look that fails must not end every later one: the executor would run no more
-            LOG.error("The watchdog's look failed; it looks again at the next tick", e);
+            if (lookFailures.dueEvery(nanos.getAsLong(), LOOK_FAILURE_INTERVAL)) {
+                LOG.error("The watchdog's look failed; it looks again at the next tick", e);
+            } else {
+                LOG.debug("The watchdog's look failed; it looks again at the next tick", e);
+            }
         }
     }
 

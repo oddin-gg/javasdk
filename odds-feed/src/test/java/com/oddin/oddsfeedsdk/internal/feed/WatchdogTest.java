@@ -4,7 +4,9 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.tuple;
 
+import ch.qos.logback.classic.Level;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
@@ -463,6 +465,42 @@ class WatchdogTest {
             assertThat(failed.get()).isGreaterThanOrEqualTo(3);
         } finally {
             timed.stop();
+        }
+    }
+
+    /** A look that fails at every tick: its stack once a minute, and debug between, not one line a tick. */
+    @Test
+    void aLookThatFailsEveryTickIsLoggedOnceAMinute() throws InterruptedException {
+        var ticked = new AtomicInteger();
+        var timed = made(new Watchdog(
+                health,
+                List::of,
+                () -> {},
+                () -> {
+                    throw new IllegalStateException("a deadlock search that cannot run");
+                },
+                System::nanoTime,
+                new Watchdog.Limits(Duration.ofHours(1), Duration.ofHours(1), Duration.ofMillis(20))));
+        timed.beforeTick(ticked::incrementAndGet);
+        try (var log = LogCapture.of(Watchdog.class, Level.DEBUG)) {
+            timed.start();
+            try {
+                awaitAtLeast(ticked, 4);
+            } finally {
+                timed.stop();
+            }
+            assertThat(timed.awaitStop(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                    .isTrue();
+            assertThat(log.lines().stream()
+                            .filter(line -> line.startsWith("ERROR "))
+                            .count())
+                    .as("the first look, and none for the next minute")
+                    .isEqualTo(1);
+            assertThat(log.lines().stream()
+                            .filter(line -> line.startsWith("DEBUG "))
+                            .count())
+                    .as("the rest of the looks")
+                    .isGreaterThanOrEqualTo(3);
         }
     }
 

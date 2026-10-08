@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
+import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.rabbitmq.client.Address;
 import com.rabbitmq.client.AddressResolver;
 import com.rabbitmq.client.Connection;
@@ -53,6 +54,8 @@ import org.slf4j.LoggerFactory;
 public final class AmqpTransport implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(AmqpTransport.class);
+    /** How often a failed reopen is logged at WARN: the first, then at most once in this long. */
+    private static final Duration REOPEN_FAILURE_INTERVAL = Duration.ofMinutes(1);
 
     /** How long close() waits for the broker to confirm an abort before it drops the socket. */
     private static final int ABORT_MILLIS = 200;
@@ -79,6 +82,8 @@ public final class AmqpTransport implements AutoCloseable {
     final AtomicBoolean reconnecting = new AtomicBoolean();
     /** Connections made again after a loss, each told up. */
     private final AtomicLong reconnects = new AtomicLong();
+    /** The reopens that failed: a line at most a minute, the rest debug, as a failing reopen repeats with backoff. */
+    private final Throttle reopenFailures = new Throttle();
 
     private volatile @Nullable ConsumerPool consumers;
     private volatile @Nullable Connection connection;
@@ -290,10 +295,12 @@ public final class AmqpTransport implements AutoCloseable {
      * connection still reads as up and nothing else would show it. It is tried again with backoff.
      */
     private void reopenFailed(String which, Exception cause) {
-        LOG.warn(
-                "{} could not be opened again on the live connection, and is tried again: {}",
-                which,
-                Failure.describe(cause, settings.accessToken()));
+        String why = Failure.describe(cause, settings.accessToken());
+        if (reopenFailures.dueEvery(System.nanoTime(), REOPEN_FAILURE_INTERVAL)) {
+            LOG.warn("{} could not be opened again on the live connection, and is tried again: {}", which, why);
+        } else {
+            LOG.debug("{} could not be opened again on the live connection, and is tried again: {}", which, why);
+        }
     }
 
     /** Whether the connection is there and open; for {@code getHealth()}. */
