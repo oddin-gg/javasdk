@@ -327,12 +327,13 @@ public final class OddsFeed {
      * threads once their callbacks return, and what the start built. A message a session takes once
      * it has begun reaches no listener, as in 0.0.x: it is dropped, and the resume point covers it.
      * Ends a start or an open under way, which then fails. Waits for the feed's threads within one
-     * shutdown timeout, five seconds, for all of them together; an interrupt does not cut short the
-     * wait for the sessions and the recovery, so the resume points are final when it returns. A
-     * callback still running then is left to end on its own and said so in the log. From one of the
-     * feed's own callbacks it does not wait for that callback. Closing twice does nothing more, and
-     * closing a feed whose start failed has nothing to release and logs nothing. Once closed, the
-     * feed does not start or open again; the managers it had already handed out stay, closed.
+     * shutdown timeout, five seconds unless the configuration sets it, for all of them together; an
+     * interrupt does not cut short the wait for the sessions and the recovery, so the resume points
+     * are final when it returns. A callback still running then is left to end on its own and said so
+     * in the log. From one of the feed's own callbacks it does not wait for that callback. Closing
+     * twice does nothing more, and closing a feed whose start failed has nothing to release and logs
+     * nothing. Once closed, the feed does not start or open again; the managers it had already handed
+     * out stay, closed.
      */
     public void close() {
         @Nullable FeedCore built;
@@ -350,7 +351,7 @@ public final class OddsFeed {
         } finally {
             state.unlock();
         }
-        var deadline = System.nanoTime() + OpenFeed.SHUTDOWN_TIMEOUT.toNanos();
+        var deadline = System.nanoTime() + configuration.getShutdownTimeout().toNanos();
         // first, so it finds no part stopping for stalled
         watchdog.stop();
         if (built == null && calling == null && run == null) {

@@ -58,8 +58,6 @@ public record RecoverySettings(
     static final Duration FIRST_REISSUE_BACKOFF = Duration.ofSeconds(5);
     static final Duration COOLDOWN = Duration.ofMinutes(10);
     static final Duration ALIVE_INTERVAL = Duration.ofSeconds(10);
-    static final Duration STALE_LIMIT = Duration.ofMinutes(2);
-    static final Duration STALE_WINDOW = Duration.ofMinutes(1);
     static final int RESETS = 3;
     static final Duration FIRST_RESET_BACKOFF = Duration.ofMinutes(1);
     static final int EVENT_RECOVERIES = 128;
@@ -77,8 +75,8 @@ public record RecoverySettings(
                 FIRST_REISSUE_BACKOFF,
                 COOLDOWN,
                 ALIVE_INTERVAL,
-                STALE_LIMIT,
-                STALE_WINDOW,
+                configuration.getStaleMessageLimit(),
+                configuration.getStaleMessageWindow(),
                 RESETS,
                 FIRST_RESET_BACKOFF,
                 EVENT_RECOVERIES,

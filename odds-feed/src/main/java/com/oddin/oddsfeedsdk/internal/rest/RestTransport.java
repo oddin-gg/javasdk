@@ -37,6 +37,8 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
 import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Makes API calls: one {@link HttpClient} per feed, three permit pools, one deadline per call and
@@ -54,9 +56,14 @@ import org.jspecify.annotations.Nullable;
  * idempotent call, since the API may have done the work before failing. Any other status is final.
  * 401 and 403 are also reported as refused, because no retry of any call can succeed after them.
  *
+ * <p>Every attempt is reported to the feed's events, and logged at INFO when the configuration asks
+ * for it.
+ *
  * <p>Safe for concurrent use.
  */
 public final class RestTransport implements AutoCloseable {
+
+    private static final Logger LOG = LoggerFactory.getLogger(RestTransport.class);
 
     static final int MAX_ATTEMPTS = 3;
     static final Duration FIRST_BACKOFF = Duration.ofMillis(500);
@@ -75,6 +82,7 @@ public final class RestTransport implements AutoCloseable {
     private final Semaphore dataPermits;
     private final RestDecoder decoder = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES);
     private final ApiEvents events;
+    private final boolean logCalls;
     private final int maxBytes;
     private final int maxErrorBytes;
     private final CountDownLatch closing = new CountDownLatch(1);
@@ -102,6 +110,7 @@ public final class RestTransport implements AutoCloseable {
         this.accessToken = configuration.getAccessToken();
         this.timeout = configuration.getHttpClientTimeout();
         this.events = events;
+        this.logCalls = configuration.isApiCallLogging();
         this.dataPermits = new Semaphore(configuration.getRestConcurrencyLimit(), true);
         HttpClient.Builder builder =
                 HttpClient.newBuilder().connectTimeout(timeout).followRedirects(HttpClient.Redirect.NEVER);
@@ -332,8 +341,24 @@ public final class RestTransport implements AutoCloseable {
 
     private ApiCall report(String method, URI uri, int status, long started, int attempt, @Nullable Exception failure) {
         var call = new ApiCall(method, uri, status, Duration.ofNanos(System.nanoTime() - started), attempt, failure);
+        if (logCalls) {
+            log(call);
+        }
         events.called(call);
         return call;
+    }
+
+    /** One line per attempt; the access token travels in a header, so the URI is safe to log. */
+    private static void log(ApiCall call) {
+        Exception failure = call.failure();
+        LOG.info(
+                "API call {} {}: {} in {} ms, attempt {}{}",
+                call.method(),
+                call.uri(),
+                call.status(),
+                call.latency().toMillis(),
+                call.attempt(),
+                failure == null ? "" : ", failed: " + failure);
     }
 
     private @Nullable RAError apiError(byte[] body) {
