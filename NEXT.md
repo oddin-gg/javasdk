@@ -307,9 +307,11 @@ the response being delivered until both its callbacks are done, is bounded by by
 at the largest response the REST decoder takes (32 MiB): a response with no room under
 that is dropped and counted, since a thousand large responses behind a slow callback
 would exhaust the heap. The raw feed messages are not queued there: their callbacks run
-on the session's own thread, bounded by the session's queue. A wedged events dispatcher
-is reported by the watchdog through `getHealth()` and the log, because the health event
-itself would queue behind the wedge.
+on the session's own thread, bounded by the session's queue. Each queue keeps its order,
+and the control queue goes first: a telemetry event is delivered only while no control
+event waits, so an API call reported before a connection change can be heard after it.
+A wedged events dispatcher is reported by the watchdog through `getHealth()` and the log,
+because the health event itself would queue behind the wedge.
 
 ### Delivery
 
