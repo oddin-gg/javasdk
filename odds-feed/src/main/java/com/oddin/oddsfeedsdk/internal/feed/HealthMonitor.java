@@ -313,7 +313,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * The health from what a reading read, each part's state found and any change told.
      *
      * @param started whether the feed has started: its events and catalogs are parts from then on
-     * @param opened whether it is open: its consumer and sessions are parts from then on
+     * @param opened whether it is open: its connection, consumer and sessions are parts from then on
      * @param recovers whether it runs a recovery, as a feed that is no replay feed does once open:
      *     its alives and recovery are parts from then on
      */
