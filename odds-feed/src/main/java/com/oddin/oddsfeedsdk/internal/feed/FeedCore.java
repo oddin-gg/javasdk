@@ -27,8 +27,10 @@ import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -162,6 +164,38 @@ public record FeedCore(
                 new Replay(api, id -> entities.match(id, inDefaultLocale), strategy),
                 new FixtureChanges(),
                 new ClockOffsets(producers));
+    }
+
+    /**
+     * Starts loading the catalogs of each locale in the background - the market descriptions, the
+     * match statuses and the sports - and the void reasons once, so the first messages and reads find
+     * them: what the feed's open does for its preload locales. Waits for nothing; a load that fails
+     * is logged, and the next read loads it again.
+     */
+    public void preload(List<Locale> locales) {
+        if (locales.isEmpty()) {
+            return;
+        }
+        preloadInBackground("the void reasons", voidReasons::all);
+        for (Locale locale : locales) {
+            preloadInBackground("the market descriptions in " + locale, () -> markets.markets(locale));
+            preloadInBackground("the match statuses in " + locale, () -> statuses.load(locale));
+            preloadInBackground("the sports in " + locale, () -> profiles.sports(locale, null));
+        }
+    }
+
+    private void preloadInBackground(String what, Runnable load) {
+        try {
+            fetches.execute(() -> {
+                try {
+                    load.run();
+                } catch (RuntimeException e) {
+                    LOG.warn("Could not preload {}; its first read loads it: {}", what, e.toString());
+                }
+            });
+        } catch (RejectedExecutionException closed) {
+            // the feed closed: nothing to preload for
+        }
     }
 
     /**
