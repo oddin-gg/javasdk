@@ -382,21 +382,27 @@ class SportsInfoTest {
 
     @Test
     void clearingAPlayerOrASportLoadsItAgainAndNothingElse() {
+        var otherPlayer = URN.parse("od:player:2");
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             var player = requireNonNull(world.sportsInfo.getPlayer(URN.parse("od:player:1")));
+            var other = requireNonNull(world.sportsInfo.getPlayer(otherPlayer));
             var sport = requireNonNull(world.sportsInfo.getSport(CS2));
+            var lol = requireNonNull(world.sportsInfo.getSport(LOL));
             var competitor = requireNonNull(world.sportsInfo.getCompetitor(URN.parse("od:competitor:1")));
-            player.getName(EN);
-            sport.getName(EN);
-            requireNonNull(world.sportsInfo.getAvailableTournaments(CS2));
-            competitor.getName(EN);
+            Runnable readAll = () -> {
+                player.getName(EN);
+                other.getName(EN);
+                sport.getName(EN);
+                lol.getName(EN);
+                requireNonNull(world.sportsInfo.getAvailableTournaments(CS2));
+                requireNonNull(world.sportsInfo.getAvailableTournaments(LOL));
+                competitor.getName(EN);
+            };
+            readAll.run();
 
             world.sportsInfo.clearPlayer(URN.parse("od:player:1"));
             world.sportsInfo.clearSport(CS2);
-            player.getName(EN);
-            sport.getName(EN);
-            requireNonNull(world.sportsInfo.getAvailableTournaments(CS2));
-            competitor.getName(EN);
+            readAll.run();
             assertThat(world.api.requests("GET", "/v1/sports/en/players/od:player:1/profile"))
                     .hasSize(2);
             assertThat(world.api.requests("GET", "/v1/sports/en/sports"))
@@ -405,12 +411,15 @@ class SportsInfoTest {
             assertThat(world.api.requests("GET", CS2_TOURNAMENTS))
                     .as("its tournament list, with it")
                     .hasSize(2);
+            assertThat(world.api.requests("GET", "/v1/sports/en/players/od:player:2/profile"))
+                    .as("another player's: not cleared")
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", LOL_TOURNAMENTS))
+                    .as("another sport's tournament list: not cleared")
+                    .hasSize(1);
             assertThat(world.api.requests("GET", "/v1/sports/en/competitors/od:competitor:1/profile"))
                     .as("not cleared")
                     .hasSize(1);
-            assertThat(world.api.requests("GET", LOL_TOURNAMENTS))
-                    .as("another sport's")
-                    .isEmpty();
         }
     }
 }
