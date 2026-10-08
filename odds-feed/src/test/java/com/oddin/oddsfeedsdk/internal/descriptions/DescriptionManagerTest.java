@@ -468,7 +468,9 @@ class DescriptionManagerTest {
                 200,
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><void_reasons response_code=\"OK\">"
                         + "<void_reason id=\"7\" name=\"OTHER\" description=\"Other\"/></void_reasons>");
-        assertThat(throwing.reloadMarketVoidReasons())
+        // as a client calls it, on the public interface
+        com.oddin.oddsfeedsdk.api.MarketDescriptionManager manager = throwing;
+        assertThat(manager.reloadMarketVoidReasons())
                 .extracting(MarketVoidReason::getId)
                 .containsExactly(7);
         assertThat(throwing.getMarketVoidReasons())
