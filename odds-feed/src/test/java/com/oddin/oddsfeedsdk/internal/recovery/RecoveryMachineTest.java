@@ -1431,6 +1431,32 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void onlyTheFirstFailureOfAStreakIsAWarningAndTheCapSpentOneToo() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.alive(PRE);
+        try (var log = LogCapture.of(RecoveryMachine.class, Level.DEBUG)) {
+            long[] pauses = {5, 10, 20};
+            for (long pause : pauses) {
+                feed.refuse(feed.lastSnapshot(PRE));
+                feed.runWithAlives(Duration.ofSeconds(pause));
+            }
+            feed.refuse(feed.lastSnapshot(PRE));
+
+            var failures = log.lines().stream()
+                    .filter(line -> line.contains("Recovery ") && line.contains(" failed, "))
+                    .toList();
+            assertThat(failures)
+                    .as("the first of the streak, the two after it, and the one that spends the cap")
+                    .hasSize(4);
+            assertThat(failures.get(0)).startsWith("WARN ").contains("asked for again in 5000 ms");
+            assertThat(failures.get(1)).startsWith("DEBUG ").contains("asked for again in 10000 ms");
+            assertThat(failures.get(2)).startsWith("DEBUG ").contains("asked for again in 20000 ms");
+            assertThat(failures.get(3)).startsWith("WARN ").contains("the producer stays down for");
+        }
+    }
+
+    @Test
     void anAliveAfterAGapReArmsASpentCapAtOnce() {
         feed.open(1, MessageInterest.ALL);
         feed.start();
