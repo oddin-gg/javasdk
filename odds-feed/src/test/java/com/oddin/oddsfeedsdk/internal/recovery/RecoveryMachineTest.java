@@ -1473,6 +1473,27 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aSessionsAliveWithoutAPositiveStampDoesNotPutOffTheDeadlineForItsSnapshotComplete() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.accept(feed.lastSnapshot(PRE));
+        // stamps that are no time: as numbers they are before the request, which an alive must be
+        // to put the deadline off
+        for (int minute = 1; minute <= 4; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.sessionAlive(1, PRE, 0, feed.now(), true);
+            feed.machine.sessionAlive(1, PRE, -Duration.ofHours(1).toMillis(), feed.now(), true);
+        }
+        assertThat(feed.counters.timedOut()).as("four minutes in").isZero();
+        feed.runWithAlives(
+                feed.settings.snapshotCompleteTimeout().minusMinutes(4).plusSeconds(1));
+        assertThat(feed.counters.timedOut())
+                .as("the snapshot complete timeout after the request")
+                .isEqualTo(1);
+    }
+
+    @Test
     void theSnapshotOfARecoveryGivenUpPutsOffTheDeadlineOfTheNextOne() {
         feed.open(1, MessageInterest.PREMATCH_ONLY);
         feed.start();
