@@ -4,9 +4,11 @@
 # stub server on 127.0.0.1 that serves https with a throwaway certificate, and checks what ends up
 # in a scratch local repository: the jar and POM when both match their digests, through a
 # redirect as a GitHub release serves them, and nothing at all when either does not, when a
-# redirect leads to plain http, or when the release has no file and there is no token for the
-# registry. With a token, the registry gets it as basic auth and curl's command line never holds
-# it. Another run's download is never touched. No call leaves the machine. next.yml runs it on every push. Needs python3, openssl and curl.
+# redirect leads to plain http, when the release or registry URL itself is plain http, or when
+# the release has no file and there is no token for the registry. With a token, the registry gets
+# it as basic auth from a config on stdin, and curl's command line never holds it, plain or
+# encoded. Another run's download is never touched. No call leaves the machine. next.yml runs it
+# on every push. Needs python3, openssl and curl.
 #
 # FETCH_SDK_TEST_BASH runs fetch_sdk in another bash, e.g. an old one: the default is bash.
 set -euo pipefail
@@ -120,12 +122,13 @@ fi
 read -r https_port http_port < "$work/ports"
 base=https://127.0.0.1:$https_port
 
-# curl as fetch_sdk finds it on PATH: the real one, with its command line recorded
+# curl as fetch_sdk finds it on PATH: the real one, with its command line recorded, one call a
+# line, each argument ended by a NUL
 real_curl=$(command -v curl)
 mkdir -p "$work/bin"
 cat > "$work/bin/curl" <<EOF
 #!/bin/sh
-printf '%s\n' "\$*" >> "$work/curl-args.log"
+{ printf '%s\0' "\$@"; printf '\n'; } >> "$work/curl-args.log"
 exec "$real_curl" "\$@"
 EOF
 chmod +x "$work/bin/curl"
@@ -140,24 +143,30 @@ fail() {
   failures=$((failures + 1))
 }
 
-# fetch <release mode> [token]: runs fetch_sdk with the release at /<mode>, the registry at
-# /registry; its output goes to $work/out
+# fetch <release> [token] [registry]: runs fetch_sdk with the release at /<release> on the https
+# listener, or at <release> itself when that is a URL, and the registry at /registry there, or at
+# the URL given; its output goes to $work/out
 fetch() {
-  local release=$1 with_token=${2:-}
+  local release=$1 with_token=${2:-} registry=${3:-$base/registry}
+  case $release in
+    http*) ;;
+    *) release=$base/$release ;;
+  esac
   : > "$work/requests.log"
   : > "$work/curl-args.log"
   env -u GITHUB_ACTOR -u GH_TOKEN PATH="$work/bin:$PATH" CURL_CA_BUNDLE="$work/cert.pem" \
       GITHUB_TOKEN="$with_token" \
     "${FETCH_SDK_TEST_BASH:-bash}" -c '. "$1"; shift; fetch_sdk "$@"' _ "$root/scripts/fetch-sdk.sh" \
-      "$version" "$repo" "$base/$release" "$base/registry" "$work/checksums.properties" \
+      "$version" "$repo" "$release" "$registry" "$work/checksums.properties" \
     > "$work/out" 2>&1
 }
 
-# refused <what> <release mode> <message> [token]: fails with the message, and leaves nothing
+# refused <what> <release> <message> [token] [registry]: fails with the message, and leaves
+# nothing
 refused() {
   local what=$1 mode=$2 message=$3
   rm -rf "$work/repo"
-  if fetch "$mode" "${4:-}"; then
+  if fetch "$mode" "${4:-}" ${5:+"$5"}; then
     fail "$what: fetch_sdk succeeded: $(cat "$work/out")"
   elif ! grep -qF -- "$message" "$work/out"; then
     fail "$what: fetch_sdk failed, but not with \"$message\": $(cat "$work/out")"
@@ -222,6 +231,14 @@ refused "a jar that does not match its digest" bad-jar "jar for odds-feed $versi
 refused "a POM that does not match its digest, the jar matching" bad-pom "pom for odds-feed $version from $base/bad-pom/odds-feed-$version.pom does not match"
 refused "no release file and no token" missing "instead needs GITHUB_TOKEN"
 if grep -q ' /registry/' "$work/requests.log"; then fail "the registry was asked without a token"; fi
+# plain http as the URL itself, not only after a redirect: refused before any request is made
+refused "a release URL that is plain http" "http://127.0.0.1:$http_port/ok" \
+  "could not fetch http://127.0.0.1:$http_port/ok/odds-feed-$version.jar (status: no response)"
+if [ -s "$work/requests.log" ]; then fail "a plain http release URL was asked: $(cat "$work/requests.log")"; fi
+refused "a registry URL that is plain http, with a token" missing \
+  "could not fetch http://127.0.0.1:$http_port/registry/odds-feed-$version.jar (status: no response)" \
+  "$token" "http://127.0.0.1:$http_port/registry"
+if grep -q '^http ' "$work/requests.log"; then fail "a plain http registry URL was asked: $(cat "$work/requests.log")"; fi
 refused "no release file and a token the registry refuses" missing "could not fetch $base/registry/odds-feed-$version.jar (status: 401)" wrong-token
 
 # no release file and a token: the registry's files, the token sent as basic auth and never on
@@ -232,12 +249,43 @@ else fail "no release file, the registry with a token: $(cat "$work/out")"; fi
 if [ "$(grep -c ' /registry/.* Basic ' "$work/requests.log")" != 2 ]; then
   fail "the registry did not get the token on both requests: $(cat "$work/requests.log")"
 fi
-if grep -qF -- "$token" "$work/curl-args.log"; then
-  fail "the token was on curl's command line"
-elif [ ! -s "$work/curl-args.log" ]; then
-  fail "curl's command lines were not recorded, so the token check proved nothing"
+# curl's command lines: no token, plain or encoded, no option that carries a credential, and the
+# registry's requests take theirs from a config on stdin
+if ! problems=$(python3 -I - "$work/curl-args.log" "$token" <<'EOF'
+import base64, re, sys
+log, token = sys.argv[1], sys.argv[2]
+secrets = [token] + [base64.b64encode(s.encode()).decode() for s in (token, "x:" + token)]
+calls = [line.split("\0")[:-1] for line in open(log).read().split("\n") if line]
+problems, configured = [], 0
+for args in calls:
+    url = args[-1] if args else ""
+    for i, arg in enumerate(args):
+        if any(s in arg for s in secrets):
+            problems.append("the token, plain or encoded, in %r" % arg)
+        value = args[i + 1] if i + 1 < len(args) else ""
+        if arg in ("-u", "--user", "--oauth2-bearer", "--proxy-user", "-U") or arg.startswith("--user="):
+            problems.append("a credential option %s %s" % (arg, value))
+        elif re.match(r"^-[A-Za-z]*u", arg) and not arg.startswith("--"):
+            problems.append("a credential option in %s" % arg)
+        header = value if arg in ("-H", "--header") else arg[2:] if re.match(r"^-H.", arg) else None
+        if header is not None and re.search(r"authorization", header, re.I):
+            problems.append("an authorization header %r" % header)
+    if "/registry/" in url:
+        if any(a in ("--config", "-K") and b == "-" for a, b in zip(args, args[1:])):
+            configured += 1
+        else:
+            problems.append("a registry request without --config -: %s" % " ".join(args))
+if not calls:
+    problems.append("no curl command line was recorded, so these checks proved nothing")
+elif configured != 2:
+    problems.append("%d registry requests took their credential from --config -, not 2" % configured)
+print("; ".join(problems))
+sys.exit(1 if problems else 0)
+EOF
+); then
+  fail "curl's command lines: $problems"
 else
-  echo "ok   the token reached the registry, and never curl's command line"
+  echo "ok   the token reached the registry from a config on stdin, and never curl's command line"
 fi
 if grep ' /missing/' "$work/requests.log" | grep -q ' Basic '; then
   fail "the release was sent the token"
