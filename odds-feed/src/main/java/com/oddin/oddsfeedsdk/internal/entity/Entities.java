@@ -118,6 +118,14 @@ public final class Entities {
     }
 
     /**
+     * The sport as the sport list names it: one the list does not have is not found, though a
+     * tournament or a competitor named it, as the client asks for a sport by id.
+     */
+    public Sport listedSport(URN id, List<Locale> locales) {
+        return new SportView(this, id, distinct(locales), true);
+    }
+
+    /**
      * What the getter returns, by the exception strategy: under {@code THROW} a load that failed is
      * an {@link ItemNotFoundException} with the API's failure as its cause, the exception 0.0.x threw
      * for an entity it could not load, and any other failure is thrown as it is; under {@code CATCH}

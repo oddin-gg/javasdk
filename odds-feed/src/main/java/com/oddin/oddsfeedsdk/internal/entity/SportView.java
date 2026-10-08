@@ -28,11 +28,21 @@ final class SportView implements Sport {
     private final Entities entities;
     private final URN id;
     private final List<Locale> locales;
+    /**
+     * Whether only the sport list's word counts: a sport asked for by id is one the list names, where
+     * a tournament's or a competitor's sport may be one only they named.
+     */
+    private final boolean listedOnly;
 
     SportView(Entities entities, URN id, List<Locale> locales) {
+        this(entities, id, locales, false);
+    }
+
+    SportView(Entities entities, URN id, List<Locale> locales, boolean listedOnly) {
         this.entities = entities;
         this.id = id;
         this.locales = locales;
+        this.listedOnly = listedOnly;
     }
 
     @Override
@@ -94,11 +104,11 @@ final class SportView implements Sport {
 
     /**
      * The sport as the list in {@code locale} describes it; one the list does not name is not found,
-     * unless a tournament or a profile has named it there.
+     * unless a tournament or a profile has named it there and only the list's word counts.
      */
     private Entry listed(Locale locale) {
         Entry sport = entities.profiles.sport(id, locale, null);
-        if (sport.loadedAt(SPORT_LIST, locale) == null && sport.get(SPORT_NAME, locale) == null) {
+        if (sport.loadedAt(SPORT_LIST, locale) == null && (listedOnly || sport.get(SPORT_NAME, locale) == null)) {
             throw new ItemNotFoundException(this + " not found in " + locale, null);
         }
         return sport;

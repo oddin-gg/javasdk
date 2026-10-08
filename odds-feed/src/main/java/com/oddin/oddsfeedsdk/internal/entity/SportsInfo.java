@@ -181,9 +181,10 @@ public final class SportsInfo implements SportsInfoManager {
         return getSport(id, defaultLocale);
     }
 
+    /** A sport the sport list names; one only a tournament or a competitor named is not found. */
     @Override
     public @Nullable Sport getSport(URN id, Locale locale) {
-        return entities.sport(id, List.of(locale));
+        return entities.listedSport(id, List.of(locale));
     }
 
     @Override
