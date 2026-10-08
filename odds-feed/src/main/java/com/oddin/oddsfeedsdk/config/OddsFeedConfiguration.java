@@ -40,6 +40,28 @@ public final class OddsFeedConfiguration {
     /** An AMQP short string's limit, in UTF-8 bytes; the broker refuses a longer exchange name. */
     static final int MAX_EXCHANGE_NAME_BYTES = 255;
 
+    /** How long a catalog may serve a value stale, its refreshes failing, before it is degraded, unless set. */
+    static final Duration DEFAULT_CATALOG_STALE_LIMIT = Duration.ofHours(1);
+    /** How long the broker connection may be down before it is degraded, unless set. */
+    static final Duration DEFAULT_CONNECTION_DOWN_LIMIT = Duration.ofSeconds(60);
+    /** The most the catalogs' and the connection's limits, and the stall limits, take: a day is as good as off. */
+    static final Duration MAX_HEALTH_LIMIT = Duration.ofDays(1);
+    /** The least a stall limit is unless set, whatever the HTTP timeout. */
+    static final Duration STALL_LIMIT_FLOOR = Duration.ofSeconds(30);
+    /**
+     * How much longer than its deadline a caller waits for one of the SDK's loads, as the loaders and
+     * an event recovery's caller do.
+     */
+    static final Duration LOAD_MARGIN = Duration.ofSeconds(1);
+    /** How far a stall limit stays above the longest the SDK itself waits for the API. */
+    static final Duration ABOVE_THE_SDKS_WAITS = Duration.ofSeconds(2);
+    /** How often the feed's watch over its own threads looks, unless set. */
+    static final Duration DEFAULT_WATCHDOG_INTERVAL = Duration.ofSeconds(5);
+    /** The least watchdog interval: each look searches the JVM's threads for a deadlock, at a safepoint. */
+    static final Duration MIN_WATCHDOG_INTERVAL = Duration.ofSeconds(1);
+    /** The longest watchdog interval the builder takes. */
+    static final Duration MAX_WATCHDOG_INTERVAL = Duration.ofMinutes(1);
+
     static final Duration DEFAULT_HTTP_CLIENT_TIMEOUT = Duration.ofSeconds(30);
     static final int DEFAULT_REST_CONCURRENCY_LIMIT = 16;
     /** The startup timeout, when none is set, is this many HTTP timeouts. */
@@ -77,6 +99,11 @@ public final class OddsFeedConfiguration {
     private final String exchangeName;
     private final String replayExchangeName;
     private final boolean apiCallLogging;
+    private final Duration catalogStaleLimit;
+    private final Duration callbackStallLimit;
+    private final Duration queueStallLimit;
+    private final Duration watchdogInterval;
+    private final Duration connectionDownLimit;
 
     /**
      * Public because 0.0.x's constructor was, to Java callers; {@link OddsFeedConfigurationBuilder}
@@ -119,7 +146,12 @@ public final class OddsFeedConfiguration {
                 DEFAULT_STALE_MESSAGE_WINDOW,
                 DEFAULT_EXCHANGE_NAME,
                 DEFAULT_REPLAY_EXCHANGE_NAME,
-                false);
+                false,
+                DEFAULT_CATALOG_STALE_LIMIT,
+                stallLimitFor(DEFAULT_HTTP_CLIENT_TIMEOUT),
+                stallLimitFor(DEFAULT_HTTP_CLIENT_TIMEOUT),
+                DEFAULT_WATCHDOG_INTERVAL,
+                DEFAULT_CONNECTION_DOWN_LIMIT);
     }
 
     OddsFeedConfiguration(
@@ -146,7 +178,12 @@ public final class OddsFeedConfiguration {
             Duration staleMessageWindow,
             String exchangeName,
             String replayExchangeName,
-            boolean apiCallLogging) {
+            boolean apiCallLogging,
+            Duration catalogStaleLimit,
+            Duration callbackStallLimit,
+            Duration queueStallLimit,
+            Duration watchdogInterval,
+            Duration connectionDownLimit) {
         this.accessToken = accessToken;
         this.defaultLocale = defaultLocale;
         this.maxInactivitySeconds = maxInactivitySeconds;
@@ -171,6 +208,31 @@ public final class OddsFeedConfiguration {
         this.exchangeName = exchangeName;
         this.replayExchangeName = replayExchangeName;
         this.apiCallLogging = apiCallLogging;
+        this.catalogStaleLimit = catalogStaleLimit;
+        this.callbackStallLimit = callbackStallLimit;
+        this.queueStallLimit = queueStallLimit;
+        this.watchdogInterval = watchdogInterval;
+        this.connectionDownLimit = connectionDownLimit;
+    }
+
+    /**
+     * The longest the SDK itself waits for the API in one getter, with an HTTP timeout of {@code
+     * httpTimeout}: a read loads twice at most, each load waiting the timeout and its margin, and the
+     * read waits its own margin over both, {@code 2 × (timeout + 1 s) + 1 s}.
+     */
+    static Duration longestApiWait(Duration httpTimeout) {
+        return httpTimeout.plus(LOAD_MARGIN).multipliedBy(2).plus(LOAD_MARGIN);
+    }
+
+    /** The least a stall limit can be with this HTTP timeout: 2 s above the SDK's own longest wait. */
+    static Duration leastStallLimit(Duration httpTimeout) {
+        return longestApiWait(httpTimeout).plus(ABOVE_THE_SDKS_WAITS);
+    }
+
+    /** A stall limit unless set: {@code max(30 s, 2 × timeout + 5 s)}, 65 s for the default timeout. */
+    static Duration stallLimitFor(Duration httpTimeout) {
+        var least = leastStallLimit(httpTimeout);
+        return least.compareTo(STALL_LIMIT_FLOOR) < 0 ? STALL_LIMIT_FLOOR : least;
     }
 
     public String getAccessToken() {
@@ -325,6 +387,47 @@ public final class OddsFeedConfiguration {
      */
     public boolean isApiCallLogging() {
         return apiCallLogging;
+    }
+
+    /**
+     * How long a catalog - the market descriptions, the void reasons, the match statuses - may serve a
+     * value stale, its refreshes failing, before {@code getHealth()} counts it degraded: an hour unless
+     * set. New in 1.0.
+     */
+    public Duration getCatalogStaleLimit() {
+        return catalogStaleLimit;
+    }
+
+    /**
+     * How long one of the feed's threads may run one callback, or one step of its own, before the
+     * feed's watch over its threads counts it stalled: unless set, {@code max(30 s, 2 × HTTP timeout
+     * + 5 s)}, 65 s for the default HTTP timeout, so a callback waiting on a slow API is no stall.
+     * New in 1.0.
+     */
+    public Duration getCallbackStallLimit() {
+        return callbackStallLimit;
+    }
+
+    /**
+     * How long a thread's queue may stand still, not empty, before the feed's watch counts the thread
+     * stalled; also how late the watch's own next look may be. Unless set, the {@linkplain
+     * #getCallbackStallLimit callback stall limit}'s default. New in 1.0.
+     */
+    public Duration getQueueStallLimit() {
+        return queueStallLimit;
+    }
+
+    /** How often the feed's watch over its own threads looks: every 5 seconds unless set. New in 1.0. */
+    public Duration getWatchdogInterval() {
+        return watchdogInterval;
+    }
+
+    /**
+     * How long the broker connection may be down before {@code getHealth()} counts it degraded: 60
+     * seconds unless set. New in 1.0.
+     */
+    public Duration getConnectionDownLimit() {
+        return connectionDownLimit;
     }
 
     /** 0.0.x's companion object; the constants are on the class. */
