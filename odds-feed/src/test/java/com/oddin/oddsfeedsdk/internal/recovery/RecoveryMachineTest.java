@@ -1207,6 +1207,25 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aFeedWhoseOnlySessionIsAliveOnlyAsksForNoRecoveryAndTellsNoProducerUp() {
+        feed.open(new SessionInfo(1, MessageInterest.SYSTEM_ALIVE_ONLY, true));
+        feed.start();
+        // the producers' alives on the SDK's own channel; an alive-only session's dispatcher posts none
+        for (int second = 1; second <= 120; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            if (second % 10 == 0) {
+                feed.alive(PRE);
+                feed.alive(LIVE);
+            }
+            feed.machine.tick();
+        }
+        assertThat(feed.calls).as("recoveries asked for").isEmpty();
+        assertThat(feed.statuses).as("producers told up").noneMatch(change -> !change.down());
+        assertThat(feed.producers.isProducerDown(PRE)).isTrue();
+        assertThat(feed.producers.isProducerDown(LIVE)).isTrue();
+    }
+
+    @Test
     void aSessionThatClosesLeavesTheCompletionsAndTheCheckpointsAtOnce() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
