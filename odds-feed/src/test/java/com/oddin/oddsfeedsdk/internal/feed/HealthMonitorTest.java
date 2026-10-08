@@ -129,6 +129,19 @@ class HealthMonitorTest {
     }
 
     @Test
+    void aConnectionDownForLessThanASecondReadsItsTimeAndItsLimitInFull() throws InterruptedException {
+        var nanos = new AtomicLong(1_000);
+        var health = new HealthMonitor(
+                events, id -> null, InstantSource.fixed(NOW), nanos::get, HOUR, Duration.ofMillis(250), logged::add);
+        events.start();
+        health.down("connection reset");
+        nanos.addAndGet(Duration.ofMillis(300).toNanos());
+        read(health);
+        assertThat(heard.next().reason())
+                .isEqualTo("the broker connection has been down for 0.3 s, over its limit of 0.25 s");
+    }
+
+    @Test
     void aConnectionLostThenClosedWithinItsLimitIsNeverDegraded() throws InterruptedException {
         var nanos = new AtomicLong(1_000);
         var limit = Duration.ofSeconds(60);
@@ -217,7 +230,8 @@ class HealthMonitorTest {
         var degraded = heard.next();
         assertThat(degraded.component()).isEqualTo(HealthComponent.CONNECTION);
         assertThat(degraded.state()).isEqualTo(HealthState.DEGRADED);
-        assertThat(degraded.reason()).isEqualTo("the broker connection has been down for 60 s, over its limit of 60 s");
+        assertThat(degraded.reason())
+                .isEqualTo("the broker connection has been down for 60.001 s, over its limit of 60 s");
         read(health);
         heard.nothingMore("still down");
 
