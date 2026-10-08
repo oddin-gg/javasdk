@@ -61,12 +61,19 @@ class ReconnectScenarioIT {
                     .isFalse();
             long processedAt = processedLive(sdk, feed, received);
             int loginsBefore = feed.logins().size();
+            List<String> lostQueues = feed.boundQueues();
+            assertThat(lostQueues).as("the SDK's queues before the pause").isNotEmpty();
 
             feed.pause();
             assertThat(sdk.events().awaitConnectionDown(Duration.ofSeconds(30)))
                     .as("the SDK reports the connection down while the broker is paused")
                     .isTrue();
             feed.resume();
+            // the broker takes the lost connection's queues down once it is back, and refuses a message
+            // routed to one it has half taken down; publish once they are unbound
+            assertThat(feed.awaitUnbound(lostQueues, Duration.ofSeconds(10)))
+                    .as("the queues of the lost connection unbound once the broker is back")
+                    .isTrue();
             // from here an alive every second, as the producer sends them: a reconnect that takes
             // longer than the alive interval must not read as the producer gone silent before it
             long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
@@ -80,8 +87,7 @@ class ReconnectScenarioIT {
                     .as("the SDK logs in again once the broker is back")
                     .hasSizeGreaterThan(loginsBefore);
 
-            // until the broker notices the old connection is gone its queue still takes messages, so
-            // "routed" proves nothing; keep publishing until one arrives
+            // logging in comes before the new queue is bound, so keep publishing until one arrives
             Optional<?> afterReconnect = Optional.empty();
             deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
             while (afterReconnect.isEmpty() && System.nanoTime() < deadline) {
