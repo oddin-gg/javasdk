@@ -288,7 +288,21 @@ final class Catalog<K, V> {
      * @throws ApiException when the fetch fails
      */
     V reload(K key) {
-        return loader.load(new Flight<>(key, generationOf(key), true));
+        return loader.load(new Flight<>(key, generationOf(key), true, false));
+    }
+
+    /**
+     * The key's value fetched unless it is held, for no reader: what the feed's open does for its
+     * preload locales. Unlike a read's, a failure of this fetch backs the key off for no one, so the
+     * first read after it fetches as it would have without the preload; it is counted all the same.
+     * No reader joins it, nor does it join a read's.
+     *
+     * @throws ApiException when the fetch fails, or the key backs off from a read's failure
+     */
+    void preload(K key) {
+        if (held.getIfPresent(key) == null) {
+            loader.load(new Flight<>(key, generationOf(key), false, true));
+        }
     }
 
     /** What is held for the key, fetching nothing. */
@@ -368,7 +382,7 @@ final class Catalog<K, V> {
     /** A fetch the reader waits for; one that would start while the key backs off fails at once. */
     private V fetchNow(K key) {
         insideColdRead.run();
-        return loader.load(new Flight<>(key, generationOf(key), false));
+        return loader.load(new Flight<>(key, generationOf(key), false, false));
     }
 
     private void refreshInBackground(K key, Instant now) {
@@ -378,7 +392,7 @@ final class Catalog<K, V> {
         try {
             refreshes.execute(() -> {
                 try {
-                    loader.load(new Flight<>(key, generationOf(key), false));
+                    loader.load(new Flight<>(key, generationOf(key), false, false));
                 } catch (RuntimeException failed) {
                     // counted where it failed; the stale value is served until the next try
                 } finally {
@@ -435,8 +449,9 @@ final class Catalog<K, V> {
             failedFetches.incrementAndGet();
             clearing.readLock().lock();
             try {
-                // a fetch from before a clear backs nothing off: the clear asked for a fetch
-                if (!abandoned.getAsBoolean() && generationOf(key) <= startedIn) {
+                // a fetch from before a clear backs nothing off: the clear asked for a fetch; nor does a
+                // preload, which no reader waited for
+                if (!flight.preload() && !abandoned.getAsBoolean() && generationOf(key) <= startedIn) {
                     Instant failedAt = clock.instant();
                     // an older fetch that fails after a newer one succeeded, or failed, records nothing
                     failures.asMap().compute(key, (k, last) -> {
@@ -501,9 +516,11 @@ final class Catalog<K, V> {
 
     /**
      * What the loader fetches: a key, in its generation when its reader asked, so that a read after a
-     * clear of the key never joins a fetch from before it, and a clear of another key changes nothing; and whether it is a reload, which does not wait out a backoff.
+     * clear of the key never joins a fetch from before it, and a clear of another key changes nothing;
+     * whether it is a reload, which does not wait out a backoff; and whether it is a preload, whose
+     * failure backs nothing off, since no reader waited for it.
      */
-    private record Flight<K>(K key, long generation, boolean reload) {
+    private record Flight<K>(K key, long generation, boolean reload, boolean preload) {
         @Override
         public String toString() {
             return key.toString();

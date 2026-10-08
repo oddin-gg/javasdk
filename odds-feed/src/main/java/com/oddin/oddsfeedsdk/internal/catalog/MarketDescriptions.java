@@ -174,6 +174,16 @@ public final class MarketDescriptions {
     }
 
     /**
+     * Fetches the market descriptions of {@code locale} unless they are held, for no reader: a failure
+     * backs off no read.
+     *
+     * @throws ApiException when the fetch fails
+     */
+    public void preload(Locale locale) {
+        lists.preload(locale);
+    }
+
+    /**
      * Drops the market's description in every locale, so the next read fetches it again: a variant
      * fetched on its own by itself, a listed market with every list it is in.
      */

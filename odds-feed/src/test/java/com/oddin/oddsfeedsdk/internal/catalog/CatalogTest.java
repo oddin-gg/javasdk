@@ -222,6 +222,33 @@ class CatalogTest {
         assertThat(fetches).hasValue(4);
     }
 
+    /** No reader waited for a preload: its failure backs off no read, though it is counted. */
+    @Test
+    void aPreloadThatFailsBacksOffNoReadAndOneThatIsHeldFetchesNothing() {
+        var down = new ApiException("down");
+        answer = () -> {
+            throw down;
+        };
+        assertThatThrownBy(() -> catalog.preload("k")).isSameAs(down);
+        assertThat(catalog.health().failedFetches()).as("counted").isEqualTo(1);
+        assertThat(catalog.health().failing()).as("backing nothing off").isZero();
+
+        answer = () -> "v1";
+        assertThat(catalog.get("k")).as("read at once after the failed preload").isEqualTo("v1");
+        assertThat(fetches).hasValue(2);
+        catalog.preload("k");
+        assertThat(fetches).as("held: no fetch").hasValue(2);
+
+        answer = () -> {
+            throw down;
+        };
+        assertThatThrownBy(() -> catalog.get("other")).isSameAs(down);
+        assertThatThrownBy(() -> catalog.preload("other"))
+                .as("a read's failure backs a preload off too")
+                .hasMessageContaining("not fetched again before");
+        assertThat(fetches).hasValue(3);
+    }
+
     @Test
     void aFailureNobodyTriesAgainForTheRefreshAgeIsForgotten() {
         answer = () -> {

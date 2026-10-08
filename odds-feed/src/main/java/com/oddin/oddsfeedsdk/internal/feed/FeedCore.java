@@ -170,16 +170,16 @@ public record FeedCore(
      * Starts loading the catalogs of each locale in the background - the market descriptions, the
      * match statuses and the sports - and the void reasons once, so the first messages and reads find
      * them: what the feed's open does for its preload locales. Waits for nothing; a load that fails
-     * is logged, and the next read loads it again.
+     * is logged and backs off no read, so the next read loads it as it would have without it.
      */
     public void preload(List<Locale> locales) {
         if (locales.isEmpty()) {
             return;
         }
-        preloadInBackground("the void reasons", voidReasons::all);
+        preloadInBackground("the void reasons", voidReasons::preload);
         for (Locale locale : locales) {
-            preloadInBackground("the market descriptions in " + locale, () -> markets.markets(locale));
-            preloadInBackground("the match statuses in " + locale, () -> statuses.load(locale));
+            preloadInBackground("the market descriptions in " + locale, () -> markets.preload(locale));
+            preloadInBackground("the match statuses in " + locale, () -> statuses.preload(locale));
             preloadInBackground("the sports in " + locale, () -> profiles.sports(locale, null));
         }
     }
