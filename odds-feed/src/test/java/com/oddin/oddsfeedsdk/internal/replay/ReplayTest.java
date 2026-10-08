@@ -31,6 +31,7 @@ class ReplayTest {
     private static final String EVENT_PATH = "/v1/replay/events/od:match:1";
     private static final String LIST_PATH = "/v1/replay";
     private static final String PLAY_PATH = "/v1/replay/play";
+    private static final String STATUS_PATH = "/v1/replay/status";
     private static final String NOT_FOUND = """
             <response response_code="NOT_FOUND"><action>replay</action><message>no such thing</message></response>""";
     private static final String BROKEN = """
@@ -214,6 +215,22 @@ class ReplayTest {
 
         assertThat(replay(strategy).getReplayList()).isNull();
         assertThat(built.events).as("nothing built").isEmpty();
+    }
+
+    @Test
+    void theStatusIsTheApisWordForThisNode() {
+        assertThat(replay(ExceptionHandlingStrategy.THROW).getReplayStatus()).isEqualTo("stopped");
+        api.respond(STATUS_PATH, 200, "<player_status status=\"playing\"/>");
+        assertThat(replay(ExceptionHandlingStrategy.THROW).getReplayStatus()).isEqualTo("playing");
+        assertThat(sent()).containsExactly("GET /v1/replay/status?node_id=7", "GET /v1/replay/status?node_id=7");
+    }
+
+    @ParameterizedTest
+    @EnumSource(ExceptionHandlingStrategy.class)
+    void aStatusTheApiFailsIsNullUnderEitherStrategy(ExceptionHandlingStrategy strategy) {
+        api.respond(STATUS_PATH, 500, BROKEN);
+
+        assertThat(replay(strategy).getReplayStatus()).isNull();
     }
 
     @Test

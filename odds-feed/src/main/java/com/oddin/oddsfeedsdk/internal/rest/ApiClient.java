@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAPlayerProfileEndpoint;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducers;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAReplaySetContent;
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAReplayStatusEndpoint;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAScheduleEndpoint;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportTournaments;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportsEndpoint;
@@ -265,6 +266,11 @@ public final class ApiClient implements RecoveryRequests, AutoCloseable {
 
     public RAReplaySetContent fetchReplaySetContent() {
         return get(Pool.DATA, "/replay" + new Query().node(nodeId), RAReplaySetContent.class);
+    }
+
+    /** The replay player's status, for this node. */
+    public RAReplayStatusEndpoint fetchReplayStatus() {
+        return get(Pool.DATA, "/replay/status" + new Query().node(nodeId), RAReplayStatusEndpoint.class);
     }
 
     public void putReplayEvent(URN eventId) {
