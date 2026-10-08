@@ -111,6 +111,8 @@ fetch_sdk() {
   # both checked: only now does either file take the name Maven looks for. Empty arrays are
   # never expanded: bash before 4.4 refuses that under set -u.
   if [ ${#parts[@]} -gt 0 ]; then
+    # mktemp made them readable by their owner alone; installed, they read like any other file
+    chmod a+r,go-w "${parts[@]}"
     for i in "${!parts[@]}"; do
       mv -f "${parts[$i]}" "${files[$i]}"
     done

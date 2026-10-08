@@ -177,10 +177,13 @@ refused() {
   fi
 }
 
-# installed <what>: both files are there, as served, with no download left beside them
+# installed <what>: both files are there, as served, readable by all and writable by the owner
+# alone, with no download left beside them
 installed() {
   if ! cmp -s "$jar" "$work/good.jar" || ! cmp -s "$pom" "$work/good.pom"; then
     fail "$1: the jar and POM are not the ones served: $(cat "$work/out")"
+  elif [ "$(ls -l "$jar" "$pom" | cut -c1-10 | sort -u)" != "-rw-r--r--" ]; then
+    fail "$1: the jar and POM are not mode 644: $(ls -l "$jar" "$pom")"
   elif [ "$(ls -A "$repo" | tr '\n' ' ')" != "odds-feed-$version.jar odds-feed-$version.pom " ]; then
     fail "$1: the local repository holds $(ls -A "$repo" | tr '\n' ' ')"
   else
