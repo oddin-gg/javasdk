@@ -75,7 +75,8 @@ public final class MarketDescriptions {
                 fetches,
                 refreshes,
                 clock,
-                ticker);
+                ticker,
+                client::isClosed);
         this.variants = new Catalog<>(
                 "market variants",
                 VARIANTS,
@@ -85,7 +86,8 @@ public final class MarketDescriptions {
                 fetches,
                 refreshes,
                 clock,
-                ticker);
+                ticker,
+                client::isClosed);
     }
 
     /**

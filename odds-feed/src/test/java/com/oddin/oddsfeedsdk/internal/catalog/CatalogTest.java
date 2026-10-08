@@ -41,6 +41,7 @@ class CatalogTest {
     private final AtomicInteger fetches = new AtomicInteger();
     private final ExecutorService threads = Executors.newVirtualThreadPerTaskExecutor();
     private volatile Supplier<String> answer = () -> "v1";
+    private volatile boolean apiClosed;
     private Catalog<String, String> catalog = catalog(10, Runnable::run, queuedRefreshes::add);
 
     @AfterEach
@@ -192,6 +193,18 @@ class CatalogTest {
         assertThat(health.failing()).isEqualTo(1);
         assertThat(health.servedStale()).isEqualTo(31);
         assertThat(catalog.peekAll()).containsEntry("k", "v1");
+    }
+
+    @Test
+    void aFetchThatFailsBecauseTheClientIsClosedIsNoFailedFetch() {
+        var closed = new ApiException("the client is closed");
+        answer = () -> {
+            apiClosed = true;
+            throw closed;
+        };
+        assertThatThrownBy(() -> catalog.get("k")).isSameAs(closed);
+        assertThat(catalog.health().failedFetches()).as("failed fetches").isZero();
+        assertThat(catalog.health().failing()).as("failing keys").isZero();
     }
 
     @Test
@@ -781,7 +794,8 @@ class CatalogTest {
                 fetchesRunOn,
                 refreshesRunOn,
                 time,
-                time);
+                time,
+                () -> apiClosed);
     }
 
     /** The two clears, of everything and of the one key {@code k}. */
