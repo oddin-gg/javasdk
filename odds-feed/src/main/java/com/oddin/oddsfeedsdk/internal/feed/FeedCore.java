@@ -193,7 +193,7 @@ public record FeedCore(
                 } catch (RuntimeException e) {
                     // one the feed's close cut short is no failure worth a warning
                     if (!Thread.currentThread().isInterrupted() && !api.isClosed()) {
-                        LOG.warn("Could not preload {}; its first read loads it: {}", what, e.toString());
+                        LOG.warn("The preload of {} failed; its first read loads it: {}", what, e.toString());
                     }
                 }
             });

@@ -749,7 +749,7 @@ public final class AmqpTransport implements AutoCloseable {
             try {
                 tell.run();
             } catch (RuntimeException e) {
-                LOG.error("A session's channel listener threw on {}; the transport goes on", event, e);
+                LOG.error("The session's channel listener threw on {}; the transport goes on", event, e);
             }
         }
     }

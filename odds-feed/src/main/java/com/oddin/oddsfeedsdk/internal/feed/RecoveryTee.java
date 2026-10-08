@@ -65,7 +65,7 @@ final class RecoveryTee implements RecoveryEvents {
             try {
                 tell.accept(events);
             } catch (RuntimeException e) {
-                LOG.error("A recovery events listener threw on {}; the others are told", event, e);
+                LOG.error("The recovery events listener threw on {}; the others are told", event, e);
             }
         }
     }

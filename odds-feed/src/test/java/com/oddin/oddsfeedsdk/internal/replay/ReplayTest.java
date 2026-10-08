@@ -245,9 +245,9 @@ class ReplayTest {
                     .isNull();
             assertThat(log.lines()).hasSize(2);
             assertThat(log.lines().getFirst())
-                    .startsWith("WARN Failed to fetch the replay status: ")
+                    .startsWith("WARN The replay status could not be fetched: ")
                     .doesNotContain("\n");
-            assertThat(log.lines().get(1)).isEqualTo("DEBUG Failed to fetch the replay status");
+            assertThat(log.lines().get(1)).isEqualTo("DEBUG The replay status could not be fetched");
         }
     }
 
