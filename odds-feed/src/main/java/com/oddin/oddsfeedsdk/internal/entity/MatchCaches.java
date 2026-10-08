@@ -28,9 +28,14 @@ import java.time.InstantSource;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The match and fixture caches, the live state of matches, and the loaders that fill them from the
@@ -58,6 +63,8 @@ import org.jspecify.annotations.Nullable;
  */
 public final class MatchCaches {
 
+    private static final Logger LOG = LoggerFactory.getLogger(MatchCaches.class);
+
     /** How long a match or a fixture is fresh, as in 0.0.x. */
     static final Duration AGE = Duration.ofHours(12);
 
@@ -74,6 +81,10 @@ public final class MatchCaches {
     private final LiveState<URN> live;
     private final Loader<MatchKey, Boolean> summaries;
     private final Loader<URN, Boolean> fixtureLoads;
+    /** The match and locale of each preload queued or under way, so a burst of messages queues one. */
+    private final Set<MatchKey> preloading = ConcurrentHashMap.newKeySet();
+    /** Preloads that failed, for the log's count. */
+    private final AtomicLong preloadsFailed = new AtomicLong();
 
     /**
      * @param profiles what a match's responses fill, and where its competitors are side-loaded
@@ -228,13 +239,47 @@ public final class MatchCaches {
 
     /**
      * Loads the match in the background in each of {@code locales}, and with it its competitors: the
-     * eager preload a message's match can get, so that its callback reads it warm. Never waits; a
-     * full side-load queue drops it, and a reader loads what it needs itself.
+     * eager preload a message's match can get, so that its callback reads it warm. Never waits, and
+     * makes no call itself: a load of the match in a locale already queued or under way is not
+     * queued again, a full side-load queue drops it and counts it, and a reader loads what it needs
+     * itself. A load that fails is logged, the first and every thousandth, and counted with the
+     * side-loads.
      */
     public void preload(URN id, List<Locale> locales) {
         for (Locale locale : locales) {
-            sideLoads.offer(deadline -> match(id, locale, deadline));
+            var key = new MatchKey(id, locale);
+            if (!preloading.add(key)) {
+                continue;
+            }
+            if (!sideLoads.offer(deadline -> preloadNow(key, deadline))) {
+                preloading.remove(key);
+            }
         }
+    }
+
+    private void preloadNow(MatchKey key, Deadline deadline) {
+        try {
+            match(key.id(), key.locale(), deadline);
+        } catch (RuntimeException e) {
+            long failed = preloadsFailed.incrementAndGet();
+            if (failed == 1 || failed % 1_000 == 0) {
+                LOG.warn(
+                        "The eager preload could not load match {} in {}, {} so far: {}",
+                        key.id(),
+                        key.locale(),
+                        failed,
+                        e.toString());
+            }
+            // the side-loads count it
+            throw e;
+        } finally {
+            preloading.remove(key);
+        }
+    }
+
+    /** The preloads queued or under way; for a test. */
+    int preloading() {
+        return preloading.size();
     }
 
     /**

@@ -149,15 +149,24 @@ public final class AmqpTransport implements AutoCloseable {
      * connection, and when a new one replaced it.
      */
     public SessionTransport addSession(List<String> bindings, ChannelEvents told) {
-        return addSession(bindings, settings.prefetch(), told);
+        return addSession(bindings, told, routingKey -> {});
+    }
+
+    /**
+     * The same, telling {@code queued} each delivery's routing key once the session's queue has taken
+     * it, on the consumer thread: it must not wait, and what it throws is counted, not thrown on.
+     */
+    public SessionTransport addSession(List<String> bindings, ChannelEvents told, Consumer<String> queued) {
+        return addSession(bindings, settings.prefetch(), told, queued);
     }
 
     /** With a queue of another size than the prefetch, for a test to fill it. */
     SessionTransport addSession(List<String> bindings, int queueCapacity) {
-        return addSession(bindings, queueCapacity, ChannelEvents.NONE);
+        return addSession(bindings, queueCapacity, ChannelEvents.NONE, routingKey -> {});
     }
 
-    private SessionTransport addSession(List<String> bindings, int queueCapacity, ChannelEvents told) {
+    private SessionTransport addSession(
+            List<String> bindings, int queueCapacity, ChannelEvents told, Consumer<String> queued) {
         lock.lock();
         try {
             if (opening) {
@@ -165,7 +174,7 @@ public final class AmqpTransport implements AutoCloseable {
             }
             var session = channel(
                     bindings,
-                    new SessionChannel.Sink.Queued(new SessionQueue(queueCapacity), settings.prefetch()),
+                    new SessionChannel.Sink.Queued(new SessionQueue(queueCapacity), settings.prefetch(), queued),
                     "a session's channel",
                     new GuardedChannel(told));
             channels.add(session);

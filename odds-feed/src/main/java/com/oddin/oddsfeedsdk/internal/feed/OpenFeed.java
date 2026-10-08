@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.internal.amqp.AmqpSettings;
 import com.oddin.oddsfeedsdk.internal.amqp.AmqpTransport;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
+import com.oddin.oddsfeedsdk.internal.dispatch.MessagePreload;
 import com.oddin.oddsfeedsdk.internal.dispatch.Pipeline;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
 import com.oddin.oddsfeedsdk.internal.recovery.EventRecoveryStatus;
@@ -28,6 +29,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -172,12 +174,16 @@ public final class OpenFeed {
                 replay ? configuration.getReplayExchangeName() : configuration.getExchangeName(),
                 connection,
                 alives);
+        // the eager preload hears of each delivery a session's queue takes, and only queues a load
+        Consumer<String> queued = configuration.isEagerEntityPreload()
+                ? MessagePreload.of(core.matches()::preload, configuration)
+                : routingKey -> {};
         var dispatchers = new ArrayList<SessionDispatcher>();
         var facts = new ArrayList<SessionFacts>();
         for (Sessions.Planned planned : plan.sessions()) {
             var spec = planned.spec();
             var channel = new LateChannelEvents();
-            var session = transport.addSession(planned.routingKeys(), channel);
+            var session = transport.addSession(planned.routingKeys(), channel, queued);
             @Nullable SessionFacts told = null;
             if (actor != null) {
                 // the actor makes the session's side from its transport; bound before the transport opens

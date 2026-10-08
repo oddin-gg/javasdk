@@ -33,8 +33,12 @@ final class SessionChannel implements SessionTransport {
     /** Where a channel's deliveries go. */
     sealed interface Sink {
 
-        /** A session's queue, which the session acknowledges from, with this prefetch. */
-        record Queued(SessionQueue queue, int prefetch) implements Sink {}
+        /**
+         * A session's queue, which the session acknowledges from, with this prefetch; {@code queued}
+         * is told each delivery's routing key once the queue has taken it, on the consumer thread, so
+         * it must not wait, and what it throws is counted, not thrown on.
+         */
+        record Queued(SessionQueue queue, int prefetch, Consumer<String> queued) implements Sink {}
 
         /**
          * A handler, called on the consumer thread; what it throws is counted, not thrown on, since
@@ -123,7 +127,7 @@ final class SessionChannel implements SessionTransport {
                 for (String key : bindings) {
                     opened.queueBind(name, exchange, key);
                 }
-                if (sink instanceof Sink.Queued(var _, var prefetch)) {
+                if (sink instanceof Sink.Queued(var _, var prefetch, var _)) {
                     opened.basicQos(prefetch);
                 }
                 opened.basicConsume(name, sink instanceof Sink.Handled, consumer);
@@ -251,7 +255,7 @@ final class SessionChannel implements SessionTransport {
 
     @Override
     public SessionQueue queue() {
-        if (sink instanceof Sink.Queued(var queue, var _)) {
+        if (sink instanceof Sink.Queued(var queue, var _, var _)) {
             return queue;
         }
         throw new IllegalStateException("a handled channel has no queue");
@@ -306,7 +310,7 @@ final class SessionChannel implements SessionTransport {
         try {
             closed = true;
             closeChannel();
-            if (sink instanceof Sink.Queued(var queue, var _)) {
+            if (sink instanceof Sink.Queued(var queue, var _, var _)) {
                 queue.close();
             }
         } finally {
@@ -315,7 +319,7 @@ final class SessionChannel implements SessionTransport {
     }
 
     private void removeEpochsBefore(long next) {
-        if (sink instanceof Sink.Queued(var queue, var _)) {
+        if (sink instanceof Sink.Queued(var queue, var _, var _)) {
             queue.removeEpochsBefore(next);
         }
     }
@@ -382,14 +386,21 @@ final class SessionChannel implements SessionTransport {
                     clock.instant(),
                     timestamp == null ? null : timestamp.toInstant());
             switch (sink) {
-                case Sink.Queued(var queue, var _) -> {
-                    if (queue.offer(delivery) == SessionQueue.Offer.FULL) {
+                case Sink.Queued(var queue, var _, var queued) -> {
+                    var offered = queue.offer(delivery);
+                    if (offered == SessionQueue.Offer.FULL) {
                         // refused and counted: acknowledged, or its prefetch credit would be gone for good
                         try {
                             getChannel().basicAck(envelope.getDeliveryTag(), false);
                         } catch (IOException | RuntimeException channelGone) {
                             // not thrown on: the client would close the channel as if the SDK had, and
                             // no reopen would follow; a channel that went tells so itself
+                        }
+                    } else if (offered == SessionQueue.Offer.QUEUED) {
+                        try {
+                            queued.accept(delivery.routingKey());
+                        } catch (RuntimeException e) {
+                            handlerFailures.incrementAndGet();
                         }
                     }
                 }

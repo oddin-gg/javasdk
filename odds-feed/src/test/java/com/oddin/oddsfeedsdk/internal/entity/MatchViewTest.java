@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Competitor;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.LiveOddsAvailability;
@@ -459,6 +460,95 @@ class MatchViewTest {
             assertThat(match.getName(DE)).isNotNull();
             assertThat(requireNonNull(match.getCompetitors())).hasSize(2);
             assertThat(world.api.requests()).as("all of it warm").hasSize(before);
+        }
+    }
+
+    /** The caller only queues: the load runs on a side-load worker, while the API takes its time. */
+    @Test
+    void aPreloadQueuesAndReturnsWhileTheApiIsSlow() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    SUMMARY_EN,
+                    Reply.of(200, Fixtures.read("rest/match_summary/match_summary.xml"))
+                            .after(Duration.ofSeconds(3)));
+            long started = System.nanoTime();
+            world.matches.preload(MATCH, List.of(EN));
+            assertThat(Duration.ofNanos(System.nanoTime() - started))
+                    .as("the preload's own time, the API answering in 3 s")
+                    .isLessThan(Duration.ofSeconds(1));
+            world.api.awaitRequest("GET", SUMMARY_EN);
+            world.api.awaitQuiet();
+            assertThat(world.matches.preloading()).as("done").isZero();
+        }
+    }
+
+    @Test
+    void aBurstOfPreloadsOfOneMatchQueuesOneLoadPerLocale() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
+            var slow = Reply.of(200, Fixtures.read("rest/match_summary/match_summary.xml"))
+                    .after(Duration.ofSeconds(1));
+            world.api.respond(SUMMARY_EN, slow);
+            world.api.respond(SUMMARY_DE, slow);
+            for (int i = 0; i < 50; i++) {
+                world.matches.preload(MATCH, List.of(EN, DE));
+            }
+            assertThat(world.matches.preloading())
+                    .as("one per locale, queued or under way")
+                    .isEqualTo(2);
+            world.api.awaitRequest("GET", SUMMARY_EN);
+            world.api.awaitQuiet();
+            assertThat(world.api.requests("GET", SUMMARY_EN))
+                    .as("English summaries")
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", SUMMARY_DE))
+                    .as("German summaries")
+                    .hasSize(1);
+            assertThat(world.sideLoads.dropped()).isZero();
+            assertThat(world.matches.preloading()).isZero();
+        }
+    }
+
+    @Test
+    void aPreloadTheFullQueueRefusesIsDroppedCountedAndQueuedAgainNextTime() {
+        // no worker: the one place is taken for good
+        try (var world = EntityWorld.withSideLoads(1, 0)) {
+            var other = URN.parse("od:match:1");
+            world.matches.preload(MATCH, List.of(EN));
+            world.matches.preload(other, List.of(EN));
+            assertThat(world.sideLoads.dropped()).as("dropped for want of room").isEqualTo(1);
+            assertThat(world.matches.preloading()).as("only the one queued").isEqualTo(1);
+            world.matches.preload(other, List.of(EN));
+            assertThat(world.sideLoads.dropped())
+                    .as("offered again, not taken for one still queued")
+                    .isEqualTo(2);
+            world.matches.preload(MATCH, List.of(EN));
+            assertThat(world.sideLoads.dropped())
+                    .as("the one queued is not queued twice")
+                    .isEqualTo(2);
+            assertThat(world.api.requests()).as("nothing asked of the API").isEmpty();
+        }
+    }
+
+    @Test
+    void aPreloadThatFailsIsLoggedAndCountedAndLoadedAgainNextTime() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW);
+                var log = LogCapture.of(MatchCaches.class)) {
+            world.api.respond(SUMMARY_EN, 500, "");
+            world.matches.preload(MATCH, List.of(EN));
+            long until = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (world.sideLoads.failed() == 0 && System.nanoTime() < until) {
+                Thread.sleep(20);
+            }
+            assertThat(world.sideLoads.failed()).as("counted").isEqualTo(1);
+            assertThat(log.lines())
+                    .singleElement()
+                    .asString()
+                    .startsWith("WARN The eager preload could not load match od:match:198314 in en, 1 so far: ");
+            assertThat(world.matches.preloading()).isZero();
+
+            world.api.respond(SUMMARY_EN, 200, Fixtures.read("rest/match_summary/match_summary.xml"));
+            world.matches.preload(MATCH, List.of(EN));
+            world.api.awaitRequests("GET", SUMMARY_EN, 2);
         }
     }
 
