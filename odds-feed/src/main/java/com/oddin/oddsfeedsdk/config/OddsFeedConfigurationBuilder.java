@@ -4,8 +4,7 @@ import static java.util.Objects.requireNonNull;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import javax.net.ssl.SSLContext;
@@ -430,21 +429,17 @@ public final class OddsFeedConfigurationBuilder {
      * void reasons once - {@code open()} starts loading in the background, so the first messages and
      * reads find them; with the {@linkplain #setEagerEntityPreload eager entity preload}, also the
      * locales a message's match is loaded in, next to the default locale. None unless set: 0.0.x
-     * loaded each catalog on its first read, as 1.0 still does for any locale. The API is asked by
-     * the language, so of two locales of one language, such as {@code en_US} and {@code en}, the
-     * first given counts and the other is left out. New in 1.0.
+     * loaded each catalog on its first read, as 1.0 still does for any locale. A locale given twice
+     * counts once. The caches keep each locale apart, as 0.0.x did, so {@code en_US} and {@code en}
+     * are both loaded, though the API, asked by the language, answers both alike. New in 1.0.
      *
      * @throws IllegalArgumentException for a locale without a language
      */
     public OddsFeedConfigurationBuilder setPreloadLocales(List<Locale> locales) {
         requireNonNull(locales, "locales");
-        // the API is asked by the language alone: en_US and en are one locale to it
-        var languages = new HashSet<String>();
-        var each = new ArrayList<Locale>();
+        var each = new LinkedHashSet<Locale>();
         for (Locale locale : locales) {
-            if (languages.add(language(locale, "locales").getLanguage())) {
-                each.add(locale);
-            }
+            each.add(language(locale, "locales"));
         }
         this.preloadLocales = List.copyOf(each);
         return this;

@@ -499,15 +499,16 @@ class OddsFeedConfigurationBuilderTest {
                 .isEmpty();
     }
 
-    /** The API is asked by the language: en_US and en are one locale to it, and load once. */
+    /** The caches keep each locale apart, as 0.0.x did: en_US and en are both kept, to load each. */
     @Test
-    void preloadLocalesOfOneLanguageCountOnceTheFirstGiven() {
+    void eachPreloadLocaleIsKeptThoughTwoShareALanguage() {
         OddsFeedConfiguration configuration = builder()
                 .selectProduction()
                 .setAccessToken("token")
-                .setPreloadLocales(List.of(Locale.US, Locale.ENGLISH, Locale.UK, Locale.GERMAN, Locale.GERMANY))
+                .setPreloadLocales(List.of(Locale.US, Locale.ENGLISH, Locale.US, Locale.GERMAN, Locale.GERMANY))
                 .build();
-        assertThat(configuration.getPreloadLocales()).containsExactly(Locale.US, Locale.GERMAN);
+        assertThat(configuration.getPreloadLocales())
+                .containsExactly(Locale.US, Locale.ENGLISH, Locale.GERMAN, Locale.GERMANY);
     }
 
     @Test

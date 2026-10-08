@@ -43,17 +43,28 @@ class MessagePreloadTest {
         assertThat(asked).containsExactly("od:match:198314");
     }
 
+    /** The caches keep each locale apart: a callback reading en finds it warm only if en was loaded. */
     @Test
-    void aPreloadLocaleOfTheDefaultLocalesLanguageIsLeftOut() {
+    void aPreloadLocaleOfTheDefaultLocalesLanguageIsLoadedToo() {
         var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectProduction()
                 .setAccessToken("token")
                 .setDefaultLocale(Locale.US)
-                .setPreloadLocales(List.of(Locale.ENGLISH, Locale.FRENCH))
+                .setPreloadLocales(List.of(Locale.ENGLISH, Locale.FRENCH, Locale.US))
                 .build();
         assertThat(MessagePreload.of((id, locales) -> {}, configuration).locales())
-                .as("each language once, the default's first")
-                .containsExactly(Locale.US, Locale.FRENCH);
+                .as("each locale once, the default first")
+                .containsExactly(Locale.US, Locale.ENGLISH, Locale.FRENCH);
+    }
+
+    /** A tournament's message, other than a fixture change, gets past that check to the type's. */
+    @Test
+    void aTournamentsOddsChangeOrSettlementAsksForNothing() {
+        var preload = new MessagePreload((id, locales) -> asked.add(id.toString()), List.of(Locale.ENGLISH));
+        preload.accept("hi.pre.-.odds_change.1.od:tournament.1.-");
+        preload.accept("lo.-.live.bet_settlement.2.od:tournament.5");
+        preload.accept("hi.-.live.bet_stop.2.od:tournament.5.-");
+        assertThat(asked).isEmpty();
     }
 
     @Test
