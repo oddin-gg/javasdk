@@ -54,6 +54,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -84,6 +85,7 @@ class SessionDispatcherTest {
     private final Listener listener = new Listener();
     private final Ext ext = new Ext();
     private final Facts facts = new Facts();
+    private final AtomicBoolean feedClosed = new AtomicBoolean();
     private final OddsFeedSession session = new OddsFeedSession() {};
     private long tag;
     private Instant lastReceived = Instant.EPOCH;
@@ -569,6 +571,35 @@ class SessionDispatcherTest {
     }
 
     @Test
+    void aDeliveryHandledOnceTheFeedsCloseBeganButBeforeThisSessionWasStoppedReachesNothingAndIsNotAcknowledged() {
+        for (var xml : List.of(
+                Fixtures.read(ODDS_CHANGE), FeedMessages.alive(2, true), FeedMessages.snapshotComplete(2, 712))) {
+            var dispatcher = dispatcher(MessageInterest.ALL);
+            // the feed has marked itself closed; it has not got to this dispatcher yet
+            ext.afterBytes = () -> feedClosed.set(true);
+            handle(dispatcher, xml);
+            assertThat(listener.messages).as("callbacks").isEmpty();
+            assertThat(facts.facts).as("facts posted").isEmpty();
+            assertThat(transport.acked).as("acknowledged").isEmpty();
+            assertThat(dispatcher.handled()).isZero();
+            feedClosed.set(false);
+        }
+    }
+
+    @Test
+    void aDeliveryWhoseMessageBuildFailsOnceTheCloseBeganPostsNoFactAndIsNotAcknowledged() {
+        var dispatcher = dispatcher(MessageInterest.ALL);
+        // the close begins before the build, which then fails, as one the close cuts short does: the
+        // delivery returns early, without reaching a listener
+        ext.afterBytes = dispatcher::stop;
+        handle(dispatcher, Fixtures.read(BET_STOP), "hi.-.live.bet_stop.-.od:tournament.7.-");
+        assertThat(listener.messages).as("callbacks").isEmpty();
+        assertThat(facts.facts).as("facts posted").isEmpty();
+        assertThat(transport.acked).as("acknowledged").isEmpty();
+        assertThat(dispatcher.handled()).isZero();
+    }
+
+    @Test
     void anAliveOrSnapshotCompletePolledBeforeTheCloseBeganButHandledAfterItPostsNoFactAndIsNotAcknowledged() {
         for (var message : List.of(FeedMessages.alive(2, true), FeedMessages.snapshotComplete(2, 712))) {
             var dispatcher = dispatcher(MessageInterest.ALL);
@@ -661,7 +692,8 @@ class SessionDispatcherTest {
                 offsets,
                 events,
                 InstantSource.system());
-        return new SessionDispatcher(1, session, interest, listener, ext, transport, facts, replay, pipeline);
+        return new SessionDispatcher(
+                1, session, interest, listener, ext, transport, facts, replay, feedClosed::get, pipeline);
     }
 
     private void handle(SessionDispatcher dispatcher, String xml) {

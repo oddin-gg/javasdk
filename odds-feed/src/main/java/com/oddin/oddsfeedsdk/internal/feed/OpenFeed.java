@@ -30,6 +30,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -140,6 +141,19 @@ public final class OpenFeed {
      */
     public static OpenFeed build(
             FeedCore core, Sessions.Plan plan, OddsFeedConfiguration configuration, HealthMonitor health) {
+        return build(core, plan, configuration, health, () -> false);
+    }
+
+    /**
+     * As above, with the feed's own signal that its close has begun, which the sessions' dispatchers
+     * read: it is set before any shutdown work, so none admits a callback after it.
+     */
+    public static OpenFeed build(
+            FeedCore core,
+            Sessions.Plan plan,
+            OddsFeedConfiguration configuration,
+            HealthMonitor health,
+            BooleanSupplier feedClosed) {
         var replay = plan.replay();
         var decoder = FeedDecoder.lenient(configuration.getMaxMessageSize());
         var pipeline = new Pipeline(
@@ -203,6 +217,7 @@ public final class OpenFeed {
                     session,
                     told,
                     spec.replay(),
+                    feedClosed,
                     pipeline));
         }
         return new OpenFeed(
