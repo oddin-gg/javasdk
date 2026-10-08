@@ -17,12 +17,14 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.regex.Pattern;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
@@ -80,6 +82,9 @@ public final class FakeFeed implements AutoCloseable {
 
     /** What the SDK binds a queue with for alives; its alive-only queue has no other binding. */
     private static final String ALIVE_BINDING = "-.-.-.alive.#";
+
+    /** A binding's destination in the management API's answer; queue names need no JSON escapes. */
+    private static final Pattern DESTINATION = Pattern.compile("\"destination\"\\s*:\\s*\"([^\"]*)\"");
 
     private final String virtualHost = "/oddinfeed/" + BOOKMAKER_ID;
     private final List<Login> logins = new CopyOnWriteArrayList<>();
@@ -249,6 +254,49 @@ public final class FakeFeed implements AutoCloseable {
                 .toList();
     }
 
+    /**
+     * The client queues bound to the {@value #EXCHANGE} exchange: what a message published now is
+     * routed to. Read from the bindings, as the exchange routes by them, rather than from the
+     * queues: a queue whose process has stopped stays here until the broker deletes its record.
+     */
+    public List<String> boundQueues() {
+        String bindings = management(
+                "GET",
+                "/api/exchanges/" + URLEncoder.encode(virtualHost, UTF_8) + "/" + EXCHANGE + "/bindings/source",
+                null);
+        return DESTINATION
+                .matcher(bindings)
+                .results()
+                .map(match -> match.group(1))
+                .filter(queue -> queue.startsWith("amq.gen-"))
+                .distinct()
+                .toList();
+    }
+
+    /**
+     * Waits until none of these queues is {@linkplain #boundQueues bound} any more, or {@code wait}
+     * is over.
+     *
+     * <p>A connection that goes without closing, as when its client gives up on a {@linkplain
+     * #pause paused} broker, takes its exclusive queues with it once the broker notices: each queue's
+     * process stops first, and its record and bindings are deleted a moment later, in a step of
+     * their own. A message routed to such a queue in between goes to a process that is gone, the
+     * broker does not confirm it, and {@link #publish(String)} fails with the broker's "Check queue
+     * limits". Once the bindings have gone, nothing is routed to those queues.
+     *
+     * @return whether they all went
+     */
+    public boolean awaitUnbound(Collection<String> queues, Duration wait) throws InterruptedException {
+        long deadline = System.nanoTime() + wait.toNanos();
+        while (boundQueues().stream().anyMatch(queues::contains)) {
+            if (System.nanoTime() >= deadline) {
+                return false;
+            }
+            Thread.sleep(20);
+        }
+        return true;
+    }
+
     /** The deliveries the clients' queues have handed out and not had acknowledged, all together. */
     public long unacknowledged() {
         return rabbitmqctl(
@@ -267,7 +315,7 @@ public final class FakeFeed implements AutoCloseable {
                 .sum();
     }
 
-    private void management(String method, String path, String body) {
+    private String management(String method, String path, String body) {
         HttpRequest request = HttpRequest.newBuilder(
                         URI.create("http://" + broker.getHost() + ":" + broker.getMappedPort(MANAGEMENT) + path))
                 .header(
@@ -285,6 +333,7 @@ public final class FakeFeed implements AutoCloseable {
                 throw new IllegalStateException(
                         method + " " + path + " failed: " + response.statusCode() + " " + response.body());
             }
+            return response.body();
         } catch (IOException e) {
             throw new UncheckedIOException(method + " " + path + " failed", e);
         } catch (InterruptedException e) {
@@ -504,7 +553,11 @@ public final class FakeFeed implements AutoCloseable {
         paused = true;
     }
 
-    /** Unfreezes the broker. The SDK reconnects on its own schedule; {@link #logins()} shows when. */
+    /**
+     * Unfreezes the broker. The SDK reconnects on its own schedule; {@link #logins()} shows when. A
+     * connection the SDK gave up on while the broker was paused is taken down now, and its queues
+     * with it; see {@link #awaitUnbound} before publishing.
+     */
     public synchronized void resume() {
         broker.getDockerClient().unpauseContainerCmd(broker.getContainerId()).exec();
         paused = false;
