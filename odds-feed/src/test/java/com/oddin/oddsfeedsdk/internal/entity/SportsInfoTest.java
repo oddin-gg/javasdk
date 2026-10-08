@@ -246,6 +246,54 @@ class SportsInfoTest {
     }
 
     @Test
+    void aSportATournamentOrAPlayerByIdLoadsNothingUntilReadAndThenItsOwn() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            var sport = requireNonNull(world.sportsInfo.getSport(CS2));
+            var tournament = requireNonNull(world.sportsInfo.getTournament(TOURNAMENT));
+            var player = requireNonNull(world.sportsInfo.getPlayer(URN.parse("od:player:1")));
+            assertThat(sport.getId()).isEqualTo(CS2);
+            assertThat(tournament.getId()).isEqualTo(TOURNAMENT);
+            assertThat(player.getId()).isEqualTo(URN.parse("od:player:1"));
+            assertThat(world.api.requests()).as("nothing read yet").isEmpty();
+
+            assertThat(sport.getName(EN)).as("from the sport list").isEqualTo("Counter-Strike 2");
+            assertThat(world.api.requests("GET", "/v1/sports/en/sports")).hasSize(1);
+            assertThat(tournament.getName(EN)).isNotBlank();
+            assertThat(tournament.getSportId())
+                    .as("from the tournament's info, which names its sport")
+                    .isNotNull();
+            assertThat(world.api.requests("GET", "/v1/sports/en/tournaments/od:tournament:1042/info"))
+                    .hasSize(1);
+            assertThat(player.getName(EN)).isNotBlank();
+            assertThat(world.api.requests("GET", "/v1/sports/en/players/od:player:1/profile"))
+                    .as("in the default locale")
+                    .hasSize(1);
+
+            assertThat(requireNonNull(world.sportsInfo.getSport(CS2, DE)).getName(DE))
+                    .isNotBlank();
+            assertThat(world.api.requests("GET", "/v1/sports/de/sports")).hasSize(1);
+            assertThat(requireNonNull(world.sportsInfo.getTournament(TOURNAMENT, DE))
+                            .getName(DE))
+                    .isNotBlank();
+            assertThat(world.api.requests("GET", "/v1/sports/de/tournaments/od:tournament:1042/info"))
+                    .hasSize(1);
+        }
+    }
+
+    @Test
+    void aSportTheListDoesNotHaveFailsItsGettersByTheStrategy() {
+        var unknown = URN.parse("od:sport:99");
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            var sport = requireNonNull(world.sportsInfo.getSport(unknown));
+            assertThatThrownBy(() -> sport.getName(EN)).isInstanceOf(ItemNotFoundException.class);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
+            assertThat(requireNonNull(world.sportsInfo.getSport(unknown)).getName(EN))
+                    .isNull();
+        }
+    }
+
+    @Test
     void theFixtureChangesAreTheApis() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             assertThat(world.sportsInfo.getFixtureChanges())
@@ -299,6 +347,40 @@ class SportsInfoTest {
                     .hasSize(2);
             assertThat(world.api.requests("GET", "/v1/sports/en/tournaments/od:tournament:1042/info"))
                     .hasSize(2);
+        }
+    }
+
+    @Test
+    void clearingAPlayerOrASportLoadsItAgainAndNothingElse() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            var player = requireNonNull(world.sportsInfo.getPlayer(URN.parse("od:player:1")));
+            var sport = requireNonNull(world.sportsInfo.getSport(CS2));
+            var competitor = requireNonNull(world.sportsInfo.getCompetitor(URN.parse("od:competitor:1")));
+            player.getName(EN);
+            sport.getName(EN);
+            requireNonNull(world.sportsInfo.getAvailableTournaments(CS2));
+            competitor.getName(EN);
+
+            world.sportsInfo.clearPlayer(URN.parse("od:player:1"));
+            world.sportsInfo.clearSport(CS2);
+            player.getName(EN);
+            sport.getName(EN);
+            requireNonNull(world.sportsInfo.getAvailableTournaments(CS2));
+            competitor.getName(EN);
+            assertThat(world.api.requests("GET", "/v1/sports/en/players/od:player:1/profile"))
+                    .hasSize(2);
+            assertThat(world.api.requests("GET", "/v1/sports/en/sports"))
+                    .as("the sport list, read again for the sport")
+                    .hasSize(2);
+            assertThat(world.api.requests("GET", CS2_TOURNAMENTS))
+                    .as("its tournament list, with it")
+                    .hasSize(2);
+            assertThat(world.api.requests("GET", "/v1/sports/en/competitors/od:competitor:1/profile"))
+                    .as("not cleared")
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", LOL_TOURNAMENTS))
+                    .as("another sport's")
+                    .isEmpty();
         }
     }
 }

@@ -213,6 +213,19 @@ public final class ProfileCaches {
         tournaments.invalidate(id);
     }
 
+    /** Drops what is cached of the player, as the public clear of one player does. */
+    public void clearPlayer(URN id) {
+        players.invalidate(id);
+    }
+
+    /**
+     * Drops what is cached of the sport, its tournament list with it, as the public clear of one sport
+     * does. A sport list that names it stays, and its next read loads the list again for the sport.
+     */
+    public void clearSport(URN id) {
+        sports.invalidate(id);
+    }
+
     /** Drops every cached competitor, player, tournament and sport, as the public clear does. */
     public void clear() {
         competitors.clear();

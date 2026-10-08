@@ -172,6 +172,32 @@ public final class SportsInfo implements SportsInfoManager {
     }
 
     @Override
+    public @Nullable Player getPlayer(URN id) {
+        return getPlayer(id, defaultLocale);
+    }
+
+    @Override
+    public @Nullable Sport getSport(URN id) {
+        return getSport(id, defaultLocale);
+    }
+
+    @Override
+    public @Nullable Sport getSport(URN id, Locale locale) {
+        return entities.sport(id, List.of(locale));
+    }
+
+    @Override
+    public @Nullable Tournament getTournament(URN id) {
+        return getTournament(id, defaultLocale);
+    }
+
+    /** Its sport is read from the tournament's info, as for a tournament no list named. */
+    @Override
+    public @Nullable Tournament getTournament(URN id, Locale locale) {
+        return entities.tournament(id, null, List.of(locale));
+    }
+
+    @Override
     public @Nullable List<FixtureChange> getFixtureChanges() {
         return getFixtureChanges(defaultLocale);
     }
@@ -236,6 +262,16 @@ public final class SportsInfo implements SportsInfoManager {
     @Override
     public void clearCompetitor(URN id) {
         entities.profiles.clearCompetitor(id);
+    }
+
+    @Override
+    public void clearPlayer(URN id) {
+        entities.profiles.clearPlayer(id);
+    }
+
+    @Override
+    public void clearSport(URN id) {
+        entities.profiles.clearSport(id);
     }
 
     /** The sport list in {@code locale}; none when it cannot be loaded, as 0.0.x answered then. */
