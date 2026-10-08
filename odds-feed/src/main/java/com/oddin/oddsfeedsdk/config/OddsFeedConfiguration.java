@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.config;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Locale;
 import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
@@ -109,6 +110,8 @@ public final class OddsFeedConfiguration {
     private final Duration queueStallLimit;
     private final Duration watchdogInterval;
     private final Duration connectionDownLimit;
+    private final List<Locale> preloadLocales;
+    private final boolean eagerEntityPreload;
 
     /**
      * Public because 0.0.x's constructor was, to Java callers; {@link OddsFeedConfigurationBuilder}
@@ -156,7 +159,9 @@ public final class OddsFeedConfiguration {
                 stallLimitFor(DEFAULT_HTTP_CLIENT_TIMEOUT),
                 stallLimitFor(DEFAULT_HTTP_CLIENT_TIMEOUT),
                 DEFAULT_WATCHDOG_INTERVAL,
-                DEFAULT_CONNECTION_DOWN_LIMIT);
+                DEFAULT_CONNECTION_DOWN_LIMIT,
+                List.of(),
+                false);
     }
 
     OddsFeedConfiguration(
@@ -188,7 +193,9 @@ public final class OddsFeedConfiguration {
             Duration callbackStallLimit,
             Duration queueStallLimit,
             Duration watchdogInterval,
-            Duration connectionDownLimit) {
+            Duration connectionDownLimit,
+            List<Locale> preloadLocales,
+            boolean eagerEntityPreload) {
         this.accessToken = accessToken;
         this.defaultLocale = defaultLocale;
         this.maxInactivitySeconds = maxInactivitySeconds;
@@ -218,6 +225,8 @@ public final class OddsFeedConfiguration {
         this.queueStallLimit = queueStallLimit;
         this.watchdogInterval = watchdogInterval;
         this.connectionDownLimit = connectionDownLimit;
+        this.preloadLocales = List.copyOf(preloadLocales);
+        this.eagerEntityPreload = eagerEntityPreload;
     }
 
     /**
@@ -244,6 +253,10 @@ public final class OddsFeedConfiguration {
         return accessToken;
     }
 
+    /**
+     * The locale a getter without one reads in, and the one fixtures and feed messages are built in:
+     * English unless set.
+     */
     public Locale getDefaultLocale() {
         return defaultLocale;
     }
@@ -433,6 +446,24 @@ public final class OddsFeedConfiguration {
      */
     public Duration getConnectionDownLimit() {
         return connectionDownLimit;
+    }
+
+    /**
+     * The locales whose catalogs - the market descriptions, the match statuses, the sports, and the
+     * void reasons once - {@code open()} starts loading in the background, so the first messages and
+     * reads find them; none unless set. New in 1.0.
+     */
+    public List<Locale> getPreloadLocales() {
+        return preloadLocales;
+    }
+
+    /**
+     * Whether the match each feed message names is loaded in the background as the message arrives,
+     * before the session takes it, in the default locale and the {@linkplain #getPreloadLocales
+     * preload locales}, so the callback reads it warm: not unless set. New in 1.0.
+     */
+    public boolean isEagerEntityPreload() {
+        return eagerEntityPreload;
     }
 
     /** 0.0.x's companion object; the constants are on the class. */
