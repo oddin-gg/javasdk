@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
+import java.util.List;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
 
@@ -54,6 +55,8 @@ class FakeFeedIT {
                 Sdk sdk = Sdk.against(rest, feed)) {
             Received received = sdk.open(MessageInterest.ALL);
             int loginsBefore = feed.logins().size();
+            List<String> lostQueues = feed.boundQueues();
+            assertThat(lostQueues).as("the SDK's queues before the pause").isNotEmpty();
 
             feed.pause();
             assertThat(sdk.events().awaitConnectionDown(Duration.ofSeconds(30)))
@@ -61,6 +64,9 @@ class FakeFeedIT {
                     .isTrue();
 
             feed.resume();
+            assertThat(feed.awaitUnbound(lostQueues, Duration.ofSeconds(10)))
+                    .as("the queues of the lost connection unbound once the broker is back")
+                    .isTrue();
             long deadline = System.nanoTime() + Duration.ofSeconds(60).toNanos();
             while (feed.logins().size() == loginsBefore && System.nanoTime() < deadline) {
                 Thread.sleep(200);
@@ -69,9 +75,8 @@ class FakeFeedIT {
                     .as("the SDK logs in again once the broker is back")
                     .hasSizeGreaterThan(loginsBefore);
 
-            // Logging in comes before the new queue is bound, and until the broker notices the old
-            // connection is gone its queue still takes messages - so "routed" proves nothing yet. Keep
-            // publishing until one actually arrives.
+            // Logging in comes before the new queue is bound, and what is published before then reaches
+            // no one. Keep publishing until one actually arrives.
             Optional<?> afterReconnect = Optional.empty();
             deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
             while (afterReconnect.isEmpty() && System.nanoTime() < deadline) {
