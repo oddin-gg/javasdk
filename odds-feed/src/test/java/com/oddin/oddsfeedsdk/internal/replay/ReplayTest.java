@@ -246,6 +246,8 @@ class ReplayTest {
             assertThat(log.lines()).hasSize(2);
             assertThat(log.lines().getFirst())
                     .startsWith("WARN The replay status could not be fetched: ")
+                    // the cause: the exception, with the message the API's answer gave
+                    .contains("ApiException", "broken - replay")
                     .doesNotContain("\n");
             assertThat(log.lines().get(1)).isEqualTo("DEBUG The replay status could not be fetched");
         }
