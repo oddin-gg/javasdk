@@ -146,6 +146,12 @@ added | api/SportsInfoManager.getPlayer (Lcom/oddin/oddsfeedsdk/schema/utils/URN
 added | api/SportsInfoManager.clearPlayer (Lcom/oddin/oddsfeedsdk/schema/utils/URN;)V | drops one player, as clearCompetitor drops one competitor
 added | api/SportsInfoManager.clearSport (Lcom/oddin/oddsfeedsdk/schema/utils/URN;)V | drops one sport and its tournament list
 
+# The producers in a scope, a producer's status, the replay status and a reload of the void
+# reasons, as the Go SDK has them; default methods, so an implementation written for 0.0.x compiles
+# as it is.
+added | ProducerManager.getActiveProducersInScope (Lcom/oddin/oddsfeedsdk/api/entities/ProducerScope;)Ljava/util/Map; | the active producers that serve a scope
+added | ProducerManager.getProducerStatus (J)Lcom/oddin/oddsfeedsdk/mq/entities/ProducerStatus; | a producer's status as onProducerStatusChange last told it, for a client that polls
+
 # ---- feed XML classes, generated from the vendored schema
 # The schema describes what the producers send. What it dropped as legacy, the classes do not have.
 # Enum attributes keep their 0.0.x enum getter, and the number as decoded next to it.

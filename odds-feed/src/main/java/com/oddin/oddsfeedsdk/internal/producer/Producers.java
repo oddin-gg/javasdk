@@ -5,6 +5,9 @@ import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.ProducerScope;
 import com.oddin.oddsfeedsdk.api.entities.RecoveryInfo;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp;
+import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
+import com.oddin.oddsfeedsdk.mq.entities.ProducerStatusReason;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducer;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducers;
 import java.time.Duration;
@@ -15,6 +18,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.UnaryOperator;
@@ -44,6 +48,8 @@ public final class Producers implements ProducerManager {
     private final ReentrantLock recoveryStarts = new ReentrantLock();
     /** Whether the feed has begun to open, and so reads, or has read, the recovery starts. */
     private boolean opened;
+    /** What the recovery last told the client of each producer's status; none before its first change. */
+    private final Map<Long, Told> told = new ConcurrentHashMap<>();
 
     public Producers(RAProducers list) {
         this(list, InstantSource.system());
@@ -122,6 +128,47 @@ public final class Producers implements ProducerManager {
             }
         });
         return active;
+    }
+
+    /** The producers the list has as active that serve the scope, in its order; a new map each time. */
+    @Override
+    public Map<Long, Producer> getActiveProducersInScope(ProducerScope scope) {
+        var inScope = new LinkedHashMap<Long, Producer>();
+        producers.forEach((id, state) -> {
+            ProducerState now = state.get();
+            if (now.available() && now.scopes().contains(scope)) {
+                inScope.put(id, new ProducerView(state, clock));
+            }
+        });
+        return inScope;
+    }
+
+    /** As the recovery last told it; a new message each time, with the producer as it is now. */
+    @Override
+    public @Nullable ProducerStatus getProducerStatus(long id) {
+        Told last = told.get(id);
+        Producer producer = getProducer(id);
+        if (last == null || producer == null) {
+            return null;
+        }
+        return new Status(
+                producer,
+                new MessageTimestamp(last.at(), last.at(), last.at(), last.at()),
+                last.down(),
+                last.delayed(),
+                last.reason());
+    }
+
+    /**
+     * The status the recovery tells the client of the producer, as it tells it: what {@link
+     * #getProducerStatus} reads from then on.
+     *
+     * @param at when it changed, epoch millis by the SDK's clock
+     */
+    public void statusTold(long id, boolean down, boolean delayed, ProducerStatusReason reason, long at) {
+        if (producers.containsKey(id)) {
+            told.put(id, new Told(down, delayed, reason, at));
+        }
     }
 
     /** The producer, or null when the list does not have it. */
@@ -267,6 +314,39 @@ public final class Producers implements ProducerManager {
         AtomicReference<ProducerState> state = producers.get(id);
         if (state != null) {
             state.updateAndGet(change);
+        }
+    }
+
+    private record Told(boolean down, boolean delayed, ProducerStatusReason reason, long at) {}
+
+    /** A producer's status as {@link #getProducerStatus} gives it. */
+    private record Status(
+            Producer producer, MessageTimestamp timestamp, boolean down, boolean delayed, ProducerStatusReason reason)
+            implements ProducerStatus {
+
+        @Override
+        public Producer getProducer() {
+            return producer;
+        }
+
+        @Override
+        public MessageTimestamp getTimestamp() {
+            return timestamp;
+        }
+
+        @Override
+        public boolean isDown() {
+            return down;
+        }
+
+        @Override
+        public boolean isDelayed() {
+            return delayed;
+        }
+
+        @Override
+        public ProducerStatusReason getProducerStatusReason() {
+            return reason;
         }
     }
 }
