@@ -274,16 +274,24 @@ else fail "no release file, the registry with a token: $(cat "$work/out")"; fi
 if [ "$(grep -c ' /registry/.* Basic ' "$work/requests.log")" != 2 ]; then
   fail "the registry did not get the token on both requests: $(cat "$work/requests.log")"
 fi
-# curl's command lines: no token, plain or encoded, no option that carries a credential, and the
-# registry's requests take theirs from a config on stdin
+# curl's command lines, the release's and the registry's: https only, redirects included, every
+# time bound fetch-sdk.sh sets, no token, plain or encoded, no option that carries a credential,
+# and the registry's requests take theirs from a config on stdin
 if ! problems=$(python3 -I - "$work/curl-args.log" "$token" <<'EOF'
 import base64, re, sys
 log, token = sys.argv[1], sys.argv[2]
 secrets = [token] + [base64.b64encode(s.encode()).decode() for s in (token, "x:" + token)]
 calls = [line.split("\0")[:-1] for line in open(log).read().split("\n") if line]
+BOUNDS = [("--proto", "=https"), ("--proto-redir", "=https"), ("--retry-max-time", "300"),
+          ("--connect-timeout", "30"), ("--speed-limit", "1024"), ("--speed-time", "60"),
+          ("--max-time", "300")]
 problems, configured = [], 0
 for args in calls:
     url = args[-1] if args else ""
+    pairs = set(zip(args, args[1:]))
+    missing = ["%s %s" % bound for bound in BOUNDS if bound not in pairs]
+    if missing:
+        problems.append("a request without %s: %s" % (", ".join(missing), url))
     for i, arg in enumerate(args):
         if any(s in arg for s in secrets):
             problems.append("the token, plain or encoded, in %r" % arg)
@@ -310,7 +318,7 @@ EOF
 ); then
   fail "curl's command lines: $problems"
 else
-  echo "ok   the token reached the registry from a config on stdin, and never curl's command line"
+  echo "ok   every request held to https and its time bounds; the token reached the registry from a config on stdin, never curl's command line"
 fi
 if grep ' /missing/' "$work/requests.log" | grep -q ' Basic '; then
   fail "the release was sent the token"
