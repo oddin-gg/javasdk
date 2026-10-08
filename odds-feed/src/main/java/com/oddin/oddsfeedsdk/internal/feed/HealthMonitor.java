@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.feed;
 
 import com.oddin.oddsfeedsdk.OddsFeedSession;
+import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
@@ -26,6 +27,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.IntFunction;
+import java.util.function.LongSupplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,32 +37,52 @@ import org.slf4j.LoggerFactory;
  * from, to the log and to {@code onHealthEvent}. One per {@code OddsFeed}, for its whole life.
  *
  * <p>A part's state comes from what it is now - a session lagging, as the recovery actor last told,
- * or a catalog serving a value stale for {@link #CATALOG_STALE_LIMIT} or more - and from what the
- * SDK's own watch found of it, through {@link #watched}; the worse of the two. A session's lagging
- * is told as the actor tells it; a catalog's staleness is found when the health is read. Each
- * reading takes a number before it reads, and what a reading found of a part tells nothing once a
- * newer reading has told of that part: two readings that race cannot tell an older state after a
- * newer one, and a reading of one part - a lagging, a watch - holds back no change an older reading
- * of the whole feed found of the others.
+ * a catalog serving a value stale for its limit or more, or the broker connection down for longer
+ * than its limit, as the transport told - and from what the SDK's own watch found of it, through
+ * {@link #watched}; the worse of the two. A session's lagging is told as the actor tells it, and the
+ * connection coming up as the transport tells it; a catalog's staleness and the connection's time
+ * down are found when the health is read. Each reading takes a number before it reads, and what a
+ * reading found of a part tells nothing once a newer reading has told of that part: two readings
+ * that race cannot tell an older state after a newer one, and a reading of one part - a lagging, a
+ * watch, the connection coming up - holds back no change an older reading of the whole feed found
+ * of the others.
  *
  * <p>Cheap and safe for concurrent use: a reading reads counters and flags, never waits for a thread
  * of the feed, and holds a lock only to compare what it found with what was told.
  */
-public final class HealthMonitor implements RecoveryEvents {
+public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
 
     private static final Logger LOG = LoggerFactory.getLogger(HealthMonitor.class);
 
     /**
-     * How long a catalog serves a value stale, its refreshes failing, before it counts as degraded;
-     * fixed until the options make it settable.
+     * How long a catalog serves a value stale, its refreshes failing, before it counts as degraded:
+     * the configuration's default, for a health built without the configuration.
      */
     public static final Duration CATALOG_STALE_LIMIT = Duration.ofHours(1);
+
+    /**
+     * How long the broker connection may be down before it counts as degraded: the configuration's
+     * default, for a health built without the configuration.
+     */
+    public static final Duration CONNECTION_DOWN_LIMIT = Duration.ofSeconds(60);
+
+    private static final Part CONNECTION = new Part(HealthComponent.CONNECTION, 0);
+    /** What {@link #connectionDownSince} holds while the connection is up. */
+    private static final long CONNECTION_UP = Long.MIN_VALUE;
 
     private final EventsDispatcher events;
     private final IntFunction<@Nullable OddsFeedSession> sessions;
     private final InstantSource clock;
     private final Duration catalogStaleLimit;
+    private final Duration connectionDownLimit;
+    private final LongSupplier nanos;
     private final Log log;
+
+    /**
+     * When the broker connection went down, by {@link #nanos}, as the transport told; {@link
+     * #CONNECTION_UP} while it is up, and before the feed opens.
+     */
+    private final AtomicLong connectionDownSince = new AtomicLong(CONNECTION_UP);
 
     /** The sessions lagging, by the feed's number, as the recovery actor last told. */
     private final Set<Integer> lagging = ConcurrentHashMap.newKeySet();
@@ -93,19 +115,20 @@ public final class HealthMonitor implements RecoveryEvents {
      * @param log where each change is logged; a test's, to read the lines
      */
     public HealthMonitor(EventsDispatcher events, IntFunction<@Nullable OddsFeedSession> sessions, Log log) {
-        this(events, sessions, InstantSource.system(), CATALOG_STALE_LIMIT, log);
+        this(events, sessions, CATALOG_STALE_LIMIT, CONNECTION_DOWN_LIMIT, log);
     }
 
     /**
-     * @param catalogStaleLimit how long a catalog serves a value stale before it is degraded; a
-     *     test's, as {@link #CATALOG_STALE_LIMIT} is fixed until the options make it settable
+     * @param catalogStaleLimit how long a catalog serves a value stale before it is degraded
+     * @param connectionDownLimit how long the broker connection may be down before it is degraded
      */
     public HealthMonitor(
             EventsDispatcher events,
             IntFunction<@Nullable OddsFeedSession> sessions,
             Duration catalogStaleLimit,
+            Duration connectionDownLimit,
             Log log) {
-        this(events, sessions, InstantSource.system(), catalogStaleLimit, log);
+        this(events, sessions, InstantSource.system(), System::nanoTime, catalogStaleLimit, connectionDownLimit, log);
     }
 
     /** With the clock and the catalogs' limit a test sets. */
@@ -123,10 +146,24 @@ public final class HealthMonitor implements RecoveryEvents {
             InstantSource clock,
             Duration catalogStaleLimit,
             Log log) {
+        this(events, sessions, clock, System::nanoTime, catalogStaleLimit, CONNECTION_DOWN_LIMIT, log);
+    }
+
+    /** @param nanos the monotonic clock the connection's time down is measured by; a test's */
+    HealthMonitor(
+            EventsDispatcher events,
+            IntFunction<@Nullable OddsFeedSession> sessions,
+            InstantSource clock,
+            LongSupplier nanos,
+            Duration catalogStaleLimit,
+            Duration connectionDownLimit,
+            Log log) {
         this.events = events;
         this.sessions = sessions;
         this.clock = clock;
+        this.nanos = nanos;
         this.catalogStaleLimit = catalogStaleLimit;
+        this.connectionDownLimit = connectionDownLimit;
         this.log = log;
     }
 
@@ -146,12 +183,30 @@ public final class HealthMonitor implements RecoveryEvents {
     }
 
     /**
+     * The transport's word that the connection is up, on the thread that saw it: told at once when it
+     * changes the state, as a connection down for longer than its limit was degraded until now.
+     */
+    @Override
+    public void up() {
+        connectionDownSince.set(CONNECTION_UP);
+        long reading = nextReading();
+        tell(reading, Map.of(CONNECTION, connectionFound()));
+    }
+
+    /** The transport's word that the connection was lost: found degraded once down for its limit. */
+    @Override
+    public void down(String reason) {
+        connectionDownSince.compareAndSet(CONNECTION_UP, nanos.getAsLong());
+    }
+
+    /**
      * What the SDK's own watch found of a part: told at once when it changes the part's state. A
      * part it watches is one the feed has from then on.
      *
      * @param session the feed's number for the session, for {@link HealthComponent#SESSION}; ignored
      *     for the other parts
-     * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS}, whose state is their own
+     * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS} or {@link
+     *     HealthComponent#CONNECTION}, whose state is their own
      */
     public void watched(HealthComponent component, int session, HealthState state, String reason) {
         note(component, session, state, reason).tell();
@@ -163,11 +218,12 @@ public final class HealthMonitor implements RecoveryEvents {
      * decides, and tells - which logs - once out of it. Of two notes of a part, the later is the
      * one kept, and the earlier tells nothing once the later has told.
      *
-     * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS}, whose state is their own
+     * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS} or {@link
+     *     HealthComponent#CONNECTION}, whose state is their own
      */
     public Noted note(HealthComponent component, int session, HealthState state, String reason) {
-        if (component == HealthComponent.CATALOGS) {
-            throw new IllegalArgumentException("the catalogs' state is their own");
+        if (component == HealthComponent.CATALOGS || component == HealthComponent.CONNECTION) {
+            throw new IllegalArgumentException("the " + component + " state is its own");
         }
         var part = new Part(component, component == HealthComponent.SESSION ? session : 0);
         var found = new Found(state, reason);
@@ -263,6 +319,7 @@ public final class HealthMonitor implements RecoveryEvents {
             found.put(new Part(HealthComponent.THREADS, 0), watchedOnly(HealthComponent.THREADS));
         }
         if (opened) {
+            found.put(CONNECTION, connectionFound());
             found.put(new Part(HealthComponent.CONSUMER, 0), watchedOnly(HealthComponent.CONSUMER));
         }
         if (recovers) {
@@ -310,6 +367,16 @@ public final class HealthMonitor implements RecoveryEvents {
                 clock.instant());
     }
 
+    /** How long a catalog serves a value stale before it is degraded; for a test. */
+    public Duration catalogStaleLimit() {
+        return catalogStaleLimit;
+    }
+
+    /** How long the broker connection may be down before it is degraded; for a test. */
+    public Duration connectionDownLimit() {
+        return connectionDownLimit;
+    }
+
     /** A new reading's number, after every one taken before: taken before the reading reads. */
     long nextReading() {
         return readings.incrementAndGet();
@@ -355,6 +422,20 @@ public final class HealthMonitor implements RecoveryEvents {
                         HealthState.DEGRADED,
                         "session " + session + " is lagging: it fell behind with the safety net's resets spent")
                 : new Found(HealthState.HEALTHY, "session " + session + " is keeping up");
+    }
+
+    private Found connectionFound() {
+        long since = connectionDownSince.get();
+        if (since == CONNECTION_UP) {
+            return new Found(HealthState.HEALTHY, "the broker connection is up");
+        }
+        var down = Duration.ofNanos(nanos.getAsLong() - since);
+        return down.compareTo(connectionDownLimit) > 0
+                ? new Found(
+                        HealthState.DEGRADED,
+                        "the broker connection has been down for " + down.toSeconds() + " s, over its limit of "
+                                + connectionDownLimit.toSeconds() + " s")
+                : new Found(HealthState.HEALTHY, "the broker connection is down, within its limit so far");
     }
 
     private Found catalogsFound(List<CatalogHealth> catalogs) {

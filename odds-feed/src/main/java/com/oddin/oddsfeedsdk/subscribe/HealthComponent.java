@@ -17,5 +17,7 @@ public enum HealthComponent {
     /** The JVM's threads, for a deadlock among them. */
     THREADS,
     /** The market descriptions, void reasons and match statuses the SDK keeps from the API. */
-    CATALOGS
+    CATALOGS,
+    /** The broker connection: degraded once it has been down for longer than its limit, until it is up. */
+    CONNECTION
 }
