@@ -6,11 +6,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
+import ch.qos.logback.classic.Level;
 import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
+import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.BetSettlement;
 import com.oddin.oddsfeedsdk.mq.entities.BetStop;
@@ -211,6 +214,24 @@ class MessageFactoryTest {
         assertThat(MessageFactory.specifiers("bad|a=b=c|x=|mapnr=2"))
                 .as("what is not a pair is left out")
                 .containsExactly(Map.entry("x", ""), Map.entry("mapnr", "2"));
+    }
+
+    @Test
+    void aBadPairIsWarnedTheFirstTimeAndOneInAThousandAndIsDebugOtherwise() {
+        var badPairs = new Throttle();
+        try (var log = LogCapture.of(MessageFactory.class, Level.DEBUG)) {
+            for (int market = 0; market < 2_500; market++) {
+                MessageFactory.specifiers("bad", badPairs);
+            }
+            assertThat(log.lines()).as("every bad pair is logged somewhere").hasSize(2_500);
+            assertThat(log.lines().stream()
+                            .filter(line -> line.startsWith("WARN "))
+                            .toList())
+                    .containsExactly(
+                            "WARN Bad specifier bad, 1 so far",
+                            "WARN Bad specifier bad, 1000 so far",
+                            "WARN Bad specifier bad, 2000 so far");
+        }
     }
 
     // ---- names
