@@ -934,16 +934,23 @@ the catalogs, the timers and the JVM's threads, once open the consumer and the s
 and the alives and the recovery unless it is a replay feed; once closed it still reads
 what was counted.
 
-The defaults, fixed until ticket 28 makes them options: a catalog that has served a value
-stale for an hour or more is `DEGRADED`, found when the health is read (by `getHealth()`,
-and by the watchdog's tick, so no reader is needed); a session is `DEGRADED` while the
-recovery actor reports it lagging, told at once. The watchdog's limits sit above the SDK's
-own waits, so a slow API is no stall: a callback running, or a queue not moving, for longer
-than the longest the SDK itself waits for the API in one getter - a read loads twice at
-most, each load waiting the HTTP timeout and the loaders' 1 s margin, and the read 1 s more,
-`2 × (timeout + 1 s) + 1 s` - and 2 s more is `STALLED`: `max(30 s, 2 × timeout + 5 s)`,
-65 s for the default timeout of 30 s, checked every 5 s. Ticket 28's options cannot set a
-timeout above the limit, since the limit follows the timeout. Each
+The thresholds are builder options, each with today's number unless set. A catalog that
+has served a value stale for an hour or more (`setCatalogStaleLimit`) is `DEGRADED`, found
+when the health is read (by `getHealth()`, and by the watchdog's tick, so no reader is
+needed); so is the broker connection once it has been down for longer than 60 s
+(`setConnectionDownLimit`), from the first loss the transport told, and it is `HEALTHY`
+again as soon as it is up, told at once. A session is `DEGRADED` while the recovery actor
+reports it lagging, told at once. The watchdog's limits sit above the SDK's own waits, so a
+slow API is no stall: a callback running (`setCallbackStallLimit`), or a queue not moving
+(`setQueueStallLimit`), for longer than the longest the SDK itself waits for the API in one
+getter - a read loads twice at most, each load waiting the HTTP timeout and the loaders'
+1 s margin, and the read 1 s more, `2 × (timeout + 1 s) + 1 s` - and 2 s more is
+`STALLED`: unless set, `max(30 s, 2 × timeout + 5 s)`, 65 s for the default timeout of
+30 s, checked every 5 s (`setWatchdogInterval`, a second to a minute, since each look
+searches for deadlocks at a safepoint). A stall limit set below `2 × timeout + 5 s` is
+refused when the configuration is built, whichever was set first, so no option can call a
+slow API a stall; a limit set with a short timeout may be below the 30 s the default keeps.
+The catalogs', the connection's and the stall limits take a day at most. Each
 change of a part's state is logged - a stall as an error, a degradation as a warning, a
 part getting better as information - and told to `onHealthEvent`, through a slot per part
 (per session for a session's) in the events dispatcher's control queue: behind a slow
@@ -976,9 +983,9 @@ watchdog cannot see its own thread wedge, so `getHealth()` looks at the parts ag
 the caller's thread, and finds the timers `STALLED` when the next tick is later than the
 queue's limit; the tick that returns tells them healthy. The looks decide under one lock that only
 reads counters and flags, and note what they decide there, in order; what is logged is
-logged out of it. A look that throws is logged and the next one runs. Not watched yet:
-the connection being down is not a degradation of its own (a pending decision;
-`onConnectionDown` and the connection's state callback tell it today).
+logged out of it. A look that throws is logged and the next one runs. The connection's
+part, `CONNECTION`, is the feed's once it is open, as the consumer's; `onConnectionDown` and
+the connection's state callback still tell each loss as it happens.
 
 Remediation is limited and stated: the watchdog does not kill threads. A wedged
 dispatcher is reported; the client's remedy is `close()` and a new `OddsFeed`, and
@@ -1005,8 +1012,10 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
   concurrency limit, the broker connection's own TLS context (`setMessagingSslContext`,
   for a truststore of the client's own or a proxy that inspects TLS), max inactivity, max
   recovery time, stale-message limit and window, exchange names, shutdown timeout, API
-  call logging (each attempt at INFO; `onApiCall` hears them either way). Planned: default
-  locale, preload locales, eager entity preload for messages.
+  call logging (each attempt at INFO; `onApiCall` hears them either way), the health
+  thresholds (catalog stale limit, callback and queue stall limits, watchdog interval,
+  connection down limit). Planned: default locale, preload locales, eager entity preload for
+  messages.
 - Events on the global listener, all as `default` methods: connection state changes
   (`onConnectionStateChange`), health events (`onHealthEvent`), listener and pipeline
   exceptions (`onCallbackFailure`), fatal errors (`onFatalError`), the safety net's resets
@@ -1294,7 +1303,9 @@ group by group.
     0.0.x's default of 360 minutes. Before 1.0.0, not in the release candidate. Done: the
     maximum inactivity, maximum recovery time, shutdown timeout, stale-message limit and
     window, exchange names and API call logging options, each checked by the builder, and
-    KD-17's test, which sets the safety net's options on 1.0.
+    KD-17's test, which sets the safety net's options on 1.0; the health thresholds -
+    catalog stale limit, callback and queue stall limits, watchdog interval - and the
+    connection down limit, which makes a connection down for longer than 60 s `DEGRADED`.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
@@ -1573,3 +1584,10 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   off it. Corrected here: a failed `open()` cannot be tried again, unlike 0.0.x; the start's
   90 s with the API down; how long a getter can wait; the thread table; completion per session
   and the processing delay.
+- 2026-10-08, ticket 28's options for the fixed numbers: 0.0.x had no setter for the
+  maximum inactivity or recovery time, only its constructor, which 1.0 keeps taking any
+  value; the new setters refuse a maximum inactivity of 10 s or less and a maximum recovery
+  time under six hours. The watchdog's stall limits stay derived from the HTTP timeout
+  unless set; one set is refused below the SDK's own longest wait for the API and 2 s, when
+  the configuration is built. A connection down for longer than 60 s, unless set, makes the
+  new `CONNECTION` part `DEGRADED`.
