@@ -527,7 +527,7 @@ public final class OddsFeed {
             state.unlock();
         }
         if (run == null || wasClosed) {
-            LOG.warn(
+            LOG.debug(
                     "Recovery of {} from producer {} not accepted: the feed is {}",
                     eventId,
                     producerId,

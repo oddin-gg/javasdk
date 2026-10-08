@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
 import com.oddin.oddsfeedsdk.api.entities.Producer;
+import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.producer.Recovery;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -107,6 +108,10 @@ final class RecoveryMachine {
     private final Map<Long, CompletableFuture<@Nullable Long>> replies = new HashMap<>();
     /** Event recoveries asked for while a session that would receive them was being reset. */
     private final List<DeferredEvent> deferred = new ArrayList<>();
+    /** The API's refusals of event recoveries, which the caller hears of only as null. */
+    private final Throttle refusedByApi = new Throttle();
+    /** The deferred event recoveries that expired while a reset they waited for never ended. */
+    private final Throttle expiredDeferred = new Throttle();
 
     private boolean started;
     /**
@@ -685,7 +690,14 @@ final class RecoveryMachine {
                             "the API did not accept it: " + failure.getMessage());
                 }
                 counters.eventRefused.incrementAndGet();
-                LOG.warn("Event recovery request {} failed: {}", requestId, failure.getMessage());
+                long refusals = refusedByApi.count();
+                if (Throttle.due(refusals)) {
+                    LOG.warn(
+                            "Event recovery request {} failed: {}, {} so far",
+                            requestId,
+                            failure.getMessage(),
+                            refusals);
+                }
                 outbox.reply(reply, null);
             }
             return;
@@ -717,7 +729,7 @@ final class RecoveryMachine {
         if (reply.isDone()) {
             // the caller stopped waiting: a request sent now would carry an id it never got
             counters.eventCallerGone.incrementAndGet();
-            LOG.info("Event recovery of {} not asked for: its caller stopped waiting", eventId);
+            LOG.debug("Event recovery of {} not asked for: its caller stopped waiting", eventId);
             return;
         }
         Track track = known(producerId);
@@ -729,7 +741,7 @@ final class RecoveryMachine {
             // its snapshot would go to queues that are gone, or not bound yet, and nothing would give
             // it up
             counters.eventRefused.incrementAndGet();
-            LOG.warn("Event recovery of {} refused: the connection is not up", eventId);
+            LOG.debug("Event recovery of {} refused: the connection is not up", eventId);
             outbox.reply(reply, null);
             return;
         }
@@ -749,14 +761,14 @@ final class RecoveryMachine {
                         .count();
         if (inFlight >= settings.eventRecoveries()) {
             counters.eventRefused.incrementAndGet();
-            LOG.warn("Event recovery of {} refused: {} in flight for producer {}", eventId, inFlight, producerId);
+            LOG.debug("Event recovery of {} refused: {} in flight for producer {}", eventId, inFlight, producerId);
             outbox.reply(reply, null);
             return;
         }
         if (awaitsChannel(track)) {
             // a session that receives it is being reset, or has lost its channel: its snapshot could
             // go to either channel, or to none
-            LOG.info("Event recovery of {} waits for a session's channel", eventId);
+            LOG.debug("Event recovery of {} waits for a session's channel", eventId);
             deferred.add(new DeferredEvent(producerId, eventId, stateful, reply, now()));
             return;
         }
@@ -825,7 +837,7 @@ final class RecoveryMachine {
                 if (reply != null) {
                     outbox.reply(reply, null);
                 }
-                LOG.warn(
+                LOG.debug(
                         "Event recovery {} of {} got no snapshot complete within {}",
                         recovery.requestId,
                         recovery.eventId,
@@ -838,10 +850,14 @@ final class RecoveryMachine {
                 deferred.remove(event);
                 counters.eventExpired.incrementAndGet();
                 outbox.reply(event.reply(), null);
-                LOG.warn(
-                        "Event recovery of {} waited for a reset longer than {}",
-                        event.eventId(),
-                        settings.maxRecoveryTime());
+                long expired = expiredDeferred.count();
+                if (Throttle.due(expired)) {
+                    LOG.warn(
+                            "Event recovery of {} waited for a reset longer than {}, {} so far",
+                            event.eventId(),
+                            settings.maxRecoveryTime(),
+                            expired);
+                }
             }
         }
         statuses.expire(Instant.ofEpochMilli(now));
@@ -1039,12 +1055,22 @@ final class RecoveryMachine {
             markDown(track, StatusCause.RECOVERY_FAILED, now);
         } else {
             track.retryAt = now + backoff(settings.firstReissueBackoff(), track.failures);
-            LOG.warn(
-                    "Recovery {} of producer {} failed, {}; asked for again in {} ms",
-                    active.requestId,
-                    track.id,
-                    reason,
-                    track.retryAt - now);
+            // the first failure of a streak is a warning; the rest, until a recovery or a cool-down ends it, are debug
+            if (track.failures == 1) {
+                LOG.warn(
+                        "Recovery {} of producer {} failed, {}; asked for again in {} ms",
+                        active.requestId,
+                        track.id,
+                        reason,
+                        track.retryAt - now);
+            } else {
+                LOG.debug(
+                        "Recovery {} of producer {} failed, {}; asked for again in {} ms",
+                        active.requestId,
+                        track.id,
+                        reason,
+                        track.retryAt - now);
+            }
         }
     }
 
@@ -1518,7 +1544,7 @@ final class RecoveryMachine {
                 if (reply != null) {
                     outbox.reply(reply, null);
                 }
-                LOG.info(
+                LOG.debug(
                         "Event recovery {} of {} given up: its snapshot went with a lost queue",
                         recovery.requestId,
                         recovery.eventId);

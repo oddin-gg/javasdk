@@ -4,6 +4,7 @@ import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.rest.RecoveryRequests;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
@@ -63,6 +64,8 @@ import org.slf4j.LoggerFactory;
 public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(RecoveryActor.class);
+    /** The user listeners that threw on a recovery event, process-wide: one line in a thousand after the first. */
+    private static final Throttle LISTENER_FAILURES = new Throttle();
 
     static final int CONTROL_CAPACITY = 10_000;
     static final int SAMPLE_CAPACITY = 10_000;
@@ -163,6 +166,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     volatile Runnable beforeMachineClose = () -> {};
     /** The turns the actor has taken; for the watchdog and a test. */
     private final AtomicLong turns = new AtomicLong();
+    /** The facts that failed, one line each in a thousand; the rest are debug. */
+    private final Throttle factFailures = new Throttle();
+    /** The facts whose publishing failed, one line each in a thousand; the rest are debug. */
+    private final Throttle publishFailures = new Throttle();
 
     /**
      * @param workers where the requests and the resets run: REST workers, virtual threads
@@ -735,7 +742,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         } catch (Throwable e) {
             failed = true;
             counters.factsFailed.incrementAndGet();
-            LOG.error("The recovery actor failed on {}; it goes on with the next", fact, e);
+            long count = factFailures.count();
+            if (Throttle.due(count)) {
+                LOG.error("The recovery actor failed on {}; it goes on with the next, {} so far", fact, count, e);
+            } else {
+                LOG.debug("The recovery actor failed on {}; it goes on with the next", fact, e);
+            }
         } finally {
             // whatever the fact moved, even one that failed part way, the client reads it from the
             // producer at once
@@ -751,7 +763,16 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             if (!counted) {
                 counters.factsFailed.incrementAndGet();
             }
-            LOG.error("The recovery actor failed to publish what {} moved; it goes on with the next", fact, e);
+            long count = publishFailures.count();
+            if (Throttle.due(count)) {
+                LOG.error(
+                        "The recovery actor failed to publish what {} moved; it goes on with the next, {} so far",
+                        fact,
+                        count,
+                        e);
+            } else {
+                LOG.debug("The recovery actor failed to publish what {} moved; it goes on with the next", fact, e);
+            }
         }
     }
 
@@ -976,7 +997,13 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             try {
                 tell.run();
             } catch (RuntimeException | Error e) {
-                LOG.error("The recovery events listener threw on {}; the actor goes on", event, e);
+                long count = LISTENER_FAILURES.count();
+                if (Throttle.due(count)) {
+                    LOG.error(
+                            "The recovery events listener threw on {}; the actor goes on, {} so far", event, count, e);
+                } else {
+                    LOG.debug("The recovery events listener threw on {}; the actor goes on", event, e);
+                }
             }
         }
     }

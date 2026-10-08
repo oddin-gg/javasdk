@@ -7,6 +7,8 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Level;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.api.entities.RecoveryInfo;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatusReason;
@@ -922,6 +924,34 @@ class RecoveryMachineTest {
         assertThat(back.down()).isFalse();
         assertThat(back.cause()).isEqualTo(StatusCause.RECOVERY_COMPLETED);
         assertThat(back.reason()).isEqualTo(ProducerStatusReason.RETURNED_FROM_INACTIVITY);
+    }
+
+    @Test
+    void aCallerWhoStoppedWaitingGetsNoInfoLine() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        var gone = new CompletableFuture<@Nullable Long>();
+        gone.complete(null);
+        try (var log = LogCapture.of(RecoveryMachine.class, Level.INFO)) {
+            feed.machine.recoverEvent(PRE, MATCH, false, gone);
+            assertThat(log.lines()).as("a routine call is debug").isEmpty();
+        }
+    }
+
+    @Test
+    void aProducerGoingDownIsAnInfoLine() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        try (var log = LogCapture.of(RecoveryMachine.class, Level.INFO)) {
+            for (int second = 0; second < 21; second++) {
+                feed.advance(Duration.ofSeconds(1));
+            }
+            assertThat(log.lines())
+                    .as("a state change")
+                    .anySatisfy(line -> assertThat(line).startsWith("INFO Producer 1 down: "));
+        }
     }
 
     @Test

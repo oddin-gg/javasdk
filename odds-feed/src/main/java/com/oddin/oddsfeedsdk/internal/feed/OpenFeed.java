@@ -10,6 +10,7 @@ import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
 import com.oddin.oddsfeedsdk.internal.dispatch.MessagePreload;
 import com.oddin.oddsfeedsdk.internal.dispatch.Pipeline;
 import com.oddin.oddsfeedsdk.internal.dispatch.SessionDispatcher;
+import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.internal.recovery.EventRecoveryStatus;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
@@ -50,6 +51,8 @@ import org.slf4j.LoggerFactory;
 public final class OpenFeed {
 
     private static final Logger LOG = LoggerFactory.getLogger(OpenFeed.class);
+    /** The API's refusals of event recoveries, process-wide: the first, then one in a thousand, is a warning. */
+    private static final Throttle REFUSED = new Throttle();
 
     /**
      * How much longer than the HTTP timeout an event recovery's caller waits for the API's answer:
@@ -342,7 +345,7 @@ public final class OpenFeed {
      */
     public @Nullable Long recoverEvent(long producerId, URN eventId, boolean stateful) {
         if (actor == null) {
-            LOG.warn(
+            LOG.debug(
                     "Recovery of {} from producer {} not accepted: a replay feed runs no recovery",
                     eventId,
                     producerId);
@@ -363,7 +366,7 @@ public final class OpenFeed {
                 return reply.get(wait.toNanos(), TimeUnit.NANOSECONDS);
             } catch (TimeoutException e) {
                 if (reply.complete(null)) {
-                    LOG.warn("Recovery of {} from producer {} not answered within {}", eventId, producerId, wait);
+                    LOG.debug("Recovery of {} from producer {} not answered within {}", eventId, producerId, wait);
                     return null;
                 }
                 // the actor answered as the wait ended: complete(null) found the reply done
@@ -374,11 +377,21 @@ public final class OpenFeed {
             }
         } catch (ExecutionException | CompletionException e) {
             Throwable cause = e.getCause();
-            LOG.warn(
-                    "Recovery of {} from producer {} not accepted: {}",
-                    eventId,
-                    producerId,
-                    cause == null ? e.getMessage() : cause.getMessage());
+            long refusals = REFUSED.count();
+            if (Throttle.due(refusals)) {
+                LOG.warn(
+                        "Recovery of {} from producer {} not accepted: {}, {} so far",
+                        eventId,
+                        producerId,
+                        cause == null ? e.getMessage() : cause.getMessage(),
+                        refusals);
+            } else {
+                LOG.debug(
+                        "Recovery of {} from producer {} not accepted: {}",
+                        eventId,
+                        producerId,
+                        cause == null ? e.getMessage() : cause.getMessage());
+            }
             return null;
         }
     }
