@@ -36,11 +36,14 @@ digest() {
 # config file on stdin, never on its command line, where any process could read it. Two calls, not
 # an optional array: bash before 4.4 (macOS's /bin/bash) refuses an empty one under set -u.
 # Every request is bounded: 30 s to connect, and a transfer slower than 1 KiB/s for a minute, or
-# longer than 5 minutes in all, is given up (the jar is under 1 MiB). With the retries, a run takes
-# well under the hour after which fetch_sdk takes a download for one an interrupted run left.
+# longer than 5 minutes in all, is given up (the jar is under 1 MiB). No retry starts, and no
+# Retry-After wait runs, past 5 minutes from the first attempt, so a get() ends within 10 minutes:
+# a file, even from the release and then the registry, within 20, and a run within 40, well under
+# the hour after which fetch_sdk takes a download for one an interrupted run left.
+# fetch-sdk-test.sh holds every curl call to these options.
 get() {
-  local options=(-sSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 30
-    --speed-limit 1024 --speed-time 60 --max-time 300 -o "$2" -w '%{http_code}')
+  local options=(-sSL --proto '=https' --proto-redir '=https' --retry 3 --retry-max-time 300
+    --connect-timeout 30 --speed-limit 1024 --speed-time 60 --max-time 300 -o "$2" -w '%{http_code}')
   if [ -n "${3:-}" ]; then
     curl "${options[@]}" --config - "$1" <<<"user = \"${GITHUB_ACTOR:-x}:$3\""
   else
