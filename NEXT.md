@@ -1033,7 +1033,10 @@ or ERROR the first time and then once in a thousand, with the count so far in th
 instead: the first, then at most one a minute.
 
 Secrets: the access token is redacted from the failures the SDK logs, the message and the
-stack alike. It travels only in a request header, so no URL the SDK logs holds it.
+stack alike. It travels in a request header of the REST calls, so no URL the SDK logs holds
+it, and it is the login of the broker connection, so the broker quotes it in some of its
+replies. Those replies are redacted before they are logged, the text and the stack of the
+failure alike, and the SDK's own reading of a close reply leaves out what the broker quotes.
 
 Logger names, all under `com.oddin.oddsfeedsdk`. Turn a package to DEBUG to see more of
 its area; the classes below are the ones to start with.
