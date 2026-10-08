@@ -82,6 +82,15 @@ public final class VoidReasons {
         return list.reload(Whole.LIST).reasons();
     }
 
+    /**
+     * Fetches the list unless it is held, for no reader: a failure backs off no read.
+     *
+     * @throws ApiException when the fetch fails
+     */
+    public void preload() {
+        list.preload(Whole.LIST);
+    }
+
     /** Drops the list. */
     public void clear() {
         list.clear();
