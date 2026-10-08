@@ -282,9 +282,19 @@ class RecoveryActorTest {
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
         actor.up();
+        // the answer to the first request is an essential fact too: it is taken before the hold
+        var answers = new LinkedBlockingQueue<Long>();
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Answered answer) {
+                answers.add(answer.requestId());
+            }
+        };
         long now = System.currentTimeMillis();
         actor.alive(PRE, now, now, true);
         Request first = api.next();
+        assertThat(answers.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the first request answered")
+                .isEqualTo(first.requestId());
 
         // the actor held, so nothing it is posted is taken meanwhile
         var entered = new CountDownLatch(1);
