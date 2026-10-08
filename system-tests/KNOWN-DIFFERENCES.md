@@ -39,8 +39,9 @@ release behaved otherwise, the entry says so.
   KD-18 leaves it with no scope, so it needs none, and on such a session its event recovery
   completes.
 - **1.0:** Called once the snapshot complete of the request has been seen. Recovery completion is
-  one of the events-dispatcher callbacks (NEXT.md section 4, Threads), and snapshot completion is
-  tracked per message interest (section 4, Recovery and producers).
+  one of the events-dispatcher callbacks (NEXT.md section 4, Threads). An event recovery completes
+  as a producer's does: once every session that receives the producer and takes snapshot
+  completions has seen its snapshot complete (KD-37; section 4, Recovery and producers).
 - **Why:** A client that asks for an event recovery cannot tell when it is done.
 - **Pinned by:** `ProducerStatusScenarioIT.theSnapshotCompleteOfAnEventRecoveryCompletesIt`
 - **Found:** by test against 0.0.56, and in the source (`validateEventSnapshotComplete`).
@@ -575,8 +576,13 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **0.0.x:** `onProducerStatusChange` and `onEventRecoveryCompleted` each run in a coroutine of
   their own: at once, in no set order, every change delivered. `onConnectionDown` runs once per
   loss, on the AMQP client's thread.
-- **1.0:** Every global-listener callback runs on the events dispatcher's one thread, in the order
-  things happened (NEXT.md section 4, Threads). A producer's status, its cause, a session's
+- **1.0:** Every global-listener callback runs on the events dispatcher's one thread (NEXT.md
+  section 4, Threads), from two queues, each in the order things happened: the control queue,
+  with the connection's state, the producers' status and cause, fatal errors, health, the safety
+  net's events, sessions lagging and recovery completions, and the telemetry queue, with the API
+  calls, the callback failures and the raw API data. The control queue goes first: a telemetry
+  event is delivered only while no control event waits, so an API call reported before a
+  connection change can be heard after it. A producer's status, its cause, a session's
   lagging, a part's health, the connection's state and each source of fatal errors have one slot
   each: a report still queued is replaced by the newest. A client that falls behind hears the
   state as it is now, so a producer's down and up both queued behind a slow callback reach it as
@@ -585,7 +591,8 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Why:** A client that counts every status change sees fewer, and one slow callback delays the
   others.
 - **Pinned by:** none in the system tests; the events dispatcher's unit tests pin it
-  (`EventsDispatcherTest`'s `aFloodOfReportsForOneSlotKeepsOneEntryQueued`).
+  (`EventsDispatcherTest`'s `aFloodOfReportsForOneSlotKeepsOneEntryQueued` and
+  `controlEventsGoBeforeTelemetryQueuedEarlier`).
 - **Found:** by reading the source (`RecoveryManagerImpl`, `GlobalScope.launch`).
 
 ## KD-36 A start with the API down takes 90 seconds to fail, and needs the producer list too
@@ -742,7 +749,8 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   takes them from.
 - **Pinned by:** none in the system tests. On 1.0 unit tests pin several: 3
   (`SessionDispatcherTest`'s `aBodyOverTheMaximumSizeIsUnparsableWithoutItsBytes`), 6
-  (`RecoveryMachineTest`'s `aClientsAliveOnlySessionReceivesNoProducer`), 11 (`CatalogTest`'s
+  (`RecoveryMachineTest`'s
+  `aFeedWhoseOnlySessionIsAliveOnlyAsksForNoRecoveryAndTellsNoProducerUp`), 11 (`CatalogTest`'s
   `anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld`) and 14 (`ProfileViewsTest`'s
   `aCompetitorWithoutPlayersHasNoneAndIsNotLoadedAgainForThem`).
 - **Found:** by reading the source of both lines, for the review of 1.0 against 0.0.58.
