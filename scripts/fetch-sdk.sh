@@ -65,14 +65,15 @@ mkdir -p "$dir"
 
 # get <url> <file> [token]: the HTTP status, with the body in file. https only, redirects included
 # (a release file redirects to GitHub's storage). The token, when there is one, goes to curl as a
-# config file on stdin, never on its command line, where any process could read it.
+# config file on stdin, never on its command line, where any process could read it. Two calls, not
+# an optional array: bash before 4.4 (macOS's /bin/bash) refuses an empty one under set -u.
 get() {
-  local auth=()
+  local options=(-sSL --proto '=https' --proto-redir '=https' --retry 3 -o "$2" -w '%{http_code}')
   if [ -n "${3:-}" ]; then
-    auth=(--config -)
+    curl "${options[@]}" --config - "$1" <<<"user = \"${GITHUB_ACTOR:-x}:$3\""
+  else
+    curl "${options[@]}" "$1"
   fi
-  curl -sSL --proto '=https' --proto-redir '=https' --retry 3 "${auth[@]}" \
-      -o "$2" -w '%{http_code}' "$1" <<<"${3:+user = \"${GITHUB_ACTOR:-x}:$3\"}"
 }
 
 for kind in jar pom; do
