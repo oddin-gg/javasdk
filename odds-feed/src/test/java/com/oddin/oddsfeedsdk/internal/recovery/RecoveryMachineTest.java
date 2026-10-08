@@ -2340,16 +2340,66 @@ class RecoveryMachineTest {
         long first = feed.now() - 5_000;
         feed.machine.processed(1, PRE, first, feed.now(), 0);
         for (long stamp : new long[] {0, -Duration.ofHours(1).toMillis()}) {
+            feed.clock.advance(Duration.ofSeconds(1));
             feed.machine.processed(1, PRE, stamp, feed.now(), 0);
-            assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastProcessedMessageGenTimestamp())
+            var producer = requireNonNull(feed.producers.getProducer(PRE));
+            assertThat(producer.getLastProcessedMessageGenTimestamp())
                     .as("after a message stamped " + stamp)
                     .isEqualTo(first);
+            assertThat(producer.getLastMessageTimestamp())
+                    .as("taken, though stamped " + stamp)
+                    .isEqualTo(feed.now());
         }
         long second = feed.now() - 1_000;
         feed.machine.processed(1, PRE, second, feed.now(), 0);
         assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastProcessedMessageGenTimestamp())
                 .as("after a later message")
                 .isEqualTo(second);
+    }
+
+    @Test
+    void aMessageStampedNoPositiveTimeIsNoAgeForTheSafetyNet() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int asked = feed.snapshots(PRE).size();
+        int changes = feed.statuses(PRE).size();
+        // the offset is fresh: read as an age, a stamp of 0 is the whole epoch
+        for (int second = 1; second <= 25; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            feed.machine.processed(
+                    1, PRE, second % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), feed.now(), 0);
+            if (second % 10 == 0) {
+                feed.alive(PRE);
+                feed.alive(LIVE);
+            }
+            feed.machine.tick();
+        }
+        assertThat(feed.statuses(PRE)).as("no delay, no change").hasSize(changes);
+        assertThat(feed.producers.isProducerDown(PRE)).as("not down").isFalse();
+        assertThat(feed.snapshots(PRE)).as("nothing asked for").hasSize(asked);
+    }
+
+    @Test
+    void aSnapshotMessageStampedNoPositiveTimeStillPutsOffTheDeadlineForItsSnapshotComplete() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        var recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        // the snapshot is on its way, its messages stamped with no time
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(
+                    1, PRE, minute % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), feed.now(), recovery.requestId());
+        }
+        assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
+        feed.runWithAlives(Duration.ofMinutes(5));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
     }
 
     @Test
