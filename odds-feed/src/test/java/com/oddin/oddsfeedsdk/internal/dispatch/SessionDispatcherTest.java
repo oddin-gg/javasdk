@@ -543,6 +543,19 @@ class SessionDispatcherTest {
     }
 
     @Test
+    void aDeliveryPolledBeforeTheCloseBeganButCalledAfterItReachesNoListenerAndIsNotAcknowledged() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        // the close begins after the poll, between the raw callback and the session's listener
+        ext.afterReceived = dispatcher::stop;
+        handle(dispatcher, Fixtures.read(ODDS_CHANGE));
+        assertThat(ext.calls).as("raw callbacks").singleElement().asString().startsWith("onRawFeedMessageReceived");
+        assertThat(listener.messages).as("callbacks").isEmpty();
+        assertThat(transport.acked).as("acknowledged").isEmpty();
+        assertThat(facts.facts).as("facts posted").isEmpty();
+        assertThat(dispatcher.handled()).isZero();
+    }
+
+    @Test
     void anInterruptedCloseStillWaitsForTheCallbackAndKeepsTheInterrupt() throws InterruptedException {
         SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
         var entered = new CountDownLatch(1);
@@ -722,6 +735,8 @@ class SessionDispatcherTest {
         final List<Long> created = new CopyOnWriteArrayList<>();
         /** The raw callback that throws, if one does. */
         volatile @Nullable String throwing;
+        /** Runs after the first raw callback, before the session's listener is called. */
+        volatile Runnable afterReceived = () -> {};
 
         @Override
         public void onRawFeedMessageReceived(
@@ -735,6 +750,7 @@ class SessionDispatcherTest {
             calls.add("onRawFeedMessageReceived " + message.getClass().getSimpleName() + " " + messageInterest + " "
                     + routingKey.getFullRoutingKey());
             throwIf("onRawFeedMessageReceived");
+            afterReceived.run();
         }
 
         @Override
