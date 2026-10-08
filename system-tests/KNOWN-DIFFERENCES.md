@@ -115,9 +115,9 @@ release behaved otherwise, the entry says so.
   producer processed late during its first recovery goes up with `FIRST_RECOVERY_COMPLETED`, is
   taken down by the next run, and comes back with `RETURNED_FROM_INACTIVITY`.
 - **1.0:** The checks run every second from the start of the recovery actor, just before the
-  connection opens, so a producer without an alive for longer than the maximum inactivity, a
-  fixed 20 s, is reported down with `ALIVE_INTERVAL_VIOLATION` just past 20 s, one never up
-  included. There is no minute of grace for the processing delay either: a producer processed late
+  connection opens, so a producer without an alive for longer than the maximum inactivity, 20 s
+  unless the builder's `setMaxInactivitySeconds`, new in 1.0, sets it, is reported down with
+  `ALIVE_INTERVAL_VIOLATION` just past it, one never up included. There is no minute of grace for the processing delay either: a producer processed late
   during its first recovery stays down, now with `PROCESSING_QUEUE_DELAY_VIOLATION`, and comes up
   with `FIRST_RECOVERY_COMPLETED` once its messages are on time (NEXT.md section 4, Recovery and
   producers).
@@ -253,15 +253,20 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   mark the producer down with `PROCESSING_QUEUE_DELAY_VIOLATION` (from its first run, KD-7), but
   that asks for no recovery; the producer comes back up once messages are on time again.
 - **1.0:** The stale-message safety net (section 4, Recovery and producers): when the age of live
-  messages from a producer stays above a fixed limit, two minutes, for a fixed window, one minute,
-  a recovery from the oldest checkpoint, then the session's channel is replaced; capped at three
-  resets per session per ten-minute cool-down, then the session is marked lagging. A reset tells
-  the producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, its cause `SAFETY_NET_RESET`. Ticket
-  28 makes the limit and the window settable.
+  messages from a producer stays above a limit, two minutes unless set, for a window, one minute
+  unless set, a recovery from the oldest checkpoint, then the session's channel is replaced; capped
+  at three resets per session per ten-minute cool-down, then the session is marked lagging. A reset
+  tells the producer down with `PROCESSING_QUEUE_DELAY_VIOLATION`, its cause `SAFETY_NET_RESET`.
+  The builder's `setStaleMessageLimit` and `setStaleMessageWindow`, new in 1.0, set the limit and
+  the window.
 - **Why:** Past a point one snapshot is cheaper than working through the backlog.
-- **Pinned by:** none yet; the limit and window are 1.0 settings a test compiled against 0.0.x
-  cannot set. To be pinned by a test on 1.0 only, with ticket 28's options; until then the rule
-  is covered by the recovery machine's unit tests (`SafetyNetTest`).
+- **Pinned by:** `StaleFeedScenarioIT.aSessionFarBehindHasItsChannelReplaced`: producer 1's live
+  messages a minute behind for three seconds. On 1.0 the scenario sets the limit to 30 seconds and
+  the window to one, by reflection, so only the options make the net act; it sees the net's
+  recovery request and the session's new queue. On 0.0.x, which has neither setter, it sees every
+  message delivered, no second recovery request and the same queue; the watchdog's delay check
+  does not run within the scenario (KD-7). The recovery machine's unit tests (`SafetyNetTest`)
+  cover the rest of the rule.
 - **Found:** by reading the source (`RecoveryManagerImpl.timerTick`, `systemSessionAliveReceived`).
 
 ## KD-18 A producer listed in both scopes has none
@@ -383,7 +388,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   awaiting it took; an event recovery's snapshot message counts only when that event recovery was
   asked for first. The deadline is checked every second. Then it is asked for again with backoff,
   as one the API refused (KD-11). The maximum recovery time still bounds a recovery that keeps
-  coming, and event recoveries (NEXT.md section 4, Recovery and producers).
+  coming, and event recoveries (NEXT.md section 4, Recovery and producers): 360 minutes unless the
+  builder's `setMaxRecoveryExecutionMinutes`, new in 1.0, sets more; it refuses less. 0.0.x's public
+  configuration constructor still takes any value, as 0.0.x did.
 - **Why:** The Go SDK saw a `snapshot_complete` that never arrived on a bound, consuming queue;
   until the recovery is given up, the client drops or buffers the producer's live feed. Against
   0.0.58 the five minutes are the same; a recovery is given up up to an alive interval later
