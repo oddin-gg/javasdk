@@ -103,7 +103,10 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      */
     private final ReentrantLock noting = new ReentrantLock();
 
-    /** Held to compare what a reading found with what was told, and to tell the change. */
+    /**
+     * Held to compare what a reading found with what was told, and to tell the change; and by an up
+     * and the close, each in one step with what it changes of the connection's part.
+     */
     private final ReentrantLock telling = new ReentrantLock();
     /** The state last told of each part; a part not in it was healthy. Guarded by {@link #telling}. */
     private final Map<Part, HealthState> told = new HashMap<>();
@@ -195,9 +198,15 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      */
     @Override
     public void up() {
-        connectionDownSince.set(CONNECTION_UP);
-        long reading = nextReading();
-        tell(reading, Map.of(CONNECTION, connectionFound()));
+        // in one step with the close: the connection's part it keeps is the one last told
+        telling.lock();
+        try {
+            connectionDownSince.set(CONNECTION_UP);
+            long reading = nextReading();
+            tell(reading, Map.of(CONNECTION, connectionFound()));
+        } finally {
+            telling.unlock();
+        }
     }
 
     /** The transport's word that the connection was lost: found degraded once down for its limit. */
@@ -209,12 +218,18 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     /**
      * The feed is closing: from now on the connection's part reads as it is found now, its time down
      * no longer counted, and no change of it is told or logged. A closed feed's connection is not
-     * one that stays down: closing it tells neither up nor down. Once only; a later call changes
-     * nothing.
+     * one that stays down: closing it tells neither up nor down. Taken in one step with an up the
+     * transport tells, so the part kept is the one last told: an up told before it is in it, and one
+     * told after it tells nothing. Once only; a later call changes nothing.
      */
     public void closed() {
-        if (connectionAtClose == null) {
-            connectionAtClose = connectionFound();
+        telling.lock();
+        try {
+            if (connectionAtClose == null) {
+                connectionAtClose = connectionFound();
+            }
+        } finally {
+            telling.unlock();
         }
     }
 

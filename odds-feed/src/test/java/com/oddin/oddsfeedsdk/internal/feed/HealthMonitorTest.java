@@ -35,9 +35,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -203,6 +206,47 @@ class HealthMonitorTest {
                 .as("an up told after the close")
                 .containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
         heard.nothingMore("after the close");
+        assertThat(logged).as("logged").containsExactly(degraded);
+    }
+
+    @Test
+    void anUpToldWhileTheCloseFindsTheConnectionIsKeptOrToldNothing() throws InterruptedException {
+        var time = new AtomicLong(1_000);
+        var limit = Duration.ofSeconds(60);
+        var closing = new AtomicReference<@Nullable Thread>();
+        var finding = new CountDownLatch(1);
+        var letItGo = new CountDownLatch(1);
+        // the close's thread holds on in its finding, the connection read degraded and not yet kept
+        LongSupplier nanos = () -> {
+            if (Thread.currentThread().equals(closing.get())) {
+                finding.countDown();
+                await(letItGo);
+            }
+            return time.get();
+        };
+        var health = new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), nanos, HOUR, limit, logged::add);
+        events.start();
+        health.down("connection reset");
+        time.addAndGet(limit.plusSeconds(1).toNanos());
+        assertThat(read(health).components()).containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        var degraded = heard.next();
+
+        var closer = Thread.ofPlatform().unstarted(health::closed);
+        closing.set(closer);
+        closer.start();
+        assertThat(finding.await(10, TimeUnit.SECONDS))
+                .as("the close finding the connection")
+                .isTrue();
+        var upper = Thread.ofPlatform().start(health::up);
+        awaitParkedOrEnded(upper);
+        letItGo.countDown();
+        closer.join(10_000);
+        upper.join(10_000);
+
+        assertThat(read(health).components())
+                .as("as last told")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        heard.nothingMore("an up the close came before");
         assertThat(logged).as("logged").containsExactly(degraded);
     }
 
@@ -597,6 +641,31 @@ class HealthMonitorTest {
             } finally {
                 core.close();
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ threads
+
+    /** Waits for the thread to park, as on a lock it waits for, or to end. */
+    private static void awaitParkedOrEnded(Thread thread) {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (thread.getState() != Thread.State.WAITING
+                && thread.getState() != Thread.State.TERMINATED
+                && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(thread.getState()).as("parked or ended").isIn(Thread.State.WAITING, Thread.State.TERMINATED);
+    }
+
+    /** Waits for the test to let it go, in a lambda: the test fails if it does not within 10 s. */
+    private static void await(CountDownLatch latch) {
+        try {
+            if (!latch.await(10, TimeUnit.SECONDS)) {
+                throw new AssertionError("not let go within 10 s");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(e);
         }
     }
 
