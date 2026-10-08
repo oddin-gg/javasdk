@@ -261,7 +261,7 @@ public final class MatchCaches {
         try {
             match(key.id(), key.locale(), deadline);
         } catch (RuntimeException e) {
-            if (Thread.currentThread().isInterrupted() || client.isClosed()) {
+            if (client.isClosed()) {
                 // the feed is closing: no failure of the API's, nothing to count or tell
                 return;
             }
