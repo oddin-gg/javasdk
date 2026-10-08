@@ -129,6 +129,71 @@ class HealthMonitorTest {
     }
 
     @Test
+    void aConnectionLostThenClosedWithinItsLimitIsNeverDegraded() throws InterruptedException {
+        var nanos = new AtomicLong(1_000);
+        var limit = Duration.ofSeconds(60);
+        var health =
+                new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), nanos::get, HOUR, limit, logged::add);
+        events.start();
+        health.down("connection reset");
+        nanos.addAndGet(Duration.ofSeconds(10).toNanos());
+        health.closed();
+        // what closing the transport leaves: neither up nor down told
+        nanos.addAndGet(limit.multipliedBy(10).toNanos());
+        assertThat(read(health).components())
+                .as("long after the close")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        health.down("connection closed");
+        health.up();
+        nanos.addAndGet(limit.multipliedBy(10).toNanos());
+        assertThat(read(health).components()).containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        heard.nothingMore("after the close");
+        assertThat(logged).as("logged").isEmpty();
+    }
+
+    @Test
+    void aConnectionPastItsLimitUnreadAtTheCloseReadsDegradedButIsToldNoMore() throws InterruptedException {
+        var nanos = new AtomicLong(1_000);
+        var limit = Duration.ofSeconds(60);
+        var health =
+                new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), nanos::get, HOUR, limit, logged::add);
+        events.start();
+        health.down("connection reset");
+        // past the limit with nobody reading: found only at the close
+        nanos.addAndGet(limit.plusSeconds(1).toNanos());
+        health.closed();
+        assertThat(read(health).components())
+                .as("as it was at the close")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        heard.nothingMore("after the close");
+        assertThat(logged).as("logged").isEmpty();
+    }
+
+    @Test
+    void aConnectionDegradedAtTheCloseStaysSoAndNothingMoreIsTold() throws InterruptedException {
+        var nanos = new AtomicLong(1_000);
+        var limit = Duration.ofSeconds(60);
+        var health =
+                new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), nanos::get, HOUR, limit, logged::add);
+        events.start();
+        health.down("connection reset");
+        nanos.addAndGet(limit.plusSeconds(1).toNanos());
+        assertThat(read(health).components()).containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        var degraded = heard.next();
+        assertThat(degraded.reason()).isEqualTo("the broker connection has been down for 61 s, over its limit of 60 s");
+        health.closed();
+        nanos.addAndGet(limit.toNanos());
+        var after = read(health);
+        assertThat(after.components()).containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        health.up();
+        assertThat(read(health).components())
+                .as("an up told after the close")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        heard.nothingMore("after the close");
+        assertThat(logged).as("logged").containsExactly(degraded);
+    }
+
+    @Test
     void aConnectionDownForLongerThanItsLimitIsDegradedAndToldAtOnceWhenItIsUp() throws InterruptedException {
         var nanos = new AtomicLong(1_000);
         var limit = Duration.ofSeconds(60);
