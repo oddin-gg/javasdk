@@ -126,20 +126,14 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * @param log where each change is logged; a test's, to read the lines
      */
     public HealthMonitor(EventsDispatcher events, IntFunction<@Nullable OddsFeedSession> sessions, Log log) {
-        this(events, sessions, CATALOG_STALE_LIMIT, CONNECTION_DOWN_LIMIT, log);
-    }
-
-    /**
-     * @param catalogStaleLimit how long a catalog serves a value stale before it is degraded
-     * @param connectionDownLimit how long the broker connection may be down before it is degraded
-     */
-    public HealthMonitor(
-            EventsDispatcher events,
-            IntFunction<@Nullable OddsFeedSession> sessions,
-            Duration catalogStaleLimit,
-            Duration connectionDownLimit,
-            Log log) {
-        this(events, sessions, InstantSource.system(), System::nanoTime, catalogStaleLimit, connectionDownLimit, log);
+        this(
+                events,
+                sessions,
+                InstantSource.system(),
+                System::nanoTime,
+                CATALOG_STALE_LIMIT,
+                CONNECTION_DOWN_LIMIT,
+                log);
     }
 
     /** With the clock and the catalogs' limit a test sets. */
@@ -160,8 +154,12 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
         this(events, sessions, clock, System::nanoTime, catalogStaleLimit, CONNECTION_DOWN_LIMIT, log);
     }
 
-    /** @param nanos the monotonic clock the connection's time down is measured by; a test's */
-    HealthMonitor(
+    /**
+     * @param nanos the monotonic clock the connection's time down is measured by; a test's
+     * @param catalogStaleLimit how long a catalog serves a value stale before it is degraded
+     * @param connectionDownLimit how long the broker connection may be down before it is degraded
+     */
+    public HealthMonitor(
             EventsDispatcher events,
             IntFunction<@Nullable OddsFeedSession> sessions,
             InstantSource clock,
@@ -411,6 +409,11 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     /** How long the broker connection may be down before it is degraded; for a test. */
     public Duration connectionDownLimit() {
         return connectionDownLimit;
+    }
+
+    /** Whether the transport has told the connection lost, and not up since; for a test. */
+    public boolean connectionDown() {
+        return connectionDownSince.get() != CONNECTION_UP;
     }
 
     /** A new reading's number, after every one taken before: taken before the reading reads. */
