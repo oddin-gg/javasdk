@@ -109,6 +109,9 @@ public final class OddsFeed {
 
     private volatile boolean closed;
 
+    /** A test's hook, run in {@link #close} as soon as the feed is marked closed, before any shutdown work. */
+    volatile Runnable afterMarkedClosed = () -> {};
+
     public OddsFeed(GlobalEventsListener listener, OddsFeedConfiguration configuration) {
         this(listener, configuration, null, null, HealthMonitor.Log.SLF4J);
     }
@@ -384,6 +387,7 @@ public final class OddsFeed {
         } finally {
             state.unlock();
         }
+        afterMarkedClosed.run();
         var deadline = System.nanoTime() + configuration.getShutdownTimeout().toNanos();
         // first, so it finds no part stopping for stalled
         watchdog.stop();
