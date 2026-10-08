@@ -139,7 +139,8 @@ if release_if:
 #
 # A secret is read through an expression: ${{ }} anywhere, or an if: without it. Any use of the
 # secrets context there counts - secrets.X, secrets['X'], secrets[format(...)], toJSON(secrets),
-# bare secrets - except secrets.GITHUB_TOKEN, the job token.
+# bare secrets - except secrets.GITHUB_TOKEN, the job token. Expressions ignore case, so
+# Secrets['X'] and SECRETS.X count too.
 def expressions(value, key=None):
     if isinstance(value, dict):
         for k, v in value.items():
@@ -155,9 +156,9 @@ def expressions(value, key=None):
 def secret_reads(value, allow_token=True):
     reads = []
     for expression in expressions(value):
-        for m in re.finditer(r"\bsecrets\b", expression):
+        for m in re.finditer(r"\bsecrets\b", expression, re.I):
             rest = expression[m.end():]
-            if allow_token and re.match(r"\.GITHUB_TOKEN\b", rest):
+            if allow_token and re.match(r"\s*\.\s*GITHUB_TOKEN\b", rest, re.I):
                 continue
             reads.append(expression.strip())
     return reads
@@ -348,13 +349,14 @@ for path in sorted(seen):
         for step in job_def.get("steps", []):
             servers = sorted(k for k in (step.get("with") or {}) if k.startswith("server-"))
             check(not servers, "%s > %s must name no registry server: %s" % (where, name, ", ".join(servers)))
-    # The job token is github.token, and secrets.GITHUB_TOKEN (any other read of secrets is refused
-    # above). The whole workflow is searched, its env and defaults too, which reach every job, and any
-    # use of the github context counts but a property other than token by name: github['token'],
-    # github[format(...)], toJSON(github) and bare github hand the token on as surely as github.token.
-    # Expressions ignore case, so this does too.
+    # The job token is github.token, and secrets.GITHUB_TOKEN. next.yml needs no secret at all, so
+    # the whole workflow is searched, its env and defaults too, which reach every job, and any use of
+    # the secrets context counts, indexed or not. So does any use of the github context but a
+    # property other than token by name: github['token'], github[format(...)], toJSON(github) and
+    # bare github hand the token on as surely as github.token. Expressions ignore case, so this
+    # does too.
     tokens = [e.strip() for e in expressions(next_workflow)
-              if re.search(r"\bsecrets\s*\.\s*GITHUB_TOKEN\b", e, re.I)
+              if re.search(r"\bsecrets\b", e, re.I)
               or any(not re.match(r"\s*\.\s*(?!token\b)[a-z_][\w-]*", e[m.end():], re.I)
                      for m in re.finditer(r"(?<![\w.-])github(?![\w-])", e, re.I))]
     check(not tokens, "%s must not hand its steps the job token: %s" % (where, "; ".join(tokens)))
@@ -657,10 +659,12 @@ breaks release.yml replace '    environment: maven-central
     env:
       KEY: ${{ secrets.MAVEN_GPG_KEY }}
 ' "publish must read secrets on its steps only"
-breaks release.yml replace "$publish_tag_step" "${publish_tag_step%
-}          KEY: \${{ secrets.MAVEN_GPG_KEY }}
+for read in 'secrets.MAVEN_GPG_KEY' "Secrets['MAVEN_GPG_KEY']"; do
+  breaks release.yml replace "$publish_tag_step" "${publish_tag_step%
+}          KEY: \${{ $read }}
 
 " "publish: only the steps with id secrets and upload may read secrets"
+done
 breaks release.yml replace "$publish_tag" "${publish_tag%%        # *}        if: false
 ${publish_tag#*
 }" "publish: the tag check must not be conditional"
@@ -872,7 +876,7 @@ breaks next.yml replace "          cache: 'maven'
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 " "./.github/workflows/next.yml > build must name no registry server: server-id, server-password, server-username"
-for token in 'secrets.GITHUB_TOKEN' 'github.token' "github['token']" 'github["TOKEN"]' 'GitHub.Token' \
+for token in 'secrets.GITHUB_TOKEN' "Secrets['GITHUB_TOKEN']" 'SECRETS.github_token' 'github.token' "github['token']" 'github["TOKEN"]' 'GitHub.Token' \
     "github[format('{0}', 'token')]" 'toJSON(github)' 'github'; do
   breaks next.yml replace '        run: ./scripts/fetch-sdk.sh
 ' "        run: ./scripts/fetch-sdk.sh
@@ -887,7 +891,7 @@ breaks next.yml replace "$next_top" "${next_top%jobs:
 
 jobs:
 " "./.github/workflows/next.yml must not hand its steps the job token: github.token"
-for read in 'secrets.MAVEN_GPG_KEY' "secrets['MAVEN_GPG_KEY']" "secrets[format('MAVEN_{0}', 'GPG_KEY')]" 'toJSON(secrets)'; do
+for read in 'secrets.MAVEN_GPG_KEY' "secrets['MAVEN_GPG_KEY']" "Secrets['MAVEN_GPG_KEY']" 'SECRETS.MAVEN_GPG_KEY' "secrets[format('MAVEN_{0}', 'GPG_KEY')]" 'toJSON(secrets)'; do
   breaks next.yml replace '          REVISION: ${{ inputs.revision }}
 ' "          REVISION: \${{ inputs.revision }}
           LEAK: \${{ $read }}
