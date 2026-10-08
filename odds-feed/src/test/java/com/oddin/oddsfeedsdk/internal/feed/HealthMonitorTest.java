@@ -36,6 +36,7 @@ import java.util.Map;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -44,6 +45,7 @@ import java.util.function.LongSupplier;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Each part's state as the health finds it, and each change told once, in order: a session lagging,
@@ -210,7 +212,8 @@ class HealthMonitorTest {
     }
 
     @Test
-    void anUpToldWhileTheCloseFindsTheConnectionIsKeptOrToldNothing() throws InterruptedException {
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void anUpToldWhileTheCloseFindsTheConnectionIsKeptOrToldNothing() throws Exception {
         var time = new AtomicLong(1_000);
         var limit = Duration.ofSeconds(60);
         var closing = new AtomicReference<@Nullable Thread>();
@@ -231,17 +234,21 @@ class HealthMonitorTest {
         assertThat(read(health).components()).containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
         var degraded = heard.next();
 
-        var closer = Thread.ofPlatform().unstarted(health::closed);
-        closing.set(closer);
-        closer.start();
+        var closer = Worker.unstarted(health::closed);
+        closing.set(closer.thread());
+        closer.thread().start();
         assertThat(finding.await(10, TimeUnit.SECONDS))
                 .as("the close finding the connection")
                 .isTrue();
-        var upper = Thread.ofPlatform().start(health::up);
-        awaitParkedOrEnded(upper);
+        var upper = Worker.start(health::up);
+        awaitParkedOrEnded(upper.thread());
+        assertThat(upper.thread().getState()).as("the up waiting for the close").isEqualTo(Thread.State.WAITING);
+        assertThat(health.connectionDown())
+                .as("the connection, as the up waits")
+                .isTrue();
         letItGo.countDown();
-        closer.join(10_000);
-        upper.join(10_000);
+        closer.ended();
+        upper.ended();
 
         assertThat(read(health).components())
                 .as("as last told")
@@ -251,7 +258,8 @@ class HealthMonitorTest {
     }
 
     @Test
-    void aConnectionChangeToldBeforeTheCloseIsLoggedBeforeItReturns() throws InterruptedException {
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aConnectionChangeToldBeforeTheCloseIsLoggedBeforeItReturns() throws Exception {
         var nanos = new AtomicLong(1_000);
         var limit = Duration.ofSeconds(60);
         var order = new CopyOnWriteArrayList<String>();
@@ -268,18 +276,18 @@ class HealthMonitorTest {
         health.down("connection reset");
         nanos.addAndGet(limit.plusSeconds(1).toNanos());
 
-        var reader = Thread.ofPlatform().start(() -> read(health));
+        var reader = Worker.start(() -> read(health));
         assertThat(logging.await(10, TimeUnit.SECONDS))
                 .as("the reading logging")
                 .isTrue();
-        var closer = Thread.ofPlatform().start(() -> {
+        var closer = Worker.start(() -> {
             health.closed();
             order.add("closed");
         });
-        awaitParkedOrEnded(closer);
+        awaitParkedOrEnded(closer.thread());
         letItGo.countDown();
-        reader.join(10_000);
-        closer.join(10_000);
+        reader.ended();
+        closer.ended();
 
         assertThat(order).containsExactly("logged CONNECTION DEGRADED", "closed");
         assertThat(heard.next().state()).isEqualTo(HealthState.DEGRADED);
@@ -691,6 +699,28 @@ class HealthMonitorTest {
             Thread.onSpinWait();
         }
         assertThat(thread.getState()).as("parked or ended").isIn(Thread.State.WAITING, Thread.State.TERMINATED);
+    }
+
+    /** A thread of the test's, what it throws failing the test. */
+    private record Worker(Thread thread, FutureTask<@Nullable Void> body) {
+
+        static Worker unstarted(Runnable body) {
+            var task = new FutureTask<@Nullable Void>(body, null);
+            return new Worker(Thread.ofPlatform().unstarted(task), task);
+        }
+
+        static Worker start(Runnable body) {
+            var worker = unstarted(body);
+            worker.thread().start();
+            return worker;
+        }
+
+        /** Waits for it to end, within 10 s: what it threw, or its not ending, fails the test. */
+        void ended() throws Exception {
+            body.get(10, TimeUnit.SECONDS);
+            thread.join(10_000);
+            assertThat(thread.isAlive()).as("%s ended", thread).isFalse();
+        }
     }
 
     /** Waits for the test to let it go, in a lambda: the test fails if it does not within 10 s. */
