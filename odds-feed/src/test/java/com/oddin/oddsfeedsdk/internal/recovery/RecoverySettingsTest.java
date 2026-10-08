@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.recovery;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.config.Environment;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
@@ -34,6 +35,22 @@ class RecoverySettingsTest {
     }
 
     @Test
+    void theOptionsTheBuilderSetsReachTheActor() {
+        RecoverySettings settings = RecoverySettings.from(OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setMaxInactivitySeconds(45)
+                .setMaxRecoveryExecutionMinutes(480)
+                .setStaleMessageLimit(Duration.ofSeconds(40))
+                .setStaleMessageWindow(Duration.ofSeconds(3))
+                .build());
+        assertThat(settings.maxInactivity()).isEqualTo(Duration.ofSeconds(45));
+        assertThat(settings.maxRecoveryTime()).isEqualTo(Duration.ofHours(8));
+        assertThat(settings.staleLimit()).isEqualTo(Duration.ofSeconds(40));
+        assertThat(settings.staleWindow()).isEqualTo(Duration.ofSeconds(3));
+    }
+
+    @Test
     void theRestAreTheDesignsNumbers() {
         RecoverySettings settings = RecoverySettings.from(configuration(20, 360, null, null));
         assertThat(settings.snapshotCompleteTimeout()).isEqualTo(Duration.ofMinutes(5));
@@ -49,7 +66,7 @@ class RecoverySettingsTest {
         assertThat(settings.tick()).isEqualTo(Duration.ofSeconds(1));
     }
 
-    /** Through 0.0.x's constructor, the one way to set the maximum inactivity and recovery time. */
+    /** Through 0.0.x's constructor, which takes any maximum inactivity and recovery time, as 0.0.x did. */
     private static OddsFeedConfiguration configuration(
             int maxInactivitySeconds,
             int maxRecoveryExecutionMinutes,

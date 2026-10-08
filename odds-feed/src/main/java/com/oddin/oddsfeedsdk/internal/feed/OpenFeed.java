@@ -49,18 +49,6 @@ public final class OpenFeed {
 
     private static final Logger LOG = LoggerFactory.getLogger(OpenFeed.class);
 
-    /** The exchange of the live feed, as 0.0.x named it. */
-    static final String FEED_EXCHANGE = "oddinfeed";
-
-    /** The exchange a replay plays to, as 0.0.x named it. */
-    static final String REPLAY_EXCHANGE = "oddinreplay";
-
-    /**
-     * How long the feed's close waits, for every thread together: a callback that runs past it is
-     * left to end on its own, on a daemon thread, and said so in the log.
-     */
-    public static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
-
     /**
      * How much longer than the HTTP timeout an event recovery's caller waits for the API's answer:
      * the request's own deadline covers the call and its retries, and this the actor's turn around
@@ -83,6 +71,11 @@ public final class OpenFeed {
     private final List<SessionFacts> facts;
     /** How long an event recovery's caller waits for the API's answer. */
     private final Duration answerWait;
+    /**
+     * How long a close waits, for every thread together: a callback that runs past it is left to end
+     * on its own, on a daemon thread, and said so in the log.
+     */
+    private final Duration shutdownTimeout;
     /** What the transport tells of the connection, in turn; for a test. */
     private final ConnectionTee connection;
     /** What the recovery actor tells of its events, in turn; null for a replay feed; for a test. */
@@ -114,6 +107,7 @@ public final class OpenFeed {
             @Nullable RecoveryActor actor,
             List<SessionFacts> facts,
             Duration answerWait,
+            Duration shutdownTimeout,
             ConnectionTee connection,
             @Nullable RecoveryTee recoveryTee) {
         this.transport = transport;
@@ -122,6 +116,7 @@ public final class OpenFeed {
         this.actor = actor;
         this.facts = List.copyOf(facts);
         this.answerWait = answerWait;
+        this.shutdownTimeout = shutdownTimeout;
         this.connection = connection;
         this.recoveryTee = recoveryTee;
     }
@@ -132,8 +127,8 @@ public final class OpenFeed {
     }
 
     /**
-     * Builds what the plan says over what the feed's start built: a transport on the feed's exchange,
-     * or the replay one for a replay feed, with each session's queue added; nothing started.
+     * Builds what the plan says over what the feed's start built: a transport on the configured
+     * exchange, or the replay one for a replay feed, with each session's queue added; nothing started.
      *
      * @param health the feed's health, told of the recovery's events after the events dispatcher: it
      *     keeps the sessions' lagging
@@ -172,7 +167,7 @@ public final class OpenFeed {
                         configuration,
                         core.bookmaker().virtualHost(),
                         core.bookmaker().connectionName(nodeId)),
-                replay ? REPLAY_EXCHANGE : FEED_EXCHANGE,
+                replay ? configuration.getReplayExchangeName() : configuration.getExchangeName(),
                 connection,
                 alives);
         var dispatchers = new ArrayList<SessionDispatcher>();
@@ -206,6 +201,7 @@ public final class OpenFeed {
                 actor,
                 facts,
                 configuration.getHttpClientTimeout().plus(ANSWER_MARGIN),
+                configuration.getShutdownTimeout(),
                 connection,
                 recoveryEvents);
     }
@@ -403,7 +399,7 @@ public final class OpenFeed {
 
     /** Closes it all, within the shutdown timeout: for a start that fails, which keeps nothing of it. */
     void close() {
-        var deadline = System.nanoTime() + SHUTDOWN_TIMEOUT.toNanos();
+        var deadline = System.nanoTime() + shutdownTimeout.toNanos();
         stop();
         awaitStop(deadline);
     }

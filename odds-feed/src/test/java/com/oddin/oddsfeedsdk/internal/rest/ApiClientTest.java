@@ -5,11 +5,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
 
+import ch.qos.logback.classic.Level;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.fakes.RecordedRequest;
 import com.oddin.oddsfeed.fakes.TestTls;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
@@ -42,6 +44,7 @@ class ApiClientTest {
     private static final URN MATCH = URN.parse("od:match:1");
     private static final String SUMMARY = "/v1/sports/en/sport_events/od:match:1/summary";
     private static final String WHOAMI = "/v1/users/whoami";
+    private static final String NO_VOID_REASONS = "<void_reasons response_code=\"OK\"/>";
     private static final String OK_PRODUCERS = Fixtures.read("rest/producers/producers.xml");
     private static final String REFUSED = """
             <response response_code="FORBIDDEN"><action>whoami</action><message>token refused</message></response>""";
@@ -591,6 +594,28 @@ class ApiClientTest {
             assertThat(call.latency().isNegative()).isFalse();
         });
         assertThat(events.received).containsExactly(markets);
+    }
+
+    @Test
+    void everyAttemptIsLoggedWhenTheConfigurationAsksAndNoneOtherwise() {
+        api.respond("/v1/descriptions/void_reasons", Reply.of(503, ""), Reply.of(200, NO_VOID_REASONS));
+        try (var log = LogCapture.of(RestTransport.class, Level.INFO)) {
+            client(b -> b).fetchMarketVoidReasons();
+            assertThat(log.lines()).as("logged unless asked").isEmpty();
+        }
+        api.respond("/v1/descriptions/void_reasons", Reply.of(503, ""), Reply.of(200, NO_VOID_REASONS));
+        try (var log = LogCapture.of(RestTransport.class, Level.INFO)) {
+            client(b -> b.setApiCallLogging(true)).fetchMarketVoidReasons();
+            String uri = "https://" + api.apiHost() + "/v1/descriptions/void_reasons";
+            assertThat(log.lines()).hasSize(2);
+            assertThat(log.lines().getFirst())
+                    .startsWith("INFO API call GET " + uri + ": 503 in ")
+                    .contains(" ms, attempt 1, failed: ");
+            assertThat(log.lines().get(1))
+                    .startsWith("INFO API call GET " + uri + ": 200 in ")
+                    .endsWith(" ms, attempt 2");
+        }
+        assertThat(events.calls).as("told to the events either way").hasSize(4);
     }
 
     @Test
