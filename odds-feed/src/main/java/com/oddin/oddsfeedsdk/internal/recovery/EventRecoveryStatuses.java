@@ -89,7 +89,7 @@ final class EventRecoveryStatuses {
             long dropped = counters.eventStatusesDropped.incrementAndGet();
             if (dropped == 1 || dropped % 1_000 == 0) {
                 LOG.warn(
-                        "More than {} event recoveries ended within {}: the oldest status is forgotten early; {}"
+                        "More than {} event recoveries ended within {}: the oldest status is forgotten early, {}"
                                 + " so far",
                         endedKept,
                         RETENTION,

@@ -69,7 +69,7 @@ final class Strategy {
         try {
             return read.get();
         } catch (RuntimeException failed) {
-            LOG.debug("{} {} not read, null returned as 0.0.x returned it", what, of, failed);
+            LOG.debug("{} {} not read, null returned as in 0.0.x", what, of, failed);
             return null;
         }
     }

@@ -276,7 +276,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     long stray = counters.unknownCompletions.incrementAndGet();
                     if (stray == 1 || stray % 1_000 == 0) {
                         LOG.warn(
-                                "A snapshot complete of request {}, which this feed did not ask for, is dropped; {} so far",
+                                "A snapshot complete of request {}, which this feed did not ask for, is dropped, {} so far",
                                 requestId,
                                 stray);
                     }
@@ -340,7 +340,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             if (!producers.isKnown(producerId)) {
                 long unknown = counters.unknownProducers.incrementAndGet();
                 if (unknown == 1 || unknown % 1_000 == 0) {
-                    LOG.warn("An alive of producer {}, which the producer list does not have, is dropped", producerId);
+                    LOG.warn(
+                            "An alive of producer {}, which the producer list does not have, is dropped, {} so far",
+                            producerId,
+                            unknown);
                 }
                 return;
             }

@@ -280,7 +280,7 @@ public final class SportsInfo implements SportsInfoManager {
         try {
             return entities.profiles.sports(locale, null);
         } catch (RuntimeException failed) {
-            LOG.debug("sports in {} could not be loaded; none, as in 0.0.x", locale, failed);
+            LOG.debug("The sports in {} could not be loaded; none, as in 0.0.x", locale, failed);
             return List.of();
         }
     }

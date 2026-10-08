@@ -639,7 +639,8 @@ public final class EventsDispatcher implements ApiEvents, ConnectionEvents, Reco
     private void failed(String callback, Throwable e) {
         long failures = callbackFailures.incrementAndGet();
         if (failures == 1 || failures % 1_000 == 0) {
-            LOG.error("The client's {} threw; {} callbacks have so far, the feed goes on", callback, failures, e);
+            LOG.error(
+                    "The client's {} threw; {} callbacks have failed so far, the feed goes on", callback, failures, e);
         } else {
             LOG.debug("The client's {} threw", callback, e);
         }

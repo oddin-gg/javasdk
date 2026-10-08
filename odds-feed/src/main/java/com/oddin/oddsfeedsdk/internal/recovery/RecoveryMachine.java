@@ -693,12 +693,12 @@ final class RecoveryMachine {
                 long refusals = refusedByApi.count();
                 if (Throttle.due(refusals)) {
                     LOG.warn(
-                            "Event recovery request {} failed: {}, {} so far",
+                            "Event recovery request {} not accepted: {}, {} so far",
                             requestId,
                             failure.getMessage(),
                             refusals);
                 } else {
-                    LOG.debug("Event recovery request {} failed: {}", requestId, failure.getMessage());
+                    LOG.debug("Event recovery request {} not accepted: {}", requestId, failure.getMessage());
                 }
                 outbox.reply(reply, null);
             }
@@ -743,7 +743,7 @@ final class RecoveryMachine {
             // its snapshot would go to queues that are gone, or not bound yet, and nothing would give
             // it up
             counters.eventRefused.incrementAndGet();
-            LOG.debug("Event recovery of {} refused: the connection is not up", eventId);
+            LOG.debug("Event recovery of {} not accepted: the connection is not up", eventId);
             outbox.reply(reply, null);
             return;
         }
@@ -763,7 +763,7 @@ final class RecoveryMachine {
                         .count();
         if (inFlight >= settings.eventRecoveries()) {
             counters.eventRefused.incrementAndGet();
-            LOG.debug("Event recovery of {} refused: {} in flight for producer {}", eventId, inFlight, producerId);
+            LOG.debug("Event recovery of {} not accepted: {} in flight for producer {}", eventId, inFlight, producerId);
             outbox.reply(reply, null);
             return;
         }
@@ -1616,7 +1616,7 @@ final class RecoveryMachine {
             // the first, then one in a thousand: a feed of such a producer would flood the log
             if (unknown == 1 || unknown % 1_000 == 0) {
                 LOG.warn(
-                        "A fact about producer {}, which the producer list does not have, is ignored; {} so far",
+                        "A fact about producer {}, which the producer list does not have, is ignored, {} so far",
                         producerId,
                         unknown);
             }

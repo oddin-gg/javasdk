@@ -58,7 +58,7 @@ final class ConnectionTee implements ConnectionEvents {
             try {
                 tell.accept(listener);
             } catch (RuntimeException e) {
-                LOG.error("A connection listener threw on {}; the others are told", event, e);
+                LOG.error("The connection listener threw on {}; the others are told", event, e);
             }
         }
     }

@@ -327,7 +327,7 @@ public final class SessionDispatcher implements AutoCloseable {
             long unknown = unknownProducers.incrementAndGet();
             if (unknown == 1 || unknown % 1_000 == 0) {
                 LOG.warn(
-                        "A message of producer {}, which the producer list does not have, is dropped; {} so far",
+                        "A message of producer {}, which the producer list does not have, is dropped, {} so far",
                         producerId,
                         unknown);
             }
@@ -520,7 +520,7 @@ public final class SessionDispatcher implements AutoCloseable {
             long failures = callbackFailures.incrementAndGet();
             if (failures == 1 || failures % 1_000 == 0) {
                 LOG.error(
-                        "The client's {} threw; {} callbacks of the session have so far, it goes on",
+                        "The client's {} threw; {} callbacks of the session have failed so far, it goes on",
                         callback,
                         failures,
                         e);
@@ -534,7 +534,11 @@ public final class SessionDispatcher implements AutoCloseable {
     private void sdkFailed(String step, Throwable e) {
         long failures = sdkFailures.incrementAndGet();
         if (failures == 1 || failures % 1_000 == 0) {
-            LOG.warn("The {} of a message failed; {} steps of the session have so far, it goes on", step, failures, e);
+            LOG.warn(
+                    "The {} of a message failed; {} steps of the session have failed so far, it goes on",
+                    step,
+                    failures,
+                    e);
         } else {
             LOG.debug("The {} of a message failed", step, e);
         }
