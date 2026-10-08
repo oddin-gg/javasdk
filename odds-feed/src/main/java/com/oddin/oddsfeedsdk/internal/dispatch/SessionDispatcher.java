@@ -65,7 +65,10 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Callback</b> on the session's listener.
  *   <li><b>Facts.</b> The recovery actor hears the session has finished the message, with when it was
  *       taken: it moves the session's checkpoint and is the safety net's sample.
- *   <li><b>Acknowledgement,</b> whatever came of the steps before.
+ *   <li><b>Acknowledgement,</b> whatever came of the steps before - except for a delivery the close
+ *       overtook before a callback or a fact: no callback is admitted once {@link #stop} has begun
+ *       (one admitted just before may still run, and the close waits for it), and the delivery is
+ *       then dropped unacknowledged with no fact posted, as one still queued is.
  * </ol>
  *
  * <p>One failure policy for every step: what a step throws, even an error, is caught, counted,
@@ -154,7 +157,8 @@ public final class SessionDispatcher implements AutoCloseable {
     /**
      * Stops taking deliveries, once the one being handled is done or after a wait; what the queue still
      * holds goes with the session's channel. From one of the session's callbacks it does not wait: the
-     * thread ends once the callback returns and its message is acknowledged.
+     * thread ends once the callback returns. No callback is admitted once this has begun, but one
+     * admitted just before may still run, and the wait covers it.
      */
     @Override
     public void close() {
@@ -176,7 +180,8 @@ public final class SessionDispatcher implements AutoCloseable {
      * Waits for the thread to end after a {@link #stop}, until {@code deadline}, by {@link
      * System#nanoTime}, an interrupt notwithstanding; says so in the log when it does not. From the
      * session's own thread - one of its callbacks closing the feed - it does not wait, as that would
-     * wait for itself: the thread ends once the callback returns and its message is acknowledged.
+     * wait for itself: the thread ends once the callback returns; the message of that callback
+     * is dropped unacknowledged if a later step of it needs a callback or a fact the close refuses.
      *
      * @return whether the thread has ended, or is the caller's own and ends next
      */
@@ -260,7 +265,7 @@ public final class SessionDispatcher implements AutoCloseable {
                 continue;
             }
             // closed while it waited: dropped unacknowledged, with no facts, as one still queued is -
-            // nothing reaches the client once close() has begun, as in 0.0.x, and the resume point
+            // no callback is admitted once close() has begun, as in 0.0.x, and the resume point
             // already covers what the close leaves
             if (delivery != null && !closed) {
                 handle(delivery);
@@ -345,12 +350,14 @@ public final class SessionDispatcher implements AutoCloseable {
         SessionFacts told = facts;
         switch (message) {
             case OFAlive alive -> {
+                dropIfClosed();
                 if (told != null) {
                     told.alive(producerId, alive.getTimestamp(), takenAt, alive.getSubscribed() == 1);
                 }
                 return;
             }
             case OFSnapshotComplete complete -> {
+                dropIfClosed();
                 if (told != null) {
                     told.snapshotComplete(producerId, complete.getRequestId());
                 }
@@ -524,10 +531,9 @@ public final class SessionDispatcher implements AutoCloseable {
 
     /** Runs the client's callback; what it throws is the client's failure, and the session goes on. */
     private void client(String callback, Runnable call) {
-        // checked at the listener call itself: once close() has begun, nothing reaches the client
-        if (closed) {
-            throw new ClosedBeforeListener();
-        }
+        // no callback is admitted once close() has begun; one admitted just before this check may
+        // still run - the client's code is never called under a lock - and close() waits for it
+        dropIfClosed();
         try {
             call.run();
         } catch (Throwable e) {
@@ -542,6 +548,13 @@ public final class SessionDispatcher implements AutoCloseable {
                 LOG.debug("The client's {} threw", callback, e);
             }
             pipeline.events().callbackFailed(callback, true, e, session);
+        }
+    }
+
+    /** Drops the delivery, unacknowledged and without facts, if the close has begun. */
+    private void dropIfClosed() {
+        if (closed) {
+            throw new ClosedBeforeListener();
         }
     }
 
