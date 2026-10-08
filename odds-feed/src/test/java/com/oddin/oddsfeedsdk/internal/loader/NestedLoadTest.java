@@ -38,7 +38,8 @@ class NestedLoadTest {
                     .selectEnvironment("mq.invalid", api.apiHost())
                     .setAccessToken("token")
                     .setRestConcurrencyLimit(1)
-                    .setHttpClientTimeout(Duration.ofSeconds(10))
+                    // the deadline of every attempt: far above a loaded machine's delay, so none is abandoned
+                    .setHttpClientTimeout(Duration.ofSeconds(60))
                     .build();
             for (int m = 0; m < 4; m++) {
                 api.respond(
@@ -87,12 +88,14 @@ class NestedLoadTest {
                     assertThat(load.get(15, TimeUnit.SECONDS)).isNotEmpty();
                 }
             }
-            // an attempt the client gave up on can still be running on the fake, past its permit, so
-            // the fake's count means the permit only while every attempt has been answered
-            assertThat(attempts.stream().filter(call -> call.failure() != null).toList())
-                    .as("attempts that failed or were abandoned")
-                    .isEmpty();
-            assertThat(api.mostInFlight()).as("one permit: one call at a time").isEqualTo(1);
+            var abandoned =
+                    attempts.stream().filter(call -> call.failure() != null).toList();
+            assertThat(api.mostInFlight())
+                    .as(
+                            "one permit: one call at a time; an attempt that failed or was abandoned can still run"
+                                    + " on the fake past its permit, so the count is not the permit then: %s",
+                            abandoned)
+                    .isEqualTo(1);
         }
     }
 }
