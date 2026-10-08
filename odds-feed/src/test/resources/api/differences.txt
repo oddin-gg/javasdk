@@ -74,6 +74,20 @@ added | config/OddsFeedConfigurationBuilder.setMessagingSslContext (Ljavax/net/s
 added | config/OddsFeedConfigurationBuilder.setHttpClientTimeout (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the deadline of an API call, from its turn through every retry
 added | config/OddsFeedConfigurationBuilder.setRestConcurrencyLimit (I)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the most entity requests in flight at once
 added | config/OddsFeedConfigurationBuilder.setStartupTimeout (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long opening the feed keeps trying the API
+added | config/OddsFeedConfiguration.getShutdownTimeout ()Ljava/time/Duration; | how long close() waits for the feed's threads
+added | config/OddsFeedConfiguration.getStaleMessageLimit ()Ljava/time/Duration; | how old live messages may be before the safety net counts a session behind
+added | config/OddsFeedConfiguration.getStaleMessageWindow ()Ljava/time/Duration; | how long they must stay that old before the safety net acts
+added | config/OddsFeedConfiguration.getExchangeName ()Ljava/lang/String; | the exchange the feed's queues are bound to
+added | config/OddsFeedConfiguration.getReplayExchangeName ()Ljava/lang/String; | the exchange a replay session's queue is bound to
+added | config/OddsFeedConfiguration.isApiCallLogging ()Z | whether each API call attempt is logged
+added | config/OddsFeedConfigurationBuilder.setMaxInactivitySeconds (I)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | 0.0.x's maximum inactivity, which it had no setter for
+added | config/OddsFeedConfigurationBuilder.setMaxRecoveryExecutionMinutes (I)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | 0.0.x's maximum recovery time, which it had no setter for; six hours at least
+added | config/OddsFeedConfigurationBuilder.setShutdownTimeout (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long close() waits for the feed's threads
+added | config/OddsFeedConfigurationBuilder.setStaleMessageLimit (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how old live messages may be before the safety net counts a session behind
+added | config/OddsFeedConfigurationBuilder.setStaleMessageWindow (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long they must stay that old before the safety net acts
+added | config/OddsFeedConfigurationBuilder.setExchangeName (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the exchange the feed's queues are bound to
+added | config/OddsFeedConfigurationBuilder.setReplayExchangeName (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the exchange a replay session's queue is bound to
+added | config/OddsFeedConfigurationBuilder.setApiCallLogging (Z)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | whether each API call attempt is logged
 
 # Events of the feed as a whole, as default methods, so a listener written for 0.0.x compiles as it is.
 added | subscribe/GlobalEventsListener.onConnectionStateChange (Lcom/oddin/oddsfeedsdk/subscribe/ConnectionStateChange;)V | the broker connection's state, up as well as down

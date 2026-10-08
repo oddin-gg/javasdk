@@ -13,8 +13,32 @@ public final class OddsFeedConfiguration {
     public static final long DEFAULT_MAX_COMPETITOR_CACHE_SIZE = 20_000L;
     public static final long DEFAULT_MAX_PLAYER_CACHE_SIZE = 50_000L;
 
-    /** 0.0.x's six hours, which it had no setter for. */
+    /** 0.0.x's 20 seconds, which it had no setter for. */
+    static final int DEFAULT_MAX_INACTIVITY_SECONDS = 20;
+    /** A producer sends an alive this often; a shorter maximum inactivity would take it down between two. */
+    static final int ALIVE_INTERVAL_SECONDS = 10;
+
+    /** 0.0.x's six hours, which it had no setter for, and the least the setter takes. */
     static final int DEFAULT_MAX_RECOVERY_EXECUTION_MINUTES = 360;
+
+    /** How long the feed's close waits for its threads, all of them together, unless set. */
+    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
+    /** The longest shutdown timeout the builder takes. */
+    static final Duration MAX_SHUTDOWN_TIMEOUT = Duration.ofHours(1);
+
+    /** How old live messages may be before the safety net counts them stale, unless set. */
+    static final Duration DEFAULT_STALE_MESSAGE_LIMIT = Duration.ofMinutes(2);
+    /** How long they must stay stale before the safety net acts, unless set. */
+    static final Duration DEFAULT_STALE_MESSAGE_WINDOW = Duration.ofMinutes(1);
+    /** The most the stale-message limit and window take: a day is as good as off. */
+    static final Duration MAX_STALE_MESSAGE_DURATION = Duration.ofDays(1);
+
+    /** The exchange 0.0.x bound the feed's queues to. */
+    static final String DEFAULT_EXCHANGE_NAME = "oddinfeed";
+    /** The exchange 0.0.x bound a replay session's queue to. */
+    static final String DEFAULT_REPLAY_EXCHANGE_NAME = "oddinreplay";
+    /** An AMQP short string's limit, in UTF-8 bytes; the broker refuses a longer exchange name. */
+    static final int MAX_EXCHANGE_NAME_BYTES = 255;
 
     static final Duration DEFAULT_HTTP_CLIENT_TIMEOUT = Duration.ofSeconds(30);
     static final int DEFAULT_REST_CONCURRENCY_LIMIT = 16;
@@ -47,6 +71,12 @@ public final class OddsFeedConfiguration {
     private final int amqpPrefetch;
     private final @Nullable SSLContext messagingSslContext;
     private final int maxMessageSize;
+    private final Duration shutdownTimeout;
+    private final Duration staleMessageLimit;
+    private final Duration staleMessageWindow;
+    private final String exchangeName;
+    private final String replayExchangeName;
+    private final boolean apiCallLogging;
 
     /**
      * Public because 0.0.x's constructor was, to Java callers; {@link OddsFeedConfigurationBuilder}
@@ -83,7 +113,13 @@ public final class OddsFeedConfiguration {
                 DEFAULT_HTTP_CLIENT_TIMEOUT.multipliedBy(STARTUP_TIMEOUTS),
                 DEFAULT_AMQP_PREFETCH,
                 DEFAULT_MAX_MESSAGE_SIZE,
-                null);
+                null,
+                DEFAULT_SHUTDOWN_TIMEOUT,
+                DEFAULT_STALE_MESSAGE_LIMIT,
+                DEFAULT_STALE_MESSAGE_WINDOW,
+                DEFAULT_EXCHANGE_NAME,
+                DEFAULT_REPLAY_EXCHANGE_NAME,
+                false);
     }
 
     OddsFeedConfiguration(
@@ -104,7 +140,13 @@ public final class OddsFeedConfiguration {
             Duration startupTimeout,
             int amqpPrefetch,
             int maxMessageSize,
-            @Nullable SSLContext messagingSslContext) {
+            @Nullable SSLContext messagingSslContext,
+            Duration shutdownTimeout,
+            Duration staleMessageLimit,
+            Duration staleMessageWindow,
+            String exchangeName,
+            String replayExchangeName,
+            boolean apiCallLogging) {
         this.accessToken = accessToken;
         this.defaultLocale = defaultLocale;
         this.maxInactivitySeconds = maxInactivitySeconds;
@@ -123,6 +165,12 @@ public final class OddsFeedConfiguration {
         this.amqpPrefetch = amqpPrefetch;
         this.maxMessageSize = maxMessageSize;
         this.messagingSslContext = messagingSslContext;
+        this.shutdownTimeout = shutdownTimeout;
+        this.staleMessageLimit = staleMessageLimit;
+        this.staleMessageWindow = staleMessageWindow;
+        this.exchangeName = exchangeName;
+        this.replayExchangeName = replayExchangeName;
+        this.apiCallLogging = apiCallLogging;
     }
 
     public String getAccessToken() {
@@ -133,10 +181,19 @@ public final class OddsFeedConfiguration {
         return defaultLocale;
     }
 
+    /**
+     * How long a producer may go without an alive, and a session may process it late, before the
+     * producer counts as down: 20 seconds unless set.
+     */
     public int getMaxInactivitySeconds() {
         return maxInactivitySeconds;
     }
 
+    /**
+     * How long a recovery may take before it counts as failed: 360 minutes unless set. A producer's
+     * recovery whose snapshot complete is lost is given up after five minutes already, so this
+     * bounds one that keeps coming, and event recoveries.
+     */
     public int getMaxRecoveryExecutionMinutes() {
         return maxRecoveryExecutionMinutes;
     }
@@ -223,6 +280,51 @@ public final class OddsFeedConfiguration {
      */
     public @Nullable SSLContext getMessagingSslContext() {
         return messagingSslContext;
+    }
+
+    /**
+     * How long {@code OddsFeed.close()} waits for the feed's threads, all of them together, before
+     * it leaves a callback still running to end on its own: 5 seconds unless set. A failed {@code
+     * open()} closes what it started within it too. New in 1.0.
+     */
+    public Duration getShutdownTimeout() {
+        return shutdownTimeout;
+    }
+
+    /**
+     * How old, by the producer's clock, live messages may be before the safety net counts a session
+     * behind: 2 minutes unless set. New in 1.0.
+     */
+    public Duration getStaleMessageLimit() {
+        return staleMessageLimit;
+    }
+
+    /**
+     * How long a session's live messages must stay older than the {@linkplain #getStaleMessageLimit
+     * limit} before the safety net asks for a recovery and replaces the session's channel: 1 minute
+     * unless set. New in 1.0.
+     */
+    public Duration getStaleMessageWindow() {
+        return staleMessageWindow;
+    }
+
+    /** The exchange the feed's queues are bound to: {@code oddinfeed} unless set. New in 1.0. */
+    public String getExchangeName() {
+        return exchangeName;
+    }
+
+    /** The exchange a replay session's queue is bound to: {@code oddinreplay} unless set. New in 1.0. */
+    public String getReplayExchangeName() {
+        return replayExchangeName;
+    }
+
+    /**
+     * Whether every attempt of an API call is logged at INFO, with its method, URI, status and
+     * latency: not unless set. The global listener's {@code onApiCall} hears them either way. New in
+     * 1.0.
+     */
+    public boolean isApiCallLogging() {
+        return apiCallLogging;
     }
 
     /** 0.0.x's companion object; the constants are on the class. */
