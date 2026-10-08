@@ -587,12 +587,13 @@ class SessionDispatcherTest {
     }
 
     @Test
-    void aDeliveryWhoseMessageBuildFailsOnceTheCloseBeganPostsNoFactAndIsNotAcknowledged() {
+    void aDeliveryWhoseMessageBuildFailsOnceTheCloseBeganPostsNoFactAndIsNotAcknowledged() throws InterruptedException {
         var dispatcher = dispatcher(MessageInterest.ALL);
         // the close begins before the build, which then fails, as one the close cuts short does: the
         // delivery returns early, without reaching a listener
         ext.afterBytes = dispatcher::stop;
         handle(dispatcher, Fixtures.read(BET_STOP), "hi.-.live.bet_stop.-.od:tournament.7.-");
+        assertThat(failures.next().callback()).as("the build that failed").isEqualTo("build");
         assertThat(listener.messages).as("callbacks").isEmpty();
         assertThat(facts.facts).as("facts posted").isEmpty();
         assertThat(transport.acked).as("acknowledged").isEmpty();
@@ -611,6 +612,46 @@ class SessionDispatcherTest {
             assertThat(transport.acked).as("acknowledged").isEmpty();
             assertThat(dispatcher.handled()).isZero();
             ext.calls.clear();
+        }
+    }
+
+    @Test
+    void aCallbackThatClosesTheSessionStillEndsItsDeliveryWithItsFactAndAcknowledgement() {
+        var dispatcher = dispatcher(MessageInterest.ALL);
+        // the close begins inside the callback admitted for the delivery: what it began is finished
+        listener.onOdds = message -> dispatcher.stop();
+        handle(dispatcher, Fixtures.read(ODDS_CHANGE));
+        assertThat(listener.messages).as("callbacks").hasSize(1);
+        assertThat(facts.facts).as("facts posted").hasSize(1).first().asString().startsWith("processed");
+        assertThat(transport.acked).as("acknowledged").hasSize(1);
+        assertThat(dispatcher.handled()).isEqualTo(1);
+    }
+
+    @Test
+    void aCallbackThatClosesTheFeedStillEndsItsDeliveryWithItsFactAndAcknowledgement() {
+        var dispatcher = dispatcher(MessageInterest.ALL);
+        // the feed's close signal is set inside the callback, before this session was stopped
+        listener.onOdds = message -> feedClosed.set(true);
+        handle(dispatcher, Fixtures.read(ODDS_CHANGE));
+        assertThat(listener.messages).as("callbacks").hasSize(1);
+        assertThat(facts.facts).as("facts posted").hasSize(1).first().asString().startsWith("processed");
+        assertThat(transport.acked).as("acknowledged").hasSize(1);
+        assertThat(dispatcher.handled()).isEqualTo(1);
+    }
+
+    @Test
+    void anAliveOrSnapshotCompleteWhoseFactIsPostedAsTheCloseBeginsIsAcknowledgedWithIt() {
+        for (var message : List.of(FeedMessages.alive(2, true), FeedMessages.snapshotComplete(2, 712))) {
+            var dispatcher = dispatcher(MessageInterest.ALL);
+            // the close begins after the check before the fact, and before the delivery's end: the
+            // fact and the acknowledgement go together, as they do after a callback
+            facts.beforePost = dispatcher::stop;
+            handle(dispatcher, message);
+            assertThat(facts.facts).as("facts posted").hasSize(1);
+            assertThat(transport.acked).as("acknowledged").hasSize(1);
+            assertThat(dispatcher.handled()).isEqualTo(1);
+            facts.facts.clear();
+            transport.acked.clear();
         }
     }
 
@@ -658,6 +699,8 @@ class SessionDispatcherTest {
             assertThat(transport.acked)
                     .as("the message the callback had, acknowledged")
                     .hasSize(1);
+            assertThat(facts.facts).as("and its fact posted").hasSize(1);
+            assertThat(dispatcher.handled()).isEqualTo(1);
         } finally {
             release.countDown();
             dispatcher.close();
@@ -839,21 +882,26 @@ class SessionDispatcherTest {
     private static final class Facts implements SessionFacts {
         final List<String> facts = new CopyOnWriteArrayList<>();
         final List<Long> takenAt = new CopyOnWriteArrayList<>();
+        /** Runs as a fact is posted, before it is recorded. */
+        volatile Runnable beforePost = () -> {};
 
         @Override
         public void processed(long producerId, long generatedAt, long takenAt, long requestId) {
+            beforePost.run();
             facts.add("processed " + producerId + " " + generatedAt + " request=" + requestId);
             this.takenAt.add(takenAt);
         }
 
         @Override
         public void alive(long producerId, long generatedAt, long takenAt, boolean subscribed) {
+            beforePost.run();
             facts.add("alive " + producerId + " " + generatedAt + " subscribed=" + subscribed);
             this.takenAt.add(takenAt);
         }
 
         @Override
         public void snapshotComplete(long producerId, long requestId) {
+            beforePost.run();
             facts.add("snapshotComplete " + producerId + " " + requestId);
         }
 

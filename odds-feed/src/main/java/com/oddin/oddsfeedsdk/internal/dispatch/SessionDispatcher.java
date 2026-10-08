@@ -334,6 +334,15 @@ public final class SessionDispatcher implements AutoCloseable {
         }
     }
 
+    /**
+     * Admits a control fact like a callback of the client's: it is posted and its delivery acknowledged
+     * together, even if the close begins between this check and the post, so that no close splits them.
+     */
+    private void admitControlFact() {
+        dropUnlessAdmitted();
+        admitted = true;
+    }
+
     private boolean dropsOnClose() {
         return !admitted && closeBegun();
     }
@@ -386,14 +395,14 @@ public final class SessionDispatcher implements AutoCloseable {
         SessionFacts told = facts;
         switch (message) {
             case OFAlive alive -> {
-                dropUnlessAdmitted();
+                admitControlFact();
                 if (told != null) {
                     told.alive(producerId, alive.getTimestamp(), takenAt, alive.getSubscribed() == 1);
                 }
                 return;
             }
             case OFSnapshotComplete complete -> {
-                dropUnlessAdmitted();
+                admitControlFact();
                 if (told != null) {
                     told.snapshotComplete(producerId, complete.getRequestId());
                 }
