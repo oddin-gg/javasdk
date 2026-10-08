@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.config;
 
 import static java.util.Objects.requireNonNull;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Locale;
 import javax.net.ssl.SSLContext;
@@ -19,7 +20,7 @@ public final class OddsFeedConfigurationBuilder {
     private @Nullable String accessToken;
     private final Locale defaultLocale = Locale.ENGLISH;
     private @Nullable Environment selectedEnvironment;
-    private final int maxInactivitySeconds = 20;
+    private int maxInactivitySeconds = OddsFeedConfiguration.DEFAULT_MAX_INACTIVITY_SECONDS;
     private int maxRecoveryExecutionMinutes = OddsFeedConfiguration.DEFAULT_MAX_RECOVERY_EXECUTION_MINUTES;
     private @Nullable Integer sdkNodeId;
     private ExceptionHandlingStrategy exceptionHandlingStrategy = ExceptionHandlingStrategy.THROW;
@@ -34,6 +35,12 @@ public final class OddsFeedConfigurationBuilder {
     private int amqpPrefetch = OddsFeedConfiguration.DEFAULT_AMQP_PREFETCH;
     private @Nullable SSLContext messagingSslContext;
     private int maxMessageSize = OddsFeedConfiguration.DEFAULT_MAX_MESSAGE_SIZE;
+    private Duration shutdownTimeout = OddsFeedConfiguration.DEFAULT_SHUTDOWN_TIMEOUT;
+    private Duration staleMessageLimit = OddsFeedConfiguration.DEFAULT_STALE_MESSAGE_LIMIT;
+    private Duration staleMessageWindow = OddsFeedConfiguration.DEFAULT_STALE_MESSAGE_WINDOW;
+    private String exchangeName = OddsFeedConfiguration.DEFAULT_EXCHANGE_NAME;
+    private String replayExchangeName = OddsFeedConfiguration.DEFAULT_REPLAY_EXCHANGE_NAME;
+    private boolean apiCallLogging;
 
     /** Public because 0.0.x's constructor was, to Java callers; {@code OddsFeed.getOddsFeedConfigurationBuilder()} makes one. */
     public OddsFeedConfigurationBuilder() {}
@@ -206,16 +213,106 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     /**
-     * How long a recovery may take before it counts as failed, and is asked for again; 0.0.x's
-     * six hours unless set. Not public: 0.0.x had no setter, and the option is ticket 28's to add.
+     * How long a producer may go without an alive, and a session may process it late, before the
+     * producer counts as down. 20 seconds unless set, as in 0.0.x, which had no setter. New in 1.0.
      *
-     * @throws IllegalArgumentException unless it is at least a minute
+     * @throws IllegalArgumentException unless it is more than the 10 seconds between a producer's
+     *     alives
      */
-    OddsFeedConfigurationBuilder setMaxRecoveryExecutionMinutes(int minutes) {
-        if (minutes < 1) {
-            throw new IllegalArgumentException("maximum recovery time must be at least 1 minute, was " + minutes);
+    public OddsFeedConfigurationBuilder setMaxInactivitySeconds(int seconds) {
+        if (seconds <= OddsFeedConfiguration.ALIVE_INTERVAL_SECONDS) {
+            throw new IllegalArgumentException("maximum inactivity must be more than the "
+                    + OddsFeedConfiguration.ALIVE_INTERVAL_SECONDS + " seconds between a producer's alives, was "
+                    + seconds);
+        }
+        this.maxInactivitySeconds = seconds;
+        return this;
+    }
+
+    /**
+     * How long a recovery may take before it counts as failed. 360 minutes unless set, as in 0.0.x,
+     * which had no setter; it can be longer, not shorter. A producer's recovery whose snapshot
+     * complete is lost is given up after five minutes already, so this bounds one that keeps coming,
+     * and event recoveries. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is at least 360 minutes
+     */
+    public OddsFeedConfigurationBuilder setMaxRecoveryExecutionMinutes(int minutes) {
+        if (minutes < OddsFeedConfiguration.DEFAULT_MAX_RECOVERY_EXECUTION_MINUTES) {
+            throw new IllegalArgumentException("maximum recovery time must be at least "
+                    + OddsFeedConfiguration.DEFAULT_MAX_RECOVERY_EXECUTION_MINUTES + " minutes, was " + minutes);
         }
         this.maxRecoveryExecutionMinutes = minutes;
+        return this;
+    }
+
+    /**
+     * How long {@code OddsFeed.close()} waits for the feed's threads, all of them together, before it
+     * leaves a callback still running to end on its own. 5 seconds unless set. A failed {@code
+     * open()} closes what it started within it too. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most an hour
+     */
+    public OddsFeedConfigurationBuilder setShutdownTimeout(Duration timeout) {
+        this.shutdownTimeout = positiveAtMost(timeout, OddsFeedConfiguration.MAX_SHUTDOWN_TIMEOUT, "shutdown timeout");
+        return this;
+    }
+
+    /**
+     * How old, by the producer's clock, a session's live messages may be before the safety net counts
+     * the session behind. 2 minutes unless set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most a day
+     */
+    public OddsFeedConfigurationBuilder setStaleMessageLimit(Duration limit) {
+        this.staleMessageLimit =
+                positiveAtMost(limit, OddsFeedConfiguration.MAX_STALE_MESSAGE_DURATION, "stale-message limit");
+        return this;
+    }
+
+    /**
+     * How long a session's live messages must stay older than the {@linkplain #setStaleMessageLimit
+     * limit} before the safety net asks for a recovery of the session's producers and, once the API
+     * has accepted them, replaces the session's channel, dropping the backlog. 1 minute unless set.
+     * New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most a day
+     */
+    public OddsFeedConfigurationBuilder setStaleMessageWindow(Duration window) {
+        this.staleMessageWindow =
+                positiveAtMost(window, OddsFeedConfiguration.MAX_STALE_MESSAGE_DURATION, "stale-message window");
+        return this;
+    }
+
+    /**
+     * The exchange the feed's queues are bound to. {@code oddinfeed} unless set, as in 0.0.x. New in
+     * 1.0.
+     *
+     * @throws IllegalArgumentException when it is blank, or longer than 255 bytes in UTF-8
+     */
+    public OddsFeedConfigurationBuilder setExchangeName(String name) {
+        this.exchangeName = exchange(name, "exchange name");
+        return this;
+    }
+
+    /**
+     * The exchange a replay session's queue is bound to. {@code oddinreplay} unless set, as in
+     * 0.0.x. New in 1.0.
+     *
+     * @throws IllegalArgumentException when it is blank, or longer than 255 bytes in UTF-8
+     */
+    public OddsFeedConfigurationBuilder setReplayExchangeName(String name) {
+        this.replayExchangeName = exchange(name, "replay exchange name");
+        return this;
+    }
+
+    /**
+     * Whether every attempt of an API call is logged at INFO, with its method, URI, status and
+     * latency. Off unless set; the global listener's {@code onApiCall} hears them either way. New in
+     * 1.0.
+     */
+    public OddsFeedConfigurationBuilder setApiCallLogging(boolean enabled) {
+        this.apiCallLogging = enabled;
         return this;
     }
 
@@ -224,6 +321,23 @@ public final class OddsFeedConfigurationBuilder {
             throw new IllegalArgumentException(what + " must be positive, was " + duration);
         }
         return duration;
+    }
+
+    private static Duration positiveAtMost(Duration duration, Duration max, String what) {
+        if (positive(duration, what).compareTo(max) > 0) {
+            throw new IllegalArgumentException(what + " must be at most " + max + ", was " + duration);
+        }
+        return duration;
+    }
+
+    private static String exchange(String name, String what) {
+        requireNonNull(name, "name");
+        if (name.isBlank()
+                || name.getBytes(StandardCharsets.UTF_8).length > OddsFeedConfiguration.MAX_EXCHANGE_NAME_BYTES) {
+            throw new IllegalArgumentException(what + " must not be blank, nor longer than "
+                    + OddsFeedConfiguration.MAX_EXCHANGE_NAME_BYTES + " bytes in UTF-8, was \"" + name + "\"");
+        }
+        return name;
     }
 
     /**
@@ -259,6 +373,12 @@ public final class OddsFeedConfigurationBuilder {
                 startup != null ? startup : httpClientTimeout.multipliedBy(OddsFeedConfiguration.STARTUP_TIMEOUTS),
                 amqpPrefetch,
                 maxMessageSize,
-                messagingSslContext);
+                messagingSslContext,
+                shutdownTimeout,
+                staleMessageLimit,
+                staleMessageWindow,
+                exchangeName,
+                replayExchangeName,
+                apiCallLogging);
     }
 }
