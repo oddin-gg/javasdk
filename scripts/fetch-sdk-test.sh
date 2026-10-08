@@ -6,7 +6,7 @@
 # redirect as a GitHub release serves them, and nothing at all when either does not, when a
 # redirect leads to plain http, or when the release has no file and there is no token for the
 # registry. With a token, the registry gets it as basic auth and curl's command line never holds
-# it. No call leaves the machine. next.yml runs it on every push. Needs python3, openssl and curl.
+# it. Another run's download is never touched. No call leaves the machine. next.yml runs it on every push. Needs python3, openssl and curl.
 #
 # FETCH_SDK_TEST_BASH runs fetch_sdk in another bash, e.g. an old one: the default is bash.
 set -euo pipefail
@@ -197,10 +197,24 @@ printf 'changed\n' >> "$pom"
 if fetch ok && grep -q "^fetched pom" "$work/out" && grep -q "^ok jar" "$work/out"; then installed "a POM changed in place, fetched again"
 else fail "a POM changed in place: $(cat "$work/out")"; fi
 
-# a download an earlier run left behind, beside files that match: removed, never moved into place
-printf 'left behind\n' > "$jar.part"
-if fetch ok && grep -q "^ok jar" "$work/out" && grep -q "^ok pom" "$work/out"; then installed "a download left behind by an earlier run"
-else fail "a download left behind by an earlier run: $(cat "$work/out")"; fi
+# downloads of other runs: one an interrupted run left hours ago is removed, one another run is
+# writing now is left alone, and neither is moved into place
+stale=$repo/.odds-feed-$version.jar.part-stale1
+running=$repo/.odds-feed-$version.pom.part-other1
+printf 'left behind\n' > "$stale"
+touch -t 202001010000 "$stale"
+printf 'another run\n' > "$running"
+rm -f "$pom"
+if ! fetch ok || ! grep -q "^ok jar" "$work/out" || ! grep -q "^fetched pom" "$work/out"; then
+  fail "other runs' downloads: $(cat "$work/out")"
+elif [ -e "$stale" ]; then
+  fail "a download an interrupted run left behind was not removed"
+elif [ "$(cat "$running" 2>/dev/null)" != "another run" ]; then
+  fail "another run's download was touched"
+else
+  rm -f "$running"
+  installed "other runs' downloads, never moved into place"
+fi
 
 refused "a redirect to plain http" to-http "could not fetch $base/to-http/odds-feed-$version.jar"
 if grep -q '^http ' "$work/requests.log"; then fail "a redirect to plain http was followed"; fi

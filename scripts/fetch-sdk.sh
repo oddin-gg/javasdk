@@ -47,19 +47,21 @@ get() {
 # fetch_sdk <version> <directory> <release URL> <registry URL> <checksums file>: puts
 # odds-feed-<version>.jar and .pom into the directory, each checked against its digest. Each file
 # comes from the release, or from the registry when the release has none (404). Both are
-# downloaded and checked before either is moved into place, so a failure installs nothing.
+# downloaded and checked before either is moved into place, so a failure installs nothing. Each
+# download goes to a name of this run's own (mktemp), so two runs on one local repository never
+# touch each other's, and a checked file takes its final name by a rename, all at once.
 fetch_sdk() {
   local version=$1 dir=$2 release=$3 registry=$4 checksums=$5
-  local kind name file expected source status actual fetched=() checked=
+  local kind name file part expected source status actual i parts=() files=() fetched=()
   mkdir -p "$dir"
-  # a download an earlier run left behind is never trusted, and never moved into place
-  discard "$dir" "$version"
+  # downloads an interrupted run left behind: never moved into place, and gone once surely stale
+  find "$dir" -maxdepth 1 -name ".odds-feed-$version.*.part-*" -mmin +60 -exec rm -f {} + 2>/dev/null || true
   for kind in jar pom; do
     name=odds-feed-$version.$kind
     file=$dir/$name
     expected=$(sed -n "s/^$version\.$kind=//p" "$checksums")
     if [ -z "$expected" ]; then
-      discard "$dir" "$version"
+      discard ${parts[@]+"${parts[@]}"}
       echo "no digest recorded for odds-feed $version ($kind) in $checksums" >&2
       echo "add one once you know where the file came from" >&2
       return 1
@@ -70,50 +72,53 @@ fetch_sdk() {
       continue
     fi
 
+    part=$(mktemp "$dir/.$name.part-XXXXXX")
+    parts+=("$part")
     source=$release/$name
-    status=$(get "$source" "$file.part") || status="no response"
+    status=$(get "$source" "$part") || status="no response"
     if [ "$status" = 404 ]; then
       # no such file on the release: the registry, which only a token can read
       source=$registry/$name
       if [ -z "${GITHUB_TOKEN:-}" ]; then
-        discard "$dir" "$version"
+        discard "${parts[@]}"
         echo "the v$version GitHub release has no $name; fetching it from the packages registry" >&2
         echo "instead needs GITHUB_TOKEN (a GitHub token with read:packages): $source" >&2
         return 1
       fi
-      status=$(get "$source" "$file.part" "$GITHUB_TOKEN") || status="no response"
+      status=$(get "$source" "$part" "$GITHUB_TOKEN") || status="no response"
     fi
     if [ "$status" != 200 ]; then
-      discard "$dir" "$version"
+      discard "${parts[@]}"
       echo "could not fetch $source (status: $status)" >&2
       return 1
     fi
 
-    actual=$(digest "$file.part")
+    actual=$(digest "$part")
     if [ "$actual" != "$expected" ]; then
-      discard "$dir" "$version"
+      discard "${parts[@]}"
       echo "$kind for odds-feed $version from $source does not match the recorded digest" >&2
       echo "  expected $expected" >&2
       echo "  got      $actual" >&2
       return 1
     fi
+    files+=("$file")
     fetched+=("$kind  $file  (from $source)")
-    checked="$checked $kind"
   done
-  # both checked: only now does either file take the name Maven looks for
-  for kind in $checked; do
-    file=$dir/odds-feed-$version.$kind
-    mv "$file.part" "$file"
-  done
-  # non-empty here whenever anything was fetched, and never expanded when empty
-  if [ ${#fetched[@]} -gt 0 ]; then
+  # both checked: only now does either file take the name Maven looks for. Empty arrays are
+  # never expanded: bash before 4.4 refuses that under set -u.
+  if [ ${#parts[@]} -gt 0 ]; then
+    for i in "${!parts[@]}"; do
+      mv -f "${parts[$i]}" "${files[$i]}"
+    done
     printf 'fetched %s\n' "${fetched[@]}"
   fi
 }
 
-# discard <directory> <version>: the downloads not yet checked, or refused
+# discard <file>...: this run's downloads, not yet checked or refused
 discard() {
-  rm -f "$1/odds-feed-$2.jar.part" "$1/odds-feed-$2.pom.part"
+  if [ $# -gt 0 ]; then
+    rm -f "$@"
+  fi
 }
 
 main() {
