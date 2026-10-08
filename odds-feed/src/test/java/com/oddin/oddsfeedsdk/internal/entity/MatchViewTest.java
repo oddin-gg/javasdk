@@ -552,6 +552,73 @@ class MatchViewTest {
         }
     }
 
+    /** The caches keep each locale apart, as 0.0.x did: each preloaded locale reads warm. */
+    @Test
+    void aPreloadOfTwoLocalesOfOneLanguageWarmsEach() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
+            world.matches.preload(MATCH, List.of(Locale.US, EN));
+            world.api.awaitRequests("GET", SUMMARY_EN, 2);
+            world.api.awaitQuiet();
+            int before = world.api.requests().size();
+            assertThat(world.entities.match(MATCH, List.of(EN)).getName(EN)).isNotNull();
+            assertThat(world.entities.match(MATCH, List.of(Locale.US)).getName(Locale.US))
+                    .isNotNull();
+            assertThat(world.api.requests()).as("both warm").hasSize(before);
+        }
+    }
+
+    /** An outage would fail every preload: the log has the first and every thousandth. */
+    @Test
+    void failedPreloadsAreLoggedTheFirstAndEveryThousandth() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW);
+                var log = LogCapture.of(MatchCaches.class)) {
+            world.api.respond(SUMMARY_EN, 500, "");
+            for (int failed = 1; failed <= 3; failed++) {
+                failOnePreload(world, failed);
+            }
+            assertThat(log.lines()).as("three failures").hasSize(1);
+            world.matches.preloadsFailedSoFar(998);
+            failOnePreload(world, 4);
+            assertThat(log.lines()).as("the 999th").hasSize(1);
+            failOnePreload(world, 5);
+            assertThat(log.lines()).as("the 1000th").hasSize(2);
+            assertThat(log.lines().getLast()).contains(", 1000 so far: ");
+        }
+    }
+
+    private static void failOnePreload(EntityWorld world, int failedThen) throws InterruptedException {
+        world.matches.preload(MATCH, List.of(EN));
+        long until = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while ((world.sideLoads.failed() < failedThen || world.matches.preloading() > 0) && System.nanoTime() < until) {
+            Thread.sleep(10);
+        }
+        assertThat(world.sideLoads.failed()).isEqualTo(failedThen);
+    }
+
+    /** The feed's close cuts a preload short: no failure of the API's, so neither counted nor logged. */
+    @Test
+    void aPreloadTheCloseCutsShortIsNeitherCountedNorLogged() throws Exception {
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW);
+                var log = LogCapture.of(MatchCaches.class)) {
+            world.api.respond(
+                    SUMMARY_EN,
+                    Reply.of(200, Fixtures.read("rest/match_summary/match_summary.xml"))
+                            .after(Duration.ofSeconds(3)));
+            world.matches.preload(MATCH, List.of(EN));
+            world.api.awaitRequest("GET", SUMMARY_EN);
+            // as the feed closes: the REST client first, then the side-loads
+            world.client.close();
+            world.sideLoads.close();
+            long until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (world.matches.preloading() > 0 && System.nanoTime() < until) {
+                Thread.sleep(10);
+            }
+            assertThat(world.matches.preloading()).as("ended").isZero();
+            assertThat(world.sideLoads.failed()).isZero();
+            assertThat(log.lines()).isEmpty();
+        }
+    }
+
     /** The summary with its competitors in the other order: away first. */
     private static String swapped(String summary) {
         String home =

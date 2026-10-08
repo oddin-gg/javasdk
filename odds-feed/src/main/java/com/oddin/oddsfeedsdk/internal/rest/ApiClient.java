@@ -63,7 +63,8 @@ public final class ApiClient implements RecoveryRequests, AutoCloseable {
         return transport.deadline();
     }
 
-    boolean isClosed() {
+    /** Whether the feed closed the client: every call fails from then on. */
+    public boolean isClosed() {
         return transport.isClosed();
     }
 
