@@ -31,4 +31,14 @@ public interface ReplayManager {
     boolean stop();
 
     boolean clear();
+
+    /**
+     * The replay player's status as the API gives it, such as {@code playing} or {@code stopped}:
+     * the API's word, not an enum, since the API may name others. Null when the API cannot be
+     * asked, as {@link #getReplayList()} answers then, whatever the exception handling strategy.
+     * New in 1.0, as the Go SDK has it.
+     */
+    default @Nullable String getReplayStatus() {
+        return null;
+    }
 }

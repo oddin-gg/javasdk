@@ -62,7 +62,8 @@ public final class FakeRestServer implements AutoCloseable {
             route("/v1/sports/{lang}/schedules/{id}/schedule", "rest/schedule/schedule.xml"),
             route("/v1/sports/{lang}/competitors/{id}/profile", "rest/competitor/competitor_profile.xml"),
             route("/v1/sports/{lang}/players/{id}/profile", "rest/player/player_profile.xml"),
-            route("/v1/replay", "rest/replay_content/replay_set_content.xml"));
+            route("/v1/replay", "rest/replay_content/replay_set_content.xml"),
+            route("/v1/replay/status", "rest/replay_status/player_status.xml"));
 
     private static final Reply NOT_FOUND = Reply.of(404, Fixtures.read("rest/error/not_found.xml"));
     private static final Reply ACCEPTED = Reply.of(202, "");

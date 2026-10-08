@@ -134,6 +134,17 @@ public final class Replay implements ReplayManager {
         return start(speed, maxDelayInMs, rewriteTimestamps, runParallel, producer);
     }
 
+    /** The API's status string; null, logged, when the API fails, whatever the strategy. */
+    @Override
+    public @Nullable String getReplayStatus() {
+        try {
+            return api.fetchReplayStatus().getStatus();
+        } catch (RuntimeException e) {
+            LOG.error("Failed to fetch the replay status", e);
+            return null;
+        }
+    }
+
     @Override
     public boolean stop() {
         try {

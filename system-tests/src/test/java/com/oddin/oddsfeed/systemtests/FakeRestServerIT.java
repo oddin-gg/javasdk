@@ -113,7 +113,8 @@ class FakeRestServerIT {
                 "/v1/sports/en/schedules/2026-09-23/schedule",
                 "/v1/sports/en/competitors/od:competitor:1/profile",
                 "/v1/sports/en/players/od:player:1/profile",
-                "/v1/replay");
+                "/v1/replay",
+                "/v1/replay/status");
 
         try (FakeRestServer fake = FakeRestServer.start();
                 HttpClient http = HttpClient.newHttpClient()) {
