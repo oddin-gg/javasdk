@@ -38,7 +38,8 @@ class NestedLoadTest {
                     .selectEnvironment("mq.invalid", api.apiHost())
                     .setAccessToken("token")
                     .setRestConcurrencyLimit(1)
-                    // the deadline of every attempt: far above a loaded machine's delay, so none is abandoned
+                    // the deadline of every attempt: a load that a loaded machine slows to ten or fifteen
+                    // seconds still finishes; an attempt past it is not retried, it fails its load
                     .setHttpClientTimeout(Duration.ofSeconds(60))
                     .build();
             for (int m = 0; m < 4; m++) {
@@ -84,18 +85,19 @@ class NestedLoadTest {
                     URN match = URN.parse("od:match:" + m);
                     loads.add(threads.submit(() -> matches.load(match)));
                 }
+                // a load ends by its deadline at the latest: the wait is above it, so a slow machine
+                // reaches the assertions below, which say what failed
+                long waitMillis = timeout.plusSeconds(10).toMillis();
                 for (Future<List<String>> load : loads) {
-                    assertThat(load.get(15, TimeUnit.SECONDS)).isNotEmpty();
+                    assertThat(load.get(waitMillis, TimeUnit.MILLISECONDS)).isNotEmpty();
                 }
             }
-            var abandoned =
+            // an attempt that failed - an I/O failure is retried, and may still run on the fake past its
+            // permit - is its own failure, not a count of two
+            var failed =
                     attempts.stream().filter(call -> call.failure() != null).toList();
-            assertThat(api.mostInFlight())
-                    .as(
-                            "one permit: one call at a time; an attempt that failed or was abandoned can still run"
-                                    + " on the fake past its permit, so the count is not the permit then: %s",
-                            abandoned)
-                    .isEqualTo(1);
+            assertThat(failed).as("attempts that failed").isEmpty();
+            assertThat(api.mostInFlight()).as("one permit: one call at a time").isEqualTo(1);
         }
     }
 }
