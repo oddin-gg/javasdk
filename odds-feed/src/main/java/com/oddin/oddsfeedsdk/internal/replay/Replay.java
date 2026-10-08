@@ -51,7 +51,7 @@ public final class Replay implements ReplayManager {
         try {
             content = api.fetchReplaySetContent();
         } catch (RuntimeException e) {
-            LOG.error("Failed to fetch replay events", e);
+            failed("Failed to fetch replay events", e);
             return null;
         }
         try {
@@ -67,7 +67,7 @@ public final class Replay implements ReplayManager {
             if (strategy == ExceptionHandlingStrategy.THROW) {
                 throw e;
             }
-            LOG.error("Failed to build replay events", e);
+            failed("Failed to build replay events", e);
             return null;
         }
     }
@@ -85,7 +85,7 @@ public final class Replay implements ReplayManager {
             api.putReplayEvent(id);
             return true;
         } catch (RuntimeException e) {
-            LOG.error("Failed to add event id {}", id, e);
+            failed("Failed to add event id " + id, e);
             return false;
         }
     }
@@ -103,7 +103,7 @@ public final class Replay implements ReplayManager {
             api.deleteReplayEvent(id);
             return true;
         } catch (RuntimeException e) {
-            LOG.error("Failed to remove event id {}", id, e);
+            failed("Failed to remove event id " + id, e);
             return false;
         }
     }
@@ -140,7 +140,7 @@ public final class Replay implements ReplayManager {
         try {
             return api.fetchReplayStatus().getStatus();
         } catch (RuntimeException e) {
-            LOG.error("Failed to fetch the replay status", e);
+            failed("Failed to fetch the replay status", e);
             return null;
         }
     }
@@ -151,7 +151,7 @@ public final class Replay implements ReplayManager {
             api.postReplayStop();
             return true;
         } catch (RuntimeException e) {
-            LOG.error("Failed to stop replay", e);
+            failed("Failed to stop replay", e);
             return false;
         }
     }
@@ -162,7 +162,7 @@ public final class Replay implements ReplayManager {
             api.postReplayClear();
             return true;
         } catch (RuntimeException e) {
-            LOG.error("Failed to clear replay", e);
+            failed("Failed to clear replay", e);
             return false;
         }
     }
@@ -178,8 +178,14 @@ public final class Replay implements ReplayManager {
             api.postReplayStart(speed, maxDelay, rewriteTimestamps, runParallel, producer);
             return true;
         } catch (RuntimeException e) {
-            LOG.error("Failed to play replay", e);
+            failed("Failed to play replay", e);
             return false;
         }
+    }
+
+    /** The API's failure, as one warning line with its cause; the stack, for a debugger, at debug. */
+    private static void failed(String what, RuntimeException e) {
+        LOG.warn("{}: {}", what, e.toString());
+        LOG.debug(what, e);
     }
 }

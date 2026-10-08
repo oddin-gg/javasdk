@@ -4,8 +4,10 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Level;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.RecordedRequest;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.LiveOddsAvailability;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
@@ -231,6 +233,22 @@ class ReplayTest {
         api.respond(STATUS_PATH, 500, BROKEN);
 
         assertThat(replay(strategy).getReplayStatus()).isNull();
+    }
+
+    /** A failed call is one warning line with its cause; the stack is at debug, and the answer is the same. */
+    @Test
+    void aFailedCallIsOneWarningLineWithItsCauseAndTheStackAtDebug() {
+        api.respond(STATUS_PATH, 500, BROKEN);
+
+        try (var log = LogCapture.of(Replay.class, Level.DEBUG)) {
+            assertThat(replay(ExceptionHandlingStrategy.CATCH).getReplayStatus())
+                    .isNull();
+            assertThat(log.lines()).hasSize(2);
+            assertThat(log.lines().getFirst())
+                    .startsWith("WARN Failed to fetch the replay status: ")
+                    .doesNotContain("\n");
+            assertThat(log.lines().get(1)).isEqualTo("DEBUG Failed to fetch the replay status");
+        }
     }
 
     @Test
