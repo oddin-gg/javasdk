@@ -25,8 +25,10 @@ import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener;
 import java.time.Duration;
+import java.time.InstantSource;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.LongSupplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -142,12 +144,35 @@ public final class OddsFeed {
             Watchdog.@Nullable Limits limits,
             HealthMonitor.Log log,
             Duration catalogStaleLimit) {
+        this(listener, configuration, extListener, limits, log, catalogStaleLimit, System::nanoTime);
+    }
+
+    /**
+     * With the watchdog's limits, the health's log, the catalogs' stale limit and the clock the
+     * connection's time down is measured by a test sets.
+     *
+     * @param limits the watchdog's limits; null for the configuration's
+     */
+    OddsFeed(
+            GlobalEventsListener listener,
+            OddsFeedConfiguration configuration,
+            @Nullable OddsFeedExtListener extListener,
+            Watchdog.@Nullable Limits limits,
+            HealthMonitor.Log log,
+            Duration catalogStaleLimit,
+            LongSupplier nanos) {
         requireNonNull(listener, "listener");
         this.configuration = requireNonNull(configuration, "configuration");
         this.sessions = new SessionRegistry(extListener);
         this.events = events(listener, extListener);
         this.health = new HealthMonitor(
-                events, sessions::session, catalogStaleLimit, configuration.getConnectionDownLimit(), log);
+                events,
+                sessions::session,
+                InstantSource.system(),
+                nanos,
+                catalogStaleLimit,
+                configuration.getConnectionDownLimit(),
+                log);
         this.watchdog = new Watchdog(
                 health,
                 () -> Watchdog.parts(events, running()),
