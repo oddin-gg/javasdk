@@ -450,9 +450,9 @@ final class Catalog<K, V> {
         try {
             value = fetch.fetch(key, previous == null ? null : previous.value(), deadline);
         } catch (RuntimeException e) {
-            // a fetch the feed's close cut short, or whose thread was interrupted, failed of the shutdown:
+            // a fetch the feed's close cut short failed of the shutdown:
             // no failure to count or back off from, as the preloads of the feed say
-            boolean shutdown = Thread.currentThread().isInterrupted() || closed.getAsBoolean();
+            boolean shutdown = closed.getAsBoolean();
             if (!shutdown) {
                 failedFetches.incrementAndGet();
             }
