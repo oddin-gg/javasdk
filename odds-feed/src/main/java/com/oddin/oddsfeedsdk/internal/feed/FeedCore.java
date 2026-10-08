@@ -170,7 +170,8 @@ public record FeedCore(
      * Starts loading the catalogs of each locale in the background - the market descriptions, the
      * match statuses and the sports - and the void reasons once, so the first messages and reads find
      * them: what the feed's open does for its preload locales. Waits for nothing; a load that fails
-     * is logged and backs off no read, so the next read loads it as it would have without it.
+     * is logged and backs off no read, so the next read loads it as it would have without it, and one
+     * the feed's close cuts short is not logged.
      */
     public void preload(List<Locale> locales) {
         if (locales.isEmpty()) {
@@ -190,7 +191,10 @@ public record FeedCore(
                 try {
                     load.run();
                 } catch (RuntimeException e) {
-                    LOG.warn("Could not preload {}; its first read loads it: {}", what, e.toString());
+                    // one the feed's close cut short is no failure worth a warning
+                    if (!Thread.currentThread().isInterrupted() && !api.isClosed()) {
+                        LOG.warn("Could not preload {}; its first read loads it: {}", what, e.toString());
+                    }
                 }
             });
         } catch (RejectedExecutionException closed) {

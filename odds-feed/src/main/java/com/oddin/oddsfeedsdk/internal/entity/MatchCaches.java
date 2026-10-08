@@ -243,7 +243,7 @@ public final class MatchCaches {
      * makes no call itself: a load of the match in a locale already queued or under way is not
      * queued again, a full side-load queue drops it and counts it, and a reader loads what it needs
      * itself. A load that fails is logged, the first and every thousandth, and counted with the
-     * side-loads.
+     * side-loads; one the feed's close cuts short is neither.
      */
     public void preload(URN id, List<Locale> locales) {
         for (Locale locale : locales) {
@@ -261,6 +261,10 @@ public final class MatchCaches {
         try {
             match(key.id(), key.locale(), deadline);
         } catch (RuntimeException e) {
+            if (Thread.currentThread().isInterrupted() || client.isClosed()) {
+                // the feed is closing: no failure of the API's, nothing to count or tell
+                return;
+            }
             long failed = preloadsFailed.incrementAndGet();
             if (failed == 1 || failed % 1_000 == 0) {
                 LOG.warn(
@@ -275,6 +279,11 @@ public final class MatchCaches {
         } finally {
             preloading.remove(key);
         }
+    }
+
+    /** Sets how many preloads have failed so far, for a test to reach the thousandth. */
+    void preloadsFailedSoFar(long failed) {
+        preloadsFailed.set(failed);
     }
 
     /** The preloads queued or under way; for a test. */
