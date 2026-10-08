@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -443,6 +444,79 @@ class OddsFeedConfigurationBuilderTest {
     }
 
     @Test
+    void theLocalesAreEnglishAndNoneToPreloadAndTheEagerPreloadIsOffUnlessSet() {
+        OddsFeedConfiguration defaults =
+                builder().selectProduction().setAccessToken("token").build();
+        assertThat(defaults.getDefaultLocale()).isEqualTo(Locale.ENGLISH);
+        assertThat(defaults.getPreloadLocales()).isEmpty();
+        assertThat(defaults.isEagerEntityPreload()).isFalse();
+
+        OddsFeedConfiguration zeroZeroX = new OddsFeedConfiguration(
+                "token",
+                Locale.FRENCH,
+                20,
+                360,
+                null,
+                ExceptionHandlingStrategy.THROW,
+                new Environment("mq", "api", 5672),
+                null,
+                1,
+                1,
+                1,
+                1);
+        assertThat(zeroZeroX.getDefaultLocale()).isEqualTo(Locale.FRENCH);
+        assertThat(zeroZeroX.getPreloadLocales()).isEmpty();
+        assertThat(zeroZeroX.isEagerEntityPreload()).isFalse();
+    }
+
+    @Test
+    void theLocalesAndTheEagerPreloadAreCarriedToTheConfiguration() {
+        var russian = Locale.of("ru");
+        var asked = new ArrayList<>(List.of(russian, Locale.ENGLISH, russian));
+        OddsFeedConfiguration configuration = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setDefaultLocale(Locale.GERMAN)
+                .setPreloadLocales(asked)
+                .setEagerEntityPreload(true)
+                .build();
+        asked.clear();
+        assertThat(configuration.getDefaultLocale()).isEqualTo(Locale.GERMAN);
+        assertThat(configuration.getPreloadLocales())
+                .as("each once, in order, the caller's list not kept")
+                .containsExactly(russian, Locale.ENGLISH);
+        assertThatThrownBy(() -> configuration.getPreloadLocales().add(Locale.FRENCH))
+                .isInstanceOf(UnsupportedOperationException.class);
+        assertThat(configuration.isEagerEntityPreload()).isTrue();
+        assertThat(builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setPreloadLocales(List.of(Locale.FRENCH))
+                        .setPreloadLocales(List.of())
+                        .build()
+                        .getPreloadLocales())
+                .as("set again to none")
+                .isEmpty();
+    }
+
+    @Test
+    void aLocaleWithoutALanguageIsRefusedAndChangesNothing() {
+        var builder = builder().selectProduction().setAccessToken("token").setPreloadLocales(List.of(Locale.FRENCH));
+        assertThatThrownBy(() -> builder.setDefaultLocale(Locale.ROOT))
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessage("locale must name a language, was \"\"");
+        assertThatThrownBy(() -> builder.setPreloadLocales(List.of(Locale.GERMAN, Locale.ROOT)))
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("locales must name a language");
+        assertThatThrownBy(() -> builder.setPreloadLocales(Arrays.asList(Locale.GERMAN, null)))
+                .isExactlyInstanceOf(NullPointerException.class)
+                .hasMessage("locales");
+        OddsFeedConfiguration configuration = builder.build();
+        assertThat(configuration.getDefaultLocale()).isEqualTo(Locale.ENGLISH);
+        assertThat(configuration.getPreloadLocales()).containsExactly(Locale.FRENCH);
+    }
+
+    @Test
     void anAccessTokenAndAnEnvironmentAreRequired() {
         assertThatThrownBy(() -> builder().selectProduction().build())
                 .isInstanceOf(IllegalArgumentException.class)
@@ -478,6 +552,8 @@ class OddsFeedConfigurationBuilderTest {
         nulls.add(new Null(() -> builder.setExchangeName(nullValue()), "name"));
         nulls.add(new Null(() -> builder.setReplayExchangeName(nullValue()), "name"));
         nulls.add(new Null(() -> builder.setCatalogStaleLimit(nullValue()), "catalog stale limit"));
+        nulls.add(new Null(() -> builder.setDefaultLocale(nullValue()), "locale"));
+        nulls.add(new Null(() -> builder.setPreloadLocales(nullValue()), "locales"));
         nulls.add(new Null(() -> builder.setCallbackStallLimit(nullValue()), "callback stall limit"));
         nulls.add(new Null(() -> builder.setQueueStallLimit(nullValue()), "queue stall limit"));
         nulls.add(new Null(() -> builder.setWatchdogInterval(nullValue()), "watchdog interval"));

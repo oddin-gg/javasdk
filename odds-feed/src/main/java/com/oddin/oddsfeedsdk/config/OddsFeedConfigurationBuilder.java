@@ -4,6 +4,8 @@ import static java.util.Objects.requireNonNull;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Locale;
 import javax.net.ssl.SSLContext;
 import org.jspecify.annotations.Nullable;
@@ -18,7 +20,7 @@ public final class OddsFeedConfigurationBuilder {
     private static final int DEFAULT_MESSAGING_PORT = 5672;
 
     private @Nullable String accessToken;
-    private final Locale defaultLocale = Locale.ENGLISH;
+    private Locale defaultLocale = Locale.ENGLISH;
     private @Nullable Environment selectedEnvironment;
     private int maxInactivitySeconds = OddsFeedConfiguration.DEFAULT_MAX_INACTIVITY_SECONDS;
     private int maxRecoveryExecutionMinutes = OddsFeedConfiguration.DEFAULT_MAX_RECOVERY_EXECUTION_MINUTES;
@@ -46,6 +48,8 @@ public final class OddsFeedConfigurationBuilder {
     private @Nullable Duration queueStallLimit;
     private Duration watchdogInterval = OddsFeedConfiguration.DEFAULT_WATCHDOG_INTERVAL;
     private Duration connectionDownLimit = OddsFeedConfiguration.DEFAULT_CONNECTION_DOWN_LIMIT;
+    private List<Locale> preloadLocales = List.of();
+    private boolean eagerEntityPreload;
 
     /** Public because 0.0.x's constructor was, to Java callers; {@code OddsFeed.getOddsFeedConfigurationBuilder()} makes one. */
     public OddsFeedConfigurationBuilder() {}
@@ -408,6 +412,62 @@ public final class OddsFeedConfigurationBuilder {
         return this;
     }
 
+    /**
+     * The locale a getter without one reads in, and the one fixtures and feed messages are built in.
+     * English unless set, as in 0.0.x, which had no setter. New in 1.0.
+     *
+     * @throws IllegalArgumentException for a locale without a language, such as {@link Locale#ROOT}:
+     *     the API is asked by the language
+     */
+    public OddsFeedConfigurationBuilder setDefaultLocale(Locale locale) {
+        this.defaultLocale = language(locale, "locale");
+        return this;
+    }
+
+    /**
+     * The locales whose catalogs - the market descriptions, the match statuses, the sports, and the
+     * void reasons once - {@code open()} starts loading in the background, so the first messages and
+     * reads find them; with the {@linkplain #setEagerEntityPreload eager entity preload}, also the
+     * locales a message's match is loaded in, next to the default locale. None unless set: 0.0.x
+     * loaded each catalog on its first read, as 1.0 still does for any locale. A locale given twice
+     * counts once. New in 1.0.
+     *
+     * @throws IllegalArgumentException for a locale without a language
+     */
+    public OddsFeedConfigurationBuilder setPreloadLocales(List<Locale> locales) {
+        requireNonNull(locales, "locales");
+        var each = new LinkedHashSet<Locale>();
+        for (Locale locale : locales) {
+            each.add(language(locale, "locales"));
+        }
+        this.preloadLocales = List.copyOf(each);
+        return this;
+    }
+
+    /**
+     * Whether the match each feed message names is loaded in the background as the message arrives,
+     * before the session takes it, in the default locale and the {@linkplain #setPreloadLocales
+     * preload locales}, so the callback reads it warm instead of waiting for the API. Off unless set,
+     * as in 0.0.x, which loaded an entity on its first read. New in 1.0.
+     *
+     * <p>The loads run on the SDK's background loaders, never on the thread that delivers or handles
+     * a message, and never delay a message: one already under way or queued for the same match and
+     * locale is not queued again, a full queue drops the load and counts it with the side-loads in
+     * {@code getHealth()}, and a load that fails is logged and counted there too. A callback that
+     * reads the match before its load is done joins it.
+     */
+    public OddsFeedConfigurationBuilder setEagerEntityPreload(boolean enabled) {
+        this.eagerEntityPreload = enabled;
+        return this;
+    }
+
+    private static Locale language(Locale locale, String what) {
+        if (requireNonNull(locale, what).getLanguage().isEmpty()) {
+            throw new IllegalArgumentException(what + " must name a language, was \"" + locale + "\"");
+        }
+        return locale;
+    }
+
     private static Duration positive(Duration duration, String what) {
         if (!requireNonNull(duration, what).isPositive()) {
             throw new IllegalArgumentException(what + " must be positive, was " + duration);
@@ -483,7 +543,9 @@ public final class OddsFeedConfigurationBuilder {
                 callbackStall,
                 queueStall,
                 watchdogInterval,
-                connectionDownLimit);
+                connectionDownLimit,
+                preloadLocales,
+                eagerEntityPreload);
     }
 
     /** The stall limit set, if it sits above the SDK's own waits for the API; the derived one if none. */

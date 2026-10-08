@@ -98,6 +98,11 @@ added | config/OddsFeedConfigurationBuilder.setCallbackStallLimit (Ljava/time/Du
 added | config/OddsFeedConfigurationBuilder.setQueueStallLimit (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long a thread's queue may stand still before the thread is stalled
 added | config/OddsFeedConfigurationBuilder.setWatchdogInterval (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how often the feed's watch over its threads looks
 added | config/OddsFeedConfigurationBuilder.setConnectionDownLimit (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long the broker connection may be down before it is degraded
+added | config/OddsFeedConfiguration.getPreloadLocales ()Ljava/util/List; | the locales whose catalogs open() starts loading
+added | config/OddsFeedConfiguration.isEagerEntityPreload ()Z | whether a message's match is loaded as the message arrives
+added | config/OddsFeedConfigurationBuilder.setDefaultLocale (Ljava/util/Locale;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | 0.0.x's default locale, which it had no setter for
+added | config/OddsFeedConfigurationBuilder.setPreloadLocales (Ljava/util/List;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the locales whose catalogs open() starts loading
+added | config/OddsFeedConfigurationBuilder.setEagerEntityPreload (Z)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | whether a message's match is loaded as the message arrives
 
 # Events of the feed as a whole, as default methods, so a listener written for 0.0.x compiles as it is.
 added | subscribe/GlobalEventsListener.onConnectionStateChange (Lcom/oddin/oddsfeedsdk/subscribe/ConnectionStateChange;)V | the broker connection's state, up as well as down
