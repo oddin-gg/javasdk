@@ -132,9 +132,19 @@ types in packages whose name contains `internal`.
 - Entity getters such as `match.getName(locale)` or `match.getCompetitors()` are
   synchronous and may fetch from REST when the cache is cold. They run on the caller's
   thread. A callback that touches a cold entity pays that latency on its own session
-  only. An eager preload, which loads what a message names before its callback, is
-  planned with ticket 28 before 1.0.0; the release candidate does not have it, so a
-  callback's first read of an entity still pays the fetch.
+  only. Clients who want no fetch in their callbacks turn on the eager entity preload
+  (`setEagerEntityPreload`, off by default, as 0.0.x loaded an entity on its first
+  read): as the broker client hands a message to its session's queue, the match its
+  routing key names is queued for loading in the default locale and the preload locales,
+  so by the time the session takes the message the match is loaded or loading, and a
+  callback that reads it joins the load. The load runs on a side-load worker, never on
+  the broker client's consumer thread or a session's, where 0.0.54 lost messages to HTTP
+  calls; the consumer thread only reads the routing key and queues, without waiting.
+  Nothing waits for a preload: a message is delivered whether its match has loaded or
+  not. A load of the same match in the same locale already queued or under way is not
+  queued again, the side-loads' queue of 1 000 drops one that finds no room and counts
+  it, and one that fails is logged - the first and every thousandth - and counted, both
+  with the side-loads in `getHealth()`.
   The same holds on the events dispatcher: a getter inside a producer-status callback
   delays other events, which the documentation of that listener says.
 - `ExceptionHandlingStrategy` keeps its meaning, getter by getter as 0.0.57 has it.
@@ -272,14 +282,14 @@ to one of them:
 | Group | Count | Runs | Never runs |
 |---|---|---|---|
 | AMQP I/O | owned by the AMQP client | frame reading, heartbeats | anything of ours |
-| AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues; the alive hand-off; telling the recovery actor of a lost channel, without blocking | decode, build, cache writes, client code, anything blocking |
+| AMQP consumer | one executor per connection, sized to sessions + 1 | hand-off of raw deliveries into session queues; the alive hand-off; telling the recovery actor of a lost channel, without blocking; with the eager preload, reading a queued delivery's routing key and queuing its match's load | decode, build, cache writes, REST, client code, anything blocking |
 | AMQP reconnect and reopen | virtual threads | the reconnect loop; reopening a lost channel | client code |
 | Session dispatcher | one thread per session | decode, build, cache write, client callback, ack, age sampling | nothing else |
 | Alive dispatcher | one thread | alive decode, clock offsets, posting liveness facts to the recovery actor | REST, client code |
 | Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second, paced by `System.nanoTime`, so a wall clock set back stops none of its ticks | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
 | Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, fatal errors, listener exceptions, API call events, recovery completion | message callbacks |
 | REST workers | virtual threads | HTTP calls, posting results back to whoever asked; an event recovery caller's answer, on a thread of its own | client code |
-| Side-loads | four virtual threads | background profile loads | client code |
+| Side-loads | four virtual threads | background profile loads, the eager preload's match loads | client code |
 | Watchdog | one thread, from the feed's first start to its close | every 5 s: the stall checks, the JVM's deadlock search, a read of the health | blocking work, client code |
 | Keep-alive | one non-daemon thread, from `open()` to `close()` | nothing: it keeps the JVM up while the feed is open (section 3) | anything |
 
@@ -428,7 +438,10 @@ Structure:
   still running past its waiters' time is abandoned and replaced by the next miss,
   and writes nothing from then on.
 - Side-loading queues never block the producer. When full, they drop and count. Each
-  side-load has one deadline too, from when a worker starts it.
+  side-load has one deadline too, from when a worker starts it. The eager preload's loads
+  go to the main queue, one per match and locale at a time: a match already queued or
+  under way in a locale is not queued again, so a burst of messages of one match takes
+  one place.
 
 Bounds and freshness:
 
@@ -1024,8 +1037,8 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
   recovery time, stale-message limit and window, exchange names, shutdown timeout, API
   call logging (each attempt at INFO; `onApiCall` hears them either way), the health
   thresholds (catalog stale limit, callback and queue stall limits, watchdog interval,
-  connection down limit). Planned: default locale, preload locales, eager entity preload for
-  messages.
+  connection down limit), the default locale, preload locales (whose catalogs `open()`
+  starts loading in the background) and the eager entity preload for messages.
 - Events on the global listener, all as `default` methods: connection state changes
   (`onConnectionStateChange`), health events (`onHealthEvent`), listener and pipeline
   exceptions (`onCallbackFailure`), fatal errors (`onFatalError`), the safety net's resets
@@ -1121,7 +1134,7 @@ Performance is a requirement, not a follow-up.
 - A benchmark harness in the repo: generated odds changes shaped like a live match's,
   run through decode, cache and entity build, with JMH. Budgets per message for time and
   allocation. Runs in CI as a regression check. It has a **cold scenario** as well: a
-  restart-shaped run where every entity is a miss and eager preload is on (ticket 28), against the
+  restart-shaped run where every entity is a miss and the eager preload is on, against the
   fake REST server with realistic latency, with a budget on time-to-caught-up. The
   cold path is the one that decides whether a client trips the safety net after a
   restart.
@@ -1250,7 +1263,7 @@ group by group.
 20. Entity façades and factories with parallel multi-locale loading and the
     partial-failure rule. Also the catalog façades and `SportsInfoManager`, the
     side-loads, the eager entity preload for messages, and the cross-cache deadlock
-    tests. The preload is built but nothing calls it yet; ticket 28 wires it.
+    tests. Ticket 28 wired the preload to the message path, with its option.
 
     39. Player underage on the 1.0 line, as merged on `release/0.x`, and the API
         compatibility baseline moved to each new 0.x release.
@@ -1319,7 +1332,7 @@ group by group.
     connection down limit, which makes a connection down for longer than 60 s `DEGRADED`;
     a sport, a tournament and a player by id, and the clears of a player and of a sport;
     the active producers in a scope, a producer's status, the replay status and the reload of
-    the void reasons.
+    the void reasons; the default locale, the preload locales and the eager entity preload.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
@@ -1620,3 +1633,14 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   status is the API's string from `/replay/status`, null when the API fails, as the replay list
   answers. The system tests compile against both lines, so these are tested over the fake REST
   server by unit tests; the fake answers the replay status from the schema's fixture.
+- 2026-10-08, ticket 28's locales and preload: 0.0.x had no setter for the default
+  locale, and loaded every catalog and entity on its first read. The default locale gets a
+  setter; the preload locales' catalogs (market descriptions, match statuses, sports, and
+  the void reasons once) start loading in the background once `open()` has opened, as the
+  Go SDK warms its catalogs at its start, but nothing waits for them and a failure is
+  logged, not thrown, since `open()` has succeeded by then. The eager entity preload is off
+  by default, so the API sees no more calls than with 0.0.x unless a client asks: as a
+  message is queued for its session, its match is queued for loading on the side-loads,
+  never loaded on the consumer or a session thread, deduplicated per match and locale,
+  dropped and counted when the queue is full, logged and counted when it fails, and never
+  waited for.
