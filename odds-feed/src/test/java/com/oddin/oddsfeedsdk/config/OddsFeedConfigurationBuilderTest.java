@@ -188,7 +188,7 @@ class OddsFeedConfigurationBuilderTest {
                 .setMaxRecoveryExecutionMinutes(360)
                 .setMaxRecoveryExecutionMinutes(720)
                 .setShutdownTimeout(Duration.ofMillis(1))
-                .setStaleMessageLimit(Duration.ofSeconds(30))
+                .setStaleMessageLimit(Duration.ofSeconds(10).plusMillis(1))
                 .setStaleMessageWindow(Duration.ofDays(1))
                 .setExchangeName("feed.of.mine")
                 .setReplayExchangeName("x".repeat(255))
@@ -197,18 +197,22 @@ class OddsFeedConfigurationBuilderTest {
         assertThat(configuration.getMaxInactivitySeconds()).isEqualTo(11);
         assertThat(configuration.getMaxRecoveryExecutionMinutes()).isEqualTo(720);
         assertThat(configuration.getShutdownTimeout()).isEqualTo(Duration.ofMillis(1));
-        assertThat(configuration.getStaleMessageLimit()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(configuration.getStaleMessageLimit())
+                .isEqualTo(Duration.ofSeconds(10).plusMillis(1));
         assertThat(configuration.getStaleMessageWindow()).isEqualTo(Duration.ofDays(1));
         assertThat(configuration.getExchangeName()).isEqualTo("feed.of.mine");
         assertThat(configuration.getReplayExchangeName()).isEqualTo("x".repeat(255));
         assertThat(configuration.isApiCallLogging()).isTrue();
-        assertThat(builder()
-                        .selectProduction()
-                        .setAccessToken("token")
-                        .setShutdownTimeout(Duration.ofHours(1))
-                        .build()
-                        .getShutdownTimeout())
-                .isEqualTo(Duration.ofHours(1));
+        OddsFeedConfiguration atTheOtherEdges = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setShutdownTimeout(Duration.ofHours(1))
+                .setStaleMessageLimit(Duration.ofDays(1))
+                .setStaleMessageWindow(Duration.ofSeconds(1))
+                .build();
+        assertThat(atTheOtherEdges.getShutdownTimeout()).isEqualTo(Duration.ofHours(1));
+        assertThat(atTheOtherEdges.getStaleMessageLimit()).isEqualTo(Duration.ofDays(1));
+        assertThat(atTheOtherEdges.getStaleMessageWindow()).isEqualTo(Duration.ofSeconds(1));
     }
 
     /** 0.0.x had none of these setters; each refuses what the feed could not work with. */
@@ -226,13 +230,21 @@ class OddsFeedConfigurationBuilderTest {
                 new Refused(
                         () -> builder.setShutdownTimeout(Duration.ofHours(1).plusNanos(1)),
                         "shutdown timeout must be at most PT1H"),
-                new Refused(() -> builder.setStaleMessageLimit(Duration.ZERO), "stale-message limit must be positive"),
+                new Refused(
+                        () -> builder.setStaleMessageLimit(Duration.ZERO),
+                        "stale-message limit must be more than the 10 seconds between a producer's alives"),
+                new Refused(
+                        () -> builder.setStaleMessageLimit(Duration.ofSeconds(10)),
+                        "stale-message limit must be more than the 10 seconds"),
                 new Refused(
                         () -> builder.setStaleMessageLimit(Duration.ofDays(1).plusMillis(1)),
                         "stale-message limit must be at most PT24H"),
                 new Refused(
                         () -> builder.setStaleMessageWindow(Duration.ofMillis(-1)),
-                        "stale-message window must be positive"),
+                        "stale-message window must be at least the recovery's tick of PT1S"),
+                new Refused(
+                        () -> builder.setStaleMessageWindow(Duration.ofMillis(999)),
+                        "stale-message window must be at least the recovery's tick of PT1S"),
                 new Refused(
                         () -> builder.setStaleMessageWindow(Duration.ofDays(2)),
                         "stale-message window must be at most PT24H"),

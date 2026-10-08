@@ -30,6 +30,11 @@ public final class OddsFeedConfiguration {
     static final Duration DEFAULT_STALE_MESSAGE_LIMIT = Duration.ofMinutes(2);
     /** How long they must stay stale before the safety net acts, unless set. */
     static final Duration DEFAULT_STALE_MESSAGE_WINDOW = Duration.ofMinutes(1);
+    /**
+     * The recovery actor's tick, how often it looks at the time: a shorter stale-message window
+     * would be measured no finer than it.
+     */
+    static final Duration RECOVERY_TICK = Duration.ofSeconds(1);
     /** The most the stale-message limit and window take: a day is as good as off. */
     static final Duration MAX_STALE_MESSAGE_DURATION = Duration.ofDays(1);
 

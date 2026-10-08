@@ -267,11 +267,19 @@ public final class OddsFeedConfigurationBuilder {
      * How old, by the producer's clock, a session's live messages may be before the safety net counts
      * the session behind. 2 minutes unless set. New in 1.0.
      *
-     * @throws IllegalArgumentException unless it is positive and at most a day
+     * @throws IllegalArgumentException unless it is more than the 10 seconds between a producer's
+     *     alives, since the delivery's own jitter would make a healthy session look stale under a
+     *     smaller one, and at most a day
      */
     public OddsFeedConfigurationBuilder setStaleMessageLimit(Duration limit) {
-        this.staleMessageLimit =
-                positiveAtMost(limit, OddsFeedConfiguration.MAX_STALE_MESSAGE_DURATION, "stale-message limit");
+        requireNonNull(limit, "stale-message limit");
+        var alives = Duration.ofSeconds(OddsFeedConfiguration.ALIVE_INTERVAL_SECONDS);
+        if (limit.compareTo(alives) <= 0) {
+            throw new IllegalArgumentException("stale-message limit must be more than the "
+                    + OddsFeedConfiguration.ALIVE_INTERVAL_SECONDS + " seconds between a producer's alives, was "
+                    + limit);
+        }
+        this.staleMessageLimit = atMost(limit, OddsFeedConfiguration.MAX_STALE_MESSAGE_DURATION, "stale-message limit");
         return this;
     }
 
@@ -281,11 +289,17 @@ public final class OddsFeedConfigurationBuilder {
      * has accepted them, replaces the session's channel, dropping the backlog. 1 minute unless set.
      * New in 1.0.
      *
-     * @throws IllegalArgumentException unless it is positive and at most a day
+     * @throws IllegalArgumentException unless it is at least the recovery's tick of a second, which
+     *     it is measured by, and at most a day
      */
     public OddsFeedConfigurationBuilder setStaleMessageWindow(Duration window) {
+        requireNonNull(window, "stale-message window");
+        if (window.compareTo(OddsFeedConfiguration.RECOVERY_TICK) < 0) {
+            throw new IllegalArgumentException("stale-message window must be at least the recovery's tick of "
+                    + OddsFeedConfiguration.RECOVERY_TICK + ", was " + window);
+        }
         this.staleMessageWindow =
-                positiveAtMost(window, OddsFeedConfiguration.MAX_STALE_MESSAGE_DURATION, "stale-message window");
+                atMost(window, OddsFeedConfiguration.MAX_STALE_MESSAGE_DURATION, "stale-message window");
         return this;
     }
 
@@ -402,7 +416,11 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     private static Duration positiveAtMost(Duration duration, Duration max, String what) {
-        if (positive(duration, what).compareTo(max) > 0) {
+        return atMost(positive(duration, what), max, what);
+    }
+
+    private static Duration atMost(Duration duration, Duration max, String what) {
+        if (duration.compareTo(max) > 0) {
             throw new IllegalArgumentException(what + " must be at most " + max + ", was " + duration);
         }
         return duration;
