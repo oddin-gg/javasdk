@@ -37,13 +37,15 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 /**
  * Each part's state as the health finds it, and each change told once, in order: a session lagging,
- * a catalog stale past its limit, what the SDK's own watch found.
+ * a catalog stale past its limit, the connection down past its limit, what the SDK's own watch
+ * found.
  */
 class HealthMonitorTest {
 
@@ -124,6 +126,60 @@ class HealthMonitorTest {
         var fresh = heard.next();
         assertThat(fresh.previous()).isEqualTo(HealthState.DEGRADED);
         assertThat(fresh.state()).isEqualTo(HealthState.HEALTHY);
+    }
+
+    @Test
+    void aConnectionDownForLongerThanItsLimitIsDegradedAndToldAtOnceWhenItIsUp() throws InterruptedException {
+        var nanos = new AtomicLong(1_000);
+        var limit = Duration.ofSeconds(60);
+        var health =
+                new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), nanos::get, HOUR, limit, logged::add);
+        events.start();
+        assertThat(read(health).components()).containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+
+        health.down("connection reset");
+        nanos.addAndGet(limit.toNanos());
+        assertThat(read(health).components())
+                .as("down for its limit")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        health.down("connection refused, a reconnect failing");
+        nanos.incrementAndGet();
+        var reading = read(health);
+        assertThat(reading.components())
+                .as("down for longer, from the first down")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        assertThat(reading.state()).isEqualTo(HealthState.DEGRADED);
+        var degraded = heard.next();
+        assertThat(degraded.component()).isEqualTo(HealthComponent.CONNECTION);
+        assertThat(degraded.state()).isEqualTo(HealthState.DEGRADED);
+        assertThat(degraded.reason()).isEqualTo("the broker connection has been down for 60 s, over its limit of 60 s");
+        read(health);
+        heard.nothingMore("still down");
+
+        health.up();
+        var up = heard.next();
+        assertThat(up.previous()).isEqualTo(HealthState.DEGRADED);
+        assertThat(up.state()).isEqualTo(HealthState.HEALTHY);
+        assertThat(up.reason()).isEqualTo("the broker connection is up");
+        health.down("connection reset");
+        nanos.addAndGet(limit.toNanos());
+        assertThat(read(health).components())
+                .as("down again, counted from the new loss")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        heard.nothingMore("up, then down within the limit");
+        assertThat(logged).extracting(HealthEvent::state).containsExactly(HealthState.DEGRADED, HealthState.HEALTHY);
+        assertThatThrownBy(() -> health.watched(HealthComponent.CONNECTION, 0, HealthState.STALLED, "watched"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void theLimitsOfAHealthBuiltWithoutTheConfigurationAreTheConfigurationsDefaults() {
+        var defaults = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectProduction()
+                .setAccessToken("token")
+                .build();
+        assertThat(HealthMonitor.CATALOG_STALE_LIMIT).isEqualTo(defaults.getCatalogStaleLimit());
+        assertThat(HealthMonitor.CONNECTION_DOWN_LIMIT).isEqualTo(defaults.getConnectionDownLimit());
     }
 
     @Test
@@ -275,7 +331,8 @@ class HealthMonitorTest {
                         HealthComponent.TIMERS,
                         HealthComponent.THREADS,
                         HealthComponent.CONSUMER,
-                        HealthComponent.SESSION);
+                        HealthComponent.SESSION,
+                        HealthComponent.CONNECTION);
 
         health.watched(HealthComponent.RECOVERY, 0, HealthState.STALLED, "its turn has not ended");
         var live = health.assess(
@@ -299,7 +356,8 @@ class HealthMonitorTest {
                         Map.entry(HealthComponent.EVENTS, HealthState.HEALTHY),
                         Map.entry(HealthComponent.TIMERS, HealthState.HEALTHY),
                         Map.entry(HealthComponent.THREADS, HealthState.HEALTHY),
-                        Map.entry(HealthComponent.CATALOGS, HealthState.DEGRADED));
+                        Map.entry(HealthComponent.CATALOGS, HealthState.DEGRADED),
+                        Map.entry(HealthComponent.CONNECTION, HealthState.HEALTHY));
         assertThat(live.state()).as("the worst").isEqualTo(HealthState.STALLED);
     }
 
@@ -410,7 +468,8 @@ class HealthMonitorTest {
                                     HealthComponent.EVENTS,
                                     HealthComponent.TIMERS,
                                     HealthComponent.THREADS,
-                                    HealthComponent.CATALOGS);
+                                    HealthComponent.CATALOGS,
+                                    HealthComponent.CONNECTION);
                     assertThat(open.sessions())
                             .extracting(FeedHealth.Session::id)
                             .containsExactly(1, 2);
@@ -451,7 +510,8 @@ class HealthMonitorTest {
                                     HealthComponent.EVENTS,
                                     HealthComponent.TIMERS,
                                     HealthComponent.THREADS,
-                                    HealthComponent.CATALOGS);
+                                    HealthComponent.CATALOGS,
+                                    HealthComponent.CONNECTION);
                 } finally {
                     replay.close();
                 }
@@ -464,6 +524,11 @@ class HealthMonitorTest {
     // ------------------------------------------------------------------ readings
 
     private FeedHealth read(FeedHealth.Session... sessions) {
+        return read(health, sessions);
+    }
+
+    /** As the feed reads one once open. */
+    private FeedHealth read(HealthMonitor health, FeedHealth.Session... sessions) {
         return health.assess(
                 health.nextReading(),
                 true,

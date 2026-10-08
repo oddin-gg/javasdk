@@ -119,7 +119,7 @@ public final class OddsFeed {
     /**
      * With the watchdog's limits and the health's log a test sets.
      *
-     * @param limits the watchdog's limits; null for those of the configuration's HTTP timeout
+     * @param limits the watchdog's limits; null for the configuration's
      */
     OddsFeed(
             GlobalEventsListener listener,
@@ -127,13 +127,13 @@ public final class OddsFeed {
             @Nullable OddsFeedExtListener extListener,
             Watchdog.@Nullable Limits limits,
             HealthMonitor.Log log) {
-        this(listener, configuration, extListener, limits, log, HealthMonitor.CATALOG_STALE_LIMIT);
+        this(listener, configuration, extListener, limits, log, configuration.getCatalogStaleLimit());
     }
 
     /**
      * With the watchdog's limits, the health's log and the catalogs' stale limit a test sets.
      *
-     * @param limits the watchdog's limits; null for those of the configuration's HTTP timeout
+     * @param limits the watchdog's limits; null for the configuration's
      */
     OddsFeed(
             GlobalEventsListener listener,
@@ -146,12 +146,13 @@ public final class OddsFeed {
         this.configuration = requireNonNull(configuration, "configuration");
         this.sessions = new SessionRegistry(extListener);
         this.events = events(listener, extListener);
-        this.health = new HealthMonitor(events, sessions::session, catalogStaleLimit, log);
+        this.health = new HealthMonitor(
+                events, sessions::session, catalogStaleLimit, configuration.getConnectionDownLimit(), log);
         this.watchdog = new Watchdog(
                 health,
                 () -> Watchdog.parts(events, running()),
                 this::read,
-                limits != null ? limits : Watchdog.Limits.forHttpTimeout(configuration.getHttpClientTimeout()));
+                limits != null ? limits : Watchdog.Limits.of(configuration));
     }
 
     /**
@@ -227,18 +228,21 @@ public final class OddsFeed {
      * deliberately gives up, for a health check or a metrics exporter. Cheap, and safe from any
      * thread, a callback included: it reads counters and flags, never waits for the feed, and does
      * not start it. Before the feed starts it has no part and counts nothing; once started it has the
-     * events, the catalogs, the timers and the JVM's threads, and once open the consumer and the
-     * sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
+     * events, the catalogs, the timers and the JVM's threads, and once open the connection, the
+     * consumer and the sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
      * what the feed counted, and each part as the watch last found it, but the timers healthy: a
      * watch stopped is not one wedged.
      *
-     * <p>From its start to its close the feed watches its own threads, every 5 seconds: a part that
-     * has been in one callback, or whose queue has not moved while not empty, for longer than the
-     * SDK itself can wait for the API in one getter - twice the HTTP client timeout and 5 seconds,
-     * 30 seconds at least: 65 seconds for the default timeout - is stalled, so a slow API is no
-     * stall, and so are the JVM's threads while a deadlock holds some; each is
-     * healthy again once that ends. A catalog that has served a value stale for an hour or more is
-     * degraded, and a session lagging. Each change is logged - a stall as an error - and told to
+     * <p>From its start to its close the feed watches its own threads, every 5 seconds unless the
+     * configuration sets another interval: a part that has been in one callback, or whose queue has
+     * not moved while not empty, for longer than the configuration's stall limits is stalled, and so
+     * are the JVM's threads while a deadlock holds some; each is healthy again once that ends. The
+     * limits are never under the longest the SDK itself can wait for the API in one getter, so a slow
+     * API is no stall; unless set, they are twice the HTTP client timeout and 5 seconds, 30 seconds
+     * at least: 65 seconds for the default timeout. A catalog that has served a value stale for its
+     * limit or more, an hour unless set, is degraded, and so are a session lagging and the broker
+     * connection down for longer than its limit, 60 seconds unless set. Each change is logged - a
+     * stall as an error - and told to
      * {@code onHealthEvent}, until the feed closes; a session's lagging as it changes. The feed never
      * interrupts a stalled thread: the remedy is to close it and open a new one. This call looks at
      * the parts again itself, so it finds a stall even when the watch's own thread is the one wedged,
@@ -462,6 +466,11 @@ public final class OddsFeed {
     /** The watch over the feed's threads; for a test. */
     Watchdog watchdog() {
         return watchdog;
+    }
+
+    /** The feed's health; for a test. */
+    HealthMonitor health() {
+        return health;
     }
 
     /** What {@link #open} added and {@link #close} is to stop; for the health, and a test. */

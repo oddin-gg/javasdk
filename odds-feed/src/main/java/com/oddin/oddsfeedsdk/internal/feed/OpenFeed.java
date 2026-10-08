@@ -130,8 +130,8 @@ public final class OpenFeed {
      * Builds what the plan says over what the feed's start built: a transport on the configured
      * exchange, or the replay one for a replay feed, with each session's queue added; nothing started.
      *
-     * @param health the feed's health, told of the recovery's events after the events dispatcher: it
-     *     keeps the sessions' lagging
+     * @param health the feed's health, told of the recovery's events and the connection's after the
+     *     events dispatcher: it keeps the sessions' lagging and the connection's time down
      */
     public static OpenFeed build(
             FeedCore core, Sessions.Plan plan, OddsFeedConfiguration configuration, HealthMonitor health) {
@@ -159,8 +159,10 @@ public final class OpenFeed {
                         recoveryEvents,
                         core.fetches());
         var alives = actor == null ? null : new AliveDispatcher(decoder, core.offsets(), actor);
-        // the actor first, so a producer's state follows the connection before the client hears of it
-        var connection = new ConnectionTee(actor == null ? List.of(core.events()) : List.of(actor, core.events()));
+        // the actor first, so a producer's state follows the connection before the client hears of it;
+        // the client hears of the connection before the health tells of it
+        var connection = new ConnectionTee(
+                actor == null ? List.of(core.events(), health) : List.of(actor, core.events(), health));
         var nodeId = configuration.getSdkNodeId();
         var transport = new AmqpTransport(
                 AmqpSettings.of(

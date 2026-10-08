@@ -84,10 +84,11 @@ class OpenFeedTest {
                 var health = new HealthMonitor(core.events(), id -> null);
                 var live = OpenFeed.build(core, plan(core, false), configuration, health);
                 assertThat(live.toldOfTheConnection())
-                        .as("told of the connection, in turn")
-                        .hasSize(2)
+                        .as("told of the connection, in turn: the recovery, the client, the health")
+                        .hasSize(3)
                         .satisfies(told -> assertThat(told.getFirst()).isSameAs(live.actor()))
-                        .satisfies(told -> assertThat(told.getLast()).isSameAs(core.events()));
+                        .satisfies(told -> assertThat(told.get(1)).isSameAs(core.events()))
+                        .satisfies(told -> assertThat(told.getLast()).isSameAs(health));
                 assertThat(live.toldOfTheRecovery())
                         .as("told of the recovery's events, the client first")
                         .containsExactly(core.events(), health);
@@ -95,7 +96,7 @@ class OpenFeedTest {
 
                 var replay = OpenFeed.build(core, plan(core, true), configuration, health);
                 assertThat(replay.actor()).as("a replay feed's recovery").isNull();
-                assertThat(replay.toldOfTheConnection()).containsExactly(core.events());
+                assertThat(replay.toldOfTheConnection()).containsExactly(core.events(), health);
                 assertThat(replay.toldOfTheRecovery()).isEmpty();
                 replay.close();
             } finally {

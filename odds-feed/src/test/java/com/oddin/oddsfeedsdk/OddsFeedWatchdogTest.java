@@ -7,6 +7,7 @@ import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
 import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
 import com.oddin.oddsfeedsdk.internal.feed.OpenFeeds;
 import com.oddin.oddsfeedsdk.internal.feed.Watchdog;
@@ -284,36 +285,49 @@ class OddsFeedWatchdogTest {
     }
 
     @Test
-    void theWatchdogsLimitsFollowTheConfiguredHttpTimeout() {
-        for (var timeout : List.of(Duration.ofSeconds(30), Duration.ofMinutes(2))) {
+    void theWatchdogsLimitsAndTheHealthsAreTheConfigurations() {
+        record Case(OddsFeedConfigurationBuilder builder, Watchdog.Limits limits) {}
+        var cases = List.of(
+                new Case(
+                        builder(),
+                        new Watchdog.Limits(Duration.ofSeconds(65), Duration.ofSeconds(65), Duration.ofSeconds(5))),
+                new Case(
+                        builder().setHttpClientTimeout(Duration.ofMinutes(2)),
+                        new Watchdog.Limits(Duration.ofSeconds(245), Duration.ofSeconds(245), Duration.ofSeconds(5))),
+                new Case(
+                        builder()
+                                .setCallbackStallLimit(Duration.ofMinutes(3))
+                                .setQueueStallLimit(Duration.ofMinutes(4))
+                                .setWatchdogInterval(Duration.ofSeconds(2)),
+                        new Watchdog.Limits(Duration.ofMinutes(3), Duration.ofMinutes(4), Duration.ofSeconds(2))));
+        for (var each : cases) {
             // never started: no host is reached
-            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
-                    .selectEnvironment("broker.example.invalid", "api.example.invalid")
-                    .setAccessToken("token")
-                    .setHttpClientTimeout(timeout)
-                    .build();
-            var feed = new OddsFeed(new Heard(), configuration);
+            var feed = new OddsFeed(new Heard(), each.builder().build());
             try {
-                assertThat(feed.watchdog().limits())
-                        .as("for an HTTP timeout of %s", timeout)
-                        .isEqualTo(Watchdog.Limits.forHttpTimeout(timeout));
+                assertThat(feed.watchdog().limits()).isEqualTo(each.limits());
             } finally {
                 feed.close();
             }
         }
-        var defaults = new OddsFeed(
+        var feed = new OddsFeed(
                 new Heard(),
-                OddsFeed.getOddsFeedConfigurationBuilder()
-                        .selectEnvironment("broker.example.invalid", "api.example.invalid")
-                        .setAccessToken("token")
+                builder()
+                        .setCatalogStaleLimit(Duration.ofMinutes(5))
+                        .setConnectionDownLimit(Duration.ofSeconds(90))
                         .build());
         try {
-            assertThat(defaults.watchdog().limits().callback())
-                    .as("the default timeout of 30 s")
-                    .isEqualTo(Duration.ofSeconds(65));
+            assertThat(feed.health().catalogStaleLimit()).isEqualTo(Duration.ofMinutes(5));
+            assertThat(feed.health().connectionDownLimit()).isEqualTo(Duration.ofSeconds(90));
         } finally {
-            defaults.close();
+            feed.close();
         }
+    }
+
+    /** A configuration for a feed that is never started, so no host is reached. */
+    private static OddsFeedConfigurationBuilder builder() {
+        return OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("broker.example.invalid", "api.example.invalid")
+                .setAccessToken("token");
     }
 
     @Test
