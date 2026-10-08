@@ -281,6 +281,36 @@ class SportsInfoTest {
     }
 
     @Test
+    void aSportByIdIsTheListsThoughATournamentNamedAnotherOne() {
+        var unlisted = URN.parse("od:sport:99");
+        String info = "/v1/sports/en/tournaments/od:tournament:1042/info";
+        String namingIt = com.oddin.oddsfeed.fakes.Fixtures.replace(
+                com.oddin.oddsfeed.fakes.Fixtures.read("rest/tournament_info/tournament_info.xml"),
+                "<sport id=\"od:sport:1\" name=\"League of Legends\" abbreviation=\"LoL\"/>",
+                "<sport id=\"od:sport:99\" name=\"Unlisted\" abbreviation=\"UL\"/>");
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(info, 200, namingIt);
+            var tournament = requireNonNull(world.sportsInfo.getTournament(TOURNAMENT));
+            var ofTournament = requireNonNull(tournament.getSport());
+            assertThat(ofTournament.getName(EN))
+                    .as("the tournament's sport, as its info named it")
+                    .isEqualTo("Unlisted");
+            var sport = requireNonNull(world.sportsInfo.getSport(unlisted));
+            assertThatThrownBy(() -> sport.getName(EN))
+                    .as("by id: the sport list does not have it")
+                    .isInstanceOf(ItemNotFoundException.class);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
+            world.api.respond(info, 200, namingIt);
+            requireNonNull(requireNonNull(world.sportsInfo.getTournament(TOURNAMENT))
+                            .getSport())
+                    .getName(EN);
+            assertThat(requireNonNull(world.sportsInfo.getSport(unlisted)).getName(EN))
+                    .isNull();
+        }
+    }
+
+    @Test
     void aSportTheListDoesNotHaveFailsItsGettersByTheStrategy() {
         var unknown = URN.parse("od:sport:99");
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {

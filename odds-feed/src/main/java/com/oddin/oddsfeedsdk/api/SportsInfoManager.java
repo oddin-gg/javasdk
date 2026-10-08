@@ -71,7 +71,8 @@ public interface SportsInfoManager {
     /**
      * The sport, in the default locale. Like a match, it loads nothing until a getter is called;
      * its name is read from the sport list, and a sport the list does not have fails its getters
-     * by the exception strategy. New in 1.0, as the Go SDK has it.
+     * by the exception strategy, though a tournament or a competitor named it. New in 1.0, as the
+     * Go SDK has it.
      */
     default @Nullable Sport getSport(URN id) {
         return null;
