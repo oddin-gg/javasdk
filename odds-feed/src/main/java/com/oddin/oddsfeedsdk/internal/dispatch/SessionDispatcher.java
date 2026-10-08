@@ -40,6 +40,7 @@ import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -66,9 +67,11 @@ import org.slf4j.LoggerFactory;
  *   <li><b>Facts.</b> The recovery actor hears the session has finished the message, with when it was
  *       taken: it moves the session's checkpoint and is the safety net's sample.
  *   <li><b>Acknowledgement,</b> whatever came of the steps before - except for a delivery the close
- *       overtook before a callback or a fact: no callback is admitted once {@link #stop} has begun
- *       (one admitted just before may still run, and the close waits for it), and the delivery is
- *       then dropped unacknowledged with no fact posted, as one still queued is.
+ *       overtook: once the feed's close or {@link #stop} has begun, no callback is admitted, and a
+ *       delivery that ends without a callback of the client's admitted for it, by whatever path, is
+ *       dropped unacknowledged with no fact posted and not counted as handled, as one still queued
+ *       is. A callback admitted just before may still run, and the close waits for it; its delivery
+ *       then ends as usual.
  * </ol>
  *
  * <p>One failure policy for every step: what a step throws, even an error, is caught, counted,
@@ -102,6 +105,9 @@ public final class SessionDispatcher implements AutoCloseable {
     private final SessionTransport transport;
     private final @Nullable SessionFacts facts;
     private final boolean replay;
+    /** Whether the feed's close has begun: set by the feed before it does anything else to close. */
+    private final BooleanSupplier feedClosed;
+
     private final Pipeline pipeline;
 
     private final AtomicLong handled = new AtomicLong();
@@ -114,6 +120,8 @@ public final class SessionDispatcher implements AutoCloseable {
 
     private final Thread thread;
     private volatile boolean closed;
+    /** Whether a callback of the client's was admitted for the delivery handled now; the thread's own. */
+    private boolean admitted;
     /** When the delivery handled now was taken, a {@link BusySince}; idle between deliveries; for the watchdog. */
     private volatile long busySince = BusySince.IDLE;
 
@@ -126,6 +134,9 @@ public final class SessionDispatcher implements AutoCloseable {
      *     nor {@link SessionFacts#channelReopened}: the channel's loss and its replacement are the
      *     transport's to tell, through the session's {@code ChannelEvents}
      * @param replay whether it is a replay session, whose messages are old by design
+     * @param feedClosed whether the feed's close has begun; read at every point a delivery would reach
+     *     the client or the recovery actor, so the close is one signal for every session, whichever the
+     *     feed has stopped yet
      */
     public SessionDispatcher(
             int id,
@@ -136,6 +147,7 @@ public final class SessionDispatcher implements AutoCloseable {
             SessionTransport transport,
             @Nullable SessionFacts facts,
             boolean replay,
+            BooleanSupplier feedClosed,
             Pipeline pipeline) {
         this.id = id;
         this.session = session;
@@ -145,6 +157,7 @@ public final class SessionDispatcher implements AutoCloseable {
         this.transport = transport;
         this.facts = interest == MessageInterest.SYSTEM_ALIVE_ONLY || replay ? null : facts;
         this.replay = replay;
+        this.feedClosed = feedClosed;
         this.pipeline = pipeline;
         this.thread =
                 Thread.ofPlatform().daemon().name("oddsfeed-session-" + id).unstarted(this::run);
@@ -180,8 +193,9 @@ public final class SessionDispatcher implements AutoCloseable {
      * Waits for the thread to end after a {@link #stop}, until {@code deadline}, by {@link
      * System#nanoTime}, an interrupt notwithstanding; says so in the log when it does not. From the
      * session's own thread - one of its callbacks closing the feed - it does not wait, as that would
-     * wait for itself: the thread ends once the callback returns; the message of that callback
-     * is dropped unacknowledged if a later step of it needs a callback or a fact the close refuses.
+     * wait for itself: the thread ends once the callback returns; the message of a listener
+     * callback that closes the feed is acknowledged as usual; one of a raw callback is dropped
+     * unacknowledged, as no callback of the client's was admitted for it.
      *
      * @return whether the thread has ended, or is the caller's own and ends next
      */
@@ -256,7 +270,7 @@ public final class SessionDispatcher implements AutoCloseable {
     // ------------------------------------------------------------------ the thread
 
     private void run() {
-        while (!closed) {
+        while (!closeBegun()) {
             RawDelivery delivery;
             try {
                 delivery = transport.queue().poll(POLL);
@@ -267,10 +281,15 @@ public final class SessionDispatcher implements AutoCloseable {
             // closed while it waited: dropped unacknowledged, with no facts, as one still queued is -
             // no callback is admitted once close() has begun, as in 0.0.x, and the resume point
             // already covers what the close leaves
-            if (delivery != null && !closed) {
+            if (delivery != null && !closeBegun()) {
                 handle(delivery);
             }
         }
+    }
+
+    /** Whether the close has begun: the feed's, or this session's own. */
+    private boolean closeBegun() {
+        return closed || feedClosed.getAsBoolean();
     }
 
     /** The dispatcher's thread; for a test. */
@@ -283,14 +302,20 @@ public final class SessionDispatcher implements AutoCloseable {
         long takenAt = Math.max(1, pipeline.clock().millis());
         busySince = BusySince.now();
         boolean acknowledged = true;
+        admitted = false;
         try {
             process(delivery, takenAt);
+            // every way a delivery ends passes here: one the close overtook, whatever it came to - a
+            // build the close interrupted, a producer filtered out, a message that did not decode -
+            // is dropped unacknowledged, unless a callback of the client's was admitted for it
+            dropUnlessAdmitted();
         } catch (ClosedBeforeListener e) {
             // the close began before a listener call: dropped unacknowledged, as one still queued is
             acknowledged = false;
         } catch (Throwable e) {
             // each step guards itself; this is the net under the net
             sdkFailed("dispatch", e);
+            acknowledged = !dropsOnClose();
         } finally {
             if (acknowledged) {
                 transport.ack(delivery);
@@ -300,6 +325,17 @@ public final class SessionDispatcher implements AutoCloseable {
             // an interrupt the client's code left would end the next wait at once
             Thread.interrupted();
         }
+    }
+
+    /** Drops the delivery if the close has begun and no callback of the client's was admitted for it. */
+    private void dropUnlessAdmitted() {
+        if (dropsOnClose()) {
+            throw new ClosedBeforeListener();
+        }
+    }
+
+    private boolean dropsOnClose() {
+        return !admitted && closeBegun();
     }
 
     private void process(RawDelivery delivery, long takenAt) {
@@ -350,14 +386,14 @@ public final class SessionDispatcher implements AutoCloseable {
         SessionFacts told = facts;
         switch (message) {
             case OFAlive alive -> {
-                dropIfClosed();
+                dropUnlessAdmitted();
                 if (told != null) {
                     told.alive(producerId, alive.getTimestamp(), takenAt, alive.getSubscribed() == 1);
                 }
                 return;
             }
             case OFSnapshotComplete complete -> {
-                dropIfClosed();
+                dropUnlessAdmitted();
                 if (told != null) {
                     told.snapshotComplete(producerId, complete.getRequestId());
                 }
@@ -372,7 +408,7 @@ public final class SessionDispatcher implements AutoCloseable {
             dropped = true;
             throw e;
         } finally {
-            if (told != null && !dropped) {
+            if (told != null && !dropped && !dropsOnClose()) {
                 Long requestId = requestId(message);
                 // a live message carries no request id
                 told.processed(producerId, message.getTimestamp(), takenAt, requestId == null ? 0 : requestId);
@@ -479,9 +515,9 @@ public final class SessionDispatcher implements AutoCloseable {
             return;
         }
         MessageTimestamp received = timestamp(message.getTimestamp(), delivery);
-        client("onRawFeedMessageReceived", () -> ext.onRawFeedMessageReceived(message, interest, route, received));
+        rawClient("onRawFeedMessageReceived", () -> ext.onRawFeedMessageReceived(message, interest, route, received));
         MessageTimestamp bytes = timestamp(message.getTimestamp(), delivery);
-        client("onRawFeedMessageBytes", () -> ext.onRawFeedMessageBytes(body, interest, route, bytes));
+        rawClient("onRawFeedMessageBytes", () -> ext.onRawFeedMessageBytes(body, interest, route, bytes));
     }
 
     /** A message that could not be read, for the event its routing key names, if it names one. */
@@ -534,6 +570,17 @@ public final class SessionDispatcher implements AutoCloseable {
         // no callback is admitted once close() has begun; one admitted just before this check may
         // still run - the client's code is never called under a lock - and close() waits for it
         dropIfClosed();
+        admitted = true;
+        invoke(callback, call);
+    }
+
+    /** A raw callback: admitted like the others, but it does not complete the delivery's end. */
+    private void rawClient(String callback, Runnable call) {
+        dropIfClosed();
+        invoke(callback, call);
+    }
+
+    private void invoke(String callback, Runnable call) {
         try {
             call.run();
         } catch (Throwable e) {
@@ -553,7 +600,7 @@ public final class SessionDispatcher implements AutoCloseable {
 
     /** Drops the delivery, unacknowledged and without facts, if the close has begun. */
     private void dropIfClosed() {
-        if (closed) {
+        if (closeBegun()) {
             throw new ClosedBeforeListener();
         }
     }

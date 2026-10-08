@@ -107,7 +107,7 @@ public final class OddsFeed {
     /** Whether {@link #open} has taken the sessions: it is one-shot from then on, whatever comes of it. */
     private boolean opened;
 
-    private boolean closed;
+    private volatile boolean closed;
 
     public OddsFeed(GlobalEventsListener listener, OddsFeedConfiguration configuration) {
         this(listener, configuration, null, null, HealthMonitor.Log.SLF4J);
@@ -326,7 +326,7 @@ public final class OddsFeed {
         producers.opened();
         var plan = Sessions.plan(specs, producers.getAvailableProducers(), configuration.getSdkNodeId());
         plan.disabledProducers().forEach(id -> producers.setProducerState(id, false));
-        var run = OpenFeed.build(core, plan, configuration, health);
+        var run = OpenFeed.build(core, plan, configuration, health, () -> closed);
         state.lock();
         try {
             if (closed) {

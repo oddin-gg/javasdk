@@ -578,6 +578,7 @@ class FeedMessageGoldenTest {
                 new Transport(),
                 null,
                 false,
+                () -> false,
                 pipeline);
         dispatcher.handle(new RawDelivery(body, body.length, FakeFeed.routingKey(xml), 1, 0, Instant.now(), null));
         assertThat(delivered).as("delivered").hasSize(1);

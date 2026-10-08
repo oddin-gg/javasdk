@@ -112,6 +112,7 @@ class DispatchOverABrokerTest {
                 channel,
                 new Facts(),
                 false,
+                () -> false,
                 pipeline);
         events.start();
         aliveDispatcher.start();
