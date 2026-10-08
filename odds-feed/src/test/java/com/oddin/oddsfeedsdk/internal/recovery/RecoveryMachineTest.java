@@ -64,6 +64,41 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aProducersStatusReadsAsTheClientWasLastToldIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.producers.getProducerStatus(PRE))
+                .as("down since the open, nothing told")
+                .isNull();
+
+        feed.bothUp(1);
+        var up = requireNonNull(feed.producers.getProducerStatus(PRE));
+        assertThat(up.isDown()).isFalse();
+        assertThat(up.getProducerStatusReason()).isEqualTo(ProducerStatusReason.FIRST_RECOVERY_COMPLETED);
+
+        feed.clock.advance(Duration.ofSeconds(1));
+        feed.machine.connectionDown();
+        long lostAt = feed.now();
+        var down = requireNonNull(feed.producers.getProducerStatus(PRE));
+        assertThat(down.isDown()).isTrue();
+        assertThat(down.getProducerStatusReason()).isEqualTo(ProducerStatusReason.OTHER);
+        assertThat(down.getTimestamp().getCreated()).isEqualTo(lostAt);
+
+        // down for another cause, but for the same public reason: 0.0.x's callback hears nothing
+        feed.clock.advance(Duration.ofSeconds(1));
+        int told = feed.publicStatuses.size();
+        feed.machine.connectionUp();
+        feed.unsubscribed(PRE);
+        assertThat(feed.lastStatus(PRE)).extracting(ProducerStatusChange::cause).isEqualTo(StatusCause.UNSUBSCRIBED);
+        assertThat(feed.publicStatuses).as("told to onProducerStatusChange").hasSize(told);
+        assertThat(requireNonNull(feed.producers.getProducerStatus(PRE))
+                        .getTimestamp()
+                        .getCreated())
+                .as("as last told")
+                .isEqualTo(lostAt);
+    }
+
+    @Test
     void theClientsRecoveryPointSeedsTheFirstRecovery() {
         long from = feed.now() - Duration.ofHours(1).toMillis();
         feed.producers.setProducerRecoveryFromTimestamp(PRE, from);

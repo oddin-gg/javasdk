@@ -1459,6 +1459,8 @@ final class RecoveryMachine {
     /** A status change: the cause-level event always, the public one when the flag or reason changed. */
     private void tell(ProducerStatusChange change, boolean publicChange) {
         if (publicChange) {
+            producers.statusTold(
+                    change.producerId(), change.down(), change.delayed(), change.reason(), change.timestamp());
             events.producerStatus(change);
         }
         events.producerCause(change);

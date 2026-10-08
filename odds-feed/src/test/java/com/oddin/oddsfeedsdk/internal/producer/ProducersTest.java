@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
 import com.oddin.oddsfeedsdk.internal.rest.Startup;
+import com.oddin.oddsfeedsdk.mq.entities.ProducerStatusReason;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducers;
 import java.time.Duration;
 import java.time.Instant;
@@ -122,6 +123,55 @@ class ProducersTest {
                 .containsExactlyInAnyOrder(ProducerScope.LIVE, ProducerScope.PREMATCH);
         assertThat(Producers.scopes("prematch|future")).containsExactly(ProducerScope.PREMATCH);
         assertThat(Producers.scopes(null)).isEmpty();
+    }
+
+    @Test
+    void theActiveProducersInAScopeAreThoseTheListHasAsActiveWithIt() {
+        Producers producers = new Producers(client.fetchProducers());
+        assertThat(producers.getActiveProducersInScope(ProducerScope.PREMATCH)).containsOnlyKeys(1L);
+        assertThat(producers.getActiveProducersInScope(ProducerScope.LIVE)).containsOnlyKeys(2L);
+
+        api.respond(PRODUCERS_PATH, 200, fixture().replace("scope=\"live\"", "scope=\"live|prematch\""));
+        Producers both = new Producers(client.fetchProducers());
+        assertThat(both.getActiveProducersInScope(ProducerScope.PREMATCH).keySet())
+                .as("in the list's order, one listed with both scopes in either's")
+                .containsExactly(1L, 2L);
+        both.getActiveProducersInScope(ProducerScope.LIVE).clear();
+        assertThat(both.getActiveProducersInScope(ProducerScope.LIVE))
+                .as("a new map each time")
+                .hasSize(1);
+
+        api.respond(
+                PRODUCERS_PATH,
+                200,
+                fixture().replace("active=\"true\" scope=\"live\"", "active=\"false\" scope=\"live\""));
+        Producers inactive = new Producers(client.fetchProducers());
+        assertThat(inactive.getActiveProducersInScope(ProducerScope.LIVE))
+                .as("a producer the list has as inactive")
+                .isEmpty();
+    }
+
+    @Test
+    void aProducersStatusIsTheOneLastToldAndNoneBefore() {
+        Producers producers = new Producers(client.fetchProducers());
+        assertThat(producers.getProducerStatus(1L))
+                .as("before its first change")
+                .isNull();
+
+        producers.statusTold(1L, false, false, ProducerStatusReason.FIRST_RECOVERY_COMPLETED, 1_000);
+        producers.statusTold(1L, true, true, ProducerStatusReason.PROCESSING_QUEUE_DELAY_VIOLATION, 2_000);
+        producers.statusTold(7L, false, false, ProducerStatusReason.FIRST_RECOVERY_COMPLETED, 2_000);
+        var status = requireNonNull(producers.getProducerStatus(1L));
+        assertThat(status.isDown()).isTrue();
+        assertThat(status.isDelayed()).isTrue();
+        assertThat(status.getProducerStatusReason()).isEqualTo(ProducerStatusReason.PROCESSING_QUEUE_DELAY_VIOLATION);
+        assertThat(status.getTimestamp().getCreated()).isEqualTo(2_000);
+        assertThat(status.getTimestamp().getReceived()).isEqualTo(2_000);
+        assertThat(requireNonNull(status.getProducer()).getId()).isEqualTo(1L);
+        assertThat(producers.getProducerStatus(2L)).as("another producer's").isNull();
+        assertThat(producers.getProducerStatus(7L))
+                .as("a producer the list does not have")
+                .isNull();
     }
 
     @Test
