@@ -556,6 +556,19 @@ class SessionDispatcherTest {
     }
 
     @Test
+    void aDeliveryPolledBeforeTheCloseBeganButClosedInTheFirstRawCallbackReachesNoLaterCallbackAndIsNotAcknowledged() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        // the close begins in the first raw callback: the bytes callback is next
+        ext.afterReceived = dispatcher::stop;
+        handle(dispatcher, Fixtures.read(ODDS_CHANGE));
+        assertThat(ext.calls).as("raw callbacks").singleElement().asString().startsWith("onRawFeedMessageReceived");
+        assertThat(listener.messages).as("callbacks").isEmpty();
+        assertThat(transport.acked).as("acknowledged").isEmpty();
+        assertThat(facts.facts).as("facts posted").isEmpty();
+        assertThat(dispatcher.handled()).isZero();
+    }
+
+    @Test
     void anAliveOrSnapshotCompletePolledBeforeTheCloseBeganButHandledAfterItPostsNoFactAndIsNotAcknowledged() {
         for (var message : List.of(FeedMessages.alive(2, true), FeedMessages.snapshotComplete(2, 712))) {
             var dispatcher = dispatcher(MessageInterest.ALL);
@@ -752,6 +765,8 @@ class SessionDispatcherTest {
         volatile @Nullable String throwing;
         /** Runs after the last raw callback, before the session's listener is called. */
         volatile Runnable afterBytes = () -> {};
+        /** Runs after the first raw callback, before the second. */
+        volatile Runnable afterReceived = () -> {};
 
         @Override
         public void onRawFeedMessageReceived(
@@ -765,6 +780,7 @@ class SessionDispatcherTest {
             calls.add("onRawFeedMessageReceived " + message.getClass().getSimpleName() + " " + messageInterest + " "
                     + routingKey.getFullRoutingKey());
             throwIf("onRawFeedMessageReceived");
+            afterReceived.run();
         }
 
         @Override
