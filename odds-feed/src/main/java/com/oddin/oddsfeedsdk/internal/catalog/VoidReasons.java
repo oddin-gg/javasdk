@@ -52,7 +52,16 @@ public final class VoidReasons {
             Ticker ticker) {
         this.client = client;
         this.list = new Catalog<>(
-                "void reasons", 1, REFRESH_AGE, this::fetchList, timeout, fetches, refreshes, clock, ticker);
+                "void reasons",
+                1,
+                REFRESH_AGE,
+                this::fetchList,
+                timeout,
+                fetches,
+                refreshes,
+                clock,
+                ticker,
+                client::isClosed);
     }
 
     /**

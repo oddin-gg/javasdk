@@ -58,7 +58,8 @@ public final class MatchStatusDescriptions {
                 fetches,
                 refreshes,
                 clock,
-                ticker);
+                ticker,
+                client::isClosed);
     }
 
     /**

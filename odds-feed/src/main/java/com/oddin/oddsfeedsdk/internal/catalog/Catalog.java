@@ -94,6 +94,7 @@ final class Catalog<K, V> {
     private final Duration refreshAge;
     private final Fetch<K, V> fetch;
     private final InstantSource clock;
+    private final BooleanSupplier closed;
     private final Executor refreshes;
     private final Loader<Flight<K>, V> loader;
     private final Cache<K, Held<V>> held;
@@ -140,6 +141,7 @@ final class Catalog<K, V> {
      * @param timeout the HTTP client timeout, each fetch's deadline
      * @param fetches where the fetches run: virtual threads
      * @param refreshes where a background refresh waits for its fetch: virtual threads
+     * @param closed whether the feed's API client is closed: a fetch that fails then is no failure
      */
     Catalog(
             String name,
@@ -150,12 +152,14 @@ final class Catalog<K, V> {
             Executor fetches,
             Executor refreshes,
             InstantSource clock,
-            Ticker ticker) {
+            Ticker ticker,
+            BooleanSupplier closed) {
         this.name = name;
         this.refreshAge = refreshAge;
         this.fetch = fetch;
         this.clock = clock;
         this.refreshes = refreshes;
+        this.closed = closed;
         this.loader = new Loader<>(name, this::fetch, timeout, MARGIN, fetches);
         this.held = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
@@ -446,12 +450,17 @@ final class Catalog<K, V> {
         try {
             value = fetch.fetch(key, previous == null ? null : previous.value(), deadline);
         } catch (RuntimeException e) {
-            failedFetches.incrementAndGet();
+            // a fetch the feed's close cut short, or whose thread was interrupted, failed of the shutdown:
+            // no failure to count or back off from, as the preloads of the feed say
+            boolean shutdown = Thread.currentThread().isInterrupted() || closed.getAsBoolean();
+            if (!shutdown) {
+                failedFetches.incrementAndGet();
+            }
             clearing.readLock().lock();
             try {
                 // a fetch from before a clear backs nothing off: the clear asked for a fetch; nor does a
                 // preload, which no reader waited for
-                if (!flight.preload() && !abandoned.getAsBoolean() && generationOf(key) <= startedIn) {
+                if (!shutdown && !flight.preload() && !abandoned.getAsBoolean() && generationOf(key) <= startedIn) {
                     Instant failedAt = clock.instant();
                     // an older fetch that fails after a newer one succeeded, or failed, records nothing
                     failures.asMap().compute(key, (k, last) -> {
