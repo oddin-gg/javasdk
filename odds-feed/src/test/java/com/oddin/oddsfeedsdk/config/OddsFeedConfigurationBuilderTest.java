@@ -260,6 +260,177 @@ class OddsFeedConfigurationBuilderTest {
     }
 
     @Test
+    void theHealthOptionsHaveTodaysNumbersUnlessSet() {
+        OddsFeedConfiguration defaults =
+                builder().selectProduction().setAccessToken("token").build();
+        assertThat(defaults.getCatalogStaleLimit()).isEqualTo(Duration.ofHours(1));
+        assertThat(defaults.getCallbackStallLimit()).isEqualTo(Duration.ofSeconds(65));
+        assertThat(defaults.getQueueStallLimit()).isEqualTo(Duration.ofSeconds(65));
+        assertThat(defaults.getWatchdogInterval()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(defaults.getConnectionDownLimit()).isEqualTo(Duration.ofSeconds(60));
+
+        OddsFeedConfiguration zeroZeroX = new OddsFeedConfiguration(
+                "token",
+                Locale.ENGLISH,
+                20,
+                360,
+                null,
+                ExceptionHandlingStrategy.THROW,
+                new Environment("mq", "api", 5672),
+                null,
+                1,
+                1,
+                1,
+                1);
+        assertThat(zeroZeroX.getCatalogStaleLimit()).isEqualTo(Duration.ofHours(1));
+        assertThat(zeroZeroX.getCallbackStallLimit()).isEqualTo(Duration.ofSeconds(65));
+        assertThat(zeroZeroX.getQueueStallLimit()).isEqualTo(Duration.ofSeconds(65));
+        assertThat(zeroZeroX.getWatchdogInterval()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(zeroZeroX.getConnectionDownLimit()).isEqualTo(Duration.ofSeconds(60));
+    }
+
+    /**
+     * A getter in a callback waits for the API twice at most, each time the HTTP timeout and a second,
+     * and a second more: the stall limits stay 2 s above that, 30 s at least unless set.
+     */
+    @Test
+    void theStallLimitsFollowTheHttpTimeoutUnlessSet() {
+        record Case(Duration httpTimeout, Duration limit) {}
+        for (var each : List.of(
+                new Case(Duration.ofMillis(1), Duration.ofSeconds(30)),
+                new Case(Duration.ofSeconds(5), Duration.ofSeconds(30)),
+                new Case(Duration.ofSeconds(12), Duration.ofSeconds(30)),
+                new Case(Duration.ofSeconds(13), Duration.ofSeconds(31)),
+                new Case(Duration.ofSeconds(30), Duration.ofSeconds(65)),
+                new Case(Duration.ofMinutes(2), Duration.ofSeconds(245)))) {
+            OddsFeedConfiguration configuration = builder()
+                    .selectProduction()
+                    .setAccessToken("token")
+                    .setHttpClientTimeout(each.httpTimeout())
+                    .build();
+            assertThat(configuration.getCallbackStallLimit())
+                    .as("the callback stall limit for an HTTP timeout of %s", each.httpTimeout())
+                    .isEqualTo(each.limit());
+            assertThat(configuration.getQueueStallLimit()).isEqualTo(each.limit());
+        }
+    }
+
+    @Test
+    void theHealthOptionsAreCarriedToTheConfiguration() {
+        OddsFeedConfiguration configuration = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setCatalogStaleLimit(Duration.ofMinutes(10))
+                .setCallbackStallLimit(Duration.ofSeconds(65))
+                .setQueueStallLimit(Duration.ofDays(1))
+                .setWatchdogInterval(Duration.ofSeconds(1))
+                .setConnectionDownLimit(Duration.ofMillis(1))
+                .build();
+        assertThat(configuration.getCatalogStaleLimit()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(configuration.getCallbackStallLimit()).isEqualTo(Duration.ofSeconds(65));
+        assertThat(configuration.getQueueStallLimit()).isEqualTo(Duration.ofDays(1));
+        assertThat(configuration.getWatchdogInterval()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(configuration.getConnectionDownLimit()).isEqualTo(Duration.ofMillis(1));
+
+        OddsFeedConfiguration withAShortTimeout = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setHttpClientTimeout(Duration.ofSeconds(5))
+                .setCallbackStallLimit(Duration.ofSeconds(15))
+                .setQueueStallLimit(Duration.ofSeconds(20))
+                .setWatchdogInterval(Duration.ofMinutes(1))
+                .build();
+        assertThat(withAShortTimeout.getCallbackStallLimit())
+                .as("under the 30 s floor, set with a short HTTP timeout")
+                .isEqualTo(Duration.ofSeconds(15));
+        assertThat(withAShortTimeout.getQueueStallLimit()).isEqualTo(Duration.ofSeconds(20));
+        assertThat(withAShortTimeout.getWatchdogInterval()).isEqualTo(Duration.ofMinutes(1));
+    }
+
+    /** Each refuses what would call a slow API a stall, or what the feed's watch could not work with. */
+    @Test
+    void eachHealthOptionRefusesWhatTheWatchCannotWorkWith() {
+        var builder = builder().selectProduction().setAccessToken("token");
+        record Refused(ThrowingCallable call, String message) {}
+        var refused = List.of(
+                new Refused(() -> builder.setCatalogStaleLimit(Duration.ZERO), "catalog stale limit must be positive"),
+                new Refused(
+                        () -> builder.setCatalogStaleLimit(Duration.ofDays(1).plusNanos(1)),
+                        "catalog stale limit must be at most PT24H"),
+                new Refused(
+                        () -> builder.setCallbackStallLimit(Duration.ofSeconds(-1)),
+                        "callback stall limit must be positive"),
+                new Refused(
+                        () -> builder.setCallbackStallLimit(Duration.ofDays(2)),
+                        "callback stall limit must be at most PT24H"),
+                new Refused(() -> builder.setQueueStallLimit(Duration.ZERO), "queue stall limit must be positive"),
+                new Refused(
+                        () -> builder.setQueueStallLimit(Duration.ofDays(1).plusMillis(1)),
+                        "queue stall limit must be at most PT24H"),
+                new Refused(
+                        () -> builder.setWatchdogInterval(Duration.ofMillis(999)),
+                        "watchdog interval must be PT1S to PT1M"),
+                new Refused(
+                        () -> builder.setWatchdogInterval(Duration.ofSeconds(61)),
+                        "watchdog interval must be PT1S to PT1M"),
+                new Refused(
+                        () -> builder.setConnectionDownLimit(Duration.ZERO), "connection down limit must be positive"),
+                new Refused(
+                        () -> builder.setConnectionDownLimit(Duration.ofDays(3)),
+                        "connection down limit must be at most PT24H"));
+        for (var call : refused) {
+            assertThatThrownBy(call.call())
+                    .as(call.message())
+                    .isExactlyInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(call.message());
+        }
+        OddsFeedConfiguration configuration = builder.build();
+        assertThat(configuration.getCatalogStaleLimit()).isEqualTo(Duration.ofHours(1));
+        assertThat(configuration.getCallbackStallLimit()).isEqualTo(Duration.ofSeconds(65));
+        assertThat(configuration.getQueueStallLimit()).isEqualTo(Duration.ofSeconds(65));
+        assertThat(configuration.getWatchdogInterval()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(configuration.getConnectionDownLimit()).isEqualTo(Duration.ofSeconds(60));
+    }
+
+    /** Checked once every value is in, so the order the setters are called in does not matter. */
+    @Test
+    void aStallLimitUnderTheSdksOwnWaitsForTheApiIsRefusedByBuild() {
+        assertThat(builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setCallbackStallLimit(Duration.ofSeconds(65))
+                        .setQueueStallLimit(Duration.ofSeconds(65))
+                        .build()
+                        .getCallbackStallLimit())
+                .as("2 x 30 s + 5 s, at the edge")
+                .isEqualTo(Duration.ofSeconds(65));
+        assertThatThrownBy(() -> builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setCallbackStallLimit(Duration.ofSeconds(65).minusNanos(1))
+                        .build())
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("callback stall limit must be at least PT1M5S")
+                .hasMessageContaining("an HTTP timeout of PT30S");
+        assertThatThrownBy(() -> builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setQueueStallLimit(Duration.ofSeconds(30))
+                        .build())
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("queue stall limit must be at least PT1M5S");
+        assertThatThrownBy(() -> builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setCallbackStallLimit(Duration.ofSeconds(65))
+                        .setHttpClientTimeout(Duration.ofSeconds(31))
+                        .build())
+                .as("an HTTP timeout raised after the limit was set")
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("callback stall limit must be at least PT1M7S");
+    }
+
+    @Test
     void anAccessTokenAndAnEnvironmentAreRequired() {
         assertThatThrownBy(() -> builder().selectProduction().build())
                 .isInstanceOf(IllegalArgumentException.class)
@@ -294,6 +465,11 @@ class OddsFeedConfigurationBuilderTest {
         nulls.add(new Null(() -> builder.setStaleMessageWindow(nullValue()), "stale-message window"));
         nulls.add(new Null(() -> builder.setExchangeName(nullValue()), "name"));
         nulls.add(new Null(() -> builder.setReplayExchangeName(nullValue()), "name"));
+        nulls.add(new Null(() -> builder.setCatalogStaleLimit(nullValue()), "catalog stale limit"));
+        nulls.add(new Null(() -> builder.setCallbackStallLimit(nullValue()), "callback stall limit"));
+        nulls.add(new Null(() -> builder.setQueueStallLimit(nullValue()), "queue stall limit"));
+        nulls.add(new Null(() -> builder.setWatchdogInterval(nullValue()), "watchdog interval"));
+        nulls.add(new Null(() -> builder.setConnectionDownLimit(nullValue()), "connection down limit"));
         nulls.add(new Null(() -> new Environment(nullValue(), "api.local", 5671), "messagingHost"));
         nulls.add(new Null(() -> new Environment("mq.local", nullValue(), 5671), "apiHost"));
         for (var argument : nulls) {

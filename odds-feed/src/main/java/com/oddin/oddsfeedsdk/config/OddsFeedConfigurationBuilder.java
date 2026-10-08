@@ -41,6 +41,11 @@ public final class OddsFeedConfigurationBuilder {
     private String exchangeName = OddsFeedConfiguration.DEFAULT_EXCHANGE_NAME;
     private String replayExchangeName = OddsFeedConfiguration.DEFAULT_REPLAY_EXCHANGE_NAME;
     private boolean apiCallLogging;
+    private Duration catalogStaleLimit = OddsFeedConfiguration.DEFAULT_CATALOG_STALE_LIMIT;
+    private @Nullable Duration callbackStallLimit;
+    private @Nullable Duration queueStallLimit;
+    private Duration watchdogInterval = OddsFeedConfiguration.DEFAULT_WATCHDOG_INTERVAL;
+    private Duration connectionDownLimit = OddsFeedConfiguration.DEFAULT_CONNECTION_DOWN_LIMIT;
 
     /** Public because 0.0.x's constructor was, to Java callers; {@code OddsFeed.getOddsFeedConfigurationBuilder()} makes one. */
     public OddsFeedConfigurationBuilder() {}
@@ -133,8 +138,8 @@ public final class OddsFeedConfigurationBuilder {
     /**
      * The longest an API call takes, from waiting for its turn through every retry. 30 seconds
      * unless set. The feed's watch over its own threads finds a callback stalled only past twice
-     * this and 5 seconds, 30 seconds at least, so a callback waiting on a slow API is no stall.
-     * New in 1.0.
+     * this and 5 seconds, 30 seconds at least, unless {@link #setCallbackStallLimit} sets another
+     * limit, so a callback waiting on a slow API is no stall. New in 1.0.
      *
      * @throws IllegalArgumentException unless it is positive
      */
@@ -316,6 +321,79 @@ public final class OddsFeedConfigurationBuilder {
         return this;
     }
 
+    /**
+     * How long a catalog - the market descriptions, the void reasons, the match statuses - may serve a
+     * value stale, its refreshes failing, before {@code getHealth()} counts it degraded. An hour
+     * unless set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most a day
+     */
+    public OddsFeedConfigurationBuilder setCatalogStaleLimit(Duration limit) {
+        this.catalogStaleLimit = positiveAtMost(limit, OddsFeedConfiguration.MAX_HEALTH_LIMIT, "catalog stale limit");
+        return this;
+    }
+
+    /**
+     * How long one of the feed's threads may run one callback, or one step of its own, before the
+     * feed's watch over its threads counts it stalled, logs it and tells {@code onHealthEvent}.
+     * Unless set, {@code max(30 s, 2 × HTTP timeout + 5 s)}: 65 s for the default HTTP timeout. New
+     * in 1.0.
+     *
+     * <p>{@link #build} refuses a limit under {@code 2 × HTTP timeout + 5 s}: a getter in a callback
+     * may wait for the API twice, each time the HTTP timeout and a second, and a second more, so a
+     * shorter limit would call a slow API a stall, whose remedy, a new feed, would not speed it up.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most a day
+     */
+    public OddsFeedConfigurationBuilder setCallbackStallLimit(Duration limit) {
+        this.callbackStallLimit = positiveAtMost(limit, OddsFeedConfiguration.MAX_HEALTH_LIMIT, "callback stall limit");
+        return this;
+    }
+
+    /**
+     * How long a thread's queue may stand still, not empty, before the feed's watch counts the thread
+     * stalled; also how late the watch's own next look may be before the watch counts itself
+     * stalled. Unless set, the {@linkplain #setCallbackStallLimit callback stall limit}'s default;
+     * {@link #build} refuses it under the same {@code 2 × HTTP timeout + 5 s}. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most a day
+     */
+    public OddsFeedConfigurationBuilder setQueueStallLimit(Duration limit) {
+        this.queueStallLimit = positiveAtMost(limit, OddsFeedConfiguration.MAX_HEALTH_LIMIT, "queue stall limit");
+        return this;
+    }
+
+    /**
+     * How often the feed's watch over its own threads looks. Every 5 seconds unless set. New in 1.0.
+     *
+     * @throws IllegalArgumentException unless it is a second to a minute: each look searches the JVM's
+     *     threads for a deadlock, which stops them all for a moment
+     */
+    public OddsFeedConfigurationBuilder setWatchdogInterval(Duration interval) {
+        requireNonNull(interval, "watchdog interval");
+        if (interval.compareTo(OddsFeedConfiguration.MIN_WATCHDOG_INTERVAL) < 0
+                || interval.compareTo(OddsFeedConfiguration.MAX_WATCHDOG_INTERVAL) > 0) {
+            throw new IllegalArgumentException(
+                    "watchdog interval must be " + OddsFeedConfiguration.MIN_WATCHDOG_INTERVAL + " to "
+                            + OddsFeedConfiguration.MAX_WATCHDOG_INTERVAL + ", was " + interval);
+        }
+        this.watchdogInterval = interval;
+        return this;
+    }
+
+    /**
+     * How long the broker connection may be down before {@code getHealth()} counts it degraded and
+     * {@code onHealthEvent} is told; it is healthy again once it is up. 60 seconds unless set. New in
+     * 1.0.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most a day
+     */
+    public OddsFeedConfigurationBuilder setConnectionDownLimit(Duration limit) {
+        this.connectionDownLimit =
+                positiveAtMost(limit, OddsFeedConfiguration.MAX_HEALTH_LIMIT, "connection down limit");
+        return this;
+    }
+
     private static Duration positive(Duration duration, String what) {
         if (!requireNonNull(duration, what).isPositive()) {
             throw new IllegalArgumentException(what + " must be positive, was " + duration);
@@ -343,7 +421,8 @@ public final class OddsFeedConfigurationBuilder {
     /**
      * The configuration.
      *
-     * @throws IllegalArgumentException without an access token or an environment
+     * @throws IllegalArgumentException without an access token or an environment, or with a stall
+     *     limit set under {@code 2 × HTTP timeout + 5 s}
      */
     public OddsFeedConfiguration build() {
         String token = accessToken;
@@ -355,6 +434,8 @@ public final class OddsFeedConfigurationBuilder {
             throw new IllegalArgumentException("Missing environment. Please select environment.");
         }
         Duration startup = startupTimeout;
+        Duration callbackStall = stallLimit(callbackStallLimit, "callback stall limit");
+        Duration queueStall = stallLimit(queueStallLimit, "queue stall limit");
         return new OddsFeedConfiguration(
                 token,
                 defaultLocale,
@@ -379,6 +460,25 @@ public final class OddsFeedConfigurationBuilder {
                 staleMessageWindow,
                 exchangeName,
                 replayExchangeName,
-                apiCallLogging);
+                apiCallLogging,
+                catalogStaleLimit,
+                callbackStall,
+                queueStall,
+                watchdogInterval,
+                connectionDownLimit);
+    }
+
+    /** The stall limit set, if it sits above the SDK's own waits for the API; the derived one if none. */
+    private Duration stallLimit(@Nullable Duration set, String what) {
+        if (set == null) {
+            return OddsFeedConfiguration.stallLimitFor(httpClientTimeout);
+        }
+        var least = OddsFeedConfiguration.leastStallLimit(httpClientTimeout);
+        if (set.compareTo(least) < 0) {
+            throw new IllegalArgumentException(what + " must be at least " + least
+                    + ", 2 s above the longest the SDK itself waits for the API with an HTTP timeout of "
+                    + httpClientTimeout + ", was " + set);
+        }
+        return set;
     }
 }

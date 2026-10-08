@@ -88,6 +88,16 @@ added | config/OddsFeedConfigurationBuilder.setStaleMessageWindow (Ljava/time/Du
 added | config/OddsFeedConfigurationBuilder.setExchangeName (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the exchange the feed's queues are bound to
 added | config/OddsFeedConfigurationBuilder.setReplayExchangeName (Ljava/lang/String;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the exchange a replay session's queue is bound to
 added | config/OddsFeedConfigurationBuilder.setApiCallLogging (Z)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | whether each API call attempt is logged
+added | config/OddsFeedConfiguration.getCatalogStaleLimit ()Ljava/time/Duration; | how long a catalog serves a value stale before it is degraded
+added | config/OddsFeedConfiguration.getCallbackStallLimit ()Ljava/time/Duration; | how long one callback may run before its thread is stalled
+added | config/OddsFeedConfiguration.getQueueStallLimit ()Ljava/time/Duration; | how long a thread's queue may stand still before the thread is stalled
+added | config/OddsFeedConfiguration.getWatchdogInterval ()Ljava/time/Duration; | how often the feed's watch over its threads looks
+added | config/OddsFeedConfiguration.getConnectionDownLimit ()Ljava/time/Duration; | how long the broker connection may be down before it is degraded
+added | config/OddsFeedConfigurationBuilder.setCatalogStaleLimit (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long a catalog serves a value stale before it is degraded
+added | config/OddsFeedConfigurationBuilder.setCallbackStallLimit (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long one callback may run before its thread is stalled
+added | config/OddsFeedConfigurationBuilder.setQueueStallLimit (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long a thread's queue may stand still before the thread is stalled
+added | config/OddsFeedConfigurationBuilder.setWatchdogInterval (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how often the feed's watch over its threads looks
+added | config/OddsFeedConfigurationBuilder.setConnectionDownLimit (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how long the broker connection may be down before it is degraded
 
 # Events of the feed as a whole, as default methods, so a listener written for 0.0.x compiles as it is.
 added | subscribe/GlobalEventsListener.onConnectionStateChange (Lcom/oddin/oddsfeedsdk/subscribe/ConnectionStateChange;)V | the broker connection's state, up as well as down
