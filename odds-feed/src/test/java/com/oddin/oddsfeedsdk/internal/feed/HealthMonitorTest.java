@@ -251,6 +251,42 @@ class HealthMonitorTest {
     }
 
     @Test
+    void aConnectionChangeToldBeforeTheCloseIsLoggedBeforeItReturns() throws InterruptedException {
+        var nanos = new AtomicLong(1_000);
+        var limit = Duration.ofSeconds(60);
+        var order = new CopyOnWriteArrayList<String>();
+        var logging = new CountDownLatch(1);
+        var letItGo = new CountDownLatch(1);
+        // the reading's thread holds on in the log, the change told
+        HealthMonitor.Log log = change -> {
+            logging.countDown();
+            await(letItGo);
+            order.add("logged " + change.component() + " " + change.state());
+        };
+        var health = new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), nanos::get, HOUR, limit, log);
+        events.start();
+        health.down("connection reset");
+        nanos.addAndGet(limit.plusSeconds(1).toNanos());
+
+        var reader = Thread.ofPlatform().start(() -> read(health));
+        assertThat(logging.await(10, TimeUnit.SECONDS))
+                .as("the reading logging")
+                .isTrue();
+        var closer = Thread.ofPlatform().start(() -> {
+            health.closed();
+            order.add("closed");
+        });
+        awaitParkedOrEnded(closer);
+        letItGo.countDown();
+        reader.join(10_000);
+        closer.join(10_000);
+
+        assertThat(order).containsExactly("logged CONNECTION DEGRADED", "closed");
+        assertThat(heard.next().state()).isEqualTo(HealthState.DEGRADED);
+        heard.nothingMore("after the close");
+    }
+
+    @Test
     void aConnectionDownForLongerThanItsLimitIsDegradedAndToldAtOnceWhenItIsUp() throws InterruptedException {
         var nanos = new AtomicLong(1_000);
         var limit = Duration.ofSeconds(60);

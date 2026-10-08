@@ -50,7 +50,8 @@ import org.slf4j.LoggerFactory;
  * of the others.
  *
  * <p>Cheap and safe for concurrent use: a reading reads counters and flags, never waits for a thread
- * of the feed, and holds a lock only to compare what it found with what was told.
+ * of the feed, and holds a lock only to compare what it found with what was told, and to tell and
+ * log a change: the events dispatcher only queues it, and no callback of the client's runs there.
  */
 public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
 
@@ -104,8 +105,8 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     private final ReentrantLock noting = new ReentrantLock();
 
     /**
-     * Held to compare what a reading found with what was told, and to tell the change; and by an up
-     * and the close, each in one step with what it changes of the connection's part.
+     * Held to compare what a reading found with what was told, and to tell and log the change; and
+     * by an up and the close, each in one step with what it changes of the connection's part.
      */
     private final ReentrantLock telling = new ReentrantLock();
     /** The state last told of each part; a part not in it was healthy. Guarded by {@link #telling}. */
@@ -220,7 +221,8 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * no longer counted, and no change of it is told or logged. A closed feed's connection is not
      * one that stays down: closing it tells neither up nor down. Taken in one step with an up the
      * transport tells, so the part kept is the one last told: an up told before it is in it, and one
-     * told after it tells nothing. Once only; a later call changes nothing.
+     * told after it tells nothing. A change of it told before is logged before it returns. Once
+     * only; a later call changes nothing.
      */
     public void closed() {
         telling.lock();
@@ -560,7 +562,6 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * reading did not read is not held back by it.
      */
     private void tell(long reading, Map<Part, Found> found) {
-        var changes = new ArrayList<HealthEvent>();
         telling.lock();
         try {
             Instant at = clock.instant();
@@ -577,14 +578,14 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
                 told.put(part, now.state());
                 var session = part.component() == HealthComponent.SESSION ? sessions.apply(part.session()) : null;
                 var change = new HealthEvent(part.component(), session, was, now.state(), now.reason(), at);
-                // under the lock, so the client hears the changes in the order they were told
+                // under the lock, so the client hears and the log reads the changes in the order they
+                // were told, and the close cannot come between telling one and logging it
                 events.health(change);
-                changes.add(change);
+                log.changed(change);
             });
         } finally {
             telling.unlock();
         }
-        changes.forEach(log::changed);
     }
 
     /** Where each change of a part's state is logged. */
@@ -604,7 +605,10 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
             }
         };
 
-        /** One change, once, told after it was given to the events dispatcher. */
+        /**
+         * One change, once, told after it was given to the events dispatcher; under the health's
+         * lock, so it should return at once.
+         */
         void changed(HealthEvent change);
     }
 
