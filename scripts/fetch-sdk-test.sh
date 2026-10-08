@@ -4,11 +4,11 @@
 # stub server on 127.0.0.1 that serves https with a throwaway certificate, and checks what ends up
 # in a scratch local repository: the jar and POM when both match their digests, through a
 # redirect as a GitHub release serves them, and nothing at all when either does not, when a
-# redirect leads to plain http, when the release or registry URL itself is plain http, or when
-# the release has no file and there is no token for the registry. With a token, the registry gets
-# it as basic auth from a config on stdin, and curl's command line never holds it, plain or
-# encoded. Another run's download is never touched. No call leaves the machine. next.yml runs it
-# on every push. Needs python3, openssl and curl.
+# redirect leads to plain http, when the release or registry URL itself is plain http or the
+# registry redirects to it, or when the release has no file and there is no token for the
+# registry. With a token, the registry gets it as basic auth from a config on stdin, and curl's
+# command line never holds it, plain or encoded. Another run's download is never touched. No call
+# leaves the machine. next.yml runs it on every push. Needs python3, openssl and curl.
 #
 # FETCH_SDK_TEST_BASH runs fetch_sdk in another bash, e.g. an old one: the default is bash.
 set -euo pipefail
@@ -81,6 +81,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.answer(200, b"another jar" if kind == "jar" else good[kind])
         elif mode == "bad-pom":
             self.answer(200, b"<project>another pom</project>" if kind == "pom" else good[kind])
+        elif mode == "registry-to-http":
+            self.answer(302, location="http://127.0.0.1:%d/registry/%s" % (ports["http"], name))
         elif mode == "registry":
             expected = "Basic " + base64.b64encode(("x:" + token).encode()).decode()
             if auth == expected:
@@ -232,6 +234,19 @@ refused "a redirect to plain http" to-http "could not fetch $base/to-http/odds-f
 if grep -q '^http ' "$work/requests.log"; then fail "a redirect to plain http was followed"; fi
 refused "a jar that does not match its digest" bad-jar "jar for odds-feed $version from $base/bad-jar/odds-feed-$version.jar does not match"
 refused "a POM that does not match its digest, the jar matching" bad-pom "pom for odds-feed $version from $base/bad-pom/odds-feed-$version.pom does not match"
+# a refused run removes its own downloads, and only those: another run's, beside it, survives
+rm -rf "$work/repo"
+mkdir -p "$repo"
+printf 'another run\n' > "$running"
+if fetch bad-pom; then
+  fail "a refused run beside another run's download: fetch_sdk succeeded: $(cat "$work/out")"
+elif [ "$(cat "$running" 2>/dev/null)" != "another run" ]; then
+  fail "a refused run removed or changed another run's download"
+elif [ "$(ls -A "$repo" | tr '\n' ' ')" != "$(basename "$running") " ]; then
+  fail "a refused run beside another run's download left $(ls -A "$repo" | tr '\n' ' ')"
+else
+  echo "ok   a refused run removes its own downloads, not another run's"
+fi
 refused "no release file and no token" missing "instead needs GITHUB_TOKEN"
 if grep -q ' /registry/' "$work/requests.log"; then fail "the registry was asked without a token"; fi
 # plain http as the URL itself, not only after a redirect: refused before any request is made
@@ -242,6 +257,13 @@ refused "a registry URL that is plain http, with a token" missing \
   "could not fetch http://127.0.0.1:$http_port/registry/odds-feed-$version.jar (status: no response)" \
   "$token" "http://127.0.0.1:$http_port/registry"
 if grep -q '^http ' "$work/requests.log"; then fail "a plain http registry URL was asked: $(cat "$work/requests.log")"; fi
+refused "a registry that redirects to plain http, with a token" missing \
+  "could not fetch $base/registry-to-http/odds-feed-$version.jar (status: no response)" \
+  "$token" "$base/registry-to-http"
+if grep -q '^http ' "$work/requests.log"; then fail "the registry's redirect to plain http was followed: $(cat "$work/requests.log")"; fi
+if ! grep -q ' /registry-to-http/.* Basic ' "$work/requests.log"; then
+  fail "the registry that redirects was not asked with the token, so its case proved nothing: $(cat "$work/requests.log")"
+fi
 refused "no release file and a token the registry refuses" missing "could not fetch $base/registry/odds-feed-$version.jar (status: 401)" wrong-token
 
 # no release file and a token: the registry's files, the token sent as basic auth and never on
