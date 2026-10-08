@@ -136,6 +136,16 @@ added | RecoveryManager.getEventRecoveryStatus (J)Lcom/oddin/oddsfeedsdk/api/ent
 added | api/entities/EventRecoveryStatus | an event recovery's status: pending, completed, failed or timed out
 added | api/entities/EventRecoveryStatus$State | the four states of an event recovery
 
+# Entities by id and clears per entity type, as the Go SDK has them; default methods, so an
+# implementation written for 0.0.x compiles as it is.
+added | api/SportsInfoManager.getSport (Lcom/oddin/oddsfeedsdk/schema/utils/URN;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/Sport; | a sport by id, in the default locale
+added | api/SportsInfoManager.getSport (Lcom/oddin/oddsfeedsdk/schema/utils/URN;Ljava/util/Locale;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/Sport; | a sport by id, in a locale
+added | api/SportsInfoManager.getTournament (Lcom/oddin/oddsfeedsdk/schema/utils/URN;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/Tournament; | a tournament by id, in the default locale
+added | api/SportsInfoManager.getTournament (Lcom/oddin/oddsfeedsdk/schema/utils/URN;Ljava/util/Locale;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/Tournament; | a tournament by id, in a locale
+added | api/SportsInfoManager.getPlayer (Lcom/oddin/oddsfeedsdk/schema/utils/URN;)Lcom/oddin/oddsfeedsdk/api/entities/sportevent/Player; | a player by id in the default locale, next to the one with a locale 0.0.x had
+added | api/SportsInfoManager.clearPlayer (Lcom/oddin/oddsfeedsdk/schema/utils/URN;)V | drops one player, as clearCompetitor drops one competitor
+added | api/SportsInfoManager.clearSport (Lcom/oddin/oddsfeedsdk/schema/utils/URN;)V | drops one sport and its tournament list
+
 # ---- feed XML classes, generated from the vendored schema
 # The schema describes what the producers send. What it dropped as legacy, the classes do not have.
 # Enum attributes keep their 0.0.x enum getter, and the number as decoded next to it.
