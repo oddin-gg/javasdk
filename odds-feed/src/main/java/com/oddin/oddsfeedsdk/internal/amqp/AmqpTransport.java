@@ -162,7 +162,12 @@ public final class AmqpTransport implements AutoCloseable {
 
     /** With a queue of another size than the prefetch, for a test to fill it. */
     SessionTransport addSession(List<String> bindings, int queueCapacity) {
-        return addSession(bindings, queueCapacity, ChannelEvents.NONE, routingKey -> {});
+        return addSession(bindings, queueCapacity, routingKey -> {});
+    }
+
+    /** The same, telling {@code queued} of each delivery the queue takes; for a test. */
+    SessionTransport addSession(List<String> bindings, int queueCapacity, Consumer<String> queued) {
+        return addSession(bindings, queueCapacity, ChannelEvents.NONE, queued);
     }
 
     private SessionTransport addSession(

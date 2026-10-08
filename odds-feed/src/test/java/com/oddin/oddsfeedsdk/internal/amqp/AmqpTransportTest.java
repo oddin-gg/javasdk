@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
+import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
@@ -407,6 +408,56 @@ class AmqpTransportTest {
         awaitAnAlive();
         assertThat(alive(transport).handlerFailures()).isEqualTo(1);
         assertThat(alive(transport).isOpen()).isTrue();
+    }
+
+    /** The hook runs on the broker client's consumer thread: what it throws must not end the consumer. */
+    @Test
+    void aSessionsQueuedHookThatThrowsKeepsTheSessionsConsumer() throws Exception {
+        var told = new CopyOnWriteArrayList<String>();
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys(), ChannelEvents.NONE, routingKey -> {
+            told.add(routingKey);
+            if (told.size() == 1) {
+                throw new IllegalStateException("the first hook fails");
+            }
+        });
+        transport.open();
+        feed().publishFixture(ODDS_CHANGE);
+        feed().publish(ofMatch(2));
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (session.queue().size() < 2 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.queue().size()).as("both queued").isEqualTo(2);
+        assertThat(told).as("the hook told of both").hasSize(2);
+        assertThat(session.handlerFailures()).isEqualTo(1);
+        assertThat(session.isOpen()).as("the channel, after the hook threw").isTrue();
+        feed().publish(ofMatch(3));
+        deadline = System.nanoTime() + WAIT.toNanos();
+        while (session.queue().size() < 3 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.queue().size()).as("still consuming").isEqualTo(3);
+    }
+
+    @Test
+    void aSessionsQueuedHookHearsOnlyOfTheDeliveriesTheQueueTook() throws Exception {
+        var told = new CopyOnWriteArrayList<String>();
+        AmqpTransport transport = transport(settings(3, 1 << 20), false);
+        SessionTransport session = transport.addSession(allKeys(), 1, told::add);
+        transport.open();
+        for (int i = 1; i <= 5; i++) {
+            feed().publish(ofMatch(i));
+        }
+        long deadline = System.nanoTime() + WAIT.toNanos();
+        while (session.queue().overflowed() < 4 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertThat(session.queue().overflowed()).as("room for one only").isEqualTo(4);
+        assertThat(told)
+                .as("told of the one queued only")
+                .singleElement()
+                .isEqualTo(next(session).routingKey());
     }
 
     @Test
@@ -1429,6 +1480,11 @@ class AmqpTransportTest {
 
     private static SessionChannel alive(AmqpTransport transport) {
         return requireNonNull(transport.aliveChannel());
+    }
+
+    /** The odds change fixture, of another match. */
+    private static String ofMatch(int id) {
+        return Fixtures.replace(Fixtures.read(ODDS_CHANGE), "od:match:198314", "od:match:" + id);
     }
 
     private static List<String> allKeys() {
