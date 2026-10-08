@@ -2334,6 +2334,25 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aMessageStampedNoPositiveTimeDoesNotMoveTheLastProcessedTimestamp() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        long first = feed.now() - 5_000;
+        feed.machine.processed(1, PRE, first, feed.now(), 0);
+        for (long stamp : new long[] {0, -Duration.ofHours(1).toMillis()}) {
+            feed.machine.processed(1, PRE, stamp, feed.now(), 0);
+            assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastProcessedMessageGenTimestamp())
+                    .as("after a message stamped " + stamp)
+                    .isEqualTo(first);
+        }
+        long second = feed.now() - 1_000;
+        feed.machine.processed(1, PRE, second, feed.now(), 0);
+        assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastProcessedMessageGenTimestamp())
+                .as("after a later message")
+                .isEqualTo(second);
+    }
+
+    @Test
     void aMessageTakenBeforeAnAliveDoesNotTakeTheLastMessageTimestampBack() {
         feed.open(1, MessageInterest.ALL);
         feed.start();

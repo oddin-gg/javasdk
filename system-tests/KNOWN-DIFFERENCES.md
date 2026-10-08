@@ -761,3 +761,16 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   `anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld`) and 14 (`ProfileViewsTest`'s
   `aCompetitorWithoutPlayersHasNoneAndIsNotLoadedAgainForThem`).
 - **Found:** by reading the source of both lines, for the review of 1.0 against 0.0.58.
+
+## KD-42 A message stamped 0 or less does not move the last processed timestamp
+
+- **0.0.x:** A message whose timestamp is 0 or less sets the producer's last processed message
+  timestamp to that value.
+- **1.0:** Such a stamp is ignored for the timestamp, the checkpoint and the safety net's sample,
+  as an alive stamped so is; the message is still delivered, counted and processed, and the
+  producer's last message timestamp still moves to when it was taken.
+- **Why:** A client that reads the last processed timestamp as how far the feed has got sees it go
+  back to the epoch after such a message.
+- **Pinned by:** none in the system tests; the unit tests pin it (`RecoveryMachineTest`'s
+  `aMessageStampedNoPositiveTimeDoesNotMoveTheLastProcessedTimestamp`).
+- **Found:** by reading the source (`RecoveryMachine.processed`, against its `sessionAlive`).

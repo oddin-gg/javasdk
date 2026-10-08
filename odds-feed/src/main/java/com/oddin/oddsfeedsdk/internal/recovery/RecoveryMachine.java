@@ -526,7 +526,9 @@ final class RecoveryMachine {
 
     /**
      * A session has finished a message of the producer. A live one moves the session's checkpoint
-     * and is the safety net's sample; a snapshot one, from a recovery, does neither.
+     * and is the safety net's sample; a snapshot one, from a recovery, does neither. One without a
+     * positive timestamp moves none of that: it was delivered, and it is the same as an alive
+     * stamped so, which {@link #sessionAlive} ignores.
      *
      * @param takenAt when the session's dispatcher took it, epoch millis by the SDK's clock
      * @param requestId the recovery's request id a snapshot message carries, 0 for a live one
@@ -539,8 +541,13 @@ final class RecoveryMachine {
             return;
         }
         producers.setLastMessageTimestamp(producerId, Math.max(1, takenAt));
-        producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
         lane.lastAt = takenAt;
+        if (generatedAt <= 0) {
+            // not a time: the stamp would publish 0 or less as the last processed timestamp, and as
+            // the sample it would read as an age from the epoch, which starts a recovery
+            return;
+        }
+        producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
         heard(track, id, generatedAt, requestId);
         if (requestId == 0) {
             lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
