@@ -33,6 +33,30 @@ class MessagePreloadTest {
     }
 
     @Test
+    void aFixtureChangeAsksForNothing() {
+        var preload = new MessagePreload((id, locales) -> asked.add(id.toString()), List.of(Locale.ENGLISH));
+        // the session invalidates the match before the callback
+        preload.accept("hi.pre.-.fixture_change.1.od:match.198314.-");
+        preload.accept("hi.pre");
+        assertThat(asked).isEmpty();
+        preload.accept("hi.pre.-.bet_stop.1.od:match.198314.-");
+        assertThat(asked).containsExactly("od:match:198314");
+    }
+
+    @Test
+    void aPreloadLocaleOfTheDefaultLocalesLanguageIsLeftOut() {
+        var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setDefaultLocale(Locale.US)
+                .setPreloadLocales(List.of(Locale.ENGLISH, Locale.FRENCH))
+                .build();
+        assertThat(MessagePreload.of((id, locales) -> {}, configuration).locales())
+                .as("each language once, the default's first")
+                .containsExactly(Locale.US, Locale.FRENCH);
+    }
+
+    @Test
     void theLocalesAreTheDefaultFirstThenThePreloadLocalesEachOnce() {
         var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectProduction()
