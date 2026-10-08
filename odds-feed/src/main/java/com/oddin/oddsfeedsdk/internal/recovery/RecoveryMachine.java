@@ -697,6 +697,8 @@ final class RecoveryMachine {
                             requestId,
                             failure.getMessage(),
                             refusals);
+                } else {
+                    LOG.debug("Event recovery request {} failed: {}", requestId, failure.getMessage());
                 }
                 outbox.reply(reply, null);
             }
@@ -857,6 +859,11 @@ final class RecoveryMachine {
                             event.eventId(),
                             settings.maxRecoveryTime(),
                             expired);
+                } else {
+                    LOG.debug(
+                            "Event recovery of {} waited for a reset longer than {}",
+                            event.eventId(),
+                            settings.maxRecoveryTime());
                 }
             }
         }
