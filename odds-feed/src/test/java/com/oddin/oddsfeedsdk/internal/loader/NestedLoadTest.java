@@ -7,6 +7,7 @@ import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
+import com.oddin.oddsfeedsdk.internal.rest.ApiCall;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
@@ -14,6 +15,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -44,7 +46,14 @@ class NestedLoadTest {
                         Reply.of(200, Fixtures.read("rest/match_summary/match_summary.xml"))
                                 .after(Duration.ofMillis(50)));
             }
-            try (var client = new ApiClient(configuration, ApiEvents.NONE)) {
+            var attempts = new ConcurrentLinkedQueue<ApiCall>();
+            ApiEvents events = new ApiEvents() {
+                @Override
+                public void called(ApiCall call) {
+                    attempts.add(call);
+                }
+            };
+            try (var client = new ApiClient(configuration, events)) {
                 Duration timeout = configuration.getHttpClientTimeout();
                 var competitors = new Loader<URN, String>(
                         "competitor",
@@ -78,6 +87,11 @@ class NestedLoadTest {
                     assertThat(load.get(15, TimeUnit.SECONDS)).isNotEmpty();
                 }
             }
+            // an attempt the client gave up on can still be running on the fake, past its permit, so
+            // the fake's count means the permit only while every attempt has been answered
+            assertThat(attempts.stream().filter(call -> call.failure() != null).toList())
+                    .as("attempts that failed or were abandoned")
+                    .isEmpty();
             assertThat(api.mostInFlight()).as("one permit: one call at a time").isEqualTo(1);
         }
     }
