@@ -277,14 +277,20 @@ public final class SessionDispatcher implements AutoCloseable {
     void handle(RawDelivery delivery) {
         long takenAt = Math.max(1, pipeline.clock().millis());
         busySince = BusySince.now();
+        boolean acknowledged = true;
         try {
             process(delivery, takenAt);
+        } catch (ClosedBeforeListener e) {
+            // the close began before a listener call: dropped unacknowledged, as one still queued is
+            acknowledged = false;
         } catch (Throwable e) {
             // each step guards itself; this is the net under the net
             sdkFailed("dispatch", e);
         } finally {
-            transport.ack(delivery);
-            handled.incrementAndGet();
+            if (acknowledged) {
+                transport.ack(delivery);
+                handled.incrementAndGet();
+            }
             busySince = BusySince.IDLE;
             // an interrupt the client's code left would end the next wait at once
             Thread.interrupted();
@@ -352,10 +358,14 @@ public final class SessionDispatcher implements AutoCloseable {
             }
             default -> {}
         }
+        boolean dropped = false;
         try {
             deliver(message, route, body, producer, timestamp(message.getTimestamp(), delivery), takenAt, delivery);
+        } catch (ClosedBeforeListener e) {
+            dropped = true;
+            throw e;
         } finally {
-            if (told != null) {
+            if (told != null && !dropped) {
                 Long requestId = requestId(message);
                 // a live message carries no request id
                 told.processed(producerId, message.getTimestamp(), takenAt, requestId == null ? 0 : requestId);
@@ -514,6 +524,10 @@ public final class SessionDispatcher implements AutoCloseable {
 
     /** Runs the client's callback; what it throws is the client's failure, and the session goes on. */
     private void client(String callback, Runnable call) {
+        // checked at the listener call itself: once close() has begun, nothing reaches the client
+        if (closed) {
+            throw new ClosedBeforeListener();
+        }
         try {
             call.run();
         } catch (Throwable e) {
@@ -528,6 +542,16 @@ public final class SessionDispatcher implements AutoCloseable {
                 LOG.debug("The client's {} threw", callback, e);
             }
             pipeline.events().callbackFailed(callback, true, e, session);
+        }
+    }
+
+    /** A delivery the close overtook before a listener call; it is dropped, and needs no stack trace. */
+    private static final class ClosedBeforeListener extends RuntimeException {
+
+        private static final long serialVersionUID = 1L;
+
+        ClosedBeforeListener() {
+            super(null, null, false, false);
         }
     }
 
