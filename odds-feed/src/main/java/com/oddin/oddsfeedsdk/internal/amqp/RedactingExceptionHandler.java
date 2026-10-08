@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.amqp;
 
 import com.oddin.oddsfeedsdk.internal.log.Throttle;
+import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.impl.ForgivingExceptionHandler;
 import java.io.IOException;
 import java.time.Duration;
@@ -38,7 +39,7 @@ final class RedactingExceptionHandler extends ForgivingExceptionHandler {
     private final String token;
     private final Log log;
     private final Throttle closedOrReset = new Throttle();
-    private final Throttle failures = new Throttle();
+    private final Throttle callbackFailures = new Throttle();
 
     RedactingExceptionHandler(String token) {
         this(token, new Log() {
@@ -66,7 +67,7 @@ final class RedactingExceptionHandler extends ForgivingExceptionHandler {
 
     @Override
     protected void log(String message, Throwable e) {
-        if (e instanceof IOException && e.getMessage() != null && CLOSED_OR_RESET.contains(e.getMessage())) {
+        if (isClosedOrReset(e)) {
             String line = Failure.redact(message + " (Exception message: " + e.getMessage() + ")", token);
             if (closedOrReset.dueEvery(System.nanoTime(), CLOSED_OR_RESET_INTERVAL)) {
                 log.warn(line);
@@ -74,13 +75,30 @@ final class RedactingExceptionHandler extends ForgivingExceptionHandler {
                 log.debug(line, null);
             }
         } else {
-            // a client callback that keeps failing: the first, then one in a thousand, with its stack
-            String line = Failure.redact(message, token);
-            if (Throttle.due(failures.count())) {
-                log.error(line, Failure.redacted(e, token));
-            } else {
-                log.debug(line, Failure.redacted(e, token));
-            }
+            log.error(Failure.redact(message, token), Failure.redacted(e, token));
         }
+    }
+
+    /**
+     * A failure of a client's callback - a consumer, a return or a confirm listener - repeats per message,
+     * so the first is an error and then one in a thousand, with its stack, and the rest are debug. The
+     * handler's other reports - the connection driver, the recoveries - keep their own errors.
+     */
+    @Override
+    protected void handleChannelKiller(Channel channel, Throwable e, String what) {
+        if (isClosedOrReset(e)) {
+            super.handleChannelKiller(channel, e, what);
+            return;
+        }
+        var line = Failure.redact(what + " threw an exception for channel " + channel, token);
+        if (Throttle.due(callbackFailures.count())) {
+            log.error(line, Failure.redacted(e, token));
+        } else {
+            log.debug(line, Failure.redacted(e, token));
+        }
+    }
+
+    private static boolean isClosedOrReset(Throwable e) {
+        return e instanceof IOException && e.getMessage() != null && CLOSED_OR_RESET.contains(e.getMessage());
     }
 }

@@ -2,7 +2,10 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import ch.qos.logback.classic.Level;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.rabbitmq.client.Channel;
+import com.rabbitmq.client.Connection;
 import com.rabbitmq.client.Consumer;
 import java.lang.reflect.Proxy;
 import java.net.SocketException;
@@ -73,6 +76,58 @@ class RedactingExceptionHandlerTest {
     }
 
     @Test
+    void theExceptionOfACallbackFailureLoggedAtDebugDoesNotTellTheToken() {
+        var handler = new RedactingExceptionHandler("secret-token");
+        try (var log = LogCapture.of(AmqpTransport.class, Level.DEBUG)) {
+            for (int failure = 0; failure < 3; failure++) {
+                handler.handleConsumerException(
+                        namedAs(
+                                Channel.class,
+                                "AMQChannel(amqp://secret-token@mq.example.invalid:5671//oddinfeed/53,1)"),
+                        new IllegalStateException("the consumer of secret-token failed"),
+                        namedAs(Consumer.class, "alives"),
+                        "tag",
+                        "handleDelivery");
+            }
+            assertThat(log.lines().stream()
+                            .filter(line -> line.startsWith("DEBUG "))
+                            .count())
+                    .as("the second and the third")
+                    .isEqualTo(2);
+            assertThat(log.stacks())
+                    .as("the exception of each line, the debug ones too")
+                    .hasSize(3)
+                    .allSatisfy(stack -> assertThat(stack)
+                            .doesNotContain("secret-token")
+                            .contains("the consumer of " + Failure.TOKEN + " failed"));
+        }
+    }
+
+    @Test
+    void aConnectionErrorIsStillAnErrorAfterManyCallbackFailures() {
+        List<String> logged = new ArrayList<>();
+        var handler = new RedactingExceptionHandler("secret-token", recordedIn(logged));
+        for (int failure = 0; failure < 5; failure++) {
+            handler.handleConsumerException(
+                    namedAs(Channel.class, "AMQChannel(amqp://secret-token@mq.example.invalid:5671//oddinfeed/53,1)"),
+                    new IllegalStateException("the consumer of secret-token failed"),
+                    namedAs(Consumer.class, "alives"),
+                    "tag",
+                    "handleDelivery");
+        }
+        handler.handleUnexpectedConnectionDriverException(
+                namedAs(Connection.class, "amqp://secret-token@mq.example.invalid:5671//oddinfeed/53"),
+                new IllegalStateException("the driver of secret-token failed"));
+        assertThat(logged.stream().filter(line -> line.startsWith("ERROR ")).toList())
+                .as("the first callback failure and the connection error")
+                .hasSize(2)
+                .last()
+                .satisfies(line -> assertThat(line)
+                        .contains("An unexpected connection driver error occurred")
+                        .doesNotContain("secret-token"));
+    }
+
+    @Test
     void aSocketResetRepeatedWithinAMinuteIsOneWarningAndTheRestDebug() {
         List<String> logged = new ArrayList<>();
         var handler = new RedactingExceptionHandler("secret-token", recordedIn(logged));
@@ -106,7 +161,7 @@ class RedactingExceptionHandlerTest {
 
             @Override
             public void debug(String message, @Nullable Throwable e) {
-                logged.add("DEBUG " + message);
+                logged.add("DEBUG " + message + (e == null ? "" : " | " + e.getMessage()));
             }
         };
     }

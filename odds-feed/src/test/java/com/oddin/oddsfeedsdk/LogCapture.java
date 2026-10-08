@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.ThrowableProxyUtil;
 import ch.qos.logback.core.read.ListAppender;
 import java.util.List;
 import org.slf4j.LoggerFactory;
@@ -38,6 +39,17 @@ public final class LogCapture implements AutoCloseable {
         synchronized (appender) {
             return appender.list.stream()
                     .map(event -> event.getLevel() + " " + event.getFormattedMessage())
+                    .toList();
+        }
+    }
+
+    /** The exception each line carries, with its causes and stack, or an empty string for a line without one. */
+    public List<String> stacks() {
+        synchronized (appender) {
+            return appender.list.stream()
+                    .map(event -> event.getThrowableProxy() == null
+                            ? ""
+                            : ThrowableProxyUtil.asString(event.getThrowableProxy()))
                     .toList();
         }
     }
