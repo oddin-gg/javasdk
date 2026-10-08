@@ -810,7 +810,10 @@ and REST workers post facts to it; it decides and posts work out.
     meanwhile are asked for again. The net's numbers - the limit of two minutes, the window
     of one, three resets per session per ten minutes, a minute's backoff doubling - are
     decided defaults. The limit and the window are options (`setStaleMessageLimit`,
-    `setStaleMessageWindow`, each up to a day, which is as good as off); the rest are fixed.
+    `setStaleMessageWindow`, each up to a day, which is as good as off). The limit must be
+    more than the 10 s between a producer's alives, since the delivery's jitter alone would
+    make a healthy session look stale under a smaller one, and the window at least the
+    actor's tick of a second, which measures it; the rest are fixed.
   - Each reset raises an event (`onSafetyNetEvent`, as does a refused request) and
     increments counters (resets, messages dropped by the reset, epoch discards), so an
     operator can see exactly when and why.
