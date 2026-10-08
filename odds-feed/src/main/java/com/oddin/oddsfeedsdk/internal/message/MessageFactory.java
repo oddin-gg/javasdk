@@ -5,6 +5,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
 import com.oddin.oddsfeedsdk.internal.entity.Entities;
+import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.mq.RoutingKeyInfo;
 import com.oddin.oddsfeedsdk.mq.entities.BasicMessage;
 import com.oddin.oddsfeedsdk.mq.entities.EventMessage;
@@ -63,6 +64,8 @@ import org.slf4j.LoggerFactory;
 public final class MessageFactory {
 
     private static final Logger LOG = LoggerFactory.getLogger(MessageFactory.class);
+    /** The bad specifier pairs seen, process-wide: the first, then one in a thousand, is a warning. */
+    private static final Throttle BAD_SPECIFIERS = new Throttle();
 
     private final Entities entities;
     private final Naming naming;
@@ -243,6 +246,11 @@ public final class MessageFactory {
 
     /** The {@code name=value} pairs, separated by a pipe; one that is not a pair is left out. */
     static Map<String, String> specifiers(@Nullable String specifiers) {
+        return specifiers(specifiers, BAD_SPECIFIERS);
+    }
+
+    /** As {@link #specifiers(String)}, with the throttle that counts the bad pairs; a test's own. */
+    static Map<String, String> specifiers(@Nullable String specifiers, Throttle badPairs) {
         if (specifiers == null || specifiers.isEmpty()) {
             return Map.of();
         }
@@ -250,7 +258,13 @@ public final class MessageFactory {
         for (String pair : specifiers.split("\\|", -1)) {
             int equals = pair.indexOf('=');
             if (equals < 0 || pair.indexOf('=', equals + 1) >= 0) {
-                LOG.warn("Bad specifier {}", pair);
+                // a feed that sends the same bad pair with every market would flood the log
+                long count = badPairs.count();
+                if (Throttle.due(count)) {
+                    LOG.warn("Bad specifier {}, {} so far", pair, count);
+                } else {
+                    LOG.debug("Bad specifier {}", pair);
+                }
                 continue;
             }
             pairs.put(pair.substring(0, equals), pair.substring(equals + 1));
