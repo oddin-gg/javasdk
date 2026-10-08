@@ -197,7 +197,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      */
     @Override
     public void up() {
-        // in one step with the close: the connection's part it keeps is the one last told
+        // in one step with the close: in what it keeps if told before it, telling nothing after
         telling.lock();
         try {
             connectionDownSince.set(CONNECTION_UP);
@@ -218,9 +218,10 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * The feed is closing: from now on the connection's part reads as it is found now, its time down
      * no longer counted, and no change of it is told or logged. A closed feed's connection is not
      * one that stays down: closing it tells neither up nor down. Taken in one step with an up the
-     * transport tells, so the part kept is the one last told: an up told before it is in it, and one
-     * told after it tells nothing. A change of it told before is logged before it returns. Once
-     * only; a later call changes nothing.
+     * transport tells: an up told before it is in what it keeps, and one told after it tells
+     * nothing. What it keeps is the part as found then, which need not be the one last told: a
+     * connection past its limit with no reading since is kept degraded, never told so. A change of
+     * it told before is logged before it returns. Once only; a later call changes nothing.
      */
     public void closed() {
         telling.lock();
