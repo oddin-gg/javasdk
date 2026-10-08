@@ -24,4 +24,13 @@ public interface MarketDescriptionManager {
     List<MarketVoidReason> getMarketVoidReasons();
 
     void clearMarketVoidReasons();
+
+    /**
+     * The void reasons fetched now, whatever is held, and held from then on; what was held stays
+     * when the fetch fails, which follows the exception handling strategy as {@link
+     * #getMarketVoidReasons()} does. A new list each time. New in 1.0, as the Go SDK has it.
+     */
+    default @Nullable List<MarketVoidReason> reloadMarketVoidReasons() {
+        return null;
+    }
 }

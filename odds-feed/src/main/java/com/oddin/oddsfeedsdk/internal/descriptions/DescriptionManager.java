@@ -118,10 +118,8 @@ public final class DescriptionManager implements MarketDescriptionManager {
         voidReasons.clear();
     }
 
-    /**
-     * The void reasons fetched now, whatever is held; what was held stays when the fetch fails. New
-     * in 1.0, as the Go SDK has it.
-     */
+    /** The void reasons fetched now, whatever is held; what was held stays when the fetch fails. */
+    @Override
     public @Nullable List<MarketVoidReason> reloadMarketVoidReasons() {
         return strategy.call(() -> new ArrayList<MarketVoidReason>(voidReasons.reload()), "void reasons", "reloaded");
     }

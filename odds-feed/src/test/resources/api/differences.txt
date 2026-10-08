@@ -152,6 +152,7 @@ added | api/SportsInfoManager.clearSport (Lcom/oddin/oddsfeedsdk/schema/utils/UR
 added | ProducerManager.getActiveProducersInScope (Lcom/oddin/oddsfeedsdk/api/entities/ProducerScope;)Ljava/util/Map; | the active producers that serve a scope
 added | ProducerManager.getProducerStatus (J)Lcom/oddin/oddsfeedsdk/mq/entities/ProducerStatus; | a producer's status as onProducerStatusChange last told it, for a client that polls
 added | ReplayManager.getReplayStatus ()Ljava/lang/String; | the replay player's status, as the API names it
+added | api/MarketDescriptionManager.reloadMarketVoidReasons ()Ljava/util/List; | the void reasons fetched now, whatever is held
 
 # ---- feed XML classes, generated from the vendored schema
 # The schema describes what the producers send. What it dropped as legacy, the classes do not have.
