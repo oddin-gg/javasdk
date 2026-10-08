@@ -348,9 +348,16 @@ for path in sorted(seen):
         for step in job_def.get("steps", []):
             servers = sorted(k for k in (step.get("with") or {}) if k.startswith("server-"))
             check(not servers, "%s > %s must name no registry server: %s" % (where, name, ", ".join(servers)))
-        tokens = [e.strip() for e in expressions(job_def)
-                  if re.search(r"\bsecrets\.GITHUB_TOKEN\b|\bgithub\.token\b", e)]
-        check(not tokens, "%s > %s must not hand its steps the job token: %s" % (where, name, "; ".join(tokens)))
+    # The job token is github.token, and secrets.GITHUB_TOKEN (any other read of secrets is refused
+    # above). The whole workflow is searched, its env and defaults too, which reach every job, and any
+    # use of the github context counts but a property other than token by name: github['token'],
+    # github[format(...)], toJSON(github) and bare github hand the token on as surely as github.token.
+    # Expressions ignore case, so this does too.
+    tokens = [e.strip() for e in expressions(next_workflow)
+              if re.search(r"\bsecrets\s*\.\s*GITHUB_TOKEN\b", e, re.I)
+              or any(not re.match(r"\s*\.\s*(?!token\b)[a-z_][\w-]*", e[m.end():], re.I)
+                     for m in re.finditer(r"(?<![\w.-])github(?![\w-])", e, re.I))]
+    check(not tokens, "%s must not hand its steps the job token: %s" % (where, "; ".join(tokens)))
     # and the whole of next.yml against its pinned form, as release.yml below
     actual_next = json.dumps(load(path), indent=2, sort_keys=True) + "\n"
     pinned_next = open(pinned_next_path).read()
@@ -865,13 +872,21 @@ breaks next.yml replace "          cache: 'maven'
           server-username: GITHUB_ACTOR
           server-password: GITHUB_TOKEN
 " "./.github/workflows/next.yml > build must name no registry server: server-id, server-password, server-username"
-for token in 'secrets.GITHUB_TOKEN' 'github.token'; do
+for token in 'secrets.GITHUB_TOKEN' 'github.token' "github['token']" 'github["TOKEN"]' 'GitHub.Token' \
+    "github[format('{0}', 'token')]" 'toJSON(github)' 'github'; do
   breaks next.yml replace '        run: ./scripts/fetch-sdk.sh
 ' "        run: ./scripts/fetch-sdk.sh
         env:
           GITHUB_TOKEN: \${{ $token }}
-" "./.github/workflows/next.yml > build must not hand its steps the job token: $token"
+" "./.github/workflows/next.yml must not hand its steps the job token: $token"
 done
+# workflow-level env reaches every job's steps
+breaks next.yml replace "$next_top" "${next_top%jobs:
+}env:
+  GITHUB_TOKEN: \${{ github.token }}
+
+jobs:
+" "./.github/workflows/next.yml must not hand its steps the job token: github.token"
 for read in 'secrets.MAVEN_GPG_KEY' "secrets['MAVEN_GPG_KEY']" "secrets[format('MAVEN_{0}', 'GPG_KEY')]" 'toJSON(secrets)'; do
   breaks next.yml replace '          REVISION: ${{ inputs.revision }}
 ' "          REVISION: \${{ inputs.revision }}
