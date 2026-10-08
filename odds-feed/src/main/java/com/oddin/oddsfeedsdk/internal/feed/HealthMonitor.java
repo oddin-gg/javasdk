@@ -83,6 +83,11 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * #CONNECTION_UP} while it is up, and before the feed opens.
      */
     private final AtomicLong connectionDownSince = new AtomicLong(CONNECTION_UP);
+    /**
+     * The connection's part as found when the feed closed, read from then on and never told; null
+     * while the feed is not closed.
+     */
+    private volatile @Nullable Found connectionAtClose;
 
     /** The sessions lagging, by the feed's number, as the recovery actor last told. */
     private final Set<Integer> lagging = ConcurrentHashMap.newKeySet();
@@ -197,6 +202,18 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     @Override
     public void down(String reason) {
         connectionDownSince.compareAndSet(CONNECTION_UP, nanos.getAsLong());
+    }
+
+    /**
+     * The feed is closing: from now on the connection's part reads as it is found now, its time down
+     * no longer counted, and no change of it is told or logged. A closed feed's connection is not
+     * one that stays down: closing it tells neither up nor down. Once only; a later call changes
+     * nothing.
+     */
+    public void closed() {
+        if (connectionAtClose == null) {
+            connectionAtClose = connectionFound();
+        }
     }
 
     /**
@@ -425,6 +442,10 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     }
 
     private Found connectionFound() {
+        Found atClose = connectionAtClose;
+        if (atClose != null) {
+            return atClose;
+        }
         long since = connectionDownSince.get();
         if (since == CONNECTION_UP) {
             return new Found(HealthState.HEALTHY, "the broker connection is up");
@@ -517,7 +538,8 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
         try {
             Instant at = clock.instant();
             found.forEach((part, now) -> {
-                if (reading < toldReading.getOrDefault(part, 0L)) {
+                if (reading < toldReading.getOrDefault(part, 0L)
+                        || (part.equals(CONNECTION) && connectionAtClose != null)) {
                     return;
                 }
                 toldReading.put(part, reading);
