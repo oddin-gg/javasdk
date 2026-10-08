@@ -28,7 +28,10 @@ class QuietTrafficScenarioIT {
     private static final String FIXTURE_CHANGE = "feed/fixture_change/fixture_change.xml";
     private static final List<String> MATCHES = List.of("od:match:198314", "od:match:198315", "od:match:198316");
 
-    /** Of these, every fifth is a bet stop and every twentieth a fixture change; the rest are odds changes. */
+    /**
+     * Of these, every fifth is a bet stop, except every twentieth, which is a fixture change in its
+     * place: 320 odds changes, 60 bet stops and 20 fixture changes.
+     */
     private static final int MESSAGES = 400;
 
     /** One alive of each producer for this many messages, so the feed never reads as silent. */
@@ -93,7 +96,8 @@ class QuietTrafficScenarioIT {
 
     /** The messages in turn, each waited for; an alive of both producers after every few. Returns those delivered. */
     private static int publishTraffic(FakeFeed feed, Received received) throws InterruptedException {
-        var odds = Fixtures.read(ODDS_CHANGE);
+        // live traffic: the fixture's request id is a recovery's, which the SDK handles apart from live
+        var odds = Fixtures.replace(Fixtures.read(ODDS_CHANGE), " request_id=\"2049987833\"", "");
         var betStop = FeedMessages.fromProducer(Fixtures.read(BET_STOP), 3, 2);
         var fixtureChange = Fixtures.read(FIXTURE_CHANGE);
         var delivered = 0;
