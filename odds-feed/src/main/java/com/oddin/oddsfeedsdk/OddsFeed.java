@@ -292,9 +292,11 @@ public final class OddsFeed {
      * closed again, nothing is left running or connected, and this throws; the managers stay, until
      * {@link #close}. One-shot: once the sessions are taken, a second call throws, whatever came of
      * the first, where 0.0.x let a failed open be tried again; the client closes the feed and makes
-     * a new one. From the open to
-     * the close the feed keeps one non-daemon thread, as 0.0.x did, so the JVM does not exit while
-     * the feed is open, not even while it reconnects; a feed that is never closed keeps it running.
+     * a new one. From the open to the close the feed keeps one non-daemon thread, as 0.0.x did, so
+     * the JVM does not exit while the feed is open, not even while it reconnects; a feed that is never
+     * closed keeps it running. Once open, it starts loading the catalogs of the configured preload
+     * locales in the background; nothing waits for them, and one that fails is logged and loaded
+     * again on its first read.
      *
      * @throws IllegalStateException without a session, with 0.0.x's message; the feed can then still
      *     be opened once one is built
@@ -349,6 +351,7 @@ public final class OddsFeed {
             }
             throw e;
         }
+        core.preload(configuration.getPreloadLocales());
         LOG.info("Odds feed opened with {} session(s)", specs.size());
     }
 

@@ -71,6 +71,15 @@ public final class MatchStatusDescriptions {
     }
 
     /**
+     * Loads the list of {@code locale} unless it is held, as a read would.
+     *
+     * @throws ApiException when the list is not held and cannot be fetched
+     */
+    public void load(Locale locale) {
+        lists.get(locale);
+    }
+
+    /**
      * Whether the list of {@code locale} is held, however old: a read of it then waits for no fetch,
      * unless the id is missing from it.
      */
