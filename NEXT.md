@@ -136,8 +136,9 @@ types in packages whose name contains `internal`.
   (`setEagerEntityPreload`, off by default, as 0.0.x loaded an entity on its first
   read): as the broker client hands a message to its session's queue, the match its
   routing key names is queued for loading in the default locale and the preload locales,
-  so by the time the session takes the message the match is loaded or loading, and a
-  callback that reads it joins the load. The load runs on a side-load worker, never on
+  each language once, so by the time the session takes the message the match is loaded or
+  loading, and a callback that reads it joins the load. A fixture change preloads nothing:
+  the session invalidates its match before the callback. The load runs on a side-load worker, never on
   the broker client's consumer thread or a session's, where 0.0.54 lost messages to HTTP
   calls; the consumer thread only reads the routing key and queues, without waiting.
   Nothing waits for a preload: a message is delivered whether its match has loaded or
@@ -1643,4 +1644,6 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   message is queued for its session, its match is queued for loading on the side-loads,
   never loaded on the consumer or a session thread, deduplicated per match and locale,
   dropped and counted when the queue is full, logged and counted when it fails, and never
-  waited for.
+  waited for. A catalog preload that fails backs off no read: the first read after it
+  fetches as it would have without the preload. The API is asked by the language, so the
+  preload locales count each language once, the first given.
