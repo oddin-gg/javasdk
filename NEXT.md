@@ -1008,14 +1008,16 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
   tournaments, `Statistics` on match status and a settlement's void reason id and
   parameters are not on the list: the schema does not declare them yet, so they come
   after 1.0, once it does and the API is confirmed to send them.
-- Getters: recovery status by request id, `getHealth()`, and a single sport, tournament
-  and player by id on `SportsInfoManager` (`getSport`, `getTournament`, and `getPlayer`
-  without a locale next to 0.0.x's with one). Planned: `ProducersInScope`,
-  `ProducerStatus`, replay status.
+- Getters: recovery status by request id, `getHealth()`, a single sport, tournament and
+  player by id on `SportsInfoManager` (`getSport`, `getTournament`, and `getPlayer` without
+  a locale next to 0.0.x's with one), the active producers in a scope
+  (`ProducerManager.getActiveProducersInScope`, the Go SDK's `ProducersInScope`), a
+  producer's status as `onProducerStatusChange` last told it (`getProducerStatus`), and the
+  replay player's status (`ReplayManager.getReplayStatus`).
 - Cache control: a clear per entity type, `clearPlayer` and `clearSport` next to 0.0.x's
   clears of a match, a tournament and a competitor; a match's clear takes its fixture with
-  it, and its live status is the feed's to write, so neither has a clear of its own.
-  Planned: reload of void reasons.
+  it, and its live status is the feed's to write, so neither has a clear of its own. The
+  void reasons reload with `MarketDescriptionManager.reloadMarketVoidReasons`.
 - Configuration: HTTP timeout, startup deadline, prefetch, maximum message size, REST
   concurrency limit, the broker connection's own TLS context (`setMessagingSslContext`,
   for a truststore of the client's own or a proxy that inspects TLS), max inactivity, max
@@ -1315,7 +1317,9 @@ group by group.
     KD-17's test, which sets the safety net's options on 1.0; the health thresholds -
     catalog stale limit, callback and queue stall limits, watchdog interval - and the
     connection down limit, which makes a connection down for longer than 60 s `DEGRADED`;
-    a sport, a tournament and a player by id, and the clears of a player and of a sport.
+    a sport, a tournament and a player by id, and the clears of a player and of a sport;
+    the active producers in a scope, a producer's status, the replay status and the reload of
+    the void reasons.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
@@ -1608,3 +1612,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   takes its fixture, and the live status is written by the feed. The system tests compile
   against both lines, so the methods 0.0.x does not have are tested over the fake REST server
   by unit tests.
+- 2026-10-08, ticket 28's producer, replay and void-reason methods: `ProducerManager` has the
+  active producers in a scope and a producer's status, `ReplayManager` the replay status, and
+  `MarketDescriptionManager` the reload of the void reasons, as default methods. A producer's
+  status is the one `onProducerStatusChange` last told, null before the first, as the Go SDK
+  answers before a status is emitted; a change of the cause alone does not change it. The replay
+  status is the API's string from `/replay/status`, null when the API fails, as the replay list
+  answers. The system tests compile against both lines, so these are tested over the fake REST
+  server by unit tests; the fake answers the replay status from the schema's fixture.
