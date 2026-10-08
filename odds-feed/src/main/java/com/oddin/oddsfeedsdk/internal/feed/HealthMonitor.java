@@ -13,6 +13,8 @@ import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
@@ -454,8 +456,8 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
         return down.compareTo(connectionDownLimit) > 0
                 ? new Found(
                         HealthState.DEGRADED,
-                        "the broker connection has been down for " + down.toSeconds() + " s, over its limit of "
-                                + connectionDownLimit.toSeconds() + " s")
+                        "the broker connection has been down for " + seconds(down, RoundingMode.CEILING)
+                                + ", over its limit of " + seconds(connectionDownLimit, RoundingMode.UNNECESSARY))
                 : new Found(HealthState.HEALTHY, "the broker connection is down, within its limit so far");
     }
 
@@ -500,6 +502,16 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
 
     private static HealthState worst(HealthState one, HealthState other) {
         return one.compareTo(other) >= 0 ? one : other;
+    }
+
+    /**
+     * In seconds, with no more decimals than it has: the time down rounded up to the millisecond, so
+     * it never reads as its limit; the limit as it is set.
+     */
+    private static String seconds(Duration duration, RoundingMode rounding) {
+        var nanos = BigDecimal.valueOf(duration.getSeconds()).add(BigDecimal.valueOf(duration.getNano(), 9));
+        var shown = rounding == RoundingMode.UNNECESSARY ? nanos : nanos.setScale(3, rounding);
+        return shown.stripTrailingZeros().toPlainString() + " s";
     }
 
     private static String hours(Duration duration) {
