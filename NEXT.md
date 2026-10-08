@@ -1636,8 +1636,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   the request went out with, not null. The benchmark run takes no machine-wide JMH lock, so
   two builds at once no longer fail each other.
 - 2026-10-07, ticket 26, close hardening after the final review: a session's thread that takes
-  a message once `close()` has begun drops it unacknowledged, so nothing reaches a listener
-  after that, as in 0.0.x and the Go SDK. The waits of the close for the sessions, the alive
+  a message once `close()` has begun drops it unacknowledged, so no callback is admitted after
+  that and no fact is posted for it, as in 0.0.x and the Go SDK; a callback admitted just
+  before may still run, and `close()` waits for it within its shutdown timeout. The waits of the close for the sessions, the alive
   dispatcher and the recovery actor go on through an interrupt, the actor's 200 ms floor
   included, so an interrupted closer still reads final resume points. The sessions' queues drop
   what they hold when their channels close, and the alive queue's counters read empty once
