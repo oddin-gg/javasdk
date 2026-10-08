@@ -3,8 +3,7 @@ package com.oddin.oddsfeedsdk.internal.dispatch;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.internal.message.Routes;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
-import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.function.BiConsumer;
@@ -36,25 +35,15 @@ public final class MessagePreload implements Consumer<String> {
     }
 
     /**
-     * For the feed: the default locale, then each preload locale whose language is not in yet - the
-     * API is asked by the language, so {@code en_US} and {@code en} would load the same twice.
+     * For the feed: the default locale, then the preload locales, each once. The caches keep each
+     * locale apart, as 0.0.x did, so {@code en_US} and {@code en} are both loaded: a callback reads
+     * the locale it asks for warm.
      */
     public static MessagePreload of(BiConsumer<URN, List<Locale>> preload, OddsFeedConfiguration configuration) {
-        var languages = new HashSet<String>();
-        var locales = new ArrayList<Locale>();
-        for (Locale locale : concat(configuration.getDefaultLocale(), configuration.getPreloadLocales())) {
-            if (languages.add(locale.getLanguage())) {
-                locales.add(locale);
-            }
-        }
-        return new MessagePreload(preload, locales);
-    }
-
-    private static List<Locale> concat(Locale first, List<Locale> rest) {
-        var all = new ArrayList<Locale>(rest.size() + 1);
-        all.add(first);
-        all.addAll(rest);
-        return all;
+        var locales = new LinkedHashSet<Locale>();
+        locales.add(configuration.getDefaultLocale());
+        locales.addAll(configuration.getPreloadLocales());
+        return new MessagePreload(preload, List.copyOf(locales));
     }
 
     /** The locales the match is loaded in; for a test. */
