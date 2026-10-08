@@ -201,8 +201,8 @@ types in packages whose name contains `internal`.
   connects.
 - `close()` can be called at any time, more than once, and from a callback: it stops
   delivery, tells every thread to stop, then waits for all of them within one shutdown
-  timeout of five seconds, not one per thread; it does not wait for the callback it is
-  called from, nor for an `open()` under way, which then fails and closes what it
+  timeout of five seconds unless `setShutdownTimeout` sets it (at most an hour), not one per
+  thread; it does not wait for the callback it is called from, nor for an `open()` under way, which then fails and closes what it
   started. An interrupt does not cut short the wait for the sessions, the alive
   dispatcher and the recovery actor, so the resume points are final when `close()` returns;
   it is set again before it does. A callback still running at the deadline is left to end on its own daemon
@@ -677,8 +677,9 @@ and REST workers post facts to it; it decides and posts work out.
   Go SDK's deadline (recoveries completed there in 83 to 139 s), and 0.0.58's, checked
   there at each alive; 0.0.57 and older and the .NET SDK have none and wait out the
   maximum recovery time (KD-25). That time stays the bound on
-  a recovery that keeps coming, and on event recoveries. Ticket 28 makes it a public
-  option; its default stays 0.0.x's 360 minutes.
+  a recovery that keeps coming, and on event recoveries. The builder's
+  `setMaxRecoveryExecutionMinutes` sets it; its default stays 0.0.x's 360 minutes, and it
+  takes no less. 0.0.x had no setter; its public constructor, which 1.0 keeps, takes any value.
 - Recovery that the API does not accept, or that times out (either deadline), is
   re-issued with backoff from five seconds, doubling, at most three times in a row.
   After that the producer stays down and the client gets a producer-status event with
@@ -808,7 +809,8 @@ and REST workers post facts to it; it decides and posts work out.
     backoff does not grow - and the recoveries whose `snapshot_complete` was ignored
     meanwhile are asked for again. The net's numbers - the limit of two minutes, the window
     of one, three resets per session per ten minutes, a minute's backoff doubling - are
-    decided defaults, fixed until ticket 28's options make them settable.
+    decided defaults. The limit and the window are options (`setStaleMessageLimit`,
+    `setStaleMessageWindow`, each up to a day, which is as good as off); the rest are fixed.
   - Each reset raises an event (`onSafetyNetEvent`, as does a refused request) and
     increments counters (resets, messages dropped by the reset, epoch discards), so an
     operator can see exactly when and why.
@@ -1001,10 +1003,10 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
 - Cache control, planned: clear methods per entity type, reload of void reasons.
 - Configuration: HTTP timeout, startup deadline, prefetch, maximum message size, REST
   concurrency limit, the broker connection's own TLS context (`setMessagingSslContext`,
-  for a truststore of the client's own or a proxy that inspects TLS). Planned: default
-  locale, preload locales, eager entity preload for messages, max inactivity, max
+  for a truststore of the client's own or a proxy that inspects TLS), max inactivity, max
   recovery time, stale-message limit and window, exchange names, shutdown timeout, API
-  call logging.
+  call logging (each attempt at INFO; `onApiCall` hears them either way). Planned: default
+  locale, preload locales, eager entity preload for messages.
 - Events on the global listener, all as `default` methods: connection state changes
   (`onConnectionStateChange`), health events (`onHealthEvent`), listener and pipeline
   exceptions (`onCallbackFailure`), fatal errors (`onFatalError`), the safety net's resets
@@ -1288,8 +1290,11 @@ group by group.
 28. Option and method parity: the options and methods of section 5 the release candidate
     does not have. Includes the safety-net, inactivity, recovery-time and
     shutdown-timeout options, the eager entity preload for messages with its option, the
-    locale preload, and the 1.0-only test that pins KD-17. The maximum recovery time keeps
-    0.0.x's default of 360 minutes. Before 1.0.0, not in the release candidate.
+    locale preload, and the test that pins KD-17. The maximum recovery time keeps
+    0.0.x's default of 360 minutes. Before 1.0.0, not in the release candidate. Done: the
+    maximum inactivity, maximum recovery time, shutdown timeout, stale-message limit and
+    window, exchange names and API call logging options, each checked by the builder, and
+    KD-17's test, which sets the safety net's options on 1.0.
 29. Telemetry, done: the REST headers and the public version getter with ticket 14,
     `SDK_version` in the broker connection's client properties with ticket 21.
 30. Logging cleanup. Noisy logs are a client complaint.
