@@ -35,8 +35,12 @@ digest() {
 # (a release file redirects to GitHub's storage). The token, when there is one, goes to curl as a
 # config file on stdin, never on its command line, where any process could read it. Two calls, not
 # an optional array: bash before 4.4 (macOS's /bin/bash) refuses an empty one under set -u.
+# Every request is bounded: 30 s to connect, and a transfer slower than 1 KiB/s for a minute, or
+# longer than 5 minutes in all, is given up (the jar is under 1 MiB). With the retries, a run takes
+# well under the hour after which fetch_sdk takes a download for one an interrupted run left.
 get() {
-  local options=(-sSL --proto '=https' --proto-redir '=https' --retry 3 -o "$2" -w '%{http_code}')
+  local options=(-sSL --proto '=https' --proto-redir '=https' --retry 3 --connect-timeout 30
+    --speed-limit 1024 --speed-time 60 --max-time 300 -o "$2" -w '%{http_code}')
   if [ -n "${3:-}" ]; then
     curl "${options[@]}" --config - "$1" <<<"user = \"${GITHUB_ACTOR:-x}:$3\""
   else
