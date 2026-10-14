@@ -10,6 +10,7 @@ import com.oddin.oddsfeed.benchmarks.ColdStart.Result;
 import com.oddin.oddsfeed.benchmarks.ColdStart.Settings;
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
@@ -49,8 +50,15 @@ class ColdStartBudgetTest {
     private static final int MATCHES = Integer.getInteger("benchmarks.cold.matches", 200);
     private static final int RUNS = Integer.getInteger("benchmarks.cold.runs", 3);
 
+    /** The variant markets each odds change of the variant mode carries. */
+    private static final int VARIANTS = Integer.getInteger("benchmarks.cold.variants", 5);
+
+    /** The SDK's deadline for one request: the HTTP client timeout, 30 s unless set. */
+    private static final Duration CALL_DEADLINE = Duration.ofSeconds(30);
+
     private static @Nullable FakeFeed broker;
     private static @Nullable List<Result> scenario;
+    private static @Nullable List<Result> variantScenario;
     private static @Nullable List<Duration> firstMessages;
 
     @BeforeAll
@@ -97,6 +105,39 @@ class ColdStartBudgetTest {
         return requireNonNull(scenario);
     }
 
+    /** The variant mode: the same restart, its odds changes carrying variant markets whose names the callbacks read. */
+    private static Settings variantBurst(int matches) {
+        return new Settings(matches, LATENCY, true, Reads.NAME_AND_MARKETS, VARIANTS);
+    }
+
+    /** The variant mode, run {@link #RUNS} times once for the tests that look at it. */
+    private static synchronized List<Result> variantScenario() throws InterruptedException {
+        if (variantScenario == null) {
+            var runs = new ArrayList<Result>();
+            for (int i = 0; i < RUNS; i++) {
+                var result = ColdStart.run(requireNonNull(broker), variantBurst(MATCHES));
+                System.out.printf(
+                        "cold variant scenario run %d: caught up %d ms, %d ms after the last publish, %d requests"
+                                + " (%d variants), %d at once, longest callback %d ms, longest name read %d ms,"
+                                + " health %s, %d health events%n",
+                        i + 1,
+                        result.caughtUp().toMillis(),
+                        result.afterLastPublish().toMillis(),
+                        result.total(),
+                        result.count(ColdStart.VARIANTS),
+                        result.mostInFlight(),
+                        result.longestCallback().toMillis(),
+                        result.longestRead().toMillis(),
+                        result.health(),
+                        result.healthEvents().size());
+                result.healthEvents().forEach(event -> System.out.println("  health event: " + event));
+                runs.add(result);
+            }
+            variantScenario = runs;
+        }
+        return requireNonNull(variantScenario);
+    }
+
     private static synchronized List<Duration> firstMessages() throws InterruptedException {
         if (firstMessages == null) {
             var runs = new ArrayList<Duration>();
@@ -133,6 +174,9 @@ class ColdStartBudgetTest {
         }
         if (settings.profiles() > 0) {
             expected.put(ColdStart.PROFILES, settings.profiles());
+        }
+        if (settings.variants() > 0) {
+            expected.put(ColdStart.VARIANTS, settings.variants());
         }
         return expected;
     }
@@ -198,6 +242,33 @@ class ColdStartBudgetTest {
     }
 
     /**
+     * The variant mode: every variant market's description is fetched once, from its own request, by
+     * the callback that first reads its name, and the variants of no two matches are the same.
+     */
+    @Test
+    void theVariantScenarioFetchesEveryVariantOnce() throws InterruptedException {
+        var settings = variantBurst(MATCHES);
+        for (var result : variantScenario()) {
+            assertThat(result.requests()).isEqualTo(expected(settings));
+            assertThat(result.repeated()).as("a path asked for twice").isEmpty();
+            assertThat(result.count(ColdStart.VARIANTS)).isEqualTo(MATCHES * VARIANTS);
+        }
+    }
+
+    /** A small variant burst, to the request: the variants are fetched as the callbacks read them, and no others. */
+    @Test
+    void aVariantMarketIsFetchedOnlyWhenItsNameIsRead() throws InterruptedException {
+        // the same odds changes, the callbacks not reading the markets: no variant is asked for
+        var unread =
+                ColdStart.run(requireNonNull(broker), new Settings(SMALL_BURST, LATENCY, true, Reads.NAME, VARIANTS));
+        assertThat(unread.count(ColdStart.VARIANTS)).isZero();
+
+        var read = ColdStart.run(requireNonNull(broker), variantBurst(SMALL_BURST));
+        assertThat(read.requests()).isEqualTo(expected(variantBurst(SMALL_BURST)));
+        assertThat(read.count(ColdStart.VARIANTS)).isEqualTo(SMALL_BURST * VARIANTS);
+    }
+
+    /**
      * With the preload the summaries load at once, side by side on the side-load workers, instead of
      * one by one as each callback asks. Measured 0.69 to 0.72 of the time in 14 runs of 40 and 200
      * matches; the bound leaves room.
@@ -226,6 +297,36 @@ class ColdStartBudgetTest {
             assertThat(result.caughtUp().toMillis())
                     .as("%d requests, at most %d at once, %d ms each", result.total(), result.mostInFlight(), 50)
                     .isGreaterThanOrEqualTo(floor);
+        }
+        assertThat(caughtUp.toMillis())
+                .as(
+                        "the median of %d runs: %s",
+                        runs.size(), runs.stream().map(Result::caughtUp).toList())
+                .isLessThanOrEqualTo(budget);
+    }
+
+    /**
+     * The variant mode against its budget: the callbacks read the variants one by one on the session's
+     * thread, through the catalog's two permits. No read came near the call deadline, and the feed
+     * stayed healthy, which the budget's own headroom does not say.
+     */
+    @Test
+    void theVariantScenarioCatchesUpWithinItsBudget() throws IOException, InterruptedException {
+        var runs = variantScenario();
+        var caughtUp = median(runs.stream().map(Result::caughtUp).toList());
+        var budget = budget("cold.variants.caughtUp.ms");
+
+        for (var result : runs) {
+            long floor = Math.ceilDiv(result.total(), result.mostInFlight()) * LATENCY.toMillis();
+            assertThat(result.caughtUp().toMillis())
+                    .as("%d requests, at most %d at once, %d ms each", result.total(), result.mostInFlight(), 50)
+                    .isGreaterThanOrEqualTo(floor);
+            assertThat(result.longestRead())
+                    .as("the longest market name read, against the %s call deadline", CALL_DEADLINE)
+                    .isLessThan(CALL_DEADLINE.dividedBy(2));
+            assertThat(result.health())
+                    .as("health events %s", result.healthEvents())
+                    .isEqualTo(HealthState.HEALTHY);
         }
         assertThat(caughtUp.toMillis())
                 .as(
