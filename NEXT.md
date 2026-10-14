@@ -1106,8 +1106,9 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
 
 - Entities: the ids of a tournament's competitors and of a sport's tournaments
   (`Tournament.getCompetitorIds`, `Sport.getTournamentIds`), read from what the views
-  already hold, without loading the competitors or building the tournaments. Planned: an
-  icon path on tournaments. `Category` on tournaments, reference ids on matches and
+  already hold, without loading the competitors or building the tournaments, and a
+  tournament's icon path (`Tournament.getIconPath`, from the tournament info, the same in
+  every locale). `Category` on tournaments, reference ids on matches and
   tournaments, `Statistics` on match status and a settlement's void reason id and
   parameters are not on the list: the schema does not declare them yet, so they come
   after 1.0, once it does and the API is confirmed to send them.

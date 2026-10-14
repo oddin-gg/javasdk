@@ -468,6 +468,54 @@ class ProfileViewsTest {
     }
 
     @Test
+    void aTournamentsIconPathIsItsInfosInEveryLocale() {
+        var info = Fixtures.read("rest/tournament_info/tournament_info.xml");
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    TOURNAMENT_EN, 200, info.replace("risk_tier=\"1\"", "risk_tier=\"1\" icon_path=\"/icons/tt.svg\""));
+            world.api.respond("/v1/sports/de/tournaments/od:tournament:1042/info", 200, info);
+            Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN, DE));
+            assertThat(world.api.requests()).as("built, not loaded").isEmpty();
+
+            assertThat(tournament.getIconPath()).isEqualTo("/icons/tt.svg");
+            assertThat(world.api.requests("GET", TOURNAMENT_EN)).hasSize(1);
+        }
+    }
+
+    @Test
+    void aTournamentWhoseInfoSendsNoIconPathHasNone() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN));
+            assertThat(tournament.getIconPath()).isNull();
+        }
+    }
+
+    @Test
+    void aTournamentWhoseInfoCannotLoadFailsItsIconPathAsItsOtherGetters() {
+        for (var strategy : ExceptionHandlingStrategy.values()) {
+            try (var world = EntityWorld.start(strategy)) {
+                world.api.respond(TOURNAMENT_EN, 500, "");
+                Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN));
+                if (strategy == ExceptionHandlingStrategy.THROW) {
+                    assertThatThrownBy(tournament::getIconPath)
+                            .isInstanceOf(ItemNotFoundException.class)
+                            .hasCauseInstanceOf(ApiException.class);
+                } else {
+                    assertThat(tournament.getIconPath()).isNull();
+                }
+            }
+        }
+    }
+
+    @Test
+    void aClientsOwnTournamentHasNoIconPath() throws Exception {
+        assertThat(Tournament.class.getMethod("getIconPath").isDefault())
+                .as("a default method: an implementation written without it compiles")
+                .isTrue();
+        assertThat(stub(Tournament.class, Map.of()).getIconPath()).isNull();
+    }
+
+    @Test
     void aTournamentWhoseInfoListsNoCompetitorsHasNoCompetitorIds() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(

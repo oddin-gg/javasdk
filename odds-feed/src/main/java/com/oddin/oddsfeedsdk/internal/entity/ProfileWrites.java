@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RASportExtended;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATeam;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATeamExtended;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournament;
+import com.oddin.oddsfeedsdk.schema.rest.v1.RATournamentExtended;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -79,6 +80,12 @@ final class ProfileWrites {
                                 : ids(competitors.getCompetitor().stream()
                                         .map(RATeam::getId)
                                         .toList()));
+    }
+
+    /** A tournament's info: the tournament as the other responses have it, and the icon only it sends. */
+    static Write tournamentInfo(RATournamentExtended tournament, @Nullable RACompetitors competitors, Locale locale) {
+        return tournament(TOURNAMENT_INFO, tournament, competitors, locale)
+                .put(TOURNAMENT_ICON_PATH, tournament.getIconPath());
     }
 
     /** A sport, from the sport list. */

@@ -119,7 +119,7 @@ Element paths used in the tables:
 | riskTier | `getRiskTier` | no | `TE@risk_tier` (rest/types/tournament.xsd:14, required) same endpoints | TI | REST | **yes** | TournamentCache: every write overwrites (:168,176) |
 | competitors (ids) | `getCompetitors` | no | `tournamentExtended/competitors/competitor@id` (rest/types/tournament.xsd:28 minOccurs=0, :37) in TI, TS, TL; **also** `tournament_info/competitors` (rest/tournament_info.xsd:9, minOccurs=0) | TI | REST | no (both minOccurs=0) | TournamentCache: TI `tournament/competitors` only, **union-add, never removed**, only when non-empty (:182-189); when null, `getTournamentCompetitors` fetches TI on every call (:106-111) |
 | liveOddsAvailability | `getLiveOddsAvailability` | no | none (tournament type has no `liveodds`) | – | – | – | constant NOT_AVAILABLE (:243-244) |
-| (not exposed) icon_path | – | – | `tournamentExtended@icon_path` (rest/types/tournament.xsd:30) | – | – | – | not read |
+| iconPath | `getIconPath` | no | `tournamentExtended@icon_path` (rest/types/tournament.xsd:30, optional) **TI only**: the plain `tournament` of ST and of a match carries none; TS and TL carry it but the SDK calls neither | TI | REST | no | not read |
 
 ## Sport – `Sport`, `SportSummary`
 

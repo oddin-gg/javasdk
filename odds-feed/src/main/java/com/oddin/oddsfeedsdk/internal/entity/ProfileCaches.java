@@ -370,7 +370,7 @@ public final class ProfileCaches {
         }
         fillSport(tournament.getSport(), key.locale(), listed.sports());
         return tournaments.writeAuthoritative(
-                key.id(), ProfileWrites.tournament(TOURNAMENT_INFO, tournament, competitorList, key.locale()), started);
+                key.id(), ProfileWrites.tournamentInfo(tournament, competitorList, key.locale()), started);
     }
 
     private Boolean fetchSportTournaments(Key key, Deadline deadline, BooleanSupplier abandoned) {

@@ -5,6 +5,7 @@ import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.RISK_TIER;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.START_DATE;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_ABBREVIATION;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_COMPETITORS;
+import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_ICON_PATH;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_INFO;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_NAME;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_SCHEDULED;
@@ -129,6 +130,11 @@ final class TournamentView implements Tournament {
     @Override
     public @Nullable String getAbbreviation(Locale locale) {
         return entities.guard(this, () -> info(locale).get(TOURNAMENT_ABBREVIATION, locale));
+    }
+
+    @Override
+    public @Nullable String getIconPath() {
+        return entities.guard(this, () -> shared().get(TOURNAMENT_ICON_PATH, null));
     }
 
     /** Loads nothing when the tournament was built with its sport: the sport's getters do. */
