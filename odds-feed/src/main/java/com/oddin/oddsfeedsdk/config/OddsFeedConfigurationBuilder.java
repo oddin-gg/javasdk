@@ -153,8 +153,10 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     /**
-     * The most entity requests in flight at once. 16 unless set. Half of it, at most 16, goes to the
-     * side loads of the eager entity preload, so the client's own reads keep the rest. New in 1.0.
+     * The most entity requests in flight at once. 16 unless set. Half of it, at least one and at most
+     * 16, goes to the side loads - the eager entity preload, a match's competitor loads and the
+     * warm-ups - so the client's own reads keep the rest, except at 1, where a side load can hold the
+     * only permit. New in 1.0.
      *
      * @throws IllegalArgumentException unless it is at least 1
      */
