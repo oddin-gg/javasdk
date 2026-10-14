@@ -597,12 +597,17 @@ final class RecoveryMachine {
      * that failed or was given up, or of an event recovery asked for before it. Any of them puts off
      * the deadline for its snapshot complete. An event recovery asked for since does not: one after
      * another, they would hold a recovery whose snapshot complete is lost for the maximum recovery
-     * time.
+     * time. An event recovery's deadline is put off the same way, by its own snapshot and by what
+     * queues ahead of it: the recovery in flight asked for before it, say.
      */
     private void heard(Track track, int id, long generatedAt, long requestId) {
-        EventRecovery event = requestId == 0 ? null : eventRecoveries.get(requestId);
-        if (event != null && event.producerId == track.id && event.awaited.contains(id) && !event.seen.contains(id)) {
-            event.heardAt = now();
+        for (EventRecovery event : eventRecoveries.values()) {
+            if (event.producerId == track.id
+                    && event.awaited.contains(id)
+                    && !event.seen.contains(id)
+                    && ahead(track, event, generatedAt, requestId)) {
+                event.heardAt = now();
+            }
         }
         Active active = track.active;
         if (active != null
@@ -611,6 +616,26 @@ final class RecoveryMachine {
                 && (requestId == 0 ? generatedAt < active.requestedAt : ahead(track, active, requestId))) {
             active.heardAt = now();
         }
+    }
+
+    /**
+     * Whether what a session took is the event recovery's own snapshot, or queued ahead of it: a
+     * live message or an alive generated before it was asked for, or a snapshot message of a
+     * recovery of the producer asked for before it, in flight still.
+     */
+    private boolean ahead(Track track, EventRecovery event, long generatedAt, long requestId) {
+        if (requestId == 0) {
+            return generatedAt < event.requestedAt;
+        }
+        if (requestId == event.requestId) {
+            return true;
+        }
+        Active active = track.active;
+        if (active != null && active.requestId == requestId) {
+            return active.issuedAt < event.issuedAt;
+        }
+        EventRecovery other = eventRecoveries.get(requestId);
+        return other != null && other.producerId == track.id && other.issuedAt < event.issuedAt;
     }
 
     /** Whether a snapshot message of {@code requestId} is the recovery's own, or queued ahead of it. */
@@ -783,7 +808,8 @@ final class RecoveryMachine {
             return;
         }
         long requestId = ids.next(this::inFlight);
-        var recovery = new EventRecovery(requestId, producerId, eventId, now(), awaited(track));
+        long now = now();
+        var recovery = new EventRecovery(requestId, producerId, eventId, now, now - track.offset, awaited(track));
         eventRecoveries.put(requestId, recovery);
         statuses.pending(requestId, producerId, eventId, Instant.ofEpochMilli(recovery.issuedAt));
         replies.put(requestId, reply);
@@ -1870,16 +1896,24 @@ final class RecoveryMachine {
         final long producerId;
         final URN eventId;
         final long issuedAt;
+        /** When it was asked for, by the producer's clock. */
+        final long requestedAt;
+
         final Set<Integer> awaited;
         final Set<Integer> seen = new HashSet<>();
-        /** When the API accepted it, or a session that awaits it last took a message of it. */
+        /**
+         * When the API accepted it, or a session that awaits it last took a message of it, or one
+         * queued ahead of it.
+         */
         long heardAt;
 
-        EventRecovery(long requestId, long producerId, URN eventId, long issuedAt, Set<Integer> awaited) {
+        EventRecovery(
+                long requestId, long producerId, URN eventId, long issuedAt, long requestedAt, Set<Integer> awaited) {
             this.requestId = requestId;
             this.producerId = producerId;
             this.eventId = eventId;
             this.issuedAt = issuedAt;
+            this.requestedAt = requestedAt;
             this.awaited = awaited;
             this.heardAt = issuedAt;
         }
