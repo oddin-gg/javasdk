@@ -20,6 +20,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Function;
 import java.util.regex.Pattern;
 
 /**
@@ -80,6 +81,7 @@ public final class FakeRestServer implements AutoCloseable {
     private final List<RecordedRequest> requests = new CopyOnWriteArrayList<>();
     private final Map<String, Script> overrides = new ConcurrentHashMap<>();
     private volatile Reply outage;
+    private volatile Function<RecordedRequest, Reply> hook = _ -> null;
     /** Per method and path, the outage replies answered to their last byte. */
     private final Map<String, AtomicInteger> outageAnswers = new ConcurrentHashMap<>();
 
@@ -128,6 +130,17 @@ public final class FakeRestServer implements AutoCloseable {
             throw new IllegalArgumentException("no replies for " + path);
         }
         overrides.put(path, new Script(List.of(inTurn), new AtomicInteger()));
+    }
+
+    /**
+     * Asks this function for the reply to every request, after the outage and before the overrides
+     * and routes: a reply it returns is sent, and null leaves the request to them. For faults
+     * decided per request across all paths, which {@link #respond} cannot express. It runs on the
+     * request's own thread, so it must be thread-safe and quick; the reply's delay is waited out
+     * afterwards. Passing null removes the hook.
+     */
+    public void respondWith(Function<RecordedRequest, Reply> decide) {
+        hook = decide == null ? _ -> null : decide;
     }
 
     /**
@@ -277,11 +290,13 @@ public final class FakeRestServer implements AutoCloseable {
         try (exchange) {
             String method = exchange.getRequestMethod();
             String path = exchange.getRequestURI().getPath();
-            requests.add(
-                    new RecordedRequest(method, path, exchange.getRequestURI().getRawQuery(), headers(exchange)));
+            var request =
+                    new RecordedRequest(method, path, exchange.getRequestURI().getRawQuery(), headers(exchange));
+            requests.add(request);
 
             Reply down = outage;
-            Reply reply = down != null ? down : answer(method, path);
+            Reply hooked = down == null ? hook.apply(request) : null;
+            Reply reply = down != null ? down : hooked != null ? hooked : answer(method, path);
             if (down != null) {
                 answeredDown = method + " " + path;
             }
