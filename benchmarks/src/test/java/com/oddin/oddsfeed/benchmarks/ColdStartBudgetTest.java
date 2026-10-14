@@ -2,14 +2,18 @@ package com.oddin.oddsfeed.benchmarks;
 
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.oddin.oddsfeed.benchmarks.ColdStart.Reads;
 import com.oddin.oddsfeed.benchmarks.ColdStart.Result;
 import com.oddin.oddsfeed.benchmarks.ColdStart.Settings;
 import com.oddin.oddsfeed.fakes.FakeFeed;
+import com.oddin.oddsfeed.fakes.FakeRestServer;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.Socket;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -117,9 +121,13 @@ class ColdStartBudgetTest {
                 "GET /v1/sports/en/sports", 1);
     }
 
-    private static Map<String, Integer> expected(Settings settings, Map<String, Integer> recovery) {
+    /**
+     * Exactly the opening's requests and the loads the settings call for. Nothing is POSTed: the
+     * feed starts no recovery against the fake while it opens and takes a burst of messages, and
+     * a recovery or replay request per match would show here as an unexpected key.
+     */
+    private static Map<String, Integer> expected(Settings settings) {
         var expected = new java.util.TreeMap<>(openingRequests());
-        expected.putAll(recovery);
         if (settings.summaries() > 0) {
             expected.put(ColdStart.SUMMARIES, settings.summaries());
         }
@@ -129,15 +137,27 @@ class ColdStartBudgetTest {
         return expected;
     }
 
-    /** The recovery's requests are the feed's own, not the scenario's: read from what a run made. */
-    private static Map<String, Integer> recoveryOf(Result result) {
-        var recovery = new java.util.TreeMap<String, Integer>();
-        result.requests().forEach((key, n) -> {
-            if (key.startsWith("POST ")) {
-                recovery.put(key, n);
-            }
-        });
-        return recovery;
+    /** A feed that does not come up leaves nothing running: its fake API is closed, and the failure says why. */
+    @Test
+    void aFeedThatFailsToOpenIsClosedWithItsApi() throws IOException {
+        var feed = requireNonNull(broker);
+        var api = FakeRestServer.start();
+        int port = Integer.parseInt(api.apiHost().substring(api.apiHost().indexOf(':') + 1));
+        feed.removeExchange(FakeFeed.EXCHANGE);
+        try {
+            assertThatThrownBy(() -> new ColdStart.Running(
+                            api,
+                            burst(1, true, Reads.NOTHING),
+                            new ColdStart.Listener(Reads.NOTHING, 1),
+                            feed,
+                            Duration.ofSeconds(1)))
+                    .isInstanceOf(Throwable.class);
+        } finally {
+            feed.restoreExchange(FakeFeed.EXCHANGE);
+        }
+        assertThatThrownBy(() -> new Socket(InetAddress.getLoopbackAddress(), port).close())
+                .as("the fake API still listens")
+                .isInstanceOf(IOException.class);
     }
 
     /**
@@ -150,7 +170,7 @@ class ColdStartBudgetTest {
         var settings = burst(SMALL_BURST, true, Reads.NOTHING);
         var result = ColdStart.run(requireNonNull(broker), settings);
 
-        assertThat(result.requests()).isEqualTo(expected(settings, recoveryOf(result)));
+        assertThat(result.requests()).isEqualTo(expected(settings));
         assertThat(result.repeated()).as("a path asked for twice").isEmpty();
     }
 
@@ -162,7 +182,7 @@ class ColdStartBudgetTest {
 
         assertThat(result.count(ColdStart.SUMMARIES)).isZero();
         assertThat(result.count(ColdStart.PROFILES)).isZero();
-        assertThat(result.requests()).isEqualTo(expected(settings, recoveryOf(result)));
+        assertThat(result.requests()).isEqualTo(expected(settings));
     }
 
     /** The scenario of the budget makes exactly the requests it should; one more of any kind fails it. */
@@ -170,7 +190,7 @@ class ColdStartBudgetTest {
     void theColdScenarioMakesTheExpectedRequests() throws InterruptedException {
         var settings = burst(MATCHES, true, Reads.NAME);
         for (var result : scenario()) {
-            assertThat(result.requests()).isEqualTo(expected(settings, recoveryOf(result)));
+            assertThat(result.requests()).isEqualTo(expected(settings));
             assertThat(result.repeated()).as("a path asked for twice").isEmpty();
             assertThat(result.count(ColdStart.SUMMARIES)).isEqualTo(MATCHES);
             assertThat(result.count(ColdStart.PROFILES)).isEqualTo(MATCHES * Catalogs.COMPETITORS_PER_MATCH);

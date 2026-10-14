@@ -117,37 +117,59 @@ final class ColdStart {
     }
 
     /** A feed open and its fake API; closes both. */
-    private static final class Running implements AutoCloseable {
-        final FakeRestServer api = FakeRestServer.start();
-        final Arrivals arrivals = new Arrivals();
-        private OddsFeed feed;
+    static final class Running implements AutoCloseable {
+        final FakeRestServer api;
+        private final Arrivals arrivals = new Arrivals();
+        private @Nullable OddsFeed feed;
 
-        Running(Settings settings, Listener listener, FakeFeed broker) throws InterruptedException {
-            api.respondWith(hook(settings.latency(), arrivals));
-            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
-                    .selectEnvironment(broker.host(), api.apiHost(), broker.port())
-                    .setMessagingSslContext(TestTls.clientContext())
-                    .setAccessToken("cold-start")
-                    .setEagerEntityPreload(settings.eager())
-                    // without a preload locale no catalog is loaded at open: a client sets them
-                    .setPreloadLocales(List.of(EN))
-                    .build();
-            feed = new OddsFeed(new Quiet(), configuration);
-            feed.getSessionBuilder()
-                    .setListener(listener)
-                    .setMessageInterest(MessageInterest.ALL)
-                    .build();
-            feed.open();
-            awaitBound(broker);
+        /** Takes over {@code api}: it is closed with the feed, or here when the feed does not come up. */
+        Running(FakeRestServer api, Settings settings, Listener listener, FakeFeed broker, Duration bound)
+                throws InterruptedException {
+            this.api = api;
+            try {
+                api.respondWith(hook(settings.latency(), arrivals));
+                var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                        .selectEnvironment(broker.host(), api.apiHost(), broker.port())
+                        .setMessagingSslContext(TestTls.clientContext())
+                        .setAccessToken("cold-start")
+                        .setEagerEntityPreload(settings.eager())
+                        // without a preload locale no catalog is loaded at open: a client sets them
+                        .setPreloadLocales(List.of(EN))
+                        .build();
+                feed = new OddsFeed(new Quiet(), configuration);
+                feed.getSessionBuilder()
+                        .setListener(listener)
+                        .setMessageInterest(MessageInterest.ALL)
+                        .build();
+                feed.open();
+                awaitBound(broker, bound);
+            } catch (Throwable e) {
+                // the caller never gets a reference to close: a feed left open would send late
+                // requests into the next test's fake
+                try {
+                    if (feed != null) {
+                        feed.close();
+                    }
+                } catch (Throwable suppressed) {
+                    e.addSuppressed(suppressed);
+                } finally {
+                    try {
+                        api.close();
+                    } catch (Throwable suppressed) {
+                        e.addSuppressed(suppressed);
+                    }
+                }
+                throw e;
+            }
         }
 
         /** Sends a fixture change, which the preload skips, until the broker routes it: the session's queue is bound. */
-        private static void awaitBound(FakeFeed broker) throws InterruptedException {
+        private static void awaitBound(FakeFeed broker, Duration bound) throws InterruptedException {
             var probe = Fixtures.read("feed/fixture_change/fixture_change.xml");
-            long until = System.nanoTime() + WAIT.toNanos();
+            long until = System.nanoTime() + bound.toNanos();
             while (!broker.publish(probe)) {
                 if (System.nanoTime() > until) {
-                    throw new AssertionError("the session's queue was not bound within " + WAIT);
+                    throw new AssertionError("the session's queue was not bound within " + bound);
                 }
                 Thread.sleep(50);
             }
@@ -159,7 +181,7 @@ final class ColdStart {
                 api.awaitQuiet();
             } finally {
                 try {
-                    feed.close();
+                    requireNonNull(feed).close();
                 } finally {
                     api.close();
                 }
@@ -172,7 +194,7 @@ final class ColdStart {
     /** Opens a feed and times the burst of cold odds changes until it is caught up. */
     static Result run(FakeFeed broker, Settings settings) throws InterruptedException {
         var listener = new Listener(settings.reads(), settings.matches());
-        try (var running = new Running(settings, listener, broker)) {
+        try (var running = new Running(FakeRestServer.start(), settings, listener, broker, WAIT)) {
             var corpus = new String(Corpus.oddsChange(Corpus.TYPICAL), StandardCharsets.UTF_8);
             // built before the clock starts: only the broker's own publish cost is in the time
             var messages = new String[settings.matches()];
@@ -209,7 +231,7 @@ final class ColdStart {
     static Duration firstMessage(FakeFeed broker, Settings settings) throws InterruptedException {
         var listener = new Listener(Reads.NAME, 1);
         listener.marketToo = true;
-        try (var running = new Running(settings, listener, broker)) {
+        try (var running = new Running(FakeRestServer.start(), settings, listener, broker, WAIT)) {
             var message = Fixtures.replace(
                     new String(Corpus.oddsChange(Corpus.TYPICAL), StandardCharsets.UTF_8),
                     "od:match:198314",
@@ -328,7 +350,7 @@ final class ColdStart {
     }
 
     /** The session's listener: counts down per odds change, after reading what the settings say. */
-    private static final class Listener implements OddsFeedListener {
+    static final class Listener implements OddsFeedListener {
         final CountDownLatch done;
         final AtomicLong lastDone = new AtomicLong();
         private final Reads reads;
@@ -392,7 +414,7 @@ final class ColdStart {
         public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {}
     }
 
-    private static final class Quiet implements GlobalEventsListener {
+    static final class Quiet implements GlobalEventsListener {
         @Override
         public void onProducerStatusChange(ProducerStatus producerStatus) {}
 
