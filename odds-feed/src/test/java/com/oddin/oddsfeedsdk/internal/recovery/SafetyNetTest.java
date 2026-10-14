@@ -798,13 +798,17 @@ class SafetyNetTest {
             }
         };
         int before = feed.calls.size();
-        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        staleBeforeTheTick(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
         feed.onRequest = call -> {};
 
-        assertThat(feed.snapshots(LIVE)).as("live was never asked").hasSize(1);
-        assertThat(feed.resets).isEmpty();
+        // at once, by the message that made the request: no tick has run since
         assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
         assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+        feed.machine.tick();
+        assertThat(feed.events).as("none more from the tick").hasSize(1);
+        assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+        assertThat(feed.snapshots(LIVE)).as("live was never asked").hasSize(1);
+        assertThat(feed.resets).isEmpty();
 
         // the recovery that did go out ends, which pauses the net until then
         feed.complete(feed.lastSnapshot(PRE), 1);
@@ -1015,6 +1019,20 @@ class SafetyNetTest {
      * @return the seconds that took, or -1 when it did not hold within {@code limit}
      */
     private long stale(Harness feed, int session, Duration age, Duration limit, BooleanSupplier until) {
+        return stale(feed, session, age, limit, until, false);
+    }
+
+    /**
+     * As {@link #stale(Harness, int, Duration, Duration, BooleanSupplier)}, but {@code until} is
+     * looked at right after the message, before the second's tick: what the message itself did is
+     * all there is.
+     */
+    private long staleBeforeTheTick(Harness feed, int session, Duration age, Duration limit, BooleanSupplier until) {
+        return stale(feed, session, age, limit, until, true);
+    }
+
+    private long stale(
+            Harness feed, int session, Duration age, Duration limit, BooleanSupplier until, boolean beforeTheTick) {
         for (long second = 1; second <= limit.toSeconds(); second++) {
             feed.clock.advance(Duration.ofSeconds(1));
             if (alives && Duration.between(Harness.START, feed.clock.instant()).toSeconds() % 10 == 0) {
@@ -1022,6 +1040,9 @@ class SafetyNetTest {
             }
             long now = feed.now();
             feed.machine.processed(session, PRE, now - preSkew - age.toMillis(), now, requestId);
+            if (beforeTheTick && until.getAsBoolean()) {
+                return second;
+            }
             feed.machine.tick();
             if (until.getAsBoolean()) {
                 return second;
