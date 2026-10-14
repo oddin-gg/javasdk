@@ -148,6 +148,18 @@ types in packages whose name contains `internal`.
   with the side-loads in `getHealth()`.
   The same holds on the events dispatcher: a getter inside a producer-status callback
   delays other events, which the documentation of that listener says.
+- A cold market variant is one request, on the thread that reads its name, as in 0.0.x and
+  the Go SDK, and 1.0 keeps it so (decided 2026-10-14). A dynamic market (the players of a
+  match in a player-props market, say) has a description per variant, known only once a message
+  carries it, so no preload can have it: the first `getName()` of each variant asks the API and the
+  reader waits. A session's callbacks run one after another, so a restart whose callbacks read
+  many variant names is paced by them, a request's latency each, whatever the preload does in
+  parallel; the benchmarks README measures it, against the fake API and the test environment.
+  The ways out are the client's: preload the locales it reads (the plain markets are then one
+  list, read once), read names only for the markets it shows, and keep the reads off the session's
+  thread - hand the message to the client's own workers, which may fetch several variants at a
+  time - instead of reading every name in the callback. Nothing in the SDK reads a name the client
+  does not ask for.
 - `ExceptionHandlingStrategy` keeps its meaning, getter by getter as 0.0.57 has it.
   Default stays `THROW`.
   - Under `THROW` a failure reaches the caller as the exception 0.0.x threw there. An

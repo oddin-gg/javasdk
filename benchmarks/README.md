@@ -146,3 +146,57 @@ It needs Docker, as the system tests do: the fake feed is a RabbitMQ container. 
 tests skip with a message, unless the environment variable `CI` is set, where they fail.
 `-Dbenchmarks.cold.matches=`, `-Dbenchmarks.cold.runs=` and `-Dbenchmarks.cold.variants=` change
 the burst, the repeats and the variant mode's variants a match.
+
+## The test environment
+
+`TestEnvironmentRestartTest` is the cold scenario against the real thing: the 1.0 SDK opens against the
+test environment, which has live matches, and the harness measures what the SDK saw of the restart,
+through its public API only - the time to the first answers, each endpoint's latency from the API call
+events, when every producer is up, and when each session has caught up. It publishes nothing, does not
+replay and makes no calls but the SDK's own at start, the recovery requests every client sends, and the
+calls the callbacks cause. It is skipped unless `BENCHMARKS_TESTENV=test` (or the system property
+`benchmarks.testenv`) is set, never runs where `CI` is set, and only the test environment can be named.
+The access token is read from `ODDIN_FEED_TOKEN_TEST` and goes to the SDK's configuration and nowhere
+else.
+
+```
+BENCHMARKS_TESTENV=test BENCHMARKS_TESTENV_READS=names ODDIN_FEED_TOKEN_TEST=... \
+    ./mvnw -pl benchmarks -am verify -Dtest=TestEnvironmentRestartTest -Dsurefire.failIfNoSpecifiedTests=false
+```
+
+`BENCHMARKS_TESTENV_READS` is `nothing` (default) or `names`: the callbacks read the match's name and
+every market's name of an odds change, variants included. Also `_SESSIONS` (message interests, `ALL`
+by default), `_EAGER` (the eager preload, on), `_LAG` (seconds, 5), `_SETTLE` (30), `_MAX` (minutes, 12)
+and `_LABEL`. The report goes to the console and to `benchmarks/target/testenv/`. A session has
+caught up from the last message that was older than the lag limit when its callback started, beyond the
+least a message ever took from the producer to this client, which takes out the producer's clock and the
+network; the report also has the time a message waited inside the SDK, on this machine's clock only.
+The run ends once every producer is up and every session has been on time for the settle time.
+
+Six runs, three of each mode, a few minutes apart, 2026-10-14, from a Linux box:
+
+- The first answers come about half a second after the start (the first request carries the TLS
+  handshake), the broker connection and `open()` after two to three seconds, and the catalogs the open
+  preloads are answered within a fifth of a second of it. A REST call answers in about 35 ms (the market
+  list and the sports list in about 100 ms), with no retry and no failure.
+- A restart is paced by the environment, not by the SDK. The recovery is asked for at the producer's first
+  alive, up to about 10 s after the start, and the producer's snapshot then takes 12 to 20 s to complete;
+  every producer is up and every session caught up there, 14 to 30 s after the start. The messages the
+  snapshot brings are the old ones; the SDK's own wait for a message stayed under 50 ms and nothing
+  queued with no name read.
+- With the callbacks reading every market's name, variants included, each cold variant cost a request of
+  that latency, on the thread of the callback that read it: the longest callback took about 0.7 s, a
+  message waited up to 0.8 s inside the SDK, and the queue of the session grew to a few dozen messages
+  and emptied. The time to every producer up and every session caught up did not move: it varied between
+  runs more than between the two modes. The environment has few variants, so they added a second or so
+  of reading time to a restart of tens of seconds.
+
+Reading the same names against a catalog of variants as large as production's is the variant mode above:
+the callbacks run one after another, so the variants are fetched one at a time, a latency each, and a
+restart whose callbacks read many variant names is paced by them, whatever the preload does in parallel.
+This is 0.0.x's and the Go SDK's behaviour and 1.0 keeps it (decision of 2026-10-14): a cold variant name is
+one request, on the thread that reads it. A client that restarts with live matches and needs the names
+avoids the pace by keeping the reads off the session's thread - handing the message to its own workers,
+which fetch several variants at a time - by reading names only for the markets it shows, and by preloading
+the locales it reads (`setPreloadLocales`), which leaves the plain markets as one list read at the open,
+so that only the variants are requests of their own. Nothing in the SDK reads a name the client does not ask for.
