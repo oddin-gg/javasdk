@@ -28,6 +28,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
@@ -36,6 +37,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -680,71 +682,93 @@ class ApiClientTest {
     @Test
     @Timeout(value = 60, threadMode = SEPARATE_THREAD)
     void closingEndsAReplayRequestOnTheWireAndFreesItsPermit() throws Exception {
-        closeWithARequestOnTheWire("POST", "/v1/replay/stop", ApiClient::postReplayStop, ApiClient::postReplayClear);
-    }
-
-    /** The recovery request is repeatable after a failure, but not after the close. */
-    @Test
-    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
-    void closingEndsAProducerRecoveryOnTheWireAndFreesItsPermit() throws Exception {
-        closeWithARequestOnTheWire(
-                "POST",
-                PRODUCER_RECOVERY,
-                client -> client.postRecovery("pre", 1, null),
-                client -> client.postRecovery("live", 2, null));
+        closeWithRequestsOnTheWire(
+                "POST", List.of("/v1/replay/stop"), List.of(ApiClient::postReplayStop), ApiClient::postReplayClear);
     }
 
     /**
-     * Holds the request {@code onTheWire} makes at the API, with {@code queued} waiting for the same
-     * permit behind it (both pools have one: the REST concurrency limit is 1), then closes the client.
-     * Both calls must end as closed within a few seconds, not at their 20 s deadline: the first because
-     * the close cuts it off, the second because that gives the permit back - it would wait for it to
-     * its deadline otherwise. The API sees the first request only.
+     * The recovery request is repeatable after a failure, but not after the close. The producer pool
+     * has a permit for each of the two producers, so both have a request on the wire when a third
+     * call queues for a permit.
      */
-    private void closeWithARequestOnTheWire(
-            String method, String path, Consumer<ApiClient> onTheWire, Consumer<ApiClient> queued) throws Exception {
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void closingEndsTheProducerRecoveriesOnTheWireAndFreesTheirPermits() throws Exception {
+        closeWithRequestsOnTheWire(
+                "POST",
+                List.of(PRODUCER_RECOVERY, LIVE_RECOVERY),
+                List.of(client -> client.postRecovery("pre", 1, null), client -> client.postRecovery("live", 2, null)),
+                client -> client.postRecovery("pre", 3, null));
+    }
+
+    /**
+     * Holds the requests {@code onTheWire} makes at the API, one for each of the pool's permits, with
+     * {@code queued} waiting for a permit behind them (the replay's pool has one: the REST concurrency
+     * limit is 1; the producer pool has two), then closes the client. Every call must end as closed
+     * within a few seconds, not at its 20 s deadline: the ones on the wire because the close cuts
+     * them off, the queued one because that gives the permits back - it would wait for one to its
+     * deadline otherwise. The API sees the requests on the wire only.
+     */
+    private void closeWithRequestsOnTheWire(
+            String method, List<String> paths, List<Consumer<ApiClient>> onTheWire, Consumer<ApiClient> queued)
+            throws Exception {
         ApiClient client =
                 client(b -> b.setHttpClientTimeout(Duration.ofSeconds(20)).setRestConcurrencyLimit(1));
         var release = new CountDownLatch(1);
         api.respondWith(request -> {
-            if (request.method().equals(method) && request.path().equals(path)) {
+            if (request.method().equals(method) && paths.contains(request.path())) {
                 await(release);
             }
             return null;
         });
         try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
             try {
-                Future<?> first = calls.submit(() -> onTheWire.accept(client));
-                api.awaitRequest(method, path);
+                var held = new ArrayList<Future<?>>();
+                for (Consumer<ApiClient> request : onTheWire) {
+                    held.add(calls.submit(() -> request.accept(client)));
+                }
+                for (String path : paths) {
+                    api.awaitRequest(method, path);
+                }
                 var thread = new CompletableFuture<Thread>();
                 Future<?> second = calls.submit(() -> {
                     thread.complete(Thread.currentThread());
                     queued.accept(client);
                 });
-                awaitWaiting(thread.get(10, TimeUnit.SECONDS));
+                awaitQueuedForPermit(thread.get(10, TimeUnit.SECONDS));
 
                 long started = System.nanoTime();
                 client.close();
-                assertThatThrownBy(() -> first.get(10, TimeUnit.SECONDS))
-                        .cause()
-                        .isInstanceOf(ApiException.class)
-                        .hasMessageContaining("the feed is closed");
+                for (Future<?> first : held) {
+                    assertThatThrownBy(() -> first.get(10, TimeUnit.SECONDS))
+                            .cause()
+                            .isInstanceOf(ApiException.class)
+                            .hasMessageContaining("the feed is closed");
+                }
                 assertThatThrownBy(() -> second.get(10, TimeUnit.SECONDS))
                         .cause()
                         .isInstanceOf(ApiException.class)
                         .hasMessageContaining("the feed is closed");
                 assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
-                assertThat(api.requests()).as("one request, not repeated").hasSize(1);
+                assertThat(api.requests())
+                        .as("the requests on the wire, none repeated or sent for the queued call")
+                        .hasSize(paths.size());
             } finally {
                 release.countDown();
             }
         }
     }
 
-    /** Waits until the thread is parked, as one is that waits for a permit. */
-    private static void awaitWaiting(Thread thread) {
+    /**
+     * Waits until the thread is queued for a permit: parked in the semaphore's timed acquire. Any
+     * parked state would do for the thread state, but a call can park on a lock of the class loader or
+     * the logger before it reaches the permit, and a close then lands before it is queued.
+     */
+    private static void awaitQueuedForPermit(Thread thread) {
         long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
-        while (thread.getState() != Thread.State.TIMED_WAITING && thread.getState() != Thread.State.WAITING) {
+        while (Arrays.stream(thread.getStackTrace())
+                .noneMatch(frame -> frame.getClassName().equals(Semaphore.class.getName())
+                        && frame.getMethodName().equals("tryAcquire"))) {
             assertThat(System.nanoTime()).as("the call waits for its permit").isLessThan(deadline);
             Thread.onSpinWait();
         }
@@ -848,7 +872,9 @@ class ApiClientTest {
                 Reply.of(200, Fixtures.read("rest/whoami/bookmaker_details.xml")));
         long started = System.nanoTime();
         assertThat(client.fetchWhoAmI()).isNotNull();
-        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(1500));
+        // the first backoff is half a second, 0.7 to 1.3 times: a date in the past neither adds to it nor skips it
+        assertThat(Duration.ofNanos(System.nanoTime() - started))
+                .isBetween(Duration.ofMillis(300), Duration.ofMillis(1500));
         assertThat(api.requests("GET", WHOAMI)).hasSize(2);
     }
 
