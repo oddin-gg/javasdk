@@ -135,9 +135,15 @@ class CatalogsTest {
                 .hasSizeBetween(6, 20)
                 .allSatisfy(outcome -> assertThat(outcome.getId()).startsWith("od:player:"));
         assertThat(Catalogs.variantDescription(401, variant)).isEqualTo(Catalogs.variantDescription(401, variant));
-        assertThat(Catalogs.variantDescription(401, variant))
+        var other = decode(
+                Catalogs.variantDescription(401, "od:dynamic_outcomes:401:5000001:3"), RAMarketDescriptions.class);
+        assertThat(playersOf(other))
                 .as("another match's variant has other players")
-                .isNotEqualTo(Catalogs.variantDescription(401, "od:dynamic_outcomes:401:5000001:3"));
+                .isNotEmpty()
+                .doesNotContainAnyElementsOf(playersOf(described));
+        assertThat(playersOf(decode(Catalogs.variantDescription(401, variant), RAMarketDescriptions.class)))
+                .as("the same variant has the same players")
+                .isEqualTo(playersOf(described));
         assertThatThrownBy(() -> Catalogs.variantDescription(401, "")).isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -187,6 +193,13 @@ class CatalogsTest {
         assertThatThrownBy(() ->
                         restSchema.newValidator().validate(new StreamSource(new java.io.ByteArrayInputStream(broken))))
                 .isInstanceOf(org.xml.sax.SAXException.class);
+    }
+
+    /** The ids of the outcomes of the one market a variant's description holds. */
+    private static List<String> playersOf(RAMarketDescriptions described) {
+        return described.getMarket().get(0).getOutcomes().getOutcome().stream()
+                .map(outcome -> outcome.getId())
+                .toList();
     }
 
     private static <T> T decode(byte[] body, Class<T> type) throws DecodeException {
