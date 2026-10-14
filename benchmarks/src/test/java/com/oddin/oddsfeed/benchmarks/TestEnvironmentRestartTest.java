@@ -26,6 +26,21 @@ class TestEnvironmentRestartTest {
     @Test
     @Timeout(value = 15, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void aRestartWithLiveMatches() throws Exception {
+        run(false);
+    }
+
+    /**
+     * The same feed left running for {@code BENCHMARKS_TESTENV_DURATION} minutes: the time through a
+     * session message by message, the JVM's allocation, GC and threads, and the feed's health over the run.
+     * Give the JVM {@code -Xlog:gc:file=<path>:uptime} and {@code -Dbenchmarks.gclog=<path>} for the pauses.
+     */
+    @Test
+    @Timeout(value = 150, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aSustainedRun() throws Exception {
+        run(true);
+    }
+
+    private static void run(boolean sustained) throws Exception {
         var preflight = TestEnvironmentRestart.Preflight.decide(
                 TestEnvironmentRestart.Settings::system, System.getenv("CI"), System.getenv(TOKEN));
         TestEnvironmentRestart.Settings settings;
@@ -37,6 +52,11 @@ class TestEnvironmentRestartTest {
             case TestEnvironmentRestart.Preflight.Refuse refuse -> throw new AssertionError(refuse.reason());
             case TestEnvironmentRestart.Preflight.Open open -> settings = open.settings();
         }
+        assumeTrue(
+                settings.sustained() == sustained,
+                sustained
+                        ? "BENCHMARKS_TESTENV_DURATION (minutes) names a sustained run; it is not set"
+                        : "BENCHMARKS_TESTENV_DURATION is set: this is a sustained run");
         var result = TestEnvironmentRestart.run(settings, System.getenv(TOKEN));
 
         System.out.println(result.report());
