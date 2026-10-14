@@ -137,6 +137,49 @@ final class TestEnvironmentRestart {
         }
     }
 
+    /** What the run does with the environment it was started in: the decision is made before anything opens. */
+    sealed interface Preflight {
+
+        /** Open the feed with these settings. */
+        record Open(Settings settings) implements Preflight {}
+
+        /** Nothing was asked for: the test passes by skipping. */
+        record Skip(String reason) implements Preflight {}
+
+        /** Something asked for what must not happen: the test fails, with nothing opened. */
+        record Refuse(String reason) implements Preflight {}
+
+        /**
+         * A build that names the test environment where {@code CI} is set is refused, not skipped: a
+         * skip would hide that the shared feed was about to be opened from a pipeline. Without a name
+         * it is skipped, wherever it runs; a name that is not the test environment is an
+         * {@link IllegalArgumentException}.
+         *
+         * @param lookup the system properties, then the environment, see {@link Settings#from}
+         * @param ci the value of {@code CI}, null when it is not set
+         * @param token the access token, null when it is not set
+         */
+        static Preflight decide(
+                Function<String, @Nullable String> lookup, @Nullable String ci, @Nullable String token) {
+            var selected = lookup.apply(Settings.SELECTOR);
+            boolean named = selected != null && !selected.isBlank();
+            if (ci != null) {
+                return named
+                        ? new Refuse("CI is set and " + Settings.SELECTOR
+                                + " names the test environment: the shared feed is not opened from CI")
+                        : new Skip("the test environment is not for CI");
+            }
+            var settings = Settings.from(lookup);
+            if (settings.isEmpty()) {
+                return new Skip(Settings.SELECTOR + "=test names the test environment; it is not set");
+            }
+            if (token == null || token.isBlank()) {
+                return new Refuse("the test environment is named but there is no access token");
+            }
+            return new Open(settings.get());
+        }
+    }
+
     private static final Pattern ID = Pattern.compile("od:[a-z]+:\\d+");
     private static final Pattern VARIANT = Pattern.compile("/markets/\\d+/variants/[^/]+");
 
