@@ -6,6 +6,7 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
@@ -20,6 +21,9 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -250,6 +254,54 @@ class ProfileCachesTest {
     }
 
     @Test
+    void whatAResponseSaidBeforeAClearFillsNothingAfterIt() throws Exception {
+        var summary = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES)
+                .decode(
+                        Fixtures.read("rest/match_summary/match_summary.xml").getBytes(UTF_8),
+                        RAMatchSummaryEndpoint.class);
+        var teams = summary.getSportEvent().getCompetitors().getCompetitor();
+        var tournament = summary.getSportEvent().getTournament();
+        var away = URN.parse("od:competitor:47215");
+        var penaltyArena = URN.parse("od:sport:23");
+        // one competitor is loaded already: a fill must not make its tombstone say anything either
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        caches.competitor(COMPETITOR, EN, null);
+
+        var started = caches.startMany(() -> false);
+        caches.clear();
+        long discarded = caches.discardedFetches();
+        caches.fillCompetitors(teams, EN, started);
+        caches.fillTournament(tournament, EN, started);
+
+        assertThat(caches.cachedCompetitor(away)).as("no entry made").isNull();
+        assertThat(caches.cachedTournament(TOURNAMENT)).isNull();
+        assertThat(caches.cachedSport(penaltyArena)).isNull();
+        assertThat(caches.cachedCompetitor(COMPETITOR))
+                .as("the tombstone of the one that was loaded, filled with nothing")
+                .satisfiesAnyOf(
+                        entry -> assertThat(entry).isNull(),
+                        entry -> assertThat(requireNonNull(entry).get(COMPETITOR_NAME, EN))
+                                .isNull());
+        assertThat(caches.discardedFetches() - discarded)
+                .as("both competitors, the tournament and its sport")
+                .isEqualTo(4);
+
+        // the same responses, handled by a fetch that started after the clear, do fill
+        var later = caches.startMany(() -> false);
+        caches.fillCompetitors(teams, EN, later);
+        caches.fillTournament(tournament, EN, later);
+        assertThat(requireNonNull(caches.cachedCompetitor(away)).get(COMPETITOR_NAME, EN))
+                .isEqualTo("Team Beta");
+        assertThat(requireNonNull(caches.cachedCompetitor(COMPETITOR)).get(COMPETITOR_NAME, EN))
+                .isEqualTo("Team Alpha");
+        assertThat(requireNonNull(caches.cachedTournament(TOURNAMENT)).get(TOURNAMENT_NAME, EN))
+                .isEqualTo("Test Tournament");
+        assertThat(requireNonNull(caches.cachedSport(penaltyArena)).get(SPORT_NAME, EN))
+                .isEqualTo("PenaltyArena");
+        assertThat(caches.discardedFetches() - discarded).as("none more").isEqualTo(4);
+    }
+
+    @Test
     void clearDropsEverythingCached() {
         api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
         api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
@@ -477,5 +529,61 @@ class ProfileCachesTest {
         assertThat(api.requests("GET", TOURNAMENT_INFO_EN)).hasSize(2);
         assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(2);
         assertThat(api.requests("GET", PLAYER_PROFILE_EN)).hasSize(1);
+    }
+
+    @Test
+    void aReadAfterAClearLoadsAPlayerAgainThoughALoadFromBeforeWasUnderWay() throws Exception {
+        aClearDuringALoadMakesTheReaderLoadAgain(
+                PLAYER_PROFILE_EN,
+                Fixtures.read("rest/player/player_profile.xml"),
+                Fixtures.read("rest/player/player_profile.xml").replace("Player One", "Player Uno"),
+                () -> caches.player(PLAYER, EN, null).get(PLAYER_NAME, EN),
+                "Player Uno");
+        assertThat(caches.discardedFetches()).as("the player").isEqualTo(1);
+    }
+
+    @Test
+    void aReadAfterAClearLoadsATournamentAgainThoughALoadFromBeforeWasUnderWay() throws Exception {
+        aClearDuringALoadMakesTheReaderLoadAgain(
+                TOURNAMENT_INFO_EN,
+                Fixtures.read("rest/tournament_info/tournament_info.xml"),
+                Fixtures.read("rest/tournament_info/tournament_info.xml").replace("Test Tournament", "Test Again"),
+                () -> caches.tournament(TOURNAMENT, EN, null).get(TOURNAMENT_NAME, EN),
+                "Test Again");
+    }
+
+    @Test
+    void aReadAfterAClearLoadsASportsTournamentsAgainThoughALoadFromBeforeWasUnderWay() throws Exception {
+        aClearDuringALoadMakesTheReaderLoadAgain(
+                LOL_TOURNAMENTS_EN,
+                Fixtures.read("rest/sport_tournaments/sport_tournaments.xml"),
+                Fixtures.read("rest/sport_tournaments/sport_tournaments.xml")
+                        .replace("od:tournament:1042", "od:tournament:7"),
+                () -> caches.sportTournaments(LOL, EN, null).get(SPORT_TOURNAMENTS, null),
+                List.of(URN.parse("od:tournament:7"), URN.parse("od:tournament:1043")));
+    }
+
+    /**
+     * A load held in the middle of its answer while the caches are cleared, then let go: its answer
+     * is thrown away, so the reader loads again and gets the newer one - the same one a read after
+     * the clear gets, with no third request.
+     */
+    private void aClearDuringALoadMakesTheReaderLoadAgain(
+            String path, String older, String newer, Supplier<@Nullable Object> read, Object expected)
+            throws Exception {
+        api.respond(path, Reply.of(200, older).stallingMidBody(Duration.ofSeconds(30)), Reply.of(200, newer));
+        var before = threads.submit(read::get);
+        try {
+            api.awaitRequest("GET", path);
+            caches.clear();
+        } finally {
+            api.releaseStalls();
+        }
+        assertThat(before.get(10, TimeUnit.SECONDS))
+                .as("the reader that was under way")
+                .isEqualTo(expected);
+        assertThat(read.get()).as("a read after the clear").isEqualTo(expected);
+        assertThat(api.requests("GET", path)).as("the load, and its repeat").hasSize(2);
+        assertThat(caches.discardedFetches()).as("the answer from before").isPositive();
     }
 }
