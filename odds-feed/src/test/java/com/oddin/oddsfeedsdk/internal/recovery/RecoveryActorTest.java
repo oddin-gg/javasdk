@@ -23,6 +23,7 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.BlockingQueue;
@@ -326,6 +327,125 @@ class RecoveryActorTest {
             release.countDown();
         }
         awaitUp(PRE);
+    }
+
+    @Test
+    void aRecoveryInFlightKeepsItsIdWhileMoreEndedOnesThanTheFilterKeepsAreIssued() throws Exception {
+        var actor = filtering(8);
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        Request recovery = api.next();
+
+        // far more requests than the filter keeps, each ended, while the recovery's snapshot is on its way
+        for (int i = 0; i < 20; i++) {
+            endedEventRecovery(actor, session);
+        }
+        session.snapshotComplete(producerOf(recovery), recovery.requestId());
+
+        awaitUp(PRE);
+        awaitIdle(actor);
+        assertThat(actor.counters().completed()).as("recoveries completed").isEqualTo(1);
+        assertThat(actor.counters().unknownCompletions())
+                .as("snapshot completes dropped as strays")
+                .isZero();
+        assertThat(api.requests).as("no recovery asked for again").isEmpty();
+    }
+
+    @Test
+    void theIdsOfEventRecoveriesInFlightAreKeptToo() throws Exception {
+        var actor = filtering(8);
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        Request recovery = api.next();
+        var open = new ArrayList<Long>();
+        for (int i = 0; i < 3; i++) {
+            open.add(requireNonNull(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS)));
+            api.next();
+        }
+        for (int i = 0; i < 20; i++) {
+            endedEventRecovery(actor, session);
+        }
+
+        for (long requestId : open) {
+            session.snapshotComplete(PRE, requestId);
+            assertThat(events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                    .as("event recovery " + requestId)
+                    .isEqualTo("event recovery " + requestId + " completed");
+        }
+        session.snapshotComplete(producerOf(recovery), recovery.requestId());
+        awaitUp(PRE);
+        assertThat(actor.counters().unknownCompletions())
+                .as("snapshot completes dropped as strays")
+                .isZero();
+    }
+
+    @Test
+    void theIdsOfRecoveriesThatEndedAreStillCapped() throws Exception {
+        var actor = filtering(8);
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        Request recovery = api.next();
+        long first = endedEventRecovery(actor, session);
+        for (int i = 0; i < 40; i++) {
+            endedEventRecovery(actor, session);
+        }
+        awaitIdle(actor);
+        assertThat(actor.issuedSize())
+                .as("the recovery in flight and the ended ones the filter keeps")
+                .isEqualTo(8);
+
+        // the recovery ends, and is forgotten with the next ones as any ended id is
+        session.snapshotComplete(producerOf(recovery), recovery.requestId());
+        awaitUp(PRE);
+        for (int i = 0; i < 20; i++) {
+            endedEventRecovery(actor, session);
+        }
+        awaitIdle(actor);
+        assertThat(actor.issuedSize()).as("the ended ones the filter keeps").isEqualTo(8);
+        long strays = actor.counters().unknownCompletions();
+        session.snapshotComplete(PRE, first);
+        session.snapshotComplete(PRE, recovery.requestId());
+        assertThat(actor.counters().unknownCompletions())
+                .as("completes of the ids it forgot")
+                .isEqualTo(strays + 2);
+    }
+
+    /** An actor on the real workers that keeps {@code kept} ended request ids. */
+    private RecoveryActor filtering(int kept) {
+        var actor = new RecoveryActor(
+                producers,
+                settings(),
+                api,
+                events(),
+                workers,
+                InstantSource.system(),
+                System::nanoTime,
+                new Random(1),
+                RecoveryActor.CONTROL_CAPACITY,
+                RecoveryActor.SAMPLE_CAPACITY,
+                kept);
+        this.actor = actor;
+        return actor;
+    }
+
+    /** An event recovery asked for, accepted and completed by its snapshot complete; its request id. */
+    private long endedEventRecovery(RecoveryActor actor, SessionFacts session) throws Exception {
+        long requestId = requireNonNull(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS));
+        assertThat(api.next().requestId()).isEqualTo(requestId);
+        session.snapshotComplete(PRE, requestId);
+        assertThat(events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("event recovery " + requestId)
+                .isEqualTo("event recovery " + requestId + " completed");
+        return requestId;
     }
 
     @Test

@@ -1633,7 +1633,8 @@ final class RecoveryMachine {
         return awaited;
     }
 
-    private boolean inFlight(long requestId) {
+    /** Whether a recovery or an event recovery of this request id has not ended; the actor's thread only. */
+    boolean inFlight(long requestId) {
         if (eventRecoveries.containsKey(requestId) || replies.containsKey(requestId)) {
             return true;
         }
