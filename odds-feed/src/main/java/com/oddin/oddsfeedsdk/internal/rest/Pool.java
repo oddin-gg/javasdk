@@ -2,10 +2,13 @@ package com.oddin.oddsfeedsdk.internal.rest;
 
 /**
  * Which permits an API call waits for. Each pool has its own, so a burst of entity loads cannot
- * hold up a recovery request or the market descriptions.
+ * hold up a recovery request or the market descriptions, and a burst of event recoveries cannot
+ * hold up a producer's.
  */
 public enum Pool {
-    /** Recovery requests, and the producer list and whoami that recovery depends on: 2 at once. */
+    /** A producer's recovery requests, and the producer list and whoami that recovery depends on: 1 at once. */
+    PRODUCER,
+    /** The recovery requests of single events, many of which can be waiting at once: 2 at once. */
     RECOVERY,
     /** Market descriptions, void reasons, match status descriptions and sports: 2 at once. */
     CATALOG,

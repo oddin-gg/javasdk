@@ -4,6 +4,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.groups.Tuple.tuple;
+import static org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD;
 
 import ch.qos.logback.classic.Level;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
@@ -21,7 +22,6 @@ import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RABookmakerDetail;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMarketDescriptions;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMatchSummaryEndpoint;
-import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducers;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.net.URI;
 import java.time.Duration;
@@ -31,12 +31,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.function.UnaryOperator;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /** The REST client against the fake API: each rule of the call policy, and what it sends. */
 class ApiClientTest {
@@ -44,6 +47,8 @@ class ApiClientTest {
     private static final URN MATCH = URN.parse("od:match:1");
     private static final String SUMMARY = "/v1/sports/en/sport_events/od:match:1/summary";
     private static final String WHOAMI = "/v1/users/whoami";
+    private static final String EVENT_RECOVERY = "/v1/pre/odds/events/od:match:1/initiate_request";
+    private static final String PRODUCER_RECOVERY = "/v1/pre/recovery/initiate_request";
     private static final String NO_VOID_REASONS = "<void_reasons response_code=\"OK\"/>";
     private static final String OK_PRODUCERS = Fixtures.read("rest/producers/producers.xml");
     private static final String REFUSED = """
@@ -193,21 +198,101 @@ class ApiClientTest {
                 Reply.of(200, Fixtures.read("rest/whoami/bookmaker_details.xml"))
                         .after(Duration.ofSeconds(2)));
         try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
-            // both recovery permits
-            List<Future<RABookmakerDetail>> holders =
-                    List.of(calls.submit(() -> client.fetchWhoAmI()), calls.submit(() -> client.fetchWhoAmI()));
-            api.awaitRequests("GET", WHOAMI, 2);
+            // the producer pool's one permit
+            Future<RABookmakerDetail> holder = calls.submit(() -> client.fetchWhoAmI());
+            api.awaitRequest("GET", WHOAMI);
 
             long started = System.nanoTime();
             assertThatThrownBy(() -> client.fetchProducers(Deadline.in(Duration.ofMillis(300))))
                     .isInstanceOf(ApiException.class)
                     .hasMessageContaining("not done within 300 ms, waiting for its turn");
             assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
-            for (Future<RABookmakerDetail> holder : holders) {
-                assertThat(holder.get()).isNotNull();
-            }
+            assertThat(holder.get()).isNotNull();
         }
         assertThat(api.requests("GET", "/v1/descriptions/producers")).isEmpty();
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void aProducerRecoveryAndItsCallsWaitForNoEventRecovery() throws Exception {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(20)));
+        var release = new CountDownLatch(1);
+        holdEventRecoveries(release);
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            try {
+                // both recovery permits are held at the API, and more requests are queued behind them
+                List<Future<?>> events = new ArrayList<>();
+                for (int i = 0; i < 6; i++) {
+                    long requestId = i;
+                    events.add(calls.submit(() -> client.postEventOddsRecovery("pre", MATCH, requestId)));
+                }
+                api.awaitRequests("POST", EVENT_RECOVERY, 2);
+
+                long started = System.nanoTime();
+                client.postRecovery("pre", 100, null);
+                client.postRecovery("live", 101, Instant.ofEpochMilli(1_777_000_000_000L));
+                assertThat(client.fetchWhoAmI()).isNotNull();
+                assertThat(client.fetchProducers()).isNotNull();
+                assertThat(Duration.ofNanos(System.nanoTime() - started))
+                        .as("a producer's calls wait for no event recovery")
+                        .isLessThan(Duration.ofSeconds(5));
+                assertThat(api.requests("POST", PRODUCER_RECOVERY)).hasSize(1);
+                assertThat(api.requests("POST", "/v1/live/recovery/initiate_request"))
+                        .hasSize(1);
+                assertThat(api.requests("POST", EVENT_RECOVERY))
+                        .as("event recoveries at the API: the two permits, the rest queued")
+                        .hasSize(2);
+
+                release.countDown();
+                for (Future<?> event : events) {
+                    event.get(30, TimeUnit.SECONDS);
+                }
+                assertThat(api.requests("POST", EVENT_RECOVERY)).hasSize(6);
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void aProducerRecoveryHoldsTheProducerPermitAndNoEventRecoveryWaitsForIt() throws Exception {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(20)));
+        var release = new CountDownLatch(1);
+        api.respondWith(request -> {
+            if (request.path().endsWith("/recovery/initiate_request")) {
+                await(release);
+            }
+            return null;
+        });
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            try {
+                // a producer's recovery request holds the producer pool's one permit
+                Future<?> producer = calls.submit(() -> client.postRecovery("pre", 1, null));
+                api.awaitRequest("POST", PRODUCER_RECOVERY);
+                assertThatThrownBy(() -> client.fetchWhoAmI(Deadline.in(Duration.ofMillis(300))))
+                        .isInstanceOf(ApiException.class)
+                        .hasMessageContaining("waiting for its turn");
+                assertThatThrownBy(() -> client.fetchProducers(Deadline.in(Duration.ofMillis(300))))
+                        .isInstanceOf(ApiException.class)
+                        .hasMessageContaining("waiting for its turn");
+                assertThat(api.requests("GET", WHOAMI)).isEmpty();
+                assertThat(api.requests("GET", "/v1/descriptions/producers")).isEmpty();
+
+                client.postEventOddsRecovery("pre", MATCH, 2);
+                client.postEventStatefulRecovery("live", MATCH, 3);
+                assertThat(api.requests("POST", EVENT_RECOVERY)).hasSize(1);
+
+                release.countDown();
+                producer.get(30, TimeUnit.SECONDS);
+            } finally {
+                release.countDown();
+            }
+        }
+        // the permit came back, and the calls that gave up waiting for it did not take it with them
+        assertThat(client.fetchWhoAmI()).isNotNull();
+        assertThat(client.fetchProducers()).isNotNull();
+        client.postRecovery("pre", 4, null);
     }
 
     @Test
@@ -315,18 +400,11 @@ class ApiClientTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("the answer is over " + (size - 1) + " bytes");
         assertThat(api.requests("GET", WHOAMI)).as("one byte over is final").hasSize(2);
-        // both recovery permits came back: two calls are at the API at once
-        api.respond("/v1/descriptions/producers", Reply.of(200, OK_PRODUCERS).after(Duration.ofSeconds(1)));
-        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
-            long started = System.nanoTime();
-            List<Future<RAProducers>> both =
-                    List.of(calls.submit(() -> tight.fetchProducers()), calls.submit(() -> tight.fetchProducers()));
-            api.awaitRequests("GET", "/v1/descriptions/producers", 2);
-            assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(900));
-            for (Future<RAProducers> producers : both) {
-                assertThat(producers.get()).isNotNull();
-            }
-        }
+        // the producer pool's permit came back: the next call is not left waiting for it
+        api.respond("/v1/descriptions/producers", Reply.of(200, OK_PRODUCERS));
+        long answered = System.nanoTime();
+        assertThat(tight.fetchProducers()).isNotNull();
+        assertThat(Duration.ofNanos(System.nanoTime() - answered)).isLessThan(Duration.ofSeconds(5));
 
         // an error is read only as far as the limit: this one whole would decode to its message,
         // and the call does not wait for the rest of it
@@ -725,6 +803,24 @@ class ApiClientTest {
         var client = new ApiClient(configuration, events, TestTls.clientContext());
         open.add(client);
         return client;
+    }
+
+    /** Holds every event recovery request at the API until {@code release}. */
+    private void holdEventRecoveries(CountDownLatch release) {
+        api.respondWith(request -> {
+            if (request.path().contains("/events/") && request.path().endsWith("/initiate_request")) {
+                await(release);
+            }
+            return null;
+        });
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await(30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private ApiClient client(UnaryOperator<OddsFeedConfigurationBuilder> options) {

@@ -41,7 +41,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Makes API calls: one {@link HttpClient} per feed, three permit pools, one deadline per call and
+ * Makes API calls: one {@link HttpClient} per feed, four permit pools, one deadline per call and
  * the retry policy.
  *
  * <p>A call's deadline is the HTTP client timeout. Waiting for a permit, every attempt - its
@@ -68,6 +68,7 @@ public final class RestTransport implements AutoCloseable {
     static final int MAX_ATTEMPTS = 3;
     static final Duration FIRST_BACKOFF = Duration.ofMillis(500);
     static final Duration MAX_BACKOFF = Duration.ofSeconds(5);
+    static final int PRODUCER_PERMITS = 1;
     static final int RECOVERY_PERMITS = 2;
     static final int CATALOG_PERMITS = 2;
     /** An error's body is read this far for the API's error; the rest is not needed. */
@@ -77,6 +78,7 @@ public final class RestTransport implements AutoCloseable {
     private final String base;
     private final String accessToken;
     private final Duration timeout;
+    private final Semaphore producerPermits = new Semaphore(PRODUCER_PERMITS, true);
     private final Semaphore recoveryPermits = new Semaphore(RECOVERY_PERMITS, true);
     private final Semaphore catalogPermits = new Semaphore(CATALOG_PERMITS, true);
     private final Semaphore dataPermits;
@@ -173,6 +175,7 @@ public final class RestTransport implements AutoCloseable {
             String method, Pool pool, String path, boolean idempotent, boolean needsBody, Deadline deadline) {
         URI uri = URI.create(base + path);
         Semaphore permit = switch (pool) {
+            case PRODUCER -> producerPermits;
             case RECOVERY -> recoveryPermits;
             case CATALOG -> catalogPermits;
             case DATA -> dataPermits;

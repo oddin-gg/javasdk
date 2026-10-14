@@ -78,7 +78,7 @@ public final class ApiClient implements RecoveryRequests, AutoCloseable {
     }
 
     RABookmakerDetail fetchWhoAmI(Deadline deadline) {
-        return transport.get(Pool.RECOVERY, "/users/whoami", RABookmakerDetail.class, deadline);
+        return transport.get(Pool.PRODUCER, "/users/whoami", RABookmakerDetail.class, deadline);
     }
 
     public RAProducers fetchProducers() {
@@ -86,7 +86,7 @@ public final class ApiClient implements RecoveryRequests, AutoCloseable {
     }
 
     RAProducers fetchProducers(Deadline deadline) {
-        return transport.get(Pool.RECOVERY, "/descriptions/producers", RAProducers.class, deadline);
+        return transport.get(Pool.PRODUCER, "/descriptions/producers", RAProducers.class, deadline);
     }
 
     public RASportsEndpoint fetchSports(Locale locale) {
@@ -249,12 +249,17 @@ public final class ApiClient implements RecoveryRequests, AutoCloseable {
 
     @Override
     public void postEventOddsRecovery(String producer, URN eventId, long requestId) {
-        recover("/" + segment(producer) + "/odds/events/" + segment(eventId) + "/initiate_request", requestId, null);
+        recover(
+                Pool.RECOVERY,
+                "/" + segment(producer) + "/odds/events/" + segment(eventId) + "/initiate_request",
+                requestId,
+                null);
     }
 
     @Override
     public void postEventStatefulRecovery(String producer, URN eventId, long requestId) {
         recover(
+                Pool.RECOVERY,
                 "/" + segment(producer) + "/stateful_messages/events/" + segment(eventId) + "/initiate_request",
                 requestId,
                 null);
@@ -262,7 +267,7 @@ public final class ApiClient implements RecoveryRequests, AutoCloseable {
 
     @Override
     public void postRecovery(String producer, long requestId, @Nullable Instant after) {
-        recover("/" + segment(producer) + "/recovery/initiate_request", requestId, after);
+        recover(Pool.PRODUCER, "/" + segment(producer) + "/recovery/initiate_request", requestId, after);
     }
 
     public RAReplaySetContent fetchReplaySetContent() {
@@ -318,12 +323,13 @@ public final class ApiClient implements RecoveryRequests, AutoCloseable {
         return transport.get(pool, path, type, deadline());
     }
 
-    private void recover(String path, long requestId, @Nullable Instant after) {
+    /** A recovery request: a producer's goes through {@link Pool#PRODUCER}, an event's through {@link Pool#RECOVERY}. */
+    private void recover(Pool pool, String path, long requestId, @Nullable Instant after) {
         var query = new Query()
                 .add("request_id", requestId)
                 .node(nodeId)
                 .add("after", after == null ? null : after.toEpochMilli());
-        transport.send("POST", Pool.RECOVERY, path + query, true, deadline());
+        transport.send("POST", pool, path + query, true, deadline());
     }
 
     private void replay(String method, String path) {
