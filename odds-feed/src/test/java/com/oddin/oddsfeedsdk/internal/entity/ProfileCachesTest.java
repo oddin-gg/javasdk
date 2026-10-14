@@ -561,6 +561,16 @@ class ProfileCachesTest {
                         .replace("od:tournament:1042", "od:tournament:7"),
                 () -> caches.sportTournaments(LOL, EN, null).get(SPORT_TOURNAMENTS, null),
                 List.of(URN.parse("od:tournament:7"), URN.parse("od:tournament:1043")));
+        // the answer from before also filled the tournaments it listed, before it wrote the list
+        assertThat(caches.cachedTournament(URN.parse("od:tournament:1042")))
+                .as("the tournament only the discarded answer listed")
+                .isNull();
+        assertThat(caches.cachedTournament(URN.parse("od:tournament:7")))
+                .as("a tournament the newer answer listed")
+                .isNotNull();
+        assertThat(caches.discardedFetches())
+                .as("the fills of the two tournaments the answer from before listed, and its write of the list")
+                .isEqualTo(3);
     }
 
     /**
