@@ -32,10 +32,11 @@ import org.slf4j.LoggerFactory;
  * The SDK's watch over its own threads: every {@link Limits#tick}, on the feed's timer thread, it
  * reads each part that runs on a thread of its own - the events thread, and once the feed is open the
  * broker's consumer threads, each session, the alive dispatcher and the recovery actor - and the
- * JVM's threads for a deadlock, and tells the health what it finds: a part is {@link
- * HealthState#STALLED} while it has been in one callback for longer than {@link Limits#callback}, or
- * its queue has stayed not empty without moving for {@link Limits#queue}, or a deadlock holds threads;
- * healthy again once that ends. Each tick also reads the whole health, so a catalog stale for its
+ * JVM's threads for a deadlock that holds one of the SDK's own, and tells the health what it finds:
+ * a part is {@link HealthState#STALLED} while it has been in one callback for longer than {@link
+ * Limits#callback}, or its queue has stayed not empty without moving for {@link Limits#queue}, or a
+ * deadlock holds a thread of the SDK; healthy again once that ends. A deadlock among the client's
+ * own threads is none of these: the feed it leaves as it is. Each tick also reads the whole health, so a catalog stale for its
  * limit is found without a reader. The health logs each change and tells it to {@code
  * onHealthEvent}; the watchdog does nothing else: it never interrupts or ends a thread, since it
  * cannot unwedge the client's code - the remedy is to close the feed and open a new one.
@@ -56,6 +57,11 @@ import org.slf4j.LoggerFactory;
 public final class Watchdog {
 
     private static final Logger LOG = LoggerFactory.getLogger(Watchdog.class);
+    /**
+     * The start of the name of every thread the SDK starts, platform or virtual. A deadlock counts
+     * only for the threads of the SDK it holds: one among the client's own threads is no stall of a feed.
+     */
+    static final String THREAD_PREFIX = "oddsfeed-";
     /** How often a look that fails is logged with its stack: at most once in this long. */
     private static final Duration LOOK_FAILURE_INTERVAL = Duration.ofMinutes(1);
 
@@ -129,7 +135,7 @@ public final class Watchdog {
     private final ReentrantLock deciding = new ReentrantLock();
     /** Each part followed, by its key; guarded by {@link #deciding}. */
     private final Map<Key, Followed> followed = new HashMap<>();
-    /** The state last noted of the JVM's threads; guarded by {@link #deciding}. */
+    /** The state last noted of the SDK's threads, for a deadlock; guarded by {@link #deciding}. */
     private HealthState threads = HealthState.HEALTHY;
     /** The state last noted of the timers; guarded by {@link #deciding}. */
     private HealthState timers = HealthState.HEALTHY;
@@ -293,11 +299,11 @@ public final class Watchdog {
         }
     }
 
-    /** One look, on the timer thread: the parts, the JVM's threads, the timers, then the whole health. */
+    /** One look, on the timer thread: the parts, the SDK's threads, the timers, then the whole health. */
     void tick() {
         beforeTick.run();
         tickedAt = nanos.getAsLong();
-        // outside the lock: the JVM's search for a deadlock is no read of a flag
+        // outside the lock: the search for a deadlock, the JVM's, is no read of a flag
         List<String> deadlocked = deadlocks.get();
         tell(decide(deadlocked));
         readHealth.run();
@@ -305,8 +311,8 @@ public final class Watchdog {
 
     /**
      * Looks again on the caller's thread, for {@code getHealth()}: the parts, and the timers, should
-     * the watchdog's own thread be the one that is wedged. Not the JVM's threads, whose search takes
-     * the JVM to a safepoint; the tick does that. Nothing once stopped, or before the start.
+     * the watchdog's own thread be the one that is wedged. Not the deadlock search, which takes the
+     * JVM to a safepoint; the tick does that. Nothing once stopped, or before the start.
      */
     public void recheck() {
         if (!running) {
@@ -319,7 +325,7 @@ public final class Watchdog {
      * Reads the parts, decides each one's state and notes each change, in order, all under the lock:
      * a look that read its parts before another cannot decide after it.
      *
-     * @param deadlocked the threads a deadlock holds; null when this look did not search
+     * @param deadlocked the SDK's threads a deadlock holds; null when this look did not search
      */
     private List<HealthMonitor.Noted> decide(@Nullable List<String> deadlocked) {
         var notes = new ArrayList<HealthMonitor.Noted>();
@@ -351,7 +357,7 @@ public final class Watchdog {
                             state,
                             deadlocked.isEmpty()
                                     ? "no deadlock holds a thread"
-                                    : "a deadlock holds the threads " + String.join(", ", deadlocked)));
+                                    : "a deadlock holds the SDK threads " + String.join(", ", deadlocked)));
                 }
             }
             if (running) {
@@ -477,8 +483,20 @@ public final class Watchdog {
         return parts;
     }
 
-    /** The names of the threads a deadlock holds, on monitors or on locks; none when there is none. */
+    /**
+     * The names of the SDK's threads a deadlock holds, on monitors or on locks; none when there is
+     * none, or when it holds only threads of the client's. A thread is the SDK's when its name starts
+     * with {@link #THREAD_PREFIX}: every thread the SDK starts is named so. The threads of another
+     * feed in the JVM are the SDK's too, since all feeds name theirs alike.
+     */
     static List<String> deadlockedThreads() {
+        return allDeadlockedThreads().stream()
+                .filter(name -> name.startsWith(THREAD_PREFIX))
+                .toList();
+    }
+
+    /** The names of every thread of the JVM a deadlock holds, the client's too; none when there is none. */
+    static List<String> allDeadlockedThreads() {
         var threads = ManagementFactory.getThreadMXBean();
         // a JVM that cannot follow the owners of locks still finds the deadlocks on monitors
         long @Nullable [] ids = threads.isSynchronizerUsageSupported()

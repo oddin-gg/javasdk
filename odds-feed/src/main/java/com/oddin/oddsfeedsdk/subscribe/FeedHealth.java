@@ -22,12 +22,12 @@ import java.util.Map;
  * refreshes failing, for an hour or more. It is {@link HealthState#STALLED} when the SDK's own watch finds it not
  * moving: in one callback, or with a queue that has not moved, for longer than the SDK itself can
  * wait for the API in one getter - twice the HTTP client timeout and 5 seconds, 30 seconds at
- * least - or held by a deadlock; it is healthy again once that ends. The feed's state is the worst of its
+ * least - or held by a deadlock of the SDK's own threads; it is healthy again once that ends. The feed's state is the worst of its
  * parts'. Each change is also told to {@code GlobalEventsListener.onHealthEvent}.
  *
  * @param state the worst of the parts' states; healthy when there is none yet
  * @param components the state of each part the feed has now: the events, the catalogs, the timers
- *     and the JVM's threads once the feed has started, the consumer and the sessions once it is open,
+ *     and the SDK's threads once the feed has started, the consumer and the sessions once it is open,
  *     and the alives and the recovery once a feed that is not a replay feed is open
  * @param transport the broker connection; not connected, and nothing counted, before the feed opens
  * @param alives the SDK's own alive consumer; nothing counted on a replay feed or before it opens

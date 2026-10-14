@@ -913,12 +913,12 @@ and REST workers post facts to it; it decides and posts work out.
 
 The SDK checks itself. It watches the consumer executor, every session dispatcher, the
 alive dispatcher, the recovery actor, the events dispatcher, the timer executor, and
-`ThreadMXBean` for monitor deadlocks. Every internal blocking wait in the SDK has a
-deadline, so a wedge on a permit, a latch or a queue, which `ThreadMXBean` cannot see,
-turns into a timeout with a counter instead of a silent hang. A dispatcher inside one
-callback for longer than the configured limit, an executor whose queue has not moved
-while non-empty, or a reported deadlock produces a loud log line, a health event on the
-global listener (`onHealthEvent`: the component, its previous and new `HealthState`, a
+`ThreadMXBean` for deadlocks that hold one of the SDK's own threads. Every internal
+blocking wait in the SDK has a deadline, so a wedge on a permit, a latch or a queue, which
+`ThreadMXBean` cannot see, turns into a timeout with a counter instead of a silent hang. A
+dispatcher inside one callback for longer than the configured limit, an executor whose queue
+has not moved while non-empty, or a reported deadlock of the SDK's threads produces a loud
+log line, a health event on the global listener (`onHealthEvent`: the component, its previous and new `HealthState`, a
 reason), and a state change in `getHealth()`. The states are `HEALTHY`, `DEGRADED`
 (working, with a quality the design deliberately gives up, such as a catalog served stale
 or a session lagging) and `STALLED` (something the watchdog found not moving, which the
@@ -973,7 +973,7 @@ part getting better as information - and told to `onHealthEvent`, through a slot
 (per session for a session's) in the events dispatcher's control queue: behind a slow
 client the newest change replaces one still queued, with the state the client heard last
 as its previous. A part found healthy again - a callback returned, a queue moved, a
-deadlock ended - is told so the same way.
+deadlock of the SDK's threads ended - is told so the same way.
 
 The watchdog is one daemon thread, `oddsfeed-timer`, started with the feed's first start
 (the events thread and the catalogs exist from then; the consumer, the sessions, the
@@ -995,7 +995,11 @@ ended - its facts waiting and `turns`). A queue is still from the first look tha
 sees it not empty with the same count taken; any look that sees the count move, or the
 queue empty, ends that. The JVM's deadlocks come from
 `ThreadMXBean.findDeadlockedThreads()`, which sees monitors and locks alike, once a tick
-only, since the search takes the JVM to a safepoint; the reason names the threads. The
+only, since the search takes the JVM to a safepoint. Only the SDK's own threads count: every
+thread the SDK starts is named `oddsfeed-*`, and a deadlock holding none of them, one among
+the client's own threads, leaves the feed's health as it is; a deadlock between a client
+thread and an SDK thread (client code inside a callback) is `STALLED`, and the reason names
+the SDK's threads. Another feed's threads in the same JVM are named alike and count too. The
 watchdog cannot see its own thread wedge, so `getHealth()` looks at the parts again on
 the caller's thread, and finds the timers `STALLED` when the next tick is later than the
 queue's limit; the tick that returns tells them healthy. The looks decide under one lock that only

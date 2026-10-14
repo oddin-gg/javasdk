@@ -269,34 +269,62 @@ class WatchdogTest {
         real.tick();
         heard.nothingMore("no deadlock");
 
-        var one = new ReentrantLock();
-        var other = new ReentrantLock();
-        var holding = new CountDownLatch(2);
-        var threads = List.of(
-                Thread.ofPlatform().daemon().name("deadlock-one").start(() -> deadlock(one, other, holding)),
-                Thread.ofPlatform().daemon().name("deadlock-other").start(() -> deadlock(other, one, holding)));
-        try {
-            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
-            while (Watchdog.deadlockedThreads().isEmpty() && System.nanoTime() < deadline) {
-                Thread.sleep(10);
-            }
+        try (var deadlock = new LockDeadlock("oddsfeed-deadlock-one", "oddsfeed-deadlock-other")) {
             real.tick();
             var stalled = heard.next();
             assertThat(stalled.component()).isEqualTo(HealthComponent.THREADS);
             assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
-            assertThat(stalled.reason()).isEqualTo("a deadlock holds the threads deadlock-one, deadlock-other");
+            assertThat(stalled.reason())
+                    .isEqualTo("a deadlock holds the SDK threads oddsfeed-deadlock-one, oddsfeed-deadlock-other");
             assertThat(read().components()).containsEntry(HealthComponent.THREADS, HealthState.STALLED);
-        } finally {
-            // the test's own remedy: the watchdog never interrupts a thread
-            threads.forEach(Thread::interrupt);
-            for (Thread thread : threads) {
-                thread.join(Duration.ofSeconds(WAIT_SECONDS));
-            }
+            deadlock.end();
         }
         real.tick();
         var healthy = heard.next();
         assertThat(healthy.state()).isEqualTo(HealthState.HEALTHY);
         assertThat(healthy.reason()).isEqualTo("no deadlock holds a thread");
+    }
+
+    @Test
+    void aDeadlockBetweenAnSdkThreadAndAClientThreadStallsTheThreadsNamingTheSdkOne() throws InterruptedException {
+        var real = new Watchdog(health, List::of, () -> {}, Watchdog::deadlockedThreads, clock::nanos, FLOOR);
+        events.start();
+
+        // client code inside a callback of the SDK's thread, waiting for a lock the client's own holds
+        try (var deadlock = new LockDeadlock("oddsfeed-events", "client-thread")) {
+            real.tick();
+            var stalled = heard.next();
+            assertThat(stalled.component()).isEqualTo(HealthComponent.THREADS);
+            assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
+            assertThat(stalled.reason()).isEqualTo("a deadlock holds the SDK threads oddsfeed-events");
+            assertThat(read().components()).containsEntry(HealthComponent.THREADS, HealthState.STALLED);
+            deadlock.end();
+        }
+    }
+
+    @Test
+    void aDeadlockAmongTheClientsOwnThreadsLeavesTheFeedHealthy() throws InterruptedException {
+        var real = new Watchdog(health, List::of, () -> {}, Watchdog::deadlockedThreads, clock::nanos, FLOOR);
+        events.start();
+        real.tick();
+        heard.nothingMore("no deadlock");
+
+        try (var deadlock = new LockDeadlock("client-one", "client-other")) {
+            assertThat(Watchdog.allDeadlockedThreads())
+                    .as("the JVM does find the client's deadlock")
+                    .contains("client-one", "client-other");
+            assertThat(Watchdog.deadlockedThreads())
+                    .as("the SDK's threads in it")
+                    .isEmpty();
+            real.tick();
+            real.tick();
+            heard.nothingMore("a deadlock the client's own");
+            assertThat(logged).isEmpty();
+            var health = read();
+            assertThat(health.state()).isEqualTo(HealthState.HEALTHY);
+            assertThat(health.components()).containsEntry(HealthComponent.THREADS, HealthState.HEALTHY);
+            deadlock.end();
+        }
     }
 
     @Test
@@ -313,7 +341,8 @@ class WatchdogTest {
                     .isTrue();
             var out = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             assertThat(out)
-                    .contains("THREADS HEALTHY -> STALLED: a deadlock holds the threads monitor-one, monitor-other");
+                    .contains(
+                            "THREADS HEALTHY -> STALLED: a deadlock holds the SDK threads oddsfeed-monitor-one, oddsfeed-monitor-other");
             assertThat(process.exitValue()).as(out).isZero();
         } finally {
             process.destroyForcibly();
@@ -683,18 +712,67 @@ class WatchdogTest {
         }
     }
 
-    /** Takes the first lock, waits for the other thread to take its own, then the second: never. */
-    private static void deadlock(ReentrantLock first, ReentrantLock second, CountDownLatch holding) {
-        first.lock();
-        try {
-            holding.countDown();
-            holding.await();
-            second.lockInterruptibly();
-            second.unlock();
-        } catch (InterruptedException e) {
-            // the deadlock's end
-        } finally {
-            first.unlock();
+    /**
+     * Two threads of the given names deadlocked on locks; the constructor returns once the JVM
+     * reports it. {@link #end} or {@link #close} frees both: the locks are taken interruptibly, so no
+     * stuck pair is left to the JVM, however the test ends.
+     */
+    private static final class LockDeadlock implements AutoCloseable {
+        private final List<Thread> threads;
+
+        LockDeadlock(String one, String other) throws InterruptedException {
+            var first = new ReentrantLock();
+            var second = new ReentrantLock();
+            var holding = new CountDownLatch(2);
+            threads = List.of(
+                    Thread.ofPlatform().daemon().name(one).start(() -> deadlock(first, second, holding)),
+                    Thread.ofPlatform().daemon().name(other).start(() -> deadlock(second, first, holding)));
+            try {
+                // the JVM tells of no deadlock but by asking it: a bounded wait for the two to be in it
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+                while (!Watchdog.allDeadlockedThreads().containsAll(List.of(one, other))
+                        && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(Watchdog.allDeadlockedThreads())
+                        .as("the deadlock made")
+                        .contains(one, other);
+            } catch (InterruptedException | RuntimeException | Error e) {
+                close();
+                throw e;
+            }
+        }
+
+        /** The test's own remedy: the watchdog never interrupts a thread. */
+        void end() throws InterruptedException {
+            threads.forEach(Thread::interrupt);
+            for (Thread thread : threads) {
+                thread.join(Duration.ofSeconds(WAIT_SECONDS));
+            }
+        }
+
+        @Override
+        public void close() {
+            try {
+                end();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        /** Takes the first lock, waits for the other thread to take its own, then the second: never. */
+        private static void deadlock(ReentrantLock first, ReentrantLock second, CountDownLatch holding) {
+            first.lock();
+            try {
+                holding.countDown();
+                holding.await();
+                second.lockInterruptibly();
+                second.unlock();
+            } catch (InterruptedException e) {
+                // the deadlock's end
+            } finally {
+                first.unlock();
+            }
         }
     }
 
@@ -795,8 +873,8 @@ class WatchdogTest {
 
         public static void main(String[] args) throws InterruptedException, IOException {
             var holding = new CountDownLatch(2);
-            Thread.ofPlatform().daemon().name("monitor-one").start(() -> hold(ONE, OTHER, holding));
-            Thread.ofPlatform().daemon().name("monitor-other").start(() -> hold(OTHER, ONE, holding));
+            Thread.ofPlatform().daemon().name("oddsfeed-monitor-one").start(() -> hold(ONE, OTHER, holding));
+            Thread.ofPlatform().daemon().name("oddsfeed-monitor-other").start(() -> hold(OTHER, ONE, holding));
             var events = new EventsDispatcher(new Heard(), null, id -> null);
             var health = new HealthMonitor(
                     events,
