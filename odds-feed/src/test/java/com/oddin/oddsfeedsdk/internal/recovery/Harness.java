@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -47,6 +48,9 @@ final class Harness {
     /** The sessions opened, for the alives in their queues. */
     final List<Integer> sessions = new ArrayList<>();
 
+    /** Called with each request as it goes out, before the machine goes on: a test's way to act in between. */
+    Consumer<Outbox.Call> onRequest = call -> {};
+
     final RecoveryMachine machine;
 
     Harness() {
@@ -60,6 +64,7 @@ final class Harness {
             @Override
             public void request(Call call) {
                 calls.add(call);
+                onRequest.accept(call);
             }
 
             @Override
