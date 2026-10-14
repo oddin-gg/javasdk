@@ -356,6 +356,12 @@ for path in sorted(seen):
         uploads = [step for step in stress_steps if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
         check(len(uploads) == 1 and uploads[0].get("if") == "always()",
               "%s > stress must upload its reports whatever the outcome" % where)
+        for step in stress_steps:
+            uses, with_ = str(step.get("uses", "")), step.get("with") or {}
+            check(not re.match(r"actions/cache([/@]|$)", uses), "%s > stress must restore no cache: %s" % (where, uses))
+            keys = [k for k in with_ if k == "cache" or k.startswith("cache-") or k.startswith("server-")]
+            check(not keys, "%s > stress must restore no cache and name no registry server: %s"
+                  % (where, ", ".join(keys)))
     # next.yml runs every pull request's code, a fork's included, and a token in reach of that code
     # is the fork's: contents: read and nothing else (the legacy SDK comes from its public release),
     # no registry server for Maven to authenticate to, and no step given the job token
@@ -1047,6 +1053,54 @@ breaks next.yml replace '      - name: Check the stress scenarios ran, and none 
 ' '      - name: Check the stress scenarios ran, and none was skipped
         continue-on-error: true
 ' "stress: the stress run and its check must not continue on error"
+
+breaks next.yml replace '    timeout-minutes: 10
+    # the repository is all it reads
+    permissions:
+      contents: read
+' '    timeout-minutes: 10
+    # the repository is all it reads
+    permissions:
+      contents: write
+' "./.github/workflows/next.yml > stress must hold contents: read and nothing else"
+breaks next.yml replace '-Dgroups=stress -Dstress.excluded=none -Djacoco.skip=true' '-Dgroups=stress -Djacoco.skip=true' \
+  "./.github/workflows/next.yml > stress must run the stress scenarios once"
+breaks next.yml replace '"%d stress scenarios were skipped" % skipped' '"%d skipped" % skipped' \
+  "./.github/workflows/next.yml > stress must check that the scenarios ran and none was skipped"
+breaks next.yml replace '      - name: Check the stress scenarios ran, and none was skipped
+' '      - name: Check the stress scenarios ran, and none was skipped
+        if: false
+' "stress: the stress run and its check must not be conditional"
+breaks next.yml replace '      - name: Run the stress scenarios
+' '      - name: Run the stress scenarios
+        continue-on-error: true
+' "stress: the stress run and its check must not continue on error"
+breaks next.yml replace '        # the reports and the test output, which holds the seed of the run
+        if: always()
+' '        # the reports and the test output, which holds the seed of the run
+' "./.github/workflows/next.yml > stress must upload its reports whatever the outcome"
+breaks next.yml replace "          distribution: 'corretto'
+          # No Maven cache and no registry server, as in the 1.0 system tests" "          distribution: 'corretto'
+          cache: maven
+          # No Maven cache and no registry server, as in the 1.0 system tests" \
+  "./.github/workflows/next.yml > stress must restore no cache and name no registry server"
+breaks next.yml replace '      - name: Set up JDK 25
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          java-version: '"'25'"'
+          distribution: '"'corretto'"'
+          # No Maven cache and no registry server, as in the 1.0 system tests' '      - name: Restore a cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2
+          key: stress
+      - name: Set up JDK 25
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          java-version: '"'25'"'
+          distribution: '"'corretto'"'
+          # No Maven cache and no registry server, as in the 1.0 system tests' \
+  "./.github/workflows/next.yml > stress must restore no cache: actions/cache/restore@v4"
 
 breaks next.yml replace '    name: Build & Test
 ' '    name: Build and test
