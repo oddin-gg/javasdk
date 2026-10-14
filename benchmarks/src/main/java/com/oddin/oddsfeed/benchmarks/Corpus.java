@@ -22,6 +22,9 @@ public final class Corpus {
     public static final int TYPICAL = 150;
     public static final int LARGE = 500;
 
+    /** The market ids an odds change draws from: 1 up to and including this. */
+    public static final int MARKET_IDS = 400;
+
     private static final String[] SPECIFIERS = {
         "", "", "map=1", "map=2", "threshold=2.5", "threshold=26.5", "map=1|threshold=10.5", "variant=way:two|way=two"
     };
@@ -49,7 +52,7 @@ public final class Corpus {
             int outcomes = random.nextInt(10) < 8 ? 2 + random.nextInt(2) : 4 + random.nextInt(17);
             String specifiers = SPECIFIERS[random.nextInt(SPECIFIERS.length)];
             int status = random.nextInt(20) == 0 ? -1 : 1;
-            xml.append("<market id=\"").append(1 + random.nextInt(400)).append('"');
+            xml.append("<market id=\"").append(1 + random.nextInt(MARKET_IDS)).append('"');
             if (!specifiers.isEmpty()) {
                 xml.append(" specifiers=\"").append(specifiers).append('"');
             }
