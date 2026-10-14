@@ -317,8 +317,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         this.workers = workers;
         this.nanos = nanos;
         this.tickNanos = Math.max(1, settings.tick().toNanos());
-        // the statuses still read the wall side only: their retention moves to the monotonic one next
-        this.statuses = new EventRecoveryStatuses(clock.wall(), counters);
+        this.statuses = new EventRecoveryStatuses(clock, counters);
         this.machine = new RecoveryMachine(
                 producers, settings, new Work(), new Guarded(events), clock, counters, statuses, random);
         this.thread = Thread.ofPlatform().daemon().name("oddsfeed-recovery").unstarted(this::run);

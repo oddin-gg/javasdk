@@ -41,7 +41,7 @@ final class Harness {
     final RecoverySettings settings;
     final Producers producers;
     final RecoveryCounters counters = new RecoveryCounters();
-    final EventRecoveryStatuses recoveryStatuses = new EventRecoveryStatuses(clock, counters);
+    final EventRecoveryStatuses recoveryStatuses;
     final List<Outbox.Call> calls = new ArrayList<>();
     final List<Integer> resets = new ArrayList<>();
     final List<Long> resetNumbers = new ArrayList<>();
@@ -77,6 +77,7 @@ final class Harness {
         this.settings = settings;
         this.feedClock = split ? FeedClock.of(clock, () -> monoNanos[0]) : FeedClock.following(clock);
         this.producers = new Producers(list(), clock);
+        this.recoveryStatuses = new EventRecoveryStatuses(feedClock, counters);
         Outbox outbox = new Outbox() {
             @Override
             public void request(Call call) {
