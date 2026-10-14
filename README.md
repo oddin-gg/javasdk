@@ -33,6 +33,17 @@ Java SDK
 Purpose of this SDK is to make integration process much smoother and easier. This SDK should take care of all connection, 
 data binding and other issues related to connection to API and Feed.
 
+### Documentation for 1.0
+
+* [Integration guide](docs/integration-guide.md): dependency, configuration, sessions and listeners,
+  closing, resuming after a restart, the onboarding checklist, delivery guarantees, replay
+* [Configuration](docs/configuration.md): every option with its default and bounds, preload locales
+* [Health and logging](docs/health-and-logging.md): `getHealth()`, health events, thresholds, log levels and logger names
+* [FAQ](docs/faq.md)
+* [NEXT.md](NEXT.md): the design the above is checked against
+
+The examples below show the API of both lines; 1.0 is `gg.oddin.oddsfeed:odds-feed` on Maven Central.
+
 ### How to start
 
 Please implement two basic interfaces:
@@ -44,12 +55,15 @@ Please implement two basic interfaces:
 OddsFeedListenerImplementation listener = new OddsFeedListenerImplementation();
 GlobalEventsListenerImplementation globalEventsListener = new GlobalEventsListenerImplementation();
 
-OddsFeedConfiguration config = OddsFeed.getConfigurationBuilder().setAccessToken("your-token").build();
+OddsFeedConfiguration config = OddsFeed.getOddsFeedConfigurationBuilder()
+        .selectIntegration()
+        .setAccessToken("your-token")
+        .build();
 
 OddsFeed oddsFeed = new OddsFeed(globalEventsListener, config);
 
 OddsFeedSessionBuilder sessionBuilder = oddsFeed.getSessionBuilder();
-sessionBuilder.setListener(listener).setMessageInterest(MessageInterest.AllMessages).build();
+sessionBuilder.setListener(listener).setMessageInterest(MessageInterest.ALL).build();
 
 oddsFeed.open();
 ```
@@ -83,7 +97,8 @@ Defaults: match 10 000, fixture 10 000, competitor 20 000, player 50 000.
 If you consume a very large schedule and see high memory use, lower the caps:
 
 ```java
-OddsFeedConfiguration config = OddsFeed.getConfigurationBuilder()
+OddsFeedConfiguration config = OddsFeed.getOddsFeedConfigurationBuilder()
+        .selectIntegration()
         .setAccessToken("your-token")
         .setMaxMatchCacheSize(2000)
         .setMaxFixtureCacheSize(2000)
