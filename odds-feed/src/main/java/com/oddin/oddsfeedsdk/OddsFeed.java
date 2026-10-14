@@ -256,7 +256,7 @@ public final class OddsFeed {
      * deliberately gives up, for a health check or a metrics exporter. Cheap, and safe from any
      * thread, a callback included: it reads counters and flags, never waits for the feed, and does
      * not start it. Before the feed starts it has no part and counts nothing; once started it has the
-     * events, the catalogs, the timers and the JVM's threads, and once open the connection, the
+     * events, the catalogs, the timers and the SDK's threads, and once open the connection, the
      * consumer and the sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
      * what the feed counted, and each part as the watch last found it, but the timers healthy: a
      * watch stopped is not one wedged; and the connection as it was at the close, healthy unless it
@@ -265,7 +265,8 @@ public final class OddsFeed {
      * <p>From its start to its close the feed watches its own threads, every 5 seconds unless the
      * configuration sets another interval: a part that has been in one callback, or whose queue has
      * not moved while not empty, for longer than the configuration's stall limits is stalled, and so
-     * are the JVM's threads while a deadlock holds some; each is healthy again once that ends. The
+     * are the SDK's own threads while a deadlock holds one of them, though not for a deadlock among
+     * the client's own threads; each is healthy again once that ends. The
      * limits are never under the longest the SDK itself can wait for the API in one getter, so a slow
      * API is no stall; unless set, they are twice the HTTP client timeout and 5 seconds, 30 seconds
      * at least: 65 seconds for the default timeout. A catalog that has served a value stale for its

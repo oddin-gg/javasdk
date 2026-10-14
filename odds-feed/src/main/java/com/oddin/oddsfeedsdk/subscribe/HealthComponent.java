@@ -14,7 +14,7 @@ public enum HealthComponent {
     EVENTS,
     /** The SDK's timer thread, which runs its watch over the others. */
     TIMERS,
-    /** The JVM's threads, for a deadlock among them. */
+    /** The SDK's own threads, for a deadlock that holds one of them; one among the client's threads alone is none. */
     THREADS,
     /** The market descriptions, void reasons and match statuses the SDK keeps from the API. */
     CATALOGS,
