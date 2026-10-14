@@ -336,6 +336,26 @@ for path in sorted(seen):
         keys = [k for k in with_ if k == "cache" or k.startswith("cache-") or k.startswith("server-")]
         check(not keys, "%s > system-tests-next must restore no cache and name no registry server: %s"
               % (where, ", ".join(keys)))
+    # the stress job: there, on every run, running the tagged scenarios, and checking that it did
+    stress = load(path).get("jobs", {}).get("stress")
+    check(stress is not None, "%s must have the job stress" % where)
+    if stress is not None:
+        check("if" not in stress, "%s > stress must not be conditional" % where)
+        check(not stress.get("continue-on-error"), "%s > stress must not continue on error" % where)
+        check(stress.get("timeout-minutes") == 10, "%s > stress must stop after 10 minutes, not %r" % (where, stress.get("timeout-minutes")))
+        check(stress.get("permissions") == {"contents": "read"},
+              "%s > stress must hold contents: read and nothing else, not %r" % (where, stress.get("permissions")))
+        stress_steps = stress.get("steps", [])
+        ran = [step for step in stress_steps if "-Dgroups=stress" in str(step.get("run", ""))]
+        check(len(ran) == 1 and "-Dstress.excluded=none" in str(ran[0].get("run", "")),
+              "%s > stress must run the stress scenarios once, with -Dgroups=stress -Dstress.excluded=none" % where)
+        counted = [step for step in stress_steps if "stress scenarios were skipped" in str(step.get("run", ""))]
+        check(len(counted) == 1, "%s > stress must check that the scenarios ran and none was skipped" % where)
+        for step in ran + counted:
+            unconditional("stress", step, "the stress run and its check")
+        uploads = [step for step in stress_steps if str(step.get("uses", "")).startswith("actions/upload-artifact@")]
+        check(len(uploads) == 1 and uploads[0].get("if") == "always()",
+              "%s > stress must upload its reports whatever the outcome" % where)
     # next.yml runs every pull request's code, a fork's included, and a token in reach of that code
     # is the fork's: contents: read and nothing else (the legacy SDK comes from its public release),
     # no registry server for Maven to authenticate to, and no step given the job token
@@ -1001,6 +1021,32 @@ breaks next.yml replace '      - name: Check the checkout left no credentials be
         shell: pwsh' '      - name: Check the checkout
         shell: pwsh' \
   "./.github/workflows/next.yml > wrapper-windows must check once that its checkout left no credentials behind"
+
+# next.yml's stress job: there, on every run, running its scenarios, and checking that it did
+breaks next.yml replace '  stress:
+' '  stress-legacy:
+' "./.github/workflows/next.yml must have the job stress"
+breaks next.yml replace '    name: Stress
+' '    name: Stress
+    if: false
+' "./.github/workflows/next.yml > stress must not be conditional"
+breaks next.yml replace '    name: Stress
+' '    name: Stress
+    continue-on-error: true
+' "./.github/workflows/next.yml > stress must not continue on error"
+breaks next.yml replace '    timeout-minutes: 10
+' '    timeout-minutes: 60
+' "./.github/workflows/next.yml > stress must stop after 10 minutes"
+breaks next.yml replace ' -Dgroups=stress -Dstress.excluded=none' ' -Dstress.excluded=none' \
+  "./.github/workflows/next.yml > stress must run the stress scenarios once"
+breaks next.yml replace '      - name: Run the stress scenarios
+' '      - name: Run the stress scenarios
+        if: false
+' "stress: the stress run and its check must not be conditional"
+breaks next.yml replace '      - name: Check the stress scenarios ran, and none was skipped
+' '      - name: Check the stress scenarios ran, and none was skipped
+        continue-on-error: true
+' "stress: the stress run and its check must not continue on error"
 
 breaks next.yml replace '    name: Build & Test
 ' '    name: Build and test
