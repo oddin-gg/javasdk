@@ -21,8 +21,12 @@ import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
+import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
+import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
@@ -31,6 +35,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -57,17 +62,24 @@ final class ColdStart {
 
     private static final Pattern SUMMARY = Pattern.compile("/v1/sports/en/sport_events/od:match:(\\d+)/summary");
     private static final Pattern PROFILE = Pattern.compile("/v1/sports/en/competitors/od:competitor:(\\d+)/profile");
+    private static final Pattern VARIANT = Pattern.compile("/v1/descriptions/en/markets/(\\d+)/variants/([^/]+)");
     private static final Pattern ID = Pattern.compile("od:[a-z]+:\\d+");
 
     static final String SUMMARIES = "GET /v1/sports/en/sport_events/{id}/summary";
     static final String PROFILES = "GET /v1/sports/en/competitors/{id}/profile";
+    static final String VARIANTS = "GET /v1/descriptions/en/markets/{id}/variants/{variant}";
 
     /** What the callbacks do with the match of a message. */
     enum Reads {
         /** Nothing: only the preload, if on, loads the match. */
         NOTHING,
         /** Its name in English, as a client showing the match does. */
-        NAME
+        NAME,
+        /**
+         * Its name, and the name in English of every market of the message, as a client showing the
+         * odds does: each variant market's description is fetched, the first time, on the callback's thread.
+         */
+        NAME_AND_MARKETS
     }
 
     /**
@@ -75,12 +87,37 @@ final class ColdStart {
      * @param latency what every REST request is answered after
      * @param eager whether the eager entity preload is on
      * @param reads what the callbacks read
+     * @param variantsPerMatch the variant markets, each with a variant of its own, that every odds
+     *     change carries after the corpus's markets; none unless the callbacks read the markets' names
      */
-    record Settings(int matches, Duration latency, boolean eager, Reads reads) {
+    record Settings(int matches, Duration latency, boolean eager, Reads reads, int variantsPerMatch) {
+
+        /** An odds change with no variant markets, as the scenario has always sent. */
+        Settings(int matches, Duration latency, boolean eager, Reads reads) {
+            this(matches, latency, eager, reads, 0);
+        }
 
         /** Summaries the feed must ask for: one per match, whoever loads it. */
         int summaries() {
-            return eager || reads == Reads.NAME ? matches : 0;
+            return eager || reads != Reads.NOTHING ? matches : 0;
+        }
+
+        /** Variant descriptions: one for each variant market of each message, which the callbacks read once. */
+        int variants() {
+            return reads == Reads.NAME_AND_MARKETS ? matches * variantsPerMatch : 0;
+        }
+
+        /** Whether the odds changes are the variant mode's: variant markets after the corpus's, perhaps none. */
+        boolean sendsVariants() {
+            return variantsPerMatch > 0 || reads == Reads.NAME_AND_MARKETS;
+        }
+
+        /**
+         * How long the burst may take before the scenario gives up: {@link #WAIT}, and the variants,
+         * which the callbacks read one by one, each a latency, in case no two are fetched at once.
+         */
+        Duration bound() {
+            return WAIT.plus(latency.multipliedBy(variants()));
         }
 
         /** Competitor profiles: a summary's load warms its competitors, whoever asked for the summary. */
@@ -89,7 +126,7 @@ final class ColdStart {
         }
 
         Settings with(Duration newLatency) {
-            return new Settings(matches, newLatency, eager, reads);
+            return new Settings(matches, newLatency, eager, reads, variantsPerMatch);
         }
     }
 
@@ -99,13 +136,22 @@ final class ColdStart {
      * @param requests the requests the feed made, by method and path with the ids left out
      * @param repeated paths asked for more than once, with their counts
      * @param mostInFlight the most requests the fake API was answering at once
+     * @param longestCallback the longest an odds change's callback took, in the session's thread
+     * @param longestRead the longest a single market name took to read in a callback; none when the
+     *     callbacks read no market
+     * @param healthEvents the changes of the feed's health the SDK told, as {@code component: previous to now}
+     * @param health the feed's state when it was caught up
      */
     record Result(
             Duration caughtUp,
             Duration afterLastPublish,
             Map<String, Integer> requests,
             Map<String, Integer> repeated,
-            int mostInFlight) {
+            int mostInFlight,
+            Duration longestCallback,
+            Duration longestRead,
+            List<String> healthEvents,
+            HealthState health) {
 
         int count(String key) {
             return requests.getOrDefault(key, 0);
@@ -120,6 +166,7 @@ final class ColdStart {
     static final class Running implements AutoCloseable {
         final FakeRestServer api;
         private final Arrivals arrivals = new Arrivals();
+        private final Quiet events = new Quiet();
         private @Nullable OddsFeed feed;
 
         /** Takes over {@code api}: it is closed with the feed, or here when the feed does not come up. */
@@ -136,7 +183,7 @@ final class ColdStart {
                         // without a preload locale no catalog is loaded at open: a client sets them
                         .setPreloadLocales(List.of(EN))
                         .build();
-                feed = new OddsFeed(new Quiet(), configuration);
+                feed = new OddsFeed(events, configuration);
                 feed.getSessionBuilder()
                         .setListener(listener)
                         .setMessageInterest(MessageInterest.ALL)
@@ -175,6 +222,10 @@ final class ColdStart {
             }
         }
 
+        FeedHealth health() {
+            return requireNonNull(feed).getHealth();
+        }
+
         @Override
         public void close() {
             try {
@@ -199,7 +250,12 @@ final class ColdStart {
             // built before the clock starts: only the broker's own publish cost is in the time
             var messages = new String[settings.matches()];
             for (int i = 0; i < messages.length; i++) {
-                messages[i] = Fixtures.replace(corpus, "od:match:198314", "od:match:" + (FIRST_MATCH + i));
+                var odds = settings.sendsVariants()
+                        ? new String(
+                                Corpus.oddsChange(Corpus.TYPICAL, settings.variantsPerMatch(), FIRST_MATCH + i),
+                                StandardCharsets.UTF_8)
+                        : corpus;
+                messages[i] = Fixtures.replace(odds, "od:match:198314", "od:match:" + (FIRST_MATCH + i));
             }
             long started = System.nanoTime();
             long lastPublished = started;
@@ -209,9 +265,9 @@ final class ColdStart {
                 }
                 lastPublished = System.nanoTime();
             }
-            if (!listener.done.await(WAIT.toSeconds(), TimeUnit.SECONDS)) {
-                throw new AssertionError(
-                        "only " + (settings.matches() - listener.done.getCount()) + " callbacks ran within " + WAIT);
+            if (!listener.done.await(settings.bound().toSeconds(), TimeUnit.SECONDS)) {
+                throw new AssertionError("only " + (settings.matches() - listener.done.getCount())
+                        + " callbacks ran within " + settings.bound());
             }
             listener.check();
             awaitRequests(running, settings);
@@ -223,7 +279,11 @@ final class ColdStart {
                     Duration.ofNanos(end - lastPublished),
                     requests.counts(),
                     requests.repeated(),
-                    running.api.mostInFlight());
+                    running.api.mostInFlight(),
+                    Duration.ofNanos(listener.longestCallback.get()),
+                    Duration.ofNanos(listener.longestRead.get()),
+                    List.copyOf(running.events.healthEvents),
+                    running.health().state());
         }
     }
 
@@ -253,11 +313,13 @@ final class ColdStart {
     private static void awaitRequests(Running running, Settings settings) throws InterruptedException {
         long until = System.nanoTime() + WAIT.toNanos();
         while (running.arrivals.matching(SUMMARY) < settings.summaries()
-                || running.arrivals.matching(PROFILE) < settings.profiles()) {
+                || running.arrivals.matching(PROFILE) < settings.profiles()
+                || running.arrivals.matching(VARIANT) < settings.variants()) {
             if (System.nanoTime() > until) {
                 throw new AssertionError("the requests did not arrive within " + WAIT + ": summaries "
                         + running.arrivals.matching(SUMMARY) + " of " + settings.summaries() + ", profiles "
-                        + running.arrivals.matching(PROFILE) + " of " + settings.profiles());
+                        + running.arrivals.matching(PROFILE) + " of " + settings.profiles() + ", variants "
+                        + running.arrivals.matching(VARIANT) + " of " + settings.variants());
             }
             Thread.sleep(5);
         }
@@ -269,7 +331,10 @@ final class ColdStart {
         var counts = new TreeMap<String, Integer>();
         var exact = new HashMap<String, Integer>();
         for (var request : api.requests()) {
-            counts.merge(request.method() + " " + ID.matcher(request.path()).replaceAll("{id}"), 1, Integer::sum);
+            // a variant's id is not an urn: the variants are one endpoint, whatever market and variant
+            var path =
+                    VARIANT.matcher(request.path()).replaceAll("/v1/descriptions/en/markets/{id}/variants/{variant}");
+            counts.merge(request.method() + " " + ID.matcher(path).replaceAll("{id}"), 1, Integer::sum);
             exact.merge(request.method() + " " + request.path(), 1, Integer::sum);
         }
         var repeated = new TreeMap<String, Integer>();
@@ -306,10 +371,15 @@ final class ColdStart {
             if (body == null) {
                 var summary = SUMMARY.matcher(path);
                 var profile = PROFILE.matcher(path);
+                var variant = VARIANT.matcher(path);
                 if (summary.matches()) {
                     body = text(Catalogs.matchSummary(Long.parseLong(summary.group(1))));
                 } else if (profile.matches()) {
                     body = text(Catalogs.competitorProfile(Long.parseLong(profile.group(1))));
+                } else if (variant.matches()) {
+                    body = text(Catalogs.variantDescription(
+                            Integer.parseInt(variant.group(1)),
+                            URLDecoder.decode(variant.group(2), StandardCharsets.UTF_8)));
                 } else {
                     return null; // not something the scenario expects: the fixtures', undelayed
                 }
@@ -329,7 +399,7 @@ final class ColdStart {
 
         void arrived(String path) {
             last.accumulateAndGet(System.nanoTime(), Math::max);
-            for (var pattern : List.of(SUMMARY, PROFILE)) {
+            for (var pattern : List.of(SUMMARY, PROFILE, VARIANT)) {
                 if (pattern.matcher(path).matches()) {
                     perPattern
                             .computeIfAbsent(pattern, _ -> new AtomicInteger())
@@ -353,6 +423,10 @@ final class ColdStart {
     static final class Listener implements OddsFeedListener {
         final CountDownLatch done;
         final AtomicLong lastDone = new AtomicLong();
+        /** The longest a callback took, and the longest one market name read in one, in nanoseconds. */
+        final AtomicLong longestCallback = new AtomicLong();
+
+        final AtomicLong longestRead = new AtomicLong();
         private final Reads reads;
         volatile boolean marketToo;
         private final java.util.concurrent.atomic.AtomicReference<@Nullable Throwable> failure =
@@ -365,15 +439,27 @@ final class ColdStart {
 
         @Override
         public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {
+            long entered = System.nanoTime();
             try {
-                if (reads == Reads.NAME) {
+                if (reads != Reads.NOTHING) {
                     var name = requireNonNull(message.getEvent().getName(EN));
                     if (!name.startsWith("Match ")) {
                         throw new AssertionError("an unexpected match name: " + name);
                     }
                 }
+                if (reads == Reads.NAME_AND_MARKETS) {
+                    for (var market : message.getMarkets()) {
+                        long read = System.nanoTime();
+                        var name = requireNonNull(market.getName(EN));
+                        longestRead.accumulateAndGet(System.nanoTime() - read, Math::max);
+                        if (!name.startsWith("Market ")) {
+                            throw new AssertionError("an unexpected market name: " + name);
+                        }
+                    }
+                }
                 if (marketToo) {
-                    // a variant market is read from a request of its own, which the generated catalogs do not answer
+                    // the first message is the plain one: a variant market is read from a request of its own, which
+                    // the variant mode measures
                     var plain = message.getMarkets().stream()
                             .filter(market -> !market.getSpecifiers().containsKey("variant"))
                             .findFirst()
@@ -383,7 +469,9 @@ final class ColdStart {
             } catch (RuntimeException | AssertionError e) {
                 failure.compareAndSet(null, e);
             }
-            lastDone.accumulateAndGet(System.nanoTime(), Math::max);
+            long left = System.nanoTime();
+            longestCallback.accumulateAndGet(left - entered, Math::max);
+            lastDone.accumulateAndGet(left, Math::max);
             done.countDown();
         }
 
@@ -415,6 +503,14 @@ final class ColdStart {
     }
 
     static final class Quiet implements GlobalEventsListener {
+        final List<String> healthEvents = new CopyOnWriteArrayList<>();
+
+        @Override
+        public void onHealthEvent(HealthEvent event) {
+            healthEvents.add(
+                    event.component() + ": " + event.previous() + " to " + event.state() + ", " + event.reason());
+        }
+
         @Override
         public void onProducerStatusChange(ProducerStatus producerStatus) {}
 
