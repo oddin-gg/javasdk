@@ -34,6 +34,27 @@ class RecoveryMachineDependencyTest {
             "java/util/concurrent/CountDownLatch",
             "java/util/concurrent/Semaphore");
 
+    /** What reads a clock directly: the machine reads the feed clock's two sides only, by name. */
+    private static final List<String> DIRECT_CLOCK_READS =
+            List.of("java/time/InstantSource", "java/time/Clock", "nanoTime", "currentTimeMillis");
+
+    @Test
+    void theStateMachineReadsNoClockButTheFeedClocksTwoSides() throws IOException, URISyntaxException {
+        var violations = new ArrayList<String>();
+        for (ClassModel model : machineClasses()) {
+            for (PoolEntry entry : model.constantPool()) {
+                if (entry instanceof Utf8Entry text) {
+                    for (String read : DIRECT_CLOCK_READS) {
+                        if (text.stringValue().contains(read)) {
+                            violations.add(model.thisClass().asInternalName() + " refers to " + text.stringValue());
+                        }
+                    }
+                }
+            }
+        }
+        assertThat(violations).isEmpty();
+    }
+
     @Test
     void theStateMachineCallsNothingThatBlocks() throws IOException, URISyntaxException {
         Path classes = Path.of(RecoveryMachine.class
@@ -67,5 +88,23 @@ class RecoveryMachineDependencyTest {
                         "com/oddin/oddsfeedsdk/internal/recovery/RecoveryMachine",
                         "com/oddin/oddsfeedsdk/internal/recovery/RecoveryMachine$Track");
         assertThat(violations).isEmpty();
+    }
+
+    private static List<ClassModel> machineClasses() throws IOException, URISyntaxException {
+        Path classes = Path.of(RecoveryMachine.class
+                        .getProtectionDomain()
+                        .getCodeSource()
+                        .getLocation()
+                        .toURI())
+                .resolve("com/oddin/oddsfeedsdk/internal/recovery");
+        var models = new ArrayList<ClassModel>();
+        try (Stream<Path> files = Files.list(classes)) {
+            for (Path file : files.filter(f -> f.getFileName().toString().startsWith("RecoveryMachine"))
+                    .toList()) {
+                models.add(ClassFile.of().parse(Files.readAllBytes(file)));
+            }
+        }
+        assertThat(models).as("state machine classes read").isNotEmpty();
+        return models;
     }
 }
