@@ -419,7 +419,39 @@ class RecoveryActorTest {
                 .isEqualTo(strays + 2);
     }
 
-    /** An actor on the real workers that keeps {@code kept} ended request ids. */
+    @Test
+    void theIdsOfRecoveriesInFlightAreKeptEvenWhenThereAreMoreThanTheCap() throws Exception {
+        var actor = filtering(8);
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        Request recovery = api.next();
+        var open = new ArrayList<Long>();
+        for (int i = 0; i < 10; i++) {
+            open.add(requireNonNull(actor.recoverEvent(PRE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS)));
+            api.next();
+        }
+        awaitIdle(actor);
+        assertThat(actor.issuedSize())
+                .as("the recovery and the ten event recoveries in flight, none of them forgotten for the cap of 8")
+                .isEqualTo(11);
+
+        for (long requestId : open) {
+            session.snapshotComplete(PRE, requestId);
+            assertThat(events.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                    .as("event recovery " + requestId)
+                    .isEqualTo("event recovery " + requestId + " completed");
+        }
+        session.snapshotComplete(producerOf(recovery), recovery.requestId());
+        awaitUp(PRE);
+        assertThat(actor.counters().unknownCompletions())
+                .as("snapshot completes dropped as strays")
+                .isZero();
+    }
+
+    /** An actor on the real workers that keeps {@code kept} request ids, ended ones evicted first. */
     private RecoveryActor filtering(int kept) {
         var actor = new RecoveryActor(
                 producers,

@@ -76,9 +76,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     /** How often a reset's worker looks whether the session's channel is open again. */
     private static final long REOPEN_POLL_MILLIS = 100;
     /**
-     * How many of the request ids it asked for the actor remembers once they ended, a recovery or
-     * an event recovery that completed, failed or timed out. The ids of those still in flight are
-     * kept besides, never evicted, so a snapshot complete one awaits is never taken for a stray one.
+     * How many request ids it asked for the actor remembers at most, in flight and ended together
+     * - a recovery or an event recovery that completed, failed or timed out. Past it, the oldest
+     * ended one is forgotten; the ids of those still in flight never are, so a snapshot complete
+     * one awaits is never taken for a stray one, and the set holds more than this only while more
+     * than this are in flight.
      */
     static final int ISSUED_KEPT = 10_000;
     /**
@@ -119,11 +121,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final Producers producers;
 
     /**
-     * The request ids the actor has asked for: those still in flight, and of the ones that ended
-     * the last {@link #ISSUED_KEPT}. A snapshot complete of any other is one no recovery of this
-     * feed awaits, and is dropped as it is posted. The ids in flight are a recovery per producer
-     * and at most 128 event recoveries each, so the set stays bounded by the cap and those.
-     * Written by the actor's thread only, read by any.
+     * The request ids the actor has asked for: those still in flight, and the ended ones that fit
+     * with them under {@link #ISSUED_KEPT}. A snapshot complete of any other is one no recovery of
+     * this feed awaits, and is dropped as it is posted. The ids in flight are a recovery per
+     * producer and at most 128 event recoveries each, never forgotten, so the set stays within the
+     * cap unless more than that are in flight. Written by the actor's thread only, read by any.
      */
     private final Set<Long> issued = ConcurrentHashMap.newKeySet();
     /** The same ids, oldest first, for taking the oldest ended one out; the actor's thread only. */
