@@ -13,8 +13,14 @@ import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
+import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
+import com.oddin.oddsfeedsdk.mq.entities.BetSettlement;
+import com.oddin.oddsfeedsdk.mq.entities.BetStop;
+import com.oddin.oddsfeedsdk.mq.entities.FixtureChange;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
+import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
+import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionState;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionStateChange;
@@ -134,7 +140,7 @@ class LifecycleLoopStressTest {
         private final OddsFeedSessionListener listener = new OddsFeedSessionListener();
         private final HealthSentinel health;
         private final AtomicBoolean closeReturned = new AtomicBoolean();
-        private final AtomicInteger lateCalls = new AtomicInteger();
+        private final ConcurrentLinkedQueue<String> lateCalls = new ConcurrentLinkedQueue<>();
         private final AtomicInteger delivered = new AtomicInteger();
         private final AtomicBoolean closeOnce = new AtomicBoolean();
         private final AtomicBoolean stop = new AtomicBoolean();
@@ -225,9 +231,9 @@ class LifecycleLoopStressTest {
                     .isLessThan(SHUTDOWN.plus(MARGIN));
             leaks.assertClean(WAIT);
             assertThat(broker.unacknowledged()).as("unacknowledged after close").isZero();
-            assertThat(lateCalls.get())
+            assertThat(lateCalls)
                     .as("listener calls begun after close() returned")
-                    .isZero();
+                    .isEmpty();
             ledger.assertPrefix();
             health.assertNeverStalled();
             System.out.printf(
@@ -386,20 +392,55 @@ class LifecycleLoopStressTest {
 
         // ------------------------------------------------------------------ the listeners
 
-        /** The ledger's recorder, which notes a call that begins once the close has returned. */
+        /** A call of any listener that begins once the close has returned is noted. */
+        private void late(String callback) {
+            if (closeReturned.get()) {
+                lateCalls.add(callback);
+            }
+        }
+
+        /** The ledger's recorder, which notes every call that begins once the close has returned. */
         private final class OddsFeedSessionListener implements StressFeed.OddsChanges {
 
             private final OddsFeedListener recorder = ledger.listener();
 
             @Override
             public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {
-                if (closeReturned.get()) {
-                    lateCalls.incrementAndGet();
-                }
+                late("onOddsChange");
                 recorder.onOddsChange(session, message);
                 if (source == Source.SESSION_CALLBACK && delivered.incrementAndGet() == closeAfter) {
                     closeAndMark();
                 }
+            }
+
+            @Override
+            public void onBetStop(OddsFeedSession session, BetStop<SportEvent> message) {
+                late("onBetStop");
+            }
+
+            @Override
+            public void onBetSettlement(OddsFeedSession session, BetSettlement<SportEvent> message) {
+                late("onBetSettlement");
+            }
+
+            @Override
+            public void onRollbackBetSettlement(OddsFeedSession session, RollbackBetSettlement<SportEvent> message) {
+                late("onRollbackBetSettlement");
+            }
+
+            @Override
+            public void onRollbackBetCancel(OddsFeedSession session, RollbackBetCancel<SportEvent> message) {
+                late("onRollbackBetCancel");
+            }
+
+            @Override
+            public void onBetCancel(OddsFeedSession session, BetCancel<SportEvent> message) {
+                late("onBetCancel");
+            }
+
+            @Override
+            public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {
+                late("onFixtureChange");
             }
         }
 
@@ -414,6 +455,7 @@ class LifecycleLoopStressTest {
 
             @Override
             public void onConnectionStateChange(ConnectionStateChange change) {
+                late("onConnectionStateChange");
                 if (source == Source.RACING_OPEN && change.state() == racingOn && raced.compareAndSet(false, true)) {
                     Thread.ofVirtual().name("stress-racing-closer").start(Cycle.this::closeAndMark);
                 }
@@ -421,6 +463,7 @@ class LifecycleLoopStressTest {
 
             @Override
             public void onProducerStatusChange(ProducerStatus status) {
+                late("onProducerStatusChange");
                 if (source == Source.EVENTS_CALLBACK) {
                     // on the events thread itself: the close must not wait for the callback that makes it
                     closeAndMark();
@@ -428,7 +471,23 @@ class LifecycleLoopStressTest {
             }
 
             @Override
+            public void onConnectionDown() {
+                late("onConnectionDown");
+            }
+
+            @Override
+            public void onEventRecoveryCompleted(URN eventId, long requestId) {
+                late("onEventRecoveryCompleted");
+            }
+
+            @Override
+            public void onFatalError(String reason, Throwable cause) {
+                late("onFatalError");
+            }
+
+            @Override
             public void onHealthEvent(HealthEvent event) {
+                late("onHealthEvent");
                 health.onHealthEvent(event);
             }
         }
