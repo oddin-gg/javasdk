@@ -443,10 +443,13 @@ public final class LoadSubject {
             out.append(summary("callback", calls, 1));
             int windows = 10;
             long window = Math.max(1, measured / windows);
+            // short runs, a restart, are read in seconds
+            boolean seconds = measured < 300_000_000_000L;
+            double unit = seconds ? 1e9 : 6e10;
             out.append(String.format(
                     Locale.ROOT,
                     "%-14s %8s %9s %9s %9s %9s %9s%n",
-                    "window",
+                    seconds ? "window (s)" : "window (min)",
                     "msgs/s",
                     "age p50",
                     "age p99",
@@ -464,9 +467,9 @@ public final class LoadSubject {
                 var s = inside.stream().mapToLong(i -> waits[i]).toArray();
                 out.append(String.format(
                         Locale.ROOT,
-                        "%5.1f-%-5.1f min %8.0f %6d ms %6d ms %6d ms %6d ms %6d ms%n",
-                        w * window / 6e10,
-                        (w + 1) * window / 6e10,
+                        "%6.1f-%-6.1f %8.0f %6d ms %6d ms %6d ms %6d ms %6d ms%n",
+                        w * window / unit,
+                        (w + 1) * window / unit,
                         inside.size() / (window / 1e9),
                         Stats.percentile(a, 50),
                         Stats.percentile(a, 99),

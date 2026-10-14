@@ -16,6 +16,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.lang.management.ManagementFactory;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -27,6 +28,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -254,7 +256,9 @@ class LoadHarnessIT {
     }
 
     private static String machine() {
-        return Runtime.getRuntime().availableProcessors() + " CPUs, JDK " + System.getProperty("java.version")
+        return Runtime.getRuntime().availableProcessors() + " CPUs, load average "
+                + ManagementFactory.getOperatingSystemMXBean().getSystemLoadAverage() + " at the start, JDK "
+                + System.getProperty("java.version")
                 + ", the SDK in a JVM of its own and the fakes, broker and publisher in another";
     }
 
@@ -276,7 +280,7 @@ class LoadHarnessIT {
         return Long.parseLong(requestId);
     }
 
-    /** What the SDK asked of the API, by kind. */
+    /** What the SDK asked of the API, by kind; the rest grouped by their paths with the numbers left out. */
     private static String requests(List<RecordedRequest> requests) {
         long summaries = requests.stream()
                 .filter(r -> LoadApi.SUMMARY.matcher(r.path()).matches())
@@ -289,9 +293,18 @@ class LoadHarnessIT {
                 .count();
         long recoveries =
                 requests.stream().filter(r -> r.method().equals("POST")).count();
+        var others = new TreeMap<String, Integer>();
+        for (var request : requests) {
+            if (!request.method().equals("POST")
+                    && !LoadApi.SUMMARY.matcher(request.path()).matches()
+                    && !LoadApi.PROFILE.matcher(request.path()).matches()
+                    && !LoadApi.VARIANT.matcher(request.path()).matches()) {
+                others.merge(request.path().replaceAll("\\d+", "N"), 1, Integer::sum);
+            }
+        }
         return "API requests: " + requests.size() + " (summaries " + summaries + ", profiles " + profiles
                 + ", variants " + variants + ", recovery requests " + recoveries + ", others "
-                + (requests.size() - summaries - profiles - variants - recoveries) + ")\n";
+                + others.values().stream().mapToInt(Integer::intValue).sum() + ")\nothers by path: " + others + "\n";
     }
 
     /**
