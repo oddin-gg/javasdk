@@ -76,9 +76,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     /** How often a reset's worker looks whether the session's channel is open again. */
     private static final long REOPEN_POLL_MILLIS = 100;
     /**
-     * How many of the request ids it asked for the actor remembers: far more than can be in flight,
-     * a recovery per producer and 128 event recoveries each, so a snapshot complete one awaits is
-     * never taken for a stray one.
+     * How many of the request ids it asked for the actor remembers once they ended, a recovery or
+     * an event recovery that completed, failed or timed out. The ids of those still in flight are
+     * kept besides, never evicted, so a snapshot complete one awaits is never taken for a stray one.
      */
     static final int ISSUED_KEPT = 10_000;
     /**
@@ -119,18 +119,22 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final Producers producers;
 
     /**
-     * The request ids the actor has asked for, the last {@link #ISSUED_KEPT}: a snapshot complete of
-     * any other is one no recovery of this feed awaits, and is dropped as it is posted. Written by
-     * the actor's thread only, read by any.
+     * The request ids the actor has asked for: those still in flight, and of the ones that ended
+     * the last {@link #ISSUED_KEPT}. A snapshot complete of any other is one no recovery of this
+     * feed awaits, and is dropped as it is posted. The ids in flight are a recovery per producer
+     * and at most 128 event recoveries each, so the set stays bounded by the cap and those.
+     * Written by the actor's thread only, read by any.
      */
     private final Set<Long> issued = ConcurrentHashMap.newKeySet();
-    /** The same ids, oldest first, for taking the oldest out; the actor's thread only. */
+    /** The same ids, oldest first, for taking the oldest ended one out; the actor's thread only. */
     private final ArrayDeque<Long> issuedOrder = new ArrayDeque<>();
     /**
      * The snapshot completes queued and not handled yet, one per session, producer and request: the
      * same one again meanwhile would change nothing, and is not queued twice.
      */
     private final Set<Fact.SnapshotComplete> completesQueued = ConcurrentHashMap.newKeySet();
+    /** How many ended ids {@link #issued} keeps. */
+    private final int issuedKept;
 
     private final Thread thread;
     /**
@@ -233,7 +237,38 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             RandomGenerator random,
             int controlCapacity,
             int sampleCapacity) {
+        this(
+                producers,
+                settings,
+                api,
+                events,
+                workers,
+                clock,
+                nanos,
+                random,
+                controlCapacity,
+                sampleCapacity,
+                ISSUED_KEPT);
+    }
+
+    /**
+     * With the clock, what paces the turns, the random ids, the queue sizes and how many ended
+     * request ids it remembers, which a test sets.
+     */
+    RecoveryActor(
+            Producers producers,
+            RecoverySettings settings,
+            RecoveryRequests api,
+            RecoveryEvents events,
+            Executor workers,
+            InstantSource clock,
+            LongSupplier nanos,
+            RandomGenerator random,
+            int controlCapacity,
+            int sampleCapacity,
+            int issuedKept) {
         this.counters = new RecoveryCounters();
+        this.issuedKept = issuedKept;
         this.producers = producers;
         this.control = new ArrayBlockingQueue<>(controlCapacity);
         this.samples = new ArrayBlockingQueue<>(sampleCapacity);
@@ -779,6 +814,27 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
     }
 
+    /**
+     * Forgets the oldest request id that ended; one still in flight is never forgotten, or its
+     * snapshot complete would be dropped as a stray one. The ids in flight are few, so the scan is
+     * short. Called on the actor's thread, inside the machine.
+     */
+    private void evictOldestEnded() {
+        for (var it = issuedOrder.iterator(); it.hasNext(); ) {
+            long requestId = it.next();
+            if (!machine.inFlight(requestId)) {
+                it.remove();
+                issued.remove(requestId);
+                return;
+            }
+        }
+    }
+
+    /** How many request ids the actor remembers, for a test. */
+    int issuedSize() {
+        return issued.size();
+    }
+
     /** The machine's work, handed to the workers. Called on the actor's thread. */
     private final class Work implements Outbox {
 
@@ -787,8 +843,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             // remembered before it goes out, so its snapshot complete, which can only come after, is known
             if (issued.add(call.requestId())) {
                 issuedOrder.addLast(call.requestId());
-                if (issuedOrder.size() > ISSUED_KEPT) {
-                    issued.remove(issuedOrder.removeFirst());
+                if (issuedOrder.size() > issuedKept) {
+                    evictOldestEnded();
                 }
             }
             if (closed) {
