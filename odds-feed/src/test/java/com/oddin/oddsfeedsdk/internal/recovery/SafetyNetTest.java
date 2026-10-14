@@ -5,6 +5,7 @@ import static com.oddin.oddsfeedsdk.internal.recovery.Harness.PRE;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import java.time.Duration;
 import java.time.Instant;
@@ -92,7 +93,7 @@ class SafetyNetTest {
             Harness feed = Harness.upWith(MessageInterest.ALL);
             feed.clock.advance(Duration.ofSeconds(1));
             long processedAt = feed.now();
-            feed.machine.processed(1, PRE, processedAt, feed.now(), 0);
+            feed.machine.processed(1, PRE, processedAt, Stamp.of(feed.now()), 0);
             long checkpoint = feed.machine.checkpoint(1, PRE);
             int before = feed.calls.size();
             // the session takes nothing but such alives, past the window after the limit
@@ -101,7 +102,7 @@ class SafetyNetTest {
                 if (second % 10 == 0) {
                     aliveBoth(feed);
                 }
-                feed.machine.sessionAlive(1, PRE, stamp, feed.now(), second % 2 == 0);
+                feed.machine.sessionAlive(1, PRE, stamp, Stamp.of(feed.now()), second % 2 == 0);
                 feed.machine.tick();
             }
             assertThat(feed.calls)
@@ -326,7 +327,7 @@ class SafetyNetTest {
         feed.start();
         feed.bothUp(1, 2);
         // the live producer's cap spent, for a gap of session 2 that starts far ahead
-        feed.machine.processed(2, LIVE, feed.now() + Duration.ofHours(1).toMillis(), feed.now(), 0);
+        feed.machine.processed(2, LIVE, feed.now() + Duration.ofHours(1).toMillis(), Stamp.of(feed.now()), 0);
         feed.machine.channelLost(2);
         feed.machine.channelReopened(2);
         for (int attempt = 0; attempt < 4; attempt++) {
@@ -344,7 +345,7 @@ class SafetyNetTest {
         feed.accept(feed.lastSnapshot(PRE));
         assertThat(feed.resets).containsExactly(1);
         // the new channel delivers before the transport reports the reset done
-        feed.machine.sessionAlive(1, LIVE, feed.now() + Duration.ofHours(2).toMillis(), feed.now(), true);
+        feed.machine.sessionAlive(1, LIVE, feed.now() + Duration.ofHours(2).toMillis(), Stamp.of(feed.now()), true);
         feed.resetDone();
 
         feed.runWithAlives(Duration.ofMinutes(10));
@@ -741,7 +742,7 @@ class SafetyNetTest {
         int before = feed.calls.size();
         feed.complete(recovery, 1, 2);
         long completedAt = feed.now();
-        feed.machine.processed(2, PRE, completedAt - OLD.toMillis() - 1_000, completedAt - 1_000, 0);
+        feed.machine.processed(2, PRE, completedAt - OLD.toMillis() - 1_000, Stamp.of(completedAt - 1_000), 0);
         long seconds = stale(feed, 2, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
         assertThat(seconds)
                 .as("seconds from the completion to the net's request")
@@ -1039,7 +1040,7 @@ class SafetyNetTest {
                 aliveBoth(feed);
             }
             long now = feed.now();
-            feed.machine.processed(session, PRE, now - preSkew - age.toMillis(), now, requestId);
+            feed.machine.processed(session, PRE, now - preSkew - age.toMillis(), Stamp.of(now), requestId);
             if (beforeTheTick && until.getAsBoolean()) {
                 return second;
             }
@@ -1053,9 +1054,9 @@ class SafetyNetTest {
 
     private void aliveBoth(Harness feed) {
         long now = feed.now();
-        feed.machine.alive(PRE, now - preSkew, now, true);
+        feed.machine.alive(PRE, now - preSkew, Stamp.of(now), true);
         if (liveAlives) {
-            feed.machine.alive(LIVE, now - liveSkew, now, true);
+            feed.machine.alive(LIVE, now - liveSkew, Stamp.of(now), true);
         }
     }
 }

@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.dispatch;
 
 import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.recovery.AliveFacts;
 import com.oddin.oddsfeedsdk.internal.xml.DecodeException;
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
@@ -228,9 +229,9 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
             unreadable(delivery, new IllegalArgumentException("stamped " + alive.getTimestamp() + ", not a time"));
             return;
         }
-        long receivedAt = delivery.receivedAt().toEpochMilli();
-        offsets.alive(alive.getProduct(), alive.getTimestamp(), receivedAt);
-        actor.alive(alive.getProduct(), alive.getTimestamp(), receivedAt, alive.getSubscribed() == 1);
+        var received = new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono());
+        offsets.alive(alive.getProduct(), alive.getTimestamp(), received.wall());
+        actor.alive(alive.getProduct(), alive.getTimestamp(), received, alive.getSubscribed() == 1);
     }
 
     private void unreadable(RawDelivery delivery, Throwable why) {

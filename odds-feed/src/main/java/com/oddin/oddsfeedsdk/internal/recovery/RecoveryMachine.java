@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
 import com.oddin.oddsfeedsdk.api.entities.Producer;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.producer.Recovery;
@@ -482,9 +483,11 @@ final class RecoveryMachine {
      * positive timestamp is ignored: as the producer's clock it would put the producer's now at or
      * before the epoch, and every recovery and resume point capped at it with it.
      *
-     * @param receivedAt when the SDK received it, epoch millis by its clock
+     * @param received when the SDK received it; for now only its wall reading is read, epoch millis
+     *     by the SDK's clock
      */
-    void alive(long producerId, long generatedAt, long receivedAt, boolean subscribed) {
+    void alive(long producerId, long generatedAt, Stamp received, boolean subscribed) {
+        long receivedAt = received.wall();
         Track track = known(producerId);
         if (track == null || !enabled(track)) {
             return;
@@ -536,10 +539,12 @@ final class RecoveryMachine {
      * ignores, moves none: it was delivered, and a snapshot one still puts off the deadline for its
      * snapshot complete.
      *
-     * @param takenAt when the session's dispatcher took it, epoch millis by the SDK's clock
+     * @param taken when the session's dispatcher took it; for now only its wall reading is read,
+     *     epoch millis by the SDK's clock
      * @param requestId the recovery's request id a snapshot message carries, 0 for a live one
      */
-    void processed(int id, long producerId, long generatedAt, long takenAt, long requestId) {
+    void processed(int id, long producerId, long generatedAt, Stamp taken, long requestId) {
+        long takenAt = taken.wall();
         Track track = known(producerId);
         SessionState session = sessions.get(id);
         Lane lane = session == null || track == null ? null : session.lanes.get(producerId);
@@ -570,7 +575,8 @@ final class RecoveryMachine {
      * done, so a subscribed one moves the session's checkpoint. Both kinds are samples. One without
      * a positive timestamp is ignored, as {@link #alive} ignores it.
      */
-    void sessionAlive(int id, long producerId, long generatedAt, long takenAt, boolean subscribed) {
+    void sessionAlive(int id, long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+        long takenAt = taken.wall();
         if (generatedAt <= 0) {
             // not a time: the alive dispatcher logs the same alive on the SDK's own channel
             return;

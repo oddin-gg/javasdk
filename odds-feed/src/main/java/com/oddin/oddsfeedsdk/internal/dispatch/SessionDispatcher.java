@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.message.Routes;
 import com.oddin.oddsfeedsdk.internal.recovery.SessionFacts;
 import com.oddin.oddsfeedsdk.internal.xml.DecodeException;
@@ -299,12 +300,14 @@ public final class SessionDispatcher implements AutoCloseable {
 
     /** One delivery, every step, then its acknowledgement; package-private for a test to drive. */
     void handle(RawDelivery delivery) {
-        long takenAt = Math.max(1, pipeline.clock().millis());
+        // both readings here, once: the actor judges the delivery's age later
+        var now = pipeline.clock().stamp();
+        var taken = new Stamp(Math.max(1, now.wall()), now.mono());
         busySince = BusySince.now();
         boolean acknowledged = true;
         admitted = false;
         try {
-            process(delivery, takenAt);
+            process(delivery, taken);
             // every way a delivery ends passes here: one the close overtook, whatever it came to - a
             // build the close interrupted, a producer filtered out, a message that did not decode -
             // is dropped unacknowledged, unless a callback of the client's was admitted for it
@@ -347,7 +350,7 @@ public final class SessionDispatcher implements AutoCloseable {
         return !admitted && closeBegun();
     }
 
-    private void process(RawDelivery delivery, long takenAt) {
+    private void process(RawDelivery delivery, Stamp taken) {
         RoutingKeyInfo route = Routes.parse(delivery.routingKey());
         byte[] body = delivery.body();
         if (body == null) {
@@ -397,7 +400,7 @@ public final class SessionDispatcher implements AutoCloseable {
             case OFAlive alive -> {
                 admitControlFact();
                 if (told != null) {
-                    told.alive(producerId, alive.getTimestamp(), takenAt, alive.getSubscribed() == 1);
+                    told.alive(producerId, alive.getTimestamp(), taken, alive.getSubscribed() == 1);
                 }
                 return;
             }
@@ -412,7 +415,7 @@ public final class SessionDispatcher implements AutoCloseable {
         }
         boolean dropped = false;
         try {
-            deliver(message, route, body, producer, timestamp(message.getTimestamp(), delivery), takenAt, delivery);
+            deliver(message, route, body, producer, timestamp(message.getTimestamp(), delivery), taken, delivery);
         } catch (ClosedBeforeListener e) {
             dropped = true;
             throw e;
@@ -420,7 +423,7 @@ public final class SessionDispatcher implements AutoCloseable {
             if (told != null && !dropped && !dropsOnClose()) {
                 Long requestId = requestId(message);
                 // a live message carries no request id
-                told.processed(producerId, message.getTimestamp(), takenAt, requestId == null ? 0 : requestId);
+                told.processed(producerId, message.getTimestamp(), taken, requestId == null ? 0 : requestId);
             }
         }
     }
@@ -431,7 +434,7 @@ public final class SessionDispatcher implements AutoCloseable {
             byte[] body,
             Producer producer,
             MessageTimestamp timestamp,
-            long takenAt,
+            Stamp taken,
             RawDelivery delivery) {
         if (message instanceof OFFixtureChange change) {
             URN id;
@@ -448,7 +451,7 @@ public final class SessionDispatcher implements AutoCloseable {
             }
         }
         try {
-            write(message, producer.getId(), takenAt, delivery.receivedAt());
+            write(message, producer.getId(), taken.wall(), delivery.receivedAt());
         } catch (Throwable e) {
             sdkFailed("cache write", e);
             return;
@@ -556,7 +559,7 @@ public final class SessionDispatcher implements AutoCloseable {
                 created,
                 sent == null ? 0 : sent.toEpochMilli(),
                 delivery.receivedAt().toEpochMilli(),
-                pipeline.clock().millis());
+                pipeline.clock().wallMillis());
     }
 
     private static @Nullable Long requestId(BasicMessage message) {

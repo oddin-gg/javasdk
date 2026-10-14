@@ -1,5 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
+
 /**
  * What a session's dispatcher tells the recovery actor, bound to its session. Each method hands the
  * fact over and returns at once, never waiting: when the actor's queue is full the fact is dropped
@@ -11,15 +13,15 @@ public interface SessionFacts {
      * The session has finished a message of the producer, its callback included.
      *
      * @param generatedAt the message's timestamp, epoch millis by the producer's clock
-     * @param takenAt when the dispatcher took it from the session's queue, epoch millis by the SDK's
+     * @param taken when the dispatcher took it from the session's queue, both readings of the SDK's
      *     clock, so its age includes the broker's backlog and the session's own
      * @param requestId the request id it carries, which makes it a recovery's snapshot message; 0
      *     for a live message, which carries none
      */
-    void processed(long producerId, long generatedAt, long takenAt, long requestId);
+    void processed(long producerId, long generatedAt, Stamp taken, long requestId);
 
     /** The session has finished an alive from its own queue. */
-    void alive(long producerId, long generatedAt, long takenAt, boolean subscribed);
+    void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed);
 
     void snapshotComplete(long producerId, long requestId);
 

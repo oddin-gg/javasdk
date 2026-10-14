@@ -9,6 +9,7 @@ import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.rabbitmq.client.Connection;
 import java.net.InetAddress;
@@ -25,6 +26,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import javax.net.ssl.SSLContext;
@@ -94,6 +96,31 @@ class AmqpTransportTest {
                         .contains("SDK_version")
                         .contains(SdkVersion.version())
                         .contains("java"));
+    }
+
+    @Test
+    void aDeliveryCarriesBothReadingsOfTheFeedClockFromWhenItArrived() throws Exception {
+        // the wall reading and the monotonic one differ by a lot, so a delivery given one for the other shows
+        var wall = Instant.parse("2000-01-01T00:00:00Z");
+        var nanos = new AtomicLong(40_000_000_000L);
+        var clock = FeedClock.of(() -> wall, nanos::get);
+        nanos.addAndGet(7_000_000_000L);
+        var transport = new AmqpTransport(settings(10, 1 << 20), FakeFeed.EXCHANGE, events, events::alive, clock);
+        open.add(transport);
+        SessionTransport session = transport.addSession(allKeys());
+        transport.open();
+
+        assertThat(feed().publishFixture(ODDS_CHANGE)).isTrue();
+        RawDelivery change = next(session);
+        assertThat(change.receivedAt()).as("a session's, by the wall clock").isEqualTo(wall);
+        assertThat(change.receivedMono())
+                .as("a session's, rebased to 1 at the clock")
+                .isEqualTo(7_001);
+
+        awaitAnAlive();
+        RawDelivery alive = events.alives.getFirst();
+        assertThat(alive.receivedAt()).as("the SDK's own alive channel's").isEqualTo(wall);
+        assertThat(alive.receivedMono()).isEqualTo(7_001);
     }
 
     @Test
@@ -642,7 +669,7 @@ class AmqpTransportTest {
         assertThat(session.queue().size())
                 .as("the bodies a closed feed would keep for as long as it is reachable")
                 .isZero();
-        var late = new RawDelivery(new byte[1], 1, "key", 3, session.epoch(), Instant.EPOCH, null);
+        var late = new RawDelivery(new byte[1], 1, "key", 3, session.epoch(), Instant.EPOCH, 1, null);
         assertThat(session.queue().offer(late))
                 .as("a delivery handed over as the channel closed")
                 .isEqualTo(SessionQueue.Offer.CLOSED);
@@ -947,7 +974,7 @@ class AmqpTransportTest {
         long before = session.epoch();
 
         // an acknowledgement of a tag the broker never sent: it closes the channel, not the connection
-        session.ack(new RawDelivery(new byte[0], 0, "-", 9_999, before, Instant.now(), null));
+        session.ack(new RawDelivery(new byte[0], 0, "-", 9_999, before, Instant.now(), 1, null));
         awaitReopened(session, before);
         assertThat(deliveredAfterPublishing(session).epoch()).isEqualTo(session.epoch());
 
@@ -982,7 +1009,7 @@ class AmqpTransportTest {
 
         // the broker closes the channel this time; each loss is told
         long second = session.epoch();
-        session.ack(new RawDelivery(new byte[0], 0, "-", 9_999, second, Instant.now(), null));
+        session.ack(new RawDelivery(new byte[0], 0, "-", 9_999, second, Instant.now(), 1, null));
         awaitReopened(session, second);
         told.await(4);
         assertThat(told.events.subList(2, 4))

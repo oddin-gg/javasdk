@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.oddin.oddsfeed.fakes.FeedMessages;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.recovery.AliveFacts;
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
 import java.nio.charset.StandardCharsets;
@@ -24,14 +25,18 @@ import org.junit.jupiter.api.Test;
 class AliveDispatcherTest {
 
     private static final long WAIT_SECONDS = 10;
+    private static final long MONO_SHIFT = 5_000_000;
 
     private final BlockingQueue<String> posted = new LinkedBlockingQueue<>();
     /** Producers 1 and 2, as the fixtures' list has them. */
     private final ClockOffsets offsets = new ClockOffsets(id -> id == 1 || id == 2);
 
-    private final AliveFacts actor = (producer, generatedAt, receivedAt, subscribed) ->
-            posted.add(producer + " " + generatedAt + " " + receivedAt + " " + subscribed + " "
-                    + Thread.currentThread().getName());
+    private final BlockingQueue<Stamp> stamps = new LinkedBlockingQueue<>();
+    private final AliveFacts actor = (producer, generatedAt, received, subscribed) -> {
+        stamps.add(received);
+        posted.add(producer + " " + generatedAt + " " + received.wall() + " " + subscribed + " "
+                + Thread.currentThread().getName());
+    };
     private @Nullable AliveDispatcher dispatcher;
 
     @AfterEach
@@ -58,6 +63,16 @@ class AliveDispatcherTest {
     }
 
     @Test
+    void anAliveReachesTheActorWithBothReadingsTheDeliveryWasStampedWith() throws InterruptedException {
+        AliveDispatcher dispatcher = started();
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 10_000), 12_500));
+        next();
+        assertThat(stamps.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the delivery's own, not read again by the dispatcher")
+                .isEqualTo(new Stamp(12_500, 12_500 + MONO_SHIFT));
+    }
+
+    @Test
     void anAliveOfAProducerTheListDoesNotHaveKeepsNoOffset() throws InterruptedException {
         AliveDispatcher dispatcher = started();
         dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(7, true), 10_000), 12_500));
@@ -70,7 +85,7 @@ class AliveDispatcherTest {
         AliveDispatcher dispatcher = started();
         dispatcher.accept(alive("<alive", 1));
         dispatcher.accept(alive(Fixtures.read("feed/bet_stop/bet_stop_all_groups.xml"), 1));
-        dispatcher.accept(new RawDelivery(null, 2 << 20, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, null));
+        dispatcher.accept(new RawDelivery(null, 2 << 20, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, 1, null));
         dispatcher.accept(alive(FeedMessages.alive(2, true), 5));
         assertThat(next()).startsWith("2 1777832981632 5 true");
         assertThat(dispatcher.unreadable()).isEqualTo(3);
@@ -107,11 +122,11 @@ class AliveDispatcherTest {
         var throwing = new AliveDispatcher(
                 FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES),
                 offsets,
-                (producer, generatedAt, receivedAt, subscribed) -> {
+                (producer, generatedAt, received, subscribed) -> {
                     if (producer == 1) {
                         throw new IllegalStateException("the actor's bug");
                     }
-                    actor.alive(producer, generatedAt, receivedAt, subscribed);
+                    actor.alive(producer, generatedAt, received, subscribed);
                 });
         dispatcher = throwing;
         throwing.start();
@@ -156,8 +171,8 @@ class AliveDispatcherTest {
         var waiting = new AliveDispatcher(FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES), offsets, actor);
         dispatcher = waiting;
         byte[] large = new byte[(int) (AliveDispatcher.BYTES / 2) + 1];
-        waiting.accept(new RawDelivery(large, large.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, null));
-        waiting.accept(new RawDelivery(large, large.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, null));
+        waiting.accept(new RawDelivery(large, large.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, 1, null));
+        waiting.accept(new RawDelivery(large, large.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.EPOCH, 1, null));
         assertThat(waiting.queued()).isEqualTo(1);
         assertThat(waiting.dropped()).isEqualTo(1);
         waiting.accept(alive(FeedMessages.alive(2, true), 1));
@@ -209,8 +224,17 @@ class AliveDispatcherTest {
         return requireNonNull(posted.poll(WAIT_SECONDS, TimeUnit.SECONDS), "an alive posted");
     }
 
+    /** Its monotonic reading is {@code receivedAt} plus {@link #MONO_SHIFT}: never the same number as its wall one. */
     private static RawDelivery alive(String xml, long receivedAt) {
         byte[] body = xml.getBytes(StandardCharsets.UTF_8);
-        return new RawDelivery(body, body.length, "-.-.-.alive.-.-.-.-", 0, 0, Instant.ofEpochMilli(receivedAt), null);
+        return new RawDelivery(
+                body,
+                body.length,
+                "-.-.-.alive.-.-.-.-",
+                0,
+                0,
+                Instant.ofEpochMilli(receivedAt),
+                receivedAt + MONO_SHIFT,
+                null);
     }
 }

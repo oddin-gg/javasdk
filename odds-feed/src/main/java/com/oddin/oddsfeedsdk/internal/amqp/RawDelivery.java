@@ -11,7 +11,8 @@ import org.jspecify.annotations.Nullable;
  * @param size the body's length in bytes
  * @param deliveryTag what acknowledges it, on the channel of {@code epoch}
  * @param epoch the channel it came from; an acknowledgement for an older one is skipped
- * @param receivedAt when the SDK received it, by its own clock
+ * @param receivedAt when the SDK received it, by its own wall clock
+ * @param receivedMono the same moment on the feed's monotonic clock, read with {@code receivedAt}
  * @param sentAt the message's AMQP timestamp, when it has one
  */
 @SuppressWarnings("ArrayRecordComponent") // handed on, never compared or hashed
@@ -22,6 +23,7 @@ public record RawDelivery(
         long deliveryTag,
         long epoch,
         Instant receivedAt,
+        long receivedMono,
         @Nullable Instant sentAt) {
 
     public boolean oversized() {

@@ -6,6 +6,7 @@ import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.AmqpSettings;
 import com.oddin.oddsfeedsdk.internal.amqp.AmqpTransport;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
 import com.oddin.oddsfeedsdk.internal.dispatch.MessagePreload;
 import com.oddin.oddsfeedsdk.internal.dispatch.Pipeline;
@@ -20,7 +21,6 @@ import com.oddin.oddsfeedsdk.internal.session.Sessions;
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
-import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -154,6 +154,20 @@ public final class OpenFeed {
             OddsFeedConfiguration configuration,
             HealthMonitor health,
             BooleanSupplier feedClosed) {
+        return build(core, plan, configuration, health, feedClosed, FeedClock.system());
+    }
+
+    /**
+     * As above, with the feed's clock, which stamps each delivery and each fact the sessions tell
+     * the recovery actor; the one the transport, the dispatchers and the actor share.
+     */
+    public static OpenFeed build(
+            FeedCore core,
+            Sessions.Plan plan,
+            OddsFeedConfiguration configuration,
+            HealthMonitor health,
+            BooleanSupplier feedClosed,
+            FeedClock clock) {
         var replay = plan.replay();
         var decoder = FeedDecoder.lenient(configuration.getMaxMessageSize());
         var pipeline = new Pipeline(
@@ -165,7 +179,7 @@ public final class OpenFeed {
                 core.fixtureChanges(),
                 core.offsets(),
                 core.events(),
-                InstantSource.system());
+                clock);
         // a replay feed runs no recovery, so it needs no liveness of its own, as in 0.0.x
         // the client hears of a session lagging before the health tells of it
         var recoveryEvents = replay ? null : new RecoveryTee(List.of(core.events(), health));
@@ -176,7 +190,8 @@ public final class OpenFeed {
                         RecoverySettings.from(configuration),
                         core.api(),
                         recoveryEvents,
-                        core.fetches());
+                        core.fetches(),
+                        clock);
         var alives = actor == null ? null : new AliveDispatcher(decoder, core.offsets(), actor);
         // the actor first, so a producer's state follows the connection before the client hears of it;
         // the client hears of the connection before the health tells of it
@@ -190,7 +205,8 @@ public final class OpenFeed {
                         core.bookmaker().connectionName(nodeId)),
                 replay ? configuration.getReplayExchangeName() : configuration.getExchangeName(),
                 connection,
-                alives);
+                alives,
+                clock);
         // the eager preload hears of each delivery a session's queue takes, and only queues a load
         Consumer<String> queued = configuration.isEagerEntityPreload()
                 ? MessagePreload.of(core.matches()::preload, configuration)

@@ -14,6 +14,8 @@ import com.oddin.oddsfeedsdk.internal.amqp.Queues;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionQueue;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.rest.RecoveryRequests;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -29,6 +31,7 @@ import java.util.Random;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
@@ -40,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
@@ -80,7 +84,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
 
         Request request = api.next();
         assertThat(request.producer()).isEqualTo("pre");
@@ -126,6 +130,67 @@ class RecoveryActorTest {
         assertThat(actor.turnedAt() - stepped)
                 .as("a turn begun since the step, by System.nanoTime")
                 .isBetween(0L, System.nanoTime() - stepped);
+    }
+
+    @Test
+    void aSessionsFactsAreHandledWithTheStampsTheyWerePostedWithNotOnesReadWhenHandled() throws InterruptedException {
+        var wall = new MovableClock(Instant.ofEpochMilli(1_000_000));
+        var nanos = new AtomicLong();
+        var actor = actor(FeedClock.of(wall, nanos::get));
+        var session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        var processedAt = new Stamp(2_000_000, 17);
+        var aliveAt = new Stamp(3_000_000, 23);
+        session.processed(PRE, 1_900_000, processedAt, 0);
+        session.alive(PRE, 2_900_000, aliveAt, true);
+        var handled = new CopyOnWriteArrayList<RecoveryActor.Fact>();
+        var posted = new CountDownLatch(2);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed || fact instanceof RecoveryActor.Fact.SessionAlive) {
+                handled.add(fact);
+                posted.countDown();
+            }
+        };
+
+        // both clocks an hour on by the time the actor handles them
+        wall.advance(Duration.ofHours(1));
+        nanos.addAndGet(Duration.ofHours(1).toNanos());
+        actor.start();
+        assertThat(posted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("both handled")
+                .isTrue();
+
+        assertThat(handled)
+                .extracting(fact -> fact instanceof RecoveryActor.Fact.Processed processed
+                        ? processed.taken()
+                        : ((RecoveryActor.Fact.SessionAlive) fact).taken())
+                .containsExactlyInAnyOrder(processedAt, aliveAt);
+    }
+
+    @Test
+    void anAliveIsHandledWithTheStampItWasPostedWithNotOneReadWhenHandled() throws InterruptedException {
+        var wall = new MovableClock(Instant.ofEpochMilli(1_000_000));
+        var nanos = new AtomicLong();
+        var actor = actor(FeedClock.of(wall, nanos::get));
+        var posted = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Alives) {
+                posted.countDown();
+            }
+        };
+        actor.start();
+        actor.up();
+        actor.alive(PRE, 1_900_000, new Stamp(2_000_000, 17), true);
+        wall.advance(Duration.ofHours(1));
+        nanos.addAndGet(Duration.ofHours(1).toNanos());
+        assertThat(posted.await(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the alive handled")
+                .isTrue();
+        // closing waits for the actor's thread, which has taken the alive: it is done with it
+        actor.close();
+
+        assertThat(requireNonNull(producers.getProducer(PRE)).getLastMessageTimestamp())
+                .as("the posted stamp's wall reading, not the clock's now")
+                .isEqualTo(2_000_000);
     }
 
     /** Until the wall clock is past {@code epochMillis}. */
@@ -178,12 +243,12 @@ class RecoveryActorTest {
         Instant processed = Instant.ofEpochMilli(System.currentTimeMillis() + 100);
         // a point is never published past the producer's now
         awaitPast(processed.toEpochMilli());
-        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        session.processed(PRE, processed.toEpochMilli(), Stamp.of(processed.toEpochMilli()), 0);
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
 
         // an alive on the SDK's alive channel ahead of the session moves nothing
         long later = processed.toEpochMilli() + 1_000;
-        actor.alive(PRE, later, later, true);
+        actor.alive(PRE, later, Stamp.of(later), true);
         awaitIdle(actor);
         assertThat(held.getTimestampForRecovery())
                 .as("the session's checkpoint, not the later alive")
@@ -209,14 +274,14 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = clock.millis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
         Request first = api.next();
         session.snapshotComplete(PRE, first.requestId());
         awaitUp(PRE);
         Producer held = requireNonNull(producers.getProducer(PRE));
         clock.advance(Duration.ofSeconds(1));
         Instant processed = clock.instant();
-        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        session.processed(PRE, processed.toEpochMilli(), Stamp.of(processed.toEpochMilli()), 0);
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
 
         // nothing more is posted: only the actor's ticks see the producer silent
@@ -234,8 +299,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -260,7 +325,7 @@ class RecoveryActorTest {
                 }
             }
         };
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         session.channelReopened();
         Thread closer = Thread.ofPlatform().start(actor::close);
@@ -291,7 +356,7 @@ class RecoveryActorTest {
             }
         };
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         Request first = api.next();
         assertThat(answers.poll(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("the first request answered")
@@ -336,7 +401,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         Request recovery = api.next();
 
         // far more requests than the filter keeps, each ended, while the recovery's snapshot is on its way
@@ -361,7 +426,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         Request recovery = api.next();
         var open = new ArrayList<Long>();
         for (int i = 0; i < 3; i++) {
@@ -392,7 +457,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         Request recovery = api.next();
         long first = endedEventRecovery(actor, session);
         for (int i = 0; i < 40; i++) {
@@ -426,7 +491,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         Request recovery = api.next();
         var open = new ArrayList<Long>();
         for (int i = 0; i < 10; i++) {
@@ -459,7 +524,7 @@ class RecoveryActorTest {
                 api,
                 events(),
                 workers,
-                InstantSource.system(),
+                FeedClock.system(),
                 System::nanoTime,
                 new Random(1),
                 RecoveryActor.CONTROL_CAPACITY,
@@ -487,8 +552,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -512,7 +577,7 @@ class RecoveryActorTest {
                 }
             }
         };
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         session.channelReopened();
         long closing = System.nanoTime();
@@ -541,8 +606,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -565,7 +630,7 @@ class RecoveryActorTest {
                 }
             }
         };
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         session.channelReopened();
         assertThat(actor.close(System.nanoTime()))
@@ -585,8 +650,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -608,7 +673,7 @@ class RecoveryActorTest {
                 }
             }
         };
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         session.channelReopened();
         Thread.currentThread().interrupt();
@@ -688,7 +753,7 @@ class RecoveryActorTest {
             }
         };
         long at = System.currentTimeMillis();
-        session.processed(LIVE, at, at, 0);
+        session.processed(LIVE, at, Stamp.of(at), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         try {
             assertThat(actor.close(System.nanoTime() + Duration.ofMillis(300).toNanos()))
@@ -718,8 +783,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -728,7 +793,7 @@ class RecoveryActorTest {
         Instant processed = Instant.ofEpochMilli(lastSubscribed + 100);
         // a point is never published past the producer's now
         awaitPast(processed.toEpochMilli());
-        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        session.processed(PRE, processed.toEpochMilli(), Stamp.of(processed.toEpochMilli()), 0);
         awaitTimestampForRecovery(held, processed::equals, "the message processed");
 
         // the actor held in a fact while an unsubscribed alive queues behind it and the close comes
@@ -745,9 +810,9 @@ class RecoveryActorTest {
             }
         };
         long later = processed.toEpochMilli() + 1_000;
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
-        actor.alive(PRE, later, later, false);
+        actor.alive(PRE, later, Stamp.of(later), false);
         Thread closer = Thread.ofPlatform().start(actor::close);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (!actor.closeBegun() && System.nanoTime() < deadline) {
@@ -791,8 +856,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -801,13 +866,13 @@ class RecoveryActorTest {
         long later = lastSubscribed + 100;
         // a point is never published past the producer\'s now
         awaitPast(later);
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
 
         // the feed's order: closing, every session, then the actor; the alive comes meanwhile
         actor.closing();
         session.closed();
-        actor.alive(PRE, later, later, false);
+        actor.alive(PRE, later, Stamp.of(later), false);
         actor.close();
         assertThat(held.getTimestampForRecovery())
                 .as("the producer's gap from its last subscribed alive")
@@ -836,7 +901,7 @@ class RecoveryActorTest {
         };
         long later = System.currentTimeMillis() + 100;
         awaitPast(later);
-        ahead.processed(PRE, later, later, 0);
+        ahead.processed(PRE, later, Stamp.of(later), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         behind.closed();
         Thread closer = Thread.ofPlatform().start(actor::close);
@@ -876,8 +941,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         for (Request request : List.of(api.next(), api.next())) {
             first.snapshotComplete(producerOf(request), request.requestId());
             second.snapshotComplete(producerOf(request), request.requestId());
@@ -888,8 +953,8 @@ class RecoveryActorTest {
         long behind = ahead - 100;
         // a point is never published past the producer's now
         awaitPast(ahead);
-        first.processed(PRE, ahead, ahead, 0);
-        second.processed(PRE, behind, behind, 0);
+        first.processed(PRE, ahead, Stamp.of(ahead), 0);
+        second.processed(PRE, behind, Stamp.of(behind), 0);
         aheadAt = Instant.ofEpochMilli(ahead);
         Instant behindAt = Instant.ofEpochMilli(behind);
         awaitTimestampForRecovery(
@@ -904,8 +969,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -914,7 +979,7 @@ class RecoveryActorTest {
         long later = lastSubscribed + 100;
         // a point is never published past the producer\'s now
         awaitPast(later);
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
 
         // the unsubscribed alive has looked at the close, its slot not filled nor its fact queued
@@ -928,7 +993,7 @@ class RecoveryActorTest {
                 Thread.currentThread().interrupt();
             }
         };
-        Thread poster = Thread.ofPlatform().start(() -> actor.alive(PRE, later, later, false));
+        Thread poster = Thread.ofPlatform().start(() -> actor.alive(PRE, later, Stamp.of(later), false));
         assertThat(looked.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         Thread closer = Thread.ofPlatform().start(actor::close);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
@@ -954,8 +1019,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -964,7 +1029,7 @@ class RecoveryActorTest {
         long later = lastSubscribed + 100;
         // a point is never published past the producer\'s now
         awaitPast(later);
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         awaitTimestampForRecovery(held, Instant.ofEpochMilli(later)::equals, "the message processed");
 
         // the post held past the actor's time to finish
@@ -979,7 +1044,7 @@ class RecoveryActorTest {
                 Thread.currentThread().interrupt();
             }
         };
-        Thread poster = Thread.ofPlatform().start(() -> actor.alive(PRE, later, later, false));
+        Thread poster = Thread.ofPlatform().start(() -> actor.alive(PRE, later, Stamp.of(later), false));
         assertThat(looked.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         long closing = System.nanoTime();
         actor.close();
@@ -1071,8 +1136,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long lastSubscribed = System.currentTimeMillis();
-        actor.alive(PRE, lastSubscribed, lastSubscribed, true);
-        actor.alive(LIVE, lastSubscribed, lastSubscribed, true);
+        actor.alive(PRE, lastSubscribed, Stamp.of(lastSubscribed), true);
+        actor.alive(LIVE, lastSubscribed, Stamp.of(lastSubscribed), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -1081,7 +1146,7 @@ class RecoveryActorTest {
         long later = lastSubscribed + 100;
         // a point is never published past the producer\'s now
         awaitPast(later);
-        session.processed(PRE, later, later, 0);
+        session.processed(PRE, later, Stamp.of(later), 0);
         awaitTimestampForRecovery(
                 requireNonNull(producers.getProducer(PRE)),
                 Instant.ofEpochMilli(later)::equals,
@@ -1113,8 +1178,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -1125,8 +1190,8 @@ class RecoveryActorTest {
         var answer = new CountDownLatch(1);
         api.hold.set(answer);
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, 0);
-        session.processed(PRE, later - 300_000, later + 2, 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 1), 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 2), 0);
         api.next();
         api.next();
         var entered = new CountDownLatch(1);
@@ -1141,7 +1206,7 @@ class RecoveryActorTest {
                 }
             }
         };
-        session.processed(PRE, later, later + 3, 0);
+        session.processed(PRE, later, Stamp.of(later + 3), 0);
         assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         answer.countDown();
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
@@ -1183,7 +1248,7 @@ class RecoveryActorTest {
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         assertThat(api.requests.poll(200, TimeUnit.MILLISECONDS))
                 .as("with the sessions' channels not bound yet")
                 .isNull();
@@ -1204,7 +1269,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         Request first = api.next();
         Request again = api.next();
         assertThat(again.requestId()).isNotEqualTo(first.requestId());
@@ -1258,8 +1323,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         // the two run on workers of their own, so either may come first
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
@@ -1270,8 +1335,8 @@ class RecoveryActorTest {
         // three deliveries the session has not taken, and two samples older than the limit, which
         // the window, nothing, lets act at once
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, 0);
-        session.processed(PRE, later - 300_000, later + 2, 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 1), 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 2), 0);
         api.next();
         api.next();
         assertThat(transport.resets.await(WAIT_SECONDS, TimeUnit.SECONDS))
@@ -1300,8 +1365,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         held.runNext();
         held.runNext();
         for (Request first : List.of(api.next(), api.next())) {
@@ -1312,8 +1377,8 @@ class RecoveryActorTest {
 
         // two samples past the limit, with a window of nothing: the net asks for both producers
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, 0);
-        session.processed(PRE, later - 300_000, later + 2, 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 1), 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 2), 0);
         held.runNext();
         held.runNext();
         List<Request> probes = List.of(api.next(), api.next());
@@ -1378,7 +1443,7 @@ class RecoveryActorTest {
         Runnable request = held.next();
         long now = System.currentTimeMillis();
         // a status change the listener holds the actor's thread in, then a full control queue
-        actor.alive(PRE, now, now, false);
+        actor.alive(PRE, now, Stamp.of(now), false);
         assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         while (actor.counters().factsDropped() == 0) {
             assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotNull();
@@ -1420,7 +1485,7 @@ class RecoveryActorTest {
         api.next();
 
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         held.runNext();
         session.snapshotComplete(PRE, api.next().requestId());
         assertThat(sawUp.get(WAIT_SECONDS * 2, TimeUnit.SECONDS))
@@ -1448,12 +1513,12 @@ class RecoveryActorTest {
         actor.up();
         long now = System.currentTimeMillis();
         // its request shows the actor's first tick is past, and the next is an hour away
-        actor.alive(LIVE, now, now, true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         assertThat(api.next().producer()).isEqualTo("live");
         // a wide margin for the turn that handled it to end, its tick included
         Thread.sleep(200);
         // the status change throws before the recovery is asked for: the transition still finishes
-        actor.alive(PRE, now, now, false);
+        actor.alive(PRE, now, Stamp.of(now), false);
         assertThat(api.next().producer()).as("after the listener threw").isEqualTo("pre");
         assertThat(actor.counters().factsFailed()).isZero();
     }
@@ -1472,7 +1537,7 @@ class RecoveryActorTest {
             return System.nanoTime();
         };
         var actor = new RecoveryActor(
-                producers, settings(), api, events(), workers, InstantSource.system(), nanos, new Random(1), 10, 10);
+                producers, settings(), api, events(), workers, FeedClock.system(), nanos, new Random(1), 10, 10);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1522,8 +1587,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         held.runNext();
         held.runNext();
         for (Request first : List.of(api.next(), api.next())) {
@@ -1563,8 +1628,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         held.runNext();
         held.runNext();
         for (Request first : List.of(api.next(), api.next())) {
@@ -1603,8 +1668,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         held.runNext();
         held.runNext();
         for (Request first : List.of(api.next(), api.next())) {
@@ -1643,8 +1708,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         held.runNext();
         held.runNext();
         for (Request first : List.of(api.next(), api.next())) {
@@ -1697,7 +1762,7 @@ class RecoveryActorTest {
                 .isNull();
         // the only word of a gap
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, false);
+        actor.alive(PRE, now, Stamp.of(now), false);
         assertThat(actor.counters().factsDropped()).isEqualTo(1);
         actor.start();
         actor.up();
@@ -1715,8 +1780,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -1727,8 +1792,8 @@ class RecoveryActorTest {
         var held = new CountDownLatch(1);
         api.hold.set(held);
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, 0);
-        session.processed(PRE, later - 300_000, later + 2, 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 1), 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 2), 0);
         api.next();
         api.next();
         gate.rejectNext = true;
@@ -1747,8 +1812,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -1763,7 +1828,7 @@ class RecoveryActorTest {
         long newer = System.currentTimeMillis() + 60_000;
         session.channelLost();
         session.channelReopened();
-        session.processed(PRE, newer, newer, 0);
+        session.processed(PRE, newer, Stamp.of(newer), 0);
         gate.release.countDown();
 
         Request recovery = api.next();
@@ -1784,8 +1849,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -1800,11 +1865,11 @@ class RecoveryActorTest {
             if (once.compareAndSet(false, true)) {
                 session.channelLost();
                 session.channelReopened();
-                session.processed(PRE, newer, newer, 0);
+                session.processed(PRE, newer, Stamp.of(newer), 0);
             }
         };
         long later = System.currentTimeMillis();
-        actor.alive(PRE, later, later, true);
+        actor.alive(PRE, later, Stamp.of(later), true);
 
         Request recovery = api.next();
         while (!(recovery.path().equals("recovery") && recovery.producer().equals("pre"))) {
@@ -1826,7 +1891,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         assertThat(api.next().producer())
                 .as("asked for again after the backoff")
                 .isEqualTo("pre");
@@ -1844,7 +1909,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         Request first = api.next();
         Request again = api.next();
         assertThat(again.requestId()).as("asked for again after the backoff").isNotEqualTo(first.requestId());
@@ -1894,14 +1959,14 @@ class RecoveryActorTest {
             }
         };
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
         while (actor.counters().factsFailed() == 0 && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
         assertThat(actor.counters().factsFailed()).isEqualTo(1);
         assertThat(actor.running()).isTrue();
-        actor.alive(LIVE, now, now, true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         assertThat(api.next().producer()).as("the next fact's request").isEqualTo("live");
     }
 
@@ -1938,7 +2003,7 @@ class RecoveryActorTest {
         };
         // after the alives, and not in the producer's future
         Instant processed = Instant.ofEpochMilli(System.currentTimeMillis());
-        session.processed(PRE, processed.toEpochMilli(), processed.toEpochMilli(), 0);
+        session.processed(PRE, processed.toEpochMilli(), Stamp.of(processed.toEpochMilli()), 0);
         awaitTimestampForRecovery(held, processed::equals, "the point the failed fact moved");
         assertThat(actor.counters().factsFailed()).isEqualTo(1);
         assertThat(clock.armed.get()).as("the failure the clock was armed for").isNull();
@@ -1961,7 +2026,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         assertThat(api.next().producer())
                 .as("asked for again after the backoff")
                 .isEqualTo("pre");
@@ -2047,11 +2112,11 @@ class RecoveryActorTest {
         // the actor held in a status change of the live producer, and a flood of prematch alives
         wedging.set(true);
         long now = System.currentTimeMillis();
-        actor.alive(LIVE, now, now, false);
+        actor.alive(LIVE, now, Stamp.of(now), false);
         assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         long base = now + 1_000;
         for (int i = 0; i < 100_000; i++) {
-            actor.alive(PRE, base + i, now, i != 50_000);
+            actor.alive(PRE, base + i, Stamp.of(now), i != 50_000);
         }
         assertThat(actor.queued()).as("essential facts queued for the flood").isLessThanOrEqualTo(1);
         wedge.countDown();
@@ -2068,8 +2133,8 @@ class RecoveryActorTest {
     /** Both producers brought up, each by its first recovery. */
     private void bothUp(RecoveryActor actor, SessionFacts session) throws InterruptedException {
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         for (Request first : List.of(api.next(), api.next())) {
             session.snapshotComplete(producerOf(first), first.requestId());
         }
@@ -2080,8 +2145,8 @@ class RecoveryActorTest {
     /** Two samples past the limit, which the window, nothing, lets the safety net act on at once. */
     private static void stale(SessionFacts session) {
         long later = System.currentTimeMillis();
-        session.processed(PRE, later - 300_000, later + 1, 0);
-        session.processed(PRE, later - 300_000, later + 2, 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 1), 0);
+        session.processed(PRE, later - 300_000, Stamp.of(later + 2), 0);
     }
 
     @Test
@@ -2100,7 +2165,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         assertThat(api.next().producer())
                 .as("asked for again after the backoff")
                 .isEqualTo("pre");
@@ -2129,10 +2194,10 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, false);
+        actor.alive(PRE, now, Stamp.of(now), false);
         assertThat(wedged.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         for (int i = 0; i < 100_000; i++) {
-            actor.alive(9 + i % 1_000, now, now, i % 2 == 0);
+            actor.alive(9 + i % 1_000, now, Stamp.of(now), i % 2 == 0);
         }
         assertThat(actor.queued()).as("essential facts queued for them").isZero();
         assertThat(actor.counters().unknownProducers()).isEqualTo(100_000);
@@ -2149,8 +2214,8 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
-        actor.alive(LIVE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         held.runNext();
         held.runNext();
         for (Request first : List.of(api.next(), api.next())) {
@@ -2196,13 +2261,13 @@ class RecoveryActorTest {
             }
             if (left.getAndDecrement() > 0) {
                 long now = System.currentTimeMillis();
-                session.processed(PRE, now, now, 0);
+                session.processed(PRE, now, Stamp.of(now), 0);
             } else {
                 done.countDown();
             }
         };
         long now = System.currentTimeMillis();
-        session.processed(PRE, now, now, 0);
+        session.processed(PRE, now, Stamp.of(now), 0);
         assertThat(done.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         assertThat(turnsSeen).as("turns the stream ran through").hasSizeGreaterThanOrEqualTo(3);
     }
@@ -2214,9 +2279,9 @@ class RecoveryActorTest {
                 producers, Harness.settings(), api, events(), workers, InstantSource.system(), new Random(1), 2, 2);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
-        session.processed(PRE, 1, 1, 0);
-        session.processed(PRE, 2, 2, 0);
-        session.processed(PRE, 3, 3, 0);
+        session.processed(PRE, 1, Stamp.of(1), 0);
+        session.processed(PRE, 2, Stamp.of(2), 0);
+        session.processed(PRE, 3, Stamp.of(3), 0);
         assertThat(actor.counters().factsDropped()).as("a sample with no room").isEqualTo(1);
         assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
         assertThat(actor.recoverEvent(PRE, MATCH, false)).isNotDone();
@@ -2320,7 +2385,7 @@ class RecoveryActorTest {
         started.start();
         started.up();
         long now = System.currentTimeMillis();
-        started.alive(PRE, now, now, true);
+        started.alive(PRE, now, Stamp.of(now), true);
         assertThat(api.next().producer()).as("after the second start").isEqualTo("pre");
     }
 
@@ -2338,9 +2403,9 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         session.snapshotComplete(PRE, api.next().requestId());
-        actor.alive(LIVE, now, now, true);
+        actor.alive(LIVE, now, Stamp.of(now), true);
         assertThat(api.next().producer()).as("after the listener threw").isEqualTo("live");
         assertThat(actor.counters().factsFailed()).isZero();
     }
@@ -2362,7 +2427,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, false);
+        actor.alive(PRE, now, Stamp.of(now), false);
         assertThat(seen.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
         assertThat(thread).isTrue();
     }
@@ -2380,7 +2445,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, false);
+        actor.alive(PRE, now, Stamp.of(now), false);
         assertThat(told.nextCause()).isEqualTo(StatusCause.UNSUBSCRIBED);
         session.snapshotComplete(PRE, api.next().requestId());
         assertThat(told.nextCause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
@@ -2426,14 +2491,14 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         session.snapshotComplete(PRE, api.next().requestId());
         assertThat(told.nextCause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
 
         stale(session);
         assertThat(told.next()).isEqualTo("session 1 lagging");
         long later = System.currentTimeMillis();
-        session.processed(PRE, later, later + 3, 0);
+        session.processed(PRE, later, Stamp.of(later + 3), 0);
         assertThat(told.next()).isEqualTo("session 1 caught up");
         // the stale samples may trip the processing delay until the next tick, so wait for it
         awaitUp(PRE);
@@ -2450,7 +2515,7 @@ class RecoveryActorTest {
         actor.start();
         actor.up();
         long now = System.currentTimeMillis();
-        actor.alive(PRE, now, now, true);
+        actor.alive(PRE, now, Stamp.of(now), true);
         session.snapshotComplete(PRE, api.next().requestId());
         assertThat(told.nextCause()).isEqualTo(StatusCause.FIRST_RECOVERY_COMPLETED);
 
@@ -2531,6 +2596,21 @@ class RecoveryActorTest {
                 settings.firstResetBackoff(),
                 settings.eventRecoveries(),
                 settings.tick());
+    }
+
+    private RecoveryActor actor(FeedClock clock) {
+        var actor = new RecoveryActor(
+                producers,
+                settings(),
+                api,
+                events(),
+                workers,
+                clock,
+                new Random(1),
+                RecoveryActor.CONTROL_CAPACITY,
+                RecoveryActor.SAMPLE_CAPACITY);
+        this.actor = actor;
+        return actor;
     }
 
     private RecoveryActor actor(RecoverySettings settings) {
