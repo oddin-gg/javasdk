@@ -69,8 +69,9 @@ decoding, 13 µs being built and under a microsecond in the cache.
 ## The cold scenario
 
 `ColdStartBudgetTest` is a restart: a feed opens against the fake API, which answers every request
-after a fixed 50 ms, with catalogs sized like a large deployment's (assumed: 600 market descriptions,
-250 sports - an assumption, not a production figure), and 200 matches nothing is cached for each get
+after a fixed 50 ms, with catalogs larger than the production API's (600 market descriptions and 250
+sports: room on purpose, and the corpus's market ids run to 400), and 200 matches nothing is cached
+for each get
 their first odds change at once, with the eager entity preload on and English as the preload locale.
 A callback reads the match's name, as a client does.
 
@@ -95,8 +96,10 @@ The budget (`cold-budgets.properties`) is the measurement with room, 3 times, an
 counted exactly: a match costs one summary and one profile per competitor, nothing else, and each
 catalog is read once. The time is mostly the injected latency, so it holds on a shared runner; a
 change that makes a match cost another request, or keeps the preload from overlapping, fails the
-build. Two things are not measured: the catalogs' real size, and how often a competitor is already
-cached in production (here every match brings two new ones, the worst case). The JVM is warm from
+build. Two things are not measured: the market variants - each is a request of its own the first
+time a client reads the name of such a market, production has many, and the scenario reads none -
+and how often a competitor is already cached in production (here every match brings two new
+ones, the worst case). The JVM is warm from
 the other tests, so this is the REST and the caches cold, not a JVM that has just started.
 
 It needs Docker, as the system tests do: the fake feed is a RabbitMQ container. Without Docker the

@@ -12,9 +12,10 @@ import java.util.random.RandomGeneratorFactory;
  * same input, so a run can be compared with the last one, and they are valid against the vendored
  * REST schema.
  *
- * <p><b>The sizes are assumptions.</b> {@link #MARKET_DESCRIPTIONS}, {@link #SPORTS} and {@link
- * #COMPETITORS_PER_MATCH} are what a large deployment is guessed to look like, not figures measured
- * in production; every size is a parameter, so a better figure replaces them in one place.
+ * <p><b>The sizes are above production's.</b> The production API lists fewer market types and sports
+ * than {@link #MARKET_DESCRIPTIONS} and {@link #SPORTS}; they stay above as headroom, and the corpus's
+ * market ids need 400 descriptions anyway. {@link #COMPETITORS_PER_MATCH} is the two
+ * sides of a match. Every size is a parameter, so a new figure replaces them in one place.
  *
  * <p>Market ids run from 1 up, so every id {@link Corpus} puts in an odds change ({@code 1} to
  * {@link Corpus#MARKET_IDS}) has a description as long as there are that many. Most markets have two
@@ -27,13 +28,13 @@ import java.util.random.RandomGeneratorFactory;
  */
 public final class Catalogs {
 
-    /** Assumed: market descriptions of one language. Not a measured production figure. */
+    /** Market descriptions of one language: above production's, and at least the corpus's 400 ids. */
     public static final int MARKET_DESCRIPTIONS = 600;
 
-    /** Assumed: sports in the sports list. Not a measured production figure. */
+    /** Sports in the sports list: above production's, as headroom. */
     public static final int SPORTS = 250;
 
-    /** Assumed: the competitors of a match - two sides. Not a measured production figure. */
+    /** The competitors of a match: its two sides. */
     public static final int COMPETITORS_PER_MATCH = 2;
 
     private static final long COMPETITOR_BASE = 100_000;
@@ -126,7 +127,7 @@ public final class Catalogs {
         return xml.toString().getBytes(UTF_8);
     }
 
-    /** The summary of a match with the assumed defaults: {@link #COMPETITORS_PER_MATCH} and {@link #SPORTS}. */
+    /** The summary of a match with the defaults: {@link #COMPETITORS_PER_MATCH} and {@link #SPORTS}. */
     public static byte[] matchSummary(long matchId) {
         return matchSummary(matchId, COMPETITORS_PER_MATCH, SPORTS);
     }
@@ -187,7 +188,7 @@ public final class Catalogs {
         return COMPETITOR_BASE + matchId * competitors + slot;
     }
 
-    /** The profile of a competitor with the assumed {@link #SPORTS}. */
+    /** The profile of a competitor with the default {@link #SPORTS}. */
     public static byte[] competitorProfile(long competitorId) {
         return competitorProfile(competitorId, SPORTS);
     }
