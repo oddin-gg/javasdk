@@ -24,6 +24,8 @@ import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import com.oddin.oddsfeedsdk.subscribe.SafetyNetEvent;
 import com.oddin.oddsfeedsdk.subscribe.SessionLagChange;
+import java.io.IOException;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -80,6 +82,8 @@ final class TestEnvironmentRestart {
      * @param lagLimit how long a message may wait for its callback and still be on time
      * @param settle how long every session must stay on time, after every producer is up, before the run ends
      * @param max the longest the run goes on
+     * @param duration how long a sustained run goes on, whatever the sessions do; zero for a restart,
+     *     which ends once every session is on time
      */
     record Settings(
             String label,
@@ -88,7 +92,8 @@ final class TestEnvironmentRestart {
             List<MessageInterest> sessions,
             Duration lagLimit,
             Duration settle,
-            Duration max) {
+            Duration max,
+            Duration duration) {
 
         static final String SELECTOR = "benchmarks.testenv";
 
@@ -120,7 +125,12 @@ final class TestEnvironmentRestart {
                     sessions,
                     Duration.ofSeconds(Long.parseLong(or(lookup, "lag", "5"))),
                     Duration.ofSeconds(Long.parseLong(or(lookup, "settle", "30"))),
-                    Duration.ofMinutes(Long.parseLong(or(lookup, "max", "12")))));
+                    Duration.ofMinutes(Long.parseLong(or(lookup, "max", "12"))),
+                    Duration.ofMinutes(Long.parseLong(or(lookup, "duration", "0")))));
+        }
+
+        boolean sustained() {
+            return !duration.isZero();
         }
 
         private static String or(Function<String, @Nullable String> lookup, String key, String fallback) {
@@ -212,7 +222,8 @@ final class TestEnvironmentRestart {
                 .setPreloadLocales(List.of(EN))
                 .build();
         var feed = new OddsFeed(run.events, configuration);
-        try {
+        try (var telemetry = settings.sustained() ? RuntimeTelemetry.start(Duration.ofSeconds(1)) : null) {
+            run.telemetry = telemetry;
             run.start = System.nanoTime();
             run.startInstant = Instant.now();
             for (var interest : settings.sessions()) {
@@ -229,6 +240,7 @@ final class TestEnvironmentRestart {
             run.expectedProducers =
                     Set.copyOf(feed.getProducerManager().getActiveProducers().keySet());
             run.expectedKnown = true;
+            run.threadsAtOpen = RuntimeTelemetry.threadGroups();
             watch(feed, run);
             return new Result(report(feed, run), run.timedOut);
         } finally {
@@ -249,6 +261,17 @@ final class TestEnvironmentRestart {
                 depths.add(session.queueDepth());
             }
             run.depths.add(new Sample(now, depths, health.recovery().completed()));
+            if (run.settings.sustained()) {
+                // a sustained run does not end when the sessions are on time: it goes on for its duration
+                if (run.healthSamples.isEmpty() || now - run.healthSamples.getLast().at >= HEALTH_EVERY) {
+                    run.healthSamples.add(new HealthSample(
+                            now, health.state().toString(), health.components().toString(), depths.toString()));
+                }
+                if (now >= run.settings.duration().toNanos()) {
+                    return;
+                }
+                continue;
+            }
             if (now > max) {
                 run.timedOut = true;
                 return;
@@ -272,6 +295,11 @@ final class TestEnvironmentRestart {
     /** One sample of the sessions' queues. */
     private record Sample(long at, List<Integer> queueDepths, long recoveriesCompleted) {}
 
+    /** The feed's health, as a sustained run reads it every minute. */
+    private record HealthSample(long at, String state, String components, String queueDepths) {}
+
+    private static final long HEALTH_EVERY = Duration.ofMinutes(1).toNanos();
+
     /** What a run collects, from the threads that feed it. */
     private static final class Run {
         final Settings settings;
@@ -282,6 +310,7 @@ final class TestEnvironmentRestart {
         final Map<Long, Long> producersUpAt = new ConcurrentHashMap<>();
         final Events events = new Events(this);
         final Set<String> matches = ConcurrentHashMap.newKeySet();
+        final List<HealthSample> healthSamples = new ArrayList<>();
         /** The least time from a message being made to the broker client getting it, in milliseconds. */
         final AtomicLong floor = new AtomicLong(Long.MAX_VALUE);
 
@@ -291,6 +320,8 @@ final class TestEnvironmentRestart {
         volatile Set<Long> expectedProducers = Set.of();
         volatile boolean expectedKnown;
         volatile boolean timedOut;
+        volatile @Nullable RuntimeTelemetry telemetry;
+        volatile Map<String, Integer> threadsAtOpen = Map.of();
 
         Run(Settings settings) {
             this.settings = settings;
@@ -497,6 +528,57 @@ final class TestEnvironmentRestart {
         @Override
         public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {
             other("fixture_change", message);
+        }
+
+        /** What each message spent in the SDK and in the callback, in nanoseconds, in handling order. */
+        synchronized long[] through() {
+            var waits = sdkWaits.toArray();
+            var calls = callbacks.toArray();
+            var sum = new long[waits.length];
+            for (int i = 0; i < sum.length; i++) {
+                sum[i] = waits[i] + calls[i];
+            }
+            return sum;
+        }
+
+        /** A row for each stretch of {@code window} of the run: the messages handled in it, and their waits and callbacks. */
+        synchronized String overTime(long window, long total) {
+            var when = at.toArray();
+            var waits = sdkWaits.toArray();
+            var calls = callbacks.toArray();
+            var through = through();
+            var out = new StringBuilder();
+            out.append(String.format(
+                    "%-14s %7s %9s %9s %9s %10s %10s %10s%n",
+                    "window", "msgs", "wait p50", "wait p99", "wait max", "thru p99", "thru max", "call p99"));
+            for (long from = 0; from < total; from += window) {
+                long to = from + window;
+                var wait = new ArrayList<Long>();
+                var call = new ArrayList<Long>();
+                var thru = new ArrayList<Long>();
+                for (int i = 0; i < when.length; i++) {
+                    if (when[i] >= from && when[i] < to) {
+                        wait.add(waits[i]);
+                        call.add(calls[i]);
+                        thru.add(through[i]);
+                    }
+                }
+                var w = wait.stream().mapToLong(Long::longValue).toArray();
+                var c = call.stream().mapToLong(Long::longValue).toArray();
+                var t = thru.stream().mapToLong(Long::longValue).toArray();
+                out.append(String.format(
+                        "%5.1f-%-5.1f min %7d %9s %9s %9s %10s %10s %10s%n",
+                        from / 6e10,
+                        to / 6e10,
+                        w.length,
+                        ms(RestartStats.percentile(w, 50)),
+                        ms(RestartStats.percentile(w, 99)),
+                        ms(RestartStats.percentile(w, 100)),
+                        ms(RestartStats.percentile(t, 99)),
+                        ms(RestartStats.percentile(t, 100)),
+                        ms(RestartStats.percentile(c, 99))));
+            }
+            return out.toString();
         }
 
         /** The age of each message beyond the floor, in nanoseconds; none known counts as on time. */
@@ -721,6 +803,10 @@ final class TestEnvironmentRestart {
                 .append(variants.size())
                 .append("\n");
 
+        if (settings.sustained()) {
+            sustained(out, run);
+        }
+
         out.append("\n-- health at the end\n");
         out.append("state ")
                 .append(health.state())
@@ -756,6 +842,74 @@ final class TestEnvironmentRestart {
                 .append("\n");
         facts(feed, out);
         return out.toString();
+    }
+
+    /**
+     * What only a sustained run has: the time through a session (the wait in the SDK and the callback)
+     * over the whole run and window by window, the feed's health every minute, and what the JVM spent.
+     */
+    private static void sustained(StringBuilder out, Run run) {
+        long duration = run.settings.duration().toNanos();
+        long window = duration / 12;
+        out.append("\n-- sustained: the time through a session, SDK wait plus callback\n");
+        int index = 0;
+        for (var session : run.sessions) {
+            var through = session.through();
+            out.append("session ")
+                    .append(++index)
+                    .append(" ")
+                    .append(session.interest)
+                    .append(": ")
+                    .append(through.length)
+                    .append(" messages, p50 ")
+                    .append(ms(RestartStats.percentile(through, 50)))
+                    .append(", p90 ")
+                    .append(ms(RestartStats.percentile(through, 90)))
+                    .append(", p99 ")
+                    .append(ms(RestartStats.percentile(through, 99)))
+                    .append(", p99.9 ")
+                    .append(ms(RestartStats.percentile(through, 99.9)))
+                    .append(", max ")
+                    .append(ms(RestartStats.percentile(through, 100)))
+                    .append("\n");
+            out.append(session.overTime(window, duration));
+        }
+        out.append("\n-- sustained: the feed's health, every minute\n");
+        long notHealthy = run.healthSamples.stream()
+                .filter(sample -> !sample.state.equals("HEALTHY"))
+                .count();
+        out.append(run.healthSamples.size())
+                .append(" samples, ")
+                .append(notHealthy)
+                .append(" not healthy\n");
+        for (var sample : run.healthSamples) {
+            out.append(String.format("%8.1f min  %s  queues %s", sample.at / 6e10, sample.state, sample.queueDepths));
+            out.append(sample.state.equals("HEALTHY") ? "" : "  " + sample.components)
+                    .append("\n");
+        }
+        out.append("\n-- sustained: the JVM (this test's: the SDK, the harness and nothing else)\n");
+        var telemetry = run.telemetry;
+        if (telemetry == null) {
+            return;
+        }
+        var log = System.getProperty("benchmarks.gclog");
+        var pauses = List.<GcLog.Pause>of();
+        if (log == null) {
+            out.append("no GC log: run the JVM with -Xlog:gc:file=<path>:uptime and -Dbenchmarks.gclog=<path>\n");
+        } else {
+            try {
+                pauses = GcLog.pauses(Path.of(log), telemetry.uptimeAtStartSeconds());
+            } catch (IOException e) {
+                out.append("the GC log could not be read: ").append(e).append("\n");
+            }
+        }
+        out.append(telemetry.summary(pauses, 12));
+        out.append("threads by name at the open: ").append(run.threadsAtOpen).append("\n");
+        out.append("threads by name now: ")
+                .append(RuntimeTelemetry.threadGroups())
+                .append("\n");
+        out.append("\n-- sustained: samples (seconds, bytes allocated, CPU seconds, threads, heap in use)\n");
+        out.append(telemetry.csv());
     }
 
     /** What the SDK's managers say of the environment, read last: a read may call the API, and does so after the table above. */
