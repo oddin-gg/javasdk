@@ -57,6 +57,33 @@ class LeakCheckTest {
         }
     }
 
+    @Test
+    void aLeakedVirtualFeedThreadFailsUntilItEnds() throws Exception {
+        var check = LeakCheck.begin();
+        var release = new CountDownLatch(1);
+        var leaked = Thread.ofVirtual().name("oddsfeed-side-load-test").start(() -> await(release));
+        var unnamed = Thread.ofVirtual().start(() -> await(release));
+        try {
+            assertThat(check.leakedThreads()).containsExactly("oddsfeed-side-load-test");
+            assertThatThrownBy(() -> check.assertClean(WAIT))
+                    .isInstanceOf(AssertionError.class)
+                    .hasMessageContaining("oddsfeed-side-load-test");
+        } finally {
+            release.countDown();
+            leaked.join();
+            unnamed.join();
+        }
+        check.assertClean(Duration.ofSeconds(10));
+    }
+
+    private static void await(CountDownLatch release) {
+        try {
+            release.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static Thread parked(String name, CountDownLatch release) {
         var thread = new Thread(
                 () -> {
