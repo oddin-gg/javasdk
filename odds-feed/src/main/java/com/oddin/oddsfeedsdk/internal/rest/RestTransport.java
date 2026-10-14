@@ -69,7 +69,9 @@ public final class RestTransport implements AutoCloseable {
     static final int MAX_ATTEMPTS = 3;
     static final Duration FIRST_BACKOFF = Duration.ofMillis(500);
     static final Duration MAX_BACKOFF = Duration.ofSeconds(5);
-    static final int PRODUCER_PERMITS = 1;
+    /** One for each producer the API has: prematch and live. */
+    static final int PRODUCER_PERMITS = 2;
+
     static final int RECOVERY_PERMITS = 2;
     static final int CATALOG_PERMITS = 2;
     /** An error's body is read this far for the API's error; the rest is not needed. */

@@ -53,6 +53,7 @@ class ApiClientTest {
     private static final String WHOAMI = "/v1/users/whoami";
     private static final String EVENT_RECOVERY = "/v1/pre/odds/events/od:match:1/initiate_request";
     private static final String PRODUCER_RECOVERY = "/v1/pre/recovery/initiate_request";
+    private static final String LIVE_RECOVERY = "/v1/live/recovery/initiate_request";
     private static final String NO_VOID_REASONS = "<void_reasons response_code=\"OK\"/>";
     private static final String OK_PRODUCERS = Fixtures.read("rest/producers/producers.xml");
     private static final String REFUSED = """
@@ -202,9 +203,10 @@ class ApiClientTest {
                 Reply.of(200, Fixtures.read("rest/whoami/bookmaker_details.xml"))
                         .after(Duration.ofSeconds(2)));
         try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
-            // the producer pool's one permit
+            // the producer pool's two permits
             Future<RABookmakerDetail> holder = calls.submit(() -> client.fetchWhoAmI());
-            api.awaitRequest("GET", WHOAMI);
+            Future<RABookmakerDetail> other = calls.submit(() -> client.fetchWhoAmI());
+            api.awaitRequests("GET", WHOAMI, 2);
 
             long started = System.nanoTime();
             assertThatThrownBy(() -> client.fetchProducers(Deadline.in(Duration.ofMillis(300))))
@@ -212,6 +214,7 @@ class ApiClientTest {
                     .hasMessageContaining("not done within 300 ms, waiting for its turn");
             assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
             assertThat(holder.get()).isNotNull();
+            assertThat(other.get()).isNotNull();
         }
         assertThat(api.requests("GET", "/v1/descriptions/producers")).isEmpty();
     }
@@ -241,8 +244,7 @@ class ApiClientTest {
                         .as("a producer's calls wait for no event recovery")
                         .isLessThan(Duration.ofSeconds(5));
                 assertThat(api.requests("POST", PRODUCER_RECOVERY)).hasSize(1);
-                assertThat(api.requests("POST", "/v1/live/recovery/initiate_request"))
-                        .hasSize(1);
+                assertThat(api.requests("POST", LIVE_RECOVERY)).hasSize(1);
                 assertThat(api.requests("POST", EVENT_RECOVERY))
                         .as("event recoveries at the API: the two permits, the rest queued")
                         .hasSize(2);
@@ -260,7 +262,7 @@ class ApiClientTest {
 
     @Test
     @Timeout(value = 60, threadMode = SEPARATE_THREAD)
-    void aProducerRecoveryHoldsTheProducerPermitAndNoEventRecoveryWaitsForIt() throws Exception {
+    void theProducersRecoveriesHoldTheProducerPermitsAndNoEventRecoveryWaitsForThem() throws Exception {
         ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(20)));
         var release = new CountDownLatch(1);
         api.respondWith(request -> {
@@ -271,9 +273,11 @@ class ApiClientTest {
         });
         try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
             try {
-                // a producer's recovery request holds the producer pool's one permit
-                Future<?> producer = calls.submit(() -> client.postRecovery("pre", 1, null));
+                // the two producers' recovery requests hold the producer pool's two permits
+                Future<?> pre = calls.submit(() -> client.postRecovery("pre", 1, null));
+                Future<?> live = calls.submit(() -> client.postRecovery("live", 2, null));
                 api.awaitRequest("POST", PRODUCER_RECOVERY);
+                api.awaitRequest("POST", LIVE_RECOVERY);
                 assertThatThrownBy(() -> client.fetchWhoAmI(Deadline.in(Duration.ofMillis(300))))
                         .isInstanceOf(ApiException.class)
                         .hasMessageContaining("waiting for its turn");
@@ -283,20 +287,63 @@ class ApiClientTest {
                 assertThat(api.requests("GET", WHOAMI)).isEmpty();
                 assertThat(api.requests("GET", "/v1/descriptions/producers")).isEmpty();
 
-                client.postEventOddsRecovery("pre", MATCH, 2);
-                client.postEventStatefulRecovery("live", MATCH, 3);
+                client.postEventOddsRecovery("pre", MATCH, 3);
+                client.postEventStatefulRecovery("live", MATCH, 4);
                 assertThat(api.requests("POST", EVENT_RECOVERY)).hasSize(1);
 
                 release.countDown();
-                producer.get(30, TimeUnit.SECONDS);
+                pre.get(30, TimeUnit.SECONDS);
+                live.get(30, TimeUnit.SECONDS);
             } finally {
                 release.countDown();
             }
         }
-        // the permit came back, and the calls that gave up waiting for it did not take it with them
+        // the permits came back, and the calls that gave up waiting for them did not take them with them
         assertThat(client.fetchWhoAmI()).isNotNull();
         assertThat(client.fetchProducers()).isNotNull();
-        client.postRecovery("pre", 4, null);
+        client.postRecovery("pre", 5, null);
+        client.postRecovery("live", 6, null);
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void twoProducersRecoveriesAreInFlightAtOnceWhileEventRecoveriesHoldTheirPermits() throws Exception {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(20)));
+        var release = new CountDownLatch(1);
+        api.respondWith(request -> {
+            if (request.path().endsWith("/initiate_request")) {
+                await(release);
+            }
+            return null;
+        });
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            try {
+                List<Future<?>> events = new ArrayList<>();
+                for (int i = 0; i < 4; i++) {
+                    long requestId = i;
+                    events.add(calls.submit(() -> client.postEventOddsRecovery("pre", MATCH, requestId)));
+                }
+                api.awaitRequests("POST", EVENT_RECOVERY, 2);
+
+                // one producer's recovery is slow at the API; the other's is still sent
+                Future<?> pre = calls.submit(() -> client.postRecovery("pre", 100, null));
+                Future<?> live = calls.submit(() -> client.postRecovery("live", 101, null));
+                api.awaitRequest("POST", PRODUCER_RECOVERY);
+                api.awaitRequest("POST", LIVE_RECOVERY);
+                assertThat(api.requests("POST", EVENT_RECOVERY))
+                        .as("the event recoveries still hold their two permits, the rest queued")
+                        .hasSize(2);
+
+                release.countDown();
+                pre.get(30, TimeUnit.SECONDS);
+                live.get(30, TimeUnit.SECONDS);
+                for (Future<?> event : events) {
+                    event.get(30, TimeUnit.SECONDS);
+                }
+            } finally {
+                release.countDown();
+            }
+        }
     }
 
     @Test

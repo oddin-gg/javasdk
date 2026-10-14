@@ -387,12 +387,13 @@ because the health event itself would queue behind the wedge.
 ### REST
 
 - Four permit pools per `OddsFeed`. The producer pool covers a producer's recovery
-  requests and the producer and whoami calls, size 1. The recovery pool covers the
-  recovery requests of single events, size 2: up to 128 of them can be in flight, and
-  they must not queue ahead of a producer's, which is the safety net. The catalog pool
-  covers market descriptions, void reasons, status descriptions and sports, size 2. The
-  data pool covers entity loading, default 16, configurable. Nothing else can delay a
-  producer's recovery request behind it.
+  requests and the producer and whoami calls, size 2, one for each of the API's two
+  producers, so one producer's slow recovery cannot keep the other's from being sent. The
+  recovery pool covers the recovery requests of single events, size 2: up to 128 of them
+  can be in flight, and they must not queue ahead of a producer's, which is the safety
+  net. The catalog pool covers market descriptions, void reasons, status descriptions and
+  sports, size 2. The data pool covers entity loading, default 16, configurable. Nothing
+  else can delay a producer's recovery request behind it.
   The side-load workers are half the data pool's size, at least one and at most 16, so
   the eager preload never takes more than half the permits and the client's own reads
   keep the rest, and it uses more of them the more the limit allows.
@@ -1724,9 +1725,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   permits were shared by whoami, the producer list, a producer's recovery request and every
   event recovery request, and up to 128 event recoveries can be in flight, so a producer's
   request waited behind each event request queued before it, which at a slow API is longer
-  than the call's deadline. A fourth pool of one permit now carries whoami, the producer list
-  and a producer's recovery request; the recovery pool of two carries only the requests of
-  single events, which are best effort, where a producer's is the safety net. Only the pool a
+  than the call's deadline. A fourth pool now carries whoami, the producer list
+  and a producer's recovery request, with two permits, one for each of the API's two producers
+  (prematch and live): with one, a slow recovery of one producer kept the other's from being
+  sent at all, as the recovery actor sends the producers' requests at the same time. The
+  recovery pool of two carries only the requests of single events, which are best effort,
+  where a producer's is the safety net. Only the pool a
   request waits on changed: the recovery actor, its limits and the retry policy are as they were.
 - 2026-10-14, the side-load workers follow the REST concurrency limit: four fixed workers
   paced a restart at four loads at a time whatever the limit, so at the default of 16 the

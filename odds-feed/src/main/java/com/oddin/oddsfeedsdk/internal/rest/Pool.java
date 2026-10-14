@@ -6,7 +6,11 @@ package com.oddin.oddsfeedsdk.internal.rest;
  * hold up a producer's.
  */
 public enum Pool {
-    /** A producer's recovery requests, and the producer list and whoami that recovery depends on: 1 at once. */
+    /**
+     * A producer's recovery requests, and the producer list and whoami that recovery depends on: 2
+     * at once, one for each of the API's two producers, so a slow recovery of one does not keep
+     * the other's from being sent.
+     */
     PRODUCER,
     /** The recovery requests of single events, many of which can be waiting at once: 2 at once. */
     RECOVERY,
