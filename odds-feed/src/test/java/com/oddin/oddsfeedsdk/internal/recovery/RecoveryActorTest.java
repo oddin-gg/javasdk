@@ -632,6 +632,54 @@ class RecoveryActorTest {
     }
 
     @Test
+    void anEventRecoveryPendingWhenTheCloseGivesUpWaitingForTheActorReadsFailedFromThen() throws Exception {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long requestId = requireNonNull(actor.recoverEvent(LIVE, MATCH, false).get(WAIT_SECONDS, TimeUnit.SECONDS));
+        api.next();
+        assertThat(requireNonNull(actor.recoveryStatus(requestId)).state())
+                .isEqualTo(EventRecoveryStatus.State.PENDING);
+
+        // the actor held in a fact for longer than the close waits
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        actor.beforeHandle = fact -> {
+            if (fact instanceof RecoveryActor.Fact.Processed) {
+                entered.countDown();
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        long at = System.currentTimeMillis();
+        session.processed(LIVE, at, at, 0);
+        assertThat(entered.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        try {
+            assertThat(actor.close(System.nanoTime() + Duration.ofMillis(300).toNanos()))
+                    .as("not ended, while held in a fact")
+                    .isFalse();
+            var failed = requireNonNull(actor.recoveryStatus(requestId));
+            assertThat(failed.state())
+                    .as("what a read finds once the close returned")
+                    .isEqualTo(EventRecoveryStatus.State.FAILED);
+            assertThat(failed.reason()).isEqualTo("the feed closed");
+            assertThat(failed.endedAt()).isNotNull();
+        } finally {
+            release.countDown();
+        }
+        assertThat(actor.close(System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS)))
+                .as("ended, once let go")
+                .isTrue();
+        var ended = requireNonNull(actor.recoveryStatus(requestId));
+        assertThat(ended.state()).as("as the actor ends it").isEqualTo(EventRecoveryStatus.State.FAILED);
+        assertThat(ended.reason()).isEqualTo("the feed closed");
+    }
+
+    @Test
     void aGapQueuedWhenTheCloseComesTakesThePointBackBeforeTheActorEnds() throws InterruptedException {
         RecoveryActor actor = actor(settings());
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);

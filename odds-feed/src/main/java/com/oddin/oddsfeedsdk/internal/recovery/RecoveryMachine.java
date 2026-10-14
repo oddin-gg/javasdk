@@ -301,7 +301,7 @@ final class RecoveryMachine {
      */
     void close() {
         for (EventRecovery recovery : eventRecoveries.values()) {
-            ended(recovery, EventRecoveryStatus.State.FAILED, "the feed closed");
+            ended(recovery, EventRecoveryStatus.State.FAILED, EventRecoveryStatuses.FEED_CLOSED);
         }
         eventRecoveries.clear();
         for (CompletableFuture<@Nullable Long> reply : replies.values()) {
