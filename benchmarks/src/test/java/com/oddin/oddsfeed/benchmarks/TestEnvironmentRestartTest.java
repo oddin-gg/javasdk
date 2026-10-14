@@ -1,5 +1,6 @@
 package com.oddin.oddsfeed.benchmarks;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Files;
@@ -65,5 +66,12 @@ class TestEnvironmentRestartTest {
         Files.writeString(
                 dir.resolve(settings.label() + "-" + Instant.now().toString().replace(':', '-') + ".txt"),
                 result.report());
+        // the report is kept either way; a run that never settled, or a producer that never came up, is not a pass
+        assertThat(result.timedOut())
+                .as("the run settled within its maximum (see the report)")
+                .isFalse();
+        assertThat(result.producersUp())
+                .as("every producer came up (see the report)")
+                .isTrue();
     }
 }

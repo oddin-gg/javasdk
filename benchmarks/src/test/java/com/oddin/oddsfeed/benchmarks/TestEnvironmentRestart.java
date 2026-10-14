@@ -4,6 +4,7 @@ import static java.util.Objects.requireNonNull;
 
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
+import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
@@ -45,6 +46,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -203,8 +205,13 @@ final class TestEnvironmentRestart {
         return call.method() + " " + path;
     }
 
-    /** The results of one run, as the text of its report. */
-    record Result(String report, boolean timedOut) {}
+    /**
+     * The results of one run, as the text of its report.
+     *
+     * @param timedOut whether the run reached its maximum before every session settled
+     * @param producersUp whether every producer the feed takes came up
+     */
+    record Result(String report, boolean timedOut, boolean producersUp) {}
 
     /**
      * Opens a feed against the test environment, watches it until every session has stayed on time
@@ -237,12 +244,15 @@ final class TestEnvironmentRestart {
             feed.open();
             run.opened = System.nanoTime();
             // read after the open, which is when the feed knows which producers it takes
-            run.expectedProducers =
-                    Set.copyOf(feed.getProducerManager().getActiveProducers().keySet());
+            // not the ones open() switched off because no session takes their messages: they never come up
+            run.expectedProducers = feed.getProducerManager().getActiveProducers().values().stream()
+                    .filter(Producer::isEnabled)
+                    .map(Producer::getId)
+                    .collect(Collectors.toUnmodifiableSet());
             run.expectedKnown = true;
             run.threadsAtOpen = RuntimeTelemetry.threadGroups();
             watch(feed, run);
-            return new Result(report(feed, run), run.timedOut);
+            return new Result(report(feed, run), run.timedOut, run.allProducersUpAt() >= 0);
         } finally {
             feed.close();
         }
@@ -444,6 +454,7 @@ final class TestEnvironmentRestart {
         private final Longs reads = new Longs();
         private final Map<String, AtomicInteger> byType = new TreeMap<>();
         private final AtomicInteger oddsChanges = new AtomicInteger();
+        final AtomicInteger failedReads = new AtomicInteger();
 
         SessionRecorder(Run run, MessageInterest interest) {
             this.run = run;
@@ -461,9 +472,14 @@ final class TestEnvironmentRestart {
             long age = -1;
             if (made > 0) {
                 age = stamps.getPublished() - made;
-                // what the producer's clock and the network add to every message, as the least it ever took
-                long floor = run.floor.accumulateAndGet(stamps.getReceived() - made, Math::min);
-                if (Math.max(0, age - floor) * 1_000_000
+                // what the producer's clock and the network add to every message, as the least it ever took:
+                // learned from messages made after the run began only - a recovery's old messages say how
+                // old they are, not what the network adds, and would put the floor too high until a live
+                // message came; before the first live one the floor is none, so an old message is late
+                boolean live = made >= run.startInstant.toEpochMilli();
+                long floor =
+                        live ? run.floor.accumulateAndGet(stamps.getReceived() - made, Math::min) : run.floor.get();
+                if (Math.max(0, age - (floor == Long.MAX_VALUE ? 0 : floor)) * 1_000_000
                         > run.settings.lagLimit().toNanos()) {
                     lastLateAt.set(sinceStart);
                 }
@@ -473,6 +489,11 @@ final class TestEnvironmentRestart {
             ages.add(age);
             callbacks.add(left - entered);
             byType.computeIfAbsent(type, _ -> new AtomicInteger()).incrementAndGet();
+        }
+
+        /** The kinds of message handled with their counts, read under the lock the callbacks write under. */
+        synchronized String types() {
+            return new TreeMap<>(byType).toString();
         }
 
         private synchronized void readNames(long nanos) {
@@ -485,11 +506,17 @@ final class TestEnvironmentRestart {
             oddsChanges.incrementAndGet();
             run.matches.add(String.valueOf(message.getEvent().getId()));
             if (run.settings.reads() == Reads.NAMES) {
-                requireNonNull(message.getEvent().getName(EN));
-                for (var market : message.getMarkets()) {
-                    long read = System.nanoTime();
-                    requireNonNull(market.getName(EN));
-                    readNames(System.nanoTime() - read);
+                // a read that fails still leaves the message in every statistic, and is counted
+                try {
+                    requireNonNull(message.getEvent().getName(EN));
+                    for (var market : message.getMarkets()) {
+                        long read = System.nanoTime();
+                        requireNonNull(market.getName(EN));
+                        readNames(System.nanoTime() - read);
+                    }
+                } catch (RuntimeException e) {
+                    failedReads.incrementAndGet();
+                    run.note("a name read failed in " + message.getEvent().getId() + ": " + e);
                 }
             }
             record("odds_change", message, entered, System.nanoTime());
@@ -586,7 +613,7 @@ final class TestEnvironmentRestart {
             var raw = ages.toArray();
             var adjusted = new long[raw.length];
             for (int i = 0; i < raw.length; i++) {
-                adjusted[i] = raw[i] < 0 ? 0 : Math.max(0, raw[i] - floor) * 1_000_000;
+                adjusted[i] = raw[i] < 0 ? 0 : RestartStats.beyondFloor(raw[i], floor) * 1_000_000;
             }
             return adjusted;
         }
@@ -712,10 +739,12 @@ final class TestEnvironmentRestart {
                 .append(" ms, which is the producer's clock and the network)\n");
         int index = 0;
         long lastCaughtUp = -1;
+        int silent = 0;
         for (var session : run.sessions) {
             var waits = session.waits(floorMs);
             long caught = waits.caughtUpAt();
             lastCaughtUp = Math.max(lastCaughtUp, caught);
+            silent += caught < 0 ? 1 : 0;
             long[] waitValues;
             long[] ageValues = session.adjustedAges(floorMs);
             long[] callbackValues;
@@ -732,7 +761,7 @@ final class TestEnvironmentRestart {
                     .append(": ")
                     .append(waits.messages())
                     .append(" messages ")
-                    .append(session.byType)
+                    .append(session.types())
                     .append(", late ")
                     .append(waits.late())
                     .append(", first handled at ")
@@ -764,7 +793,9 @@ final class TestEnvironmentRestart {
                 long total = Arrays.stream(readValues).sum();
                 long slow =
                         Arrays.stream(readValues).filter(n -> n > 20_000_000L).count();
-                out.append("; market names read ")
+                out.append("; name reads that failed ")
+                        .append(session.failedReads.get())
+                        .append("; market names read ")
                         .append(readValues.length)
                         .append(", in ")
                         .append(ms(total))
@@ -775,7 +806,10 @@ final class TestEnvironmentRestart {
             }
             out.append("\n");
         }
-        out.append("every session caught up at ")
+        out.append(
+                        silent == 0
+                                ? "every session caught up at "
+                                : silent + " session(s) handled nothing; the others caught up at ")
                 .append(lastCaughtUp < 0 ? "-" : ms(lastCaughtUp))
                 .append(", ")
                 .append(lastCaughtUp < 0 ? "-" : ms(Math.max(0, lastCaughtUp - Math.max(0, allUp))))

@@ -95,6 +95,9 @@ class RestartStatsTest {
         assertThat(defaults.sessions()).containsExactly(MessageInterest.ALL);
         assertThat(defaults.lagLimit()).isEqualTo(Duration.ofSeconds(5));
         assertThat(defaults.max()).isEqualTo(Duration.ofMinutes(12));
+        assertThat(defaults.sustained())
+                .as("a restart unless a duration is given")
+                .isFalse();
 
         var set = Settings.from(Map.of(
                         Settings.SELECTOR,
@@ -172,5 +175,34 @@ class RestartStatsTest {
                 .isInstanceOf(TestEnvironmentRestart.Preflight.Refuse.class);
         assertThat(decide(Map.of(Settings.SELECTOR, "test"), null, " "))
                 .isInstanceOf(TestEnvironmentRestart.Preflight.Refuse.class);
+    }
+
+    @Test
+    void lateIsMeasuredBeyondTheFloorAndNoFloorKnownCountsTheWholeAge() {
+        assertThat(RestartStats.beyondFloor(9_000, 40)).isEqualTo(8_960);
+        assertThat(RestartStats.beyondFloor(30, 40)).as("never negative").isZero();
+        assertThat(RestartStats.beyondFloor(9_000, Long.MAX_VALUE))
+                .as("before any live message has set the floor")
+                .isEqualTo(9_000);
+    }
+
+    @Test
+    void onlyAMessageMadeAfterTheRunBeganTeachesTheFloor() {
+        long start = 1_000_000;
+
+        assertThat(RestartStats.teachesFloor(start - 17_000, start))
+                .as("a recovery's old message")
+                .isFalse();
+        assertThat(RestartStats.teachesFloor(start, start)).isTrue();
+        assertThat(RestartStats.teachesFloor(start + 5, start)).isTrue();
+    }
+
+    @Test
+    void aDurationMakesTheRunSustained() {
+        var settings = Settings.from(Map.of(Settings.SELECTOR, "test", Settings.SELECTOR + ".duration", "60")::get)
+                .orElseThrow();
+
+        assertThat(settings.sustained()).isTrue();
+        assertThat(settings.duration()).isEqualTo(Duration.ofMinutes(60));
     }
 }
