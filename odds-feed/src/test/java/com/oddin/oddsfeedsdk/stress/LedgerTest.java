@@ -92,6 +92,54 @@ class LedgerTest {
     }
 
     @Test
+    void aMessageSentWithAnErrorThatArrivedKeepsThePrefix() {
+        var ledger = ledger(List.of(0L, 1L, 3L), List.of(0L, 1L, 2L, 3L));
+        ledger.sentWithError(MATCH, 2);
+
+        assertThatCode(ledger::assertPrefix).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aMessageSentWithAnErrorThatDidNotArriveKeepsThePrefix() {
+        var ledger = ledger(List.of(0L, 1L, 3L), List.of(0L, 1L, 3L));
+        ledger.sentWithError(MATCH, 2);
+        var trailing = ledger(List.of(0L, 1L), List.of(0L, 1L));
+        trailing.sentWithError(MATCH, 2);
+
+        assertThatCode(ledger::assertPrefix).doesNotThrowAnyException();
+        assertThatCode(trailing::assertPrefix).doesNotThrowAnyException();
+    }
+
+    @Test
+    void aMissingPublishedMessageBeforeAnArrivedOneIsAGapEvenWithAnUncertainOne() {
+        var ledger = ledger(List.of(0L, 1L, 3L), List.of(0L, 3L));
+        ledger.sentWithError(MATCH, 2);
+
+        assertThatThrownBy(ledger::assertPrefix)
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining(MATCH);
+    }
+
+    @Test
+    void anArrivalNeitherPublishedNorSentWithAnErrorFailsThePrefix() {
+        var ledger = ledger(List.of(0L, 1L), List.of(0L, 1L, 2L));
+        ledger.sentWithError(MATCH, 5);
+
+        assertThatThrownBy(ledger::assertPrefix).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void whatWasSentWithAnErrorIsCountedSinceAMark() {
+        var ledger = ledger(List.of(0L, 1L), List.of(0L));
+        ledger.sentWithError(MATCH, 2);
+        ledger.sentWithError(MATCH, 3);
+        ledger.sentWithError(OTHER, 0);
+
+        assertThat(ledger.uncertainSince(Map.of(MATCH, 3L))).isEqualTo(2);
+        assertThat(ledger.uncertainSince(Map.of(MATCH, 0L))).isEqualTo(3);
+    }
+
+    @Test
     void aGapIsAllowedBeforeTheReconnectAndNotAfter() {
         var ledger = ledger(List.of(0L, 1L, 2L, 3L, 4L), List.of(0L, 3L, 4L));
 
