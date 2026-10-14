@@ -677,12 +677,15 @@ final class RecoveryMachine {
         EventRecovery event = eventRecoveries.get(requestId);
         if (event != null && event.producerId == producerId) {
             if (event.awaited.contains(id)) {
-                event.seen.add(id);
+                // a session's second snapshot complete is no sign of life for the sessions still awaited
+                boolean first = event.seen.add(id);
                 if (event.seen.containsAll(event.awaited)) {
                     // its status ends before a caller still waiting hears the API took it
                     eventCompleted(event);
                 } else {
-                    event.heardAt = now();
+                    if (first) {
+                        event.heardAt = now();
+                    }
                     CompletableFuture<@Nullable Long> reply = replies.remove(requestId);
                     if (reply != null) {
                         // a snapshot complete says the API took the request: the caller hears so now

@@ -2110,6 +2110,27 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aSnapshotCompleteOfASessionRepeatedIsNoSignOfLifeForTheOthers() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        feed.accept(call);
+        feed.advance(Duration.ofMinutes(4));
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        feed.advance(Duration.ofMinutes(4));
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        feed.advance(Duration.ofMinutes(1));
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after the first one")
+                .isZero();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+        assertThat(statusOf(call).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+    }
+
+    @Test
     void theMaximumRecoveryTimeBoundsAnEventRecoveryWhoseSnapshotKeepsArriving() {
         feed.open(1, MessageInterest.ALL);
         feed.start();
