@@ -550,7 +550,8 @@ public final class OddsFeed {
 
     /**
      * Read after the close too: the recoveries it failed are kept, as any ended one, so the client
-     * finds out what became of them.
+     * finds out what became of them - those too that a close which gave up waiting for the recovery
+     * actor left to it, which read failed from then on.
      */
     private @Nullable EventRecoveryStatus recoveryStatus(long requestId) {
         @Nullable OpenFeed run;

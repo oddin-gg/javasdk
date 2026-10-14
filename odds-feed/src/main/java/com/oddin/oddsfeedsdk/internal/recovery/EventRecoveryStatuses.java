@@ -7,6 +7,7 @@ import java.time.InstantSource;
 import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +22,9 @@ import org.slf4j.LoggerFactory;
  * at most, and one more drops the one that ended first, before its five minutes, counted. The actor
  * forgets the ended ones on its ticks, and a read never shows one past its five minutes, so between
  * two ticks nothing is shown longer than it should be.
+ *
+ * <p>A feed whose close gave up waiting for the actor {@linkplain #abandon abandons} them: the
+ * actor may not run again, so a pending one reads failed from then on, whenever the actor ends it.
  */
 final class EventRecoveryStatuses {
 
@@ -35,9 +39,16 @@ final class EventRecoveryStatuses {
      */
     static final int ENDED_KEPT = 10_000;
 
+    /** Why a recovery the close left pending failed. */
+    static final String FEED_CLOSED = "the feed closed";
+
     private final Map<Long, EventRecoveryStatus> statuses = new ConcurrentHashMap<>();
     /** The ended statuses, in the order they ended; the actor's thread's only. */
     private final ArrayDeque<EventRecoveryStatus> ended = new ArrayDeque<>();
+    /** Orders {@link #abandon} and {@link #ended}: nothing ends well after it, or a read sees it undone. */
+    private final ReentrantLock lock = new ReentrantLock();
+    /** When the feed's close gave up waiting for the actor; null before. */
+    private volatile @Nullable Instant abandonedAt;
 
     private final InstantSource clock;
     private final RecoveryCounters counters;
@@ -61,10 +72,30 @@ final class EventRecoveryStatuses {
     @Nullable
     EventRecoveryStatus get(long requestId) {
         EventRecoveryStatus status = statuses.get(requestId);
-        if (status == null || expired(status, clock.instant())) {
+        if (status == null) {
             return null;
         }
-        return status;
+        Instant abandoned = abandonedAt;
+        if (abandoned != null && status.state() == EventRecoveryStatus.State.PENDING) {
+            status = status.ended(EventRecoveryStatus.State.FAILED, abandoned, FEED_CLOSED);
+        }
+        return expired(status, clock.instant()) ? null : status;
+    }
+
+    /**
+     * The feed's close gave up waiting for the actor, which may never end the pending recoveries
+     * itself: they read as failed from now on, and any it ends later as failed too. Safe from any
+     * thread, and once only; a status that ended before stays as it is.
+     */
+    void abandon() {
+        lock.lock();
+        try {
+            if (abandonedAt == null) {
+                abandonedAt = clock.instant();
+            }
+        } finally {
+            lock.unlock();
+        }
     }
 
     /** An event recovery asked for. The actor's thread only. */
@@ -81,8 +112,18 @@ final class EventRecoveryStatuses {
         if (status == null || status.state() != EventRecoveryStatus.State.PENDING) {
             return;
         }
-        EventRecoveryStatus done = status.ended(state, at, reason);
-        statuses.put(requestId, done);
+        EventRecoveryStatus done;
+        lock.lock();
+        try {
+            Instant abandoned = abandonedAt;
+            // what a read has shown since the close gave up is what it stays
+            done = abandoned == null
+                    ? status.ended(state, at, reason)
+                    : status.ended(EventRecoveryStatus.State.FAILED, abandoned, FEED_CLOSED);
+            statuses.put(requestId, done);
+        } finally {
+            lock.unlock();
+        }
         ended.addLast(done);
         if (ended.size() > endedKept) {
             forget(ended.removeFirst());

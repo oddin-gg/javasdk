@@ -523,6 +523,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             return true;
         }
         LOG.warn("The recovery actor did not stop in time");
+        // it may never end the recoveries in flight: they read as failed, as the close promises
+        statuses.abandon();
         return false;
     }
 
