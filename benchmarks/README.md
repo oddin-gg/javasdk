@@ -55,6 +55,22 @@ the generated classes, with no parsing code to keep in step with the schema. It 
 somewhat more. On 2026-09-29, before the change, the SDK's column read as the middle one;
 keeping one unmarshaller instead of one per message changed nothing.
 
+2026-10-14, on the Linux box the cold scenario runs on (Intel Pentium Gold 8505, JDK 25, other work on the
+machine: a load average of 2 to 4), 10 iterations, per odds change, warm:
+
+| markets | JAXB on Woodstox (the SDK) | JAXB on the JDK's parser | StAX, hand-written |
+|--------:|---------------------------:|-------------------------:|-------------------:|
+| 20 | 69 µs, 81 KB | 127 µs, 79 KB | 52 µs, 88 KB |
+| 150 | 398 µs, 447 KB | 734 µs, 386 KB | 293 µs, 322 KB |
+| 500 | 1.39 ms, 1.49 MB | 2.43 ms, 1.26 MB | 0.99 ms, 1.00 MB |
+
+The times are a fifth to a quarter above the M-series ones, the allocation the same, so the decoder costs about
+what it did. The ratios differ with the machine: here Woodstox is 1.8 times as fast as the JDK's parser
+(not three) and JAXB 33 to 40 % slower than the hand-written reader (not a sixth), both from one run with other
+work on the machine; the conclusion - the parser was the cost, and JAXB on Woodstox stays near the
+hand-written reader - holds on both. A second run a few minutes later, with the load average above four,
+read 37 % and 92 % slower at 150 and 20 markets, and the same at 500: a figure from this box is a run on a shared machine.
+
 2026-10-05, the same machine, the warm path's steps after the decode, per odds change:
 
 | markets | cache write | entity build |
@@ -63,7 +79,10 @@ keeping one unmarshaller instead of one per message changed nothing.
 | 150 | 0.4 µs, 2.5 KB | 12.8 µs, 112 KB |
 | 500 | 0.4 µs, 2.5 KB | 50 µs, 380 KB |
 
-Both are small next to the decode: a typical live odds change of 150 markets spends about 330 µs
+On the Linux box, 2026-10-14, the same steps: the cache write 0.5 µs and 2.5 KB whatever the size, the
+entity build 1.9 µs and 16 KB at 20 markets, 12.8 µs and 113 KB at 150, 48 µs and 384 KB at 500.
+
+Both are small next to the decode: a typical live odds change of 150 markets spends about 330 to 400 µs
 decoding, 13 µs being built and under a microsecond in the cache.
 
 ## The cold scenario
@@ -80,12 +99,16 @@ A callback reads the match's name, as a client does.
 - First message: one odds change for a cold match on a fresh feed, until its callback has read the
   match's name and a market's.
 
-Measured on this Linux box (Intel Pentium Gold 8505, JDK 25, Docker for the broker), median of 7 runs:
+Measured on this Linux box (Intel Pentium Gold 8505, JDK 25, Docker for the broker; 2026-10-14, the same
+session as the warm numbers above), median of 7 runs:
 
 | | time |
 |---|---:|
-| caught up, 200 matches | 3.9 s (3.93 to 3.95 s), of which 2.6 s after the last publish |
-| first message | 152 ms (71 to 161 ms) |
+| caught up, 200 matches | 3.9 s (3.90 to 3.96 s), of which 1.6 s after the last publish (1.5 to 2.0 s) |
+| first message | 61 ms (58 to 66 ms) |
+
+The first message read 152 ms (71 to 161) before the benchmark waited for the catalogs the open preloads: a
+message that came while the market list was still on its way made a fetch of its own.
 
 The 600 requests the 200 matches cost (a summary and two competitor profiles each) are answered
 8 at a time, by the side-load workers the preload shares - half the REST concurrency limit, 16 by
@@ -114,15 +137,16 @@ The corpus's one other variant specifier is left out in this mode: it is a varia
 has no row for, which would fail the name read. The sizes are the generator's: 5 variants a match is
 not a production figure.
 
-Measured on the same box, median of 7 runs, with the 200 matches:
+Measured on the same box, median of 7 runs, with the 200 matches (2026-10-14: 52.4 s, 51.5 to 54.3 s; earlier
+the same day 53.2 s, 53.0 to 54.8 s):
 
 | | variant mode |
 |---|---:|
-| caught up | 53.2 s (53.0 to 54.8 s), of which 51.5 to 52.4 s after the last publish |
+| caught up | 52.4 s (51.5 to 54.3 s), of which 49.0 to 52.2 s after the last publish |
 | requests | 1606: the 606 above and 1000 variants, each once |
 | most answered at once | 9 |
-| longest callback | 0.31 to 0.35 s (5 variants and the plain names) |
-| longest single name read | 58 to 81 ms |
+| longest callback | 0.31 to 0.37 s (5 variants and the plain names) |
+| longest single name read | 59 to 81 ms |
 | the feed's health, health events | healthy, none |
 
 The pace is not the catalog's two permits. The callbacks of a session run one after another, and
@@ -200,3 +224,110 @@ avoids the pace by keeping the reads off the session's thread - handing the mess
 which fetch several variants at a time - by reading names only for the markets it shows, and by preloading
 the locales it reads (`setPreloadLocales`), which leaves the plain markets as one list read at the open,
 so that only the variants are requests of their own. Nothing in the SDK reads a name the client does not ask for.
+
+## Sustained load
+
+### The test environment, for an hour
+
+`BENCHMARKS_TESTENV_DURATION=<minutes>` turns the test environment run into a sustained one: the same feed, left
+running for that long instead of ending once every session is on time. It runs as `aSustainedRun` of
+`TestEnvironmentRestartTest`, takes the same settings and the same token, and adds to the report the time
+through a session message by message (the SDK's wait plus the callback), in windows of a twelfth of the run; the
+feed's health every minute; and what the JVM spent - the heap allocated, the process's CPU, the threads, and the
+GC pauses, which come from the GC log, to the microsecond, so the JVM needs `-Xlog:gc:file=<path>:uptime` and
+`-Dbenchmarks.gclog=<path>`:
+
+```
+BENCHMARKS_TESTENV=test BENCHMARKS_TESTENV_DURATION=60 ODDIN_FEED_TOKEN_TEST=... \
+    ./mvnw -pl benchmarks -am verify -Dtest=TestEnvironmentRestartTest#aSustainedRun \
+    -Dsurefire.failIfNoSpecifiedTests=false '-DargLine=-Xmx512m -Xlog:gc:file=gc.log:uptime -Dbenchmarks.gclog=gc.log'
+```
+
+Sixty minutes, 2026-10-14, from the Linux box, one session with every message interest and a callback that reads
+nothing, a 512 MB heap:
+
+- After the recovery's snapshot the environment sends about a message a second, so this shows the cost of a
+  message and the state of a feed that has nothing to do, not a load.
+- The time through the session: p50 1 ms, p99 4 ms, p99.9 44 ms, longest 58 ms. The tail is the first minutes (the
+  snapshot and the JIT); every later window of five minutes has a p99 of 2 to 3 ms and a longest of 6 ms. The callback
+  took no measurable time.
+- The feed's health was healthy at every one of the sixty samples, the session's queue empty at every one, no health
+  event was told, and no API call was retried or failed.
+- The JVM allocated about 0.2 MB a second after the open, paused for the GC five times in the hour (the longest 11 ms)
+  and held 18 MB after the last of them: nothing grew. Its threads were 30 to 33 from the first minutes to the end
+  (the count alternates between the two), and no group of them by name grew but one of the broker client's consumer
+  threads, two after the open and three at the end (three after three minutes in a shorter run too), which is no growth
+  over the hour. The process used 0.01 of a core.
+
+### Against the fakes, 0.0.58 and 1.0
+
+The system tests' `LoadHarnessIT` (`system-tests`, skipped unless `SYSTEMTESTS_LOAD=restart`, `rate` or `all`, and
+never where `CI` is set) puts the same load on whichever SDK the build has on its classpath - the published 0.0.58
+by default, 1.0 with `-Dsdk.next` - through the public API the two share, so the numbers compare. The SDK runs in a
+JVM of its own, with a fixed 1 GB heap and the GC log on, so that the allocation, the GC and the CPU it reports are
+its own and its listener's; this JVM runs the fake API, the fake feed's broker and the publisher, on the same machine.
+The corpus and the catalogs are the benchmarks' (production-sized: the cold scenario's), the fake API answers each
+request after 50 ms, and a listener reads what a client forwarding prices does - the match's id and every market's id
+and every outcome's odds. Messages are published over AMQP, from several threads, at a steady rate: the fake feed's own
+publisher, one request to the broker's management API a message, stops at about 200 odds changes a second.
+
+```
+SYSTEMTESTS_LOAD=restart ./mvnw -pl system-tests -am verify -Dsdk.next -Dtest=NoSuchTest -Dit.test=LoadHarnessIT \
+    -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+```
+
+(the same without `-Dsdk.next` for 0.0.58; `SYSTEMTESTS_LOAD_RATE`, `_DURATION`, `_WARMUP`, `_MIX`, `_MATCHES`, `_READS`,
+`_HEAP` and `_LABEL` change the run, see the class). The reports go to `system-tests/target/load/`.
+
+A restart: the feed opens, the producers say they are alive, 200 cold matches' odds changes arrive before the
+producers' snapshot completes, every callback reads its match's name. Three runs each, 2026-10-14, the Linux box:
+
+| | 0.0.58 | 1.0 |
+|---|---:|---:|
+| every producer up, from the feed's start | 13.3 s (13.26 to 13.37) | 3.8 s (3.77 to 3.97) |
+| the callbacks of the 200 matches done | at the same moment | at the same moment |
+| REST requests | 1,500 to 1,550: a summary and about one competitor profile a match, and a profile for each player of a match (about five a match here), answered 3 at a time | 608: a summary and two competitor profiles a match, answered 8 at a time |
+| a callback (it reads the match's name) | 53 to 54 ms, p99 60 to 67 ms: a request of its own, one at a time | p50 0.3 to 2.4 ms, p99 38 to 46 ms: most read what the preload loaded |
+
+1.0 is 3.5 times faster to every producer up, with the preload and the side-load workers that 0.0.58 does not have,
+and makes about 40 % of the requests: it reads a player's profile when a client asks, 0.0.58 reads the players of a
+match with the match.
+
+A steady rate: 1000 odds changes a second for 10 minutes after a minute of warm-up, in a mix of sizes (70 % of 20
+markets, 28 % of 150, 2 % of 500: 24 KB on average, 24 MB a second), 70 % from the live producer; both SDKs
+handled every message (599,989 to 599,999 of the 600,000 in the window, the rest at its edges), with nothing waiting at
+the broker. Two runs each (the machine's load average was 3.6 to 4.6 at
+their start, other work on it):
+
+| | 0.0.58 | 1.0 |
+|---|---:|---:|
+| age, from the producer's stamp to the callback, p50 / p99 | 1 to 3 ms / 51 ms (10.3 s in the first run: see below) | 1 to 2 ms / 61 to 65 ms |
+| wait in the SDK, from the broker client to the callback: p50 / p99 / longest | 0 / 3 to 4 / 30 to 67 ms | 1 / 19 / 74 to 78 ms |
+| allocated per message | 281 KB | 317 to 318 KB (13 % more) |
+| process CPU per message | 590 to 640 µs | 671 to 680 µs (5 to 15 % more) |
+| GC pauses: p99 / longest | 3.2 to 11.7 / 4.2 to 15.1 ms | 3.3 to 3.7 / 3.5 to 5.8 ms |
+| heap after a GC, over the run | 16 to 54 MB | 22 to 59 MB |
+| threads | 40 | 27 to 37 |
+
+Both keep up with room (0.6 to 0.7 of a core), the pauses are a few milliseconds and 0.1 % of the time, and the heap
+after a GC rises the same way in both - the young collections do not take the old generation - so neither run shows
+a leak or a pause that matters. 1.0 does more work for a message and the table shows it: more allocation and CPU, and a
+wait inside the SDK of 19 ms at p99 and up to 78 ms at the longest, against 3 to 4 ms and up to 67 ms. The two SDKs stamp
+a message at their own points, so the wait is a comparison of a kind; the age is the same clock for both and
+the tails of the two lie a few milliseconds apart.
+
+A message's age includes what the publisher and the broker do, and on a shared machine that moves: the first
+run of 0.0.58 had spells of ages up to 10 seconds, with the SDK's own wait at most 67 ms, nothing waiting at the broker
+when sampled, and the publisher late by up to 3.6 s - the delay was most likely before the message reached the broker's queue, and
+an earlier, shorter run of 1.0 under the same load had them as well. Read the wait in the SDK and the throughput first, the age second.
+
+## A slow listener slows only its own session
+
+`SlowListenerTest` runs two sessions on one feed, a live-only one whose listener sleeps 50 ms for every message and a
+prematch-only one whose listener does nothing, over the same traffic. The slow session falls behind by seconds and the
+other does not notice: with 300 messages each, the slow session's messages waited up to 8 s in the SDK, with its queue
+at 158 of the prefetch of 200 and the rest at the broker; the other session's waited at most 4 ms (p99 3 ms) with its queue
+at 1, against 33 ms (p99 9 ms) with nothing slow - the first messages of a run, before the JIT. The budget is in
+`listener-budgets.properties`: 250 ms and a queue of 20 for the other session, far above what a session that is not
+blocked needs on a shared runner and far below the seconds a blocked one would wait. Needs Docker, like the cold
+scenario, and takes about 35 s.
