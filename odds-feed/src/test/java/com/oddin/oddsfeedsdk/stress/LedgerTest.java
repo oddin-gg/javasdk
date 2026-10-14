@@ -73,6 +73,25 @@ class LedgerTest {
     }
 
     @Test
+    void nothingDeliveredIsAPrefixOfWhatWasPublished() {
+        var ledger = ledger(List.of(0L, 1L), List.of());
+
+        assertThatCode(ledger::assertPrefix).doesNotThrowAnyException();
+        assertThatThrownBy(ledger::assertExact).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void aMessageSentWithAnErrorMayArriveButIsNotRequiredTo() {
+        var ledger = ledger(List.of(0L, 2L), List.of(0L, 1L, 2L));
+        ledger.sentWithError(MATCH, 1);
+        ledger.sentWithError(MATCH, 3);
+
+        assertThatCode(() -> ledger.assertGapsOnlyAfterReconnect(Map.of(MATCH, 0L)))
+                .doesNotThrowAnyException();
+        assertThatThrownBy(ledger::assertExact).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
     void aGapIsAllowedBeforeTheReconnectAndNotAfter() {
         var ledger = ledger(List.of(0L, 1L, 2L, 3L, 4L), List.of(0L, 3L, 4L));
 
@@ -81,6 +100,16 @@ class LedgerTest {
         assertThatThrownBy(() -> ledger.assertGapsOnlyAfterReconnect(Map.of(MATCH, 2L)))
                 .isInstanceOf(AssertionError.class)
                 .hasMessageContaining(MATCH);
+    }
+
+    @Test
+    void whatCameSinceAMarkIsCountedPerMatch() {
+        var ledger = ledger(List.of(0L, 1L, 2L, 3L), List.of(0L, 3L));
+        ledger.published(OTHER, 0);
+        var mark = Map.of(MATCH, 2L);
+
+        assertThat(ledger.publishedSince(mark)).isEqualTo(3);
+        assertThat(ledger.deliveredSince(mark)).isEqualTo(1);
     }
 
     @Test
