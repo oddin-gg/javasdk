@@ -72,11 +72,18 @@ public record FeedCore(
     /** How many side-loads each of the two queues holds. */
     static final int SIDE_LOAD_CAPACITY = 1_000;
 
+    /** The most side-load workers, however high the REST concurrency limit is set. */
+    static final int MAX_SIDE_LOAD_WORKERS = 16;
+
     /**
-     * The side-load workers. More than one, since warm-ups run on at most half of them: with one, a
-     * warm-up would hold the only worker a match's competitors wait for.
+     * How many side-load workers a REST concurrency limit allows: half the data permits, so the
+     * preload's loads leave the rest to the client's own reads, and at least one, at most
+     * {@link #MAX_SIDE_LOAD_WORKERS}. With several, warm-ups run on at most half of them, so one
+     * would not hold the only worker a match's competitors wait for; with one they can.
      */
-    static final int SIDE_LOAD_WORKERS = 4;
+    static int sideLoadWorkers(int restConcurrencyLimit) {
+        return Math.clamp(restConcurrencyLimit / 2, 1, MAX_SIDE_LOAD_WORKERS);
+    }
 
     /**
      * Asks the API who the bookmaker is and which producers there are, within the startup timeout,
@@ -104,7 +111,10 @@ public record FeedCore(
             }
             var producers = new Producers(startup.producers());
             fetches = Executors.newVirtualThreadPerTaskExecutor();
-            sideLoads = new SideLoads(SIDE_LOAD_CAPACITY, SIDE_LOAD_WORKERS, configuration.getHttpClientTimeout());
+            sideLoads = new SideLoads(
+                    SIDE_LOAD_CAPACITY,
+                    sideLoadWorkers(configuration.getRestConcurrencyLimit()),
+                    configuration.getHttpClientTimeout());
             return assemble(configuration, api, events, bookmaker, producers, fetches, sideLoads);
         } catch (RuntimeException e) {
             api.close();
