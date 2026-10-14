@@ -17,8 +17,10 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import java.util.regex.Pattern;
@@ -86,6 +88,8 @@ public final class FakeRestServer implements AutoCloseable {
     private final Map<String, AtomicInteger> outageAnswers = new ConcurrentHashMap<>();
 
     private final AtomicInteger inFlight = new AtomicInteger();
+    /** What the stalled replies wait on: opened by {@link #releaseStalls}, and replaced by a closed one. */
+    private volatile CountDownLatch stallGate = new CountDownLatch(1);
     /** Requests come and not answered to their last byte: what the client can still be waiting on. */
     private final AtomicInteger unanswered = new AtomicInteger();
 
@@ -246,6 +250,17 @@ public final class FakeRestServer implements AutoCloseable {
     }
 
     /**
+     * Ends the stall of every request that has arrived, as if its pause were over; a request that
+     * arrives later stalls in full. {@link #awaitQuiet} and {@link #close} do it, so a stall the client gave up on
+     * does not keep the fake busy.
+     */
+    public void releaseStalls() {
+        var gate = stallGate;
+        stallGate = new CountDownLatch(1);
+        gate.countDown();
+    }
+
+    /**
      * Waits until requests stop arriving. Call it before closing the SDK, so the background work a
      * test started finishes inside that test rather than being cut off by the shutdown.
      */
@@ -261,6 +276,7 @@ public final class FakeRestServer implements AutoCloseable {
     private void awaitQuiet(Duration quiet, Duration limit) {
         long deadline = System.nanoTime() + limit.toNanos();
         while (true) {
+            releaseStalls();
             long pause = Duration.ofMillis(20).toNanos();
             if (inFlight.get() == 0) {
                 long silent = System.nanoTime() - lastFinishedAt;
@@ -283,6 +299,8 @@ public final class FakeRestServer implements AutoCloseable {
     }
 
     private void handle(HttpExchange exchange) throws IOException {
+        // taken on arrival: a release after the request was recorded always reaches its stall
+        var gate = stallGate;
         inFlight.incrementAndGet();
         mostInFlight.accumulateAndGet(unanswered.incrementAndGet(), Math::max);
         var answering = new Answering();
@@ -333,7 +351,7 @@ public final class FakeRestServer implements AutoCloseable {
                 throw new IOException("the fake cut the answer off");
             }
             try {
-                Thread.sleep(reply.stall());
+                gate.await(reply.stall().toNanos(), TimeUnit.NANOSECONDS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
