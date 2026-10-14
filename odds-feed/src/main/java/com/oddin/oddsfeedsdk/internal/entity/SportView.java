@@ -85,21 +85,31 @@ final class SportView implements Sport {
     @Override
     public @Nullable List<Tournament> getTournaments() {
         return entities.guard(this, () -> {
-            Locale locale = locales.getFirst();
-            List<URN> ids = Entities.found(
-                            entities.profiles.sportTournaments(id, locale, null), SPORT_TOURNAMENT_LIST, locale, this)
-                    .get(SPORT_TOURNAMENTS, null);
             var tournaments = new ArrayList<Tournament>();
-            for (URN tournament : ids == null ? List.<URN>of() : ids) {
+            for (URN tournament : tournamentIds()) {
                 tournaments.add(new TournamentView(entities, tournament, id, locales));
             }
             return tournaments;
         });
     }
 
+    /** The ids of the tournaments of that list, in its order; no tournament is built or loaded. */
+    @Override
+    public @Nullable List<URN> getTournamentIds() {
+        return entities.guard(this, () -> new ArrayList<>(tournamentIds()));
+    }
+
     @Override
     public String toString() {
         return "sport " + id;
+    }
+
+    private List<URN> tournamentIds() {
+        Locale locale = locales.getFirst();
+        List<URN> ids = Entities.found(
+                        entities.profiles.sportTournaments(id, locale, null), SPORT_TOURNAMENT_LIST, locale, this)
+                .get(SPORT_TOURNAMENTS, null);
+        return ids == null ? List.of() : ids;
     }
 
     /**

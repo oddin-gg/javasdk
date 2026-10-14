@@ -91,8 +91,7 @@ final class TournamentView implements Tournament {
     @Override
     public @Nullable List<Competitor> getCompetitors() {
         return entities.guard(this, () -> {
-            List<URN> ids = shared().get(TOURNAMENT_COMPETITORS, null);
-            List<URN> competitors = ids == null ? List.of() : ids;
+            List<URN> competitors = competitorIds();
             entities.warmEach(
                     competitors,
                     locales,
@@ -104,6 +103,12 @@ final class TournamentView implements Tournament {
             }
             return list;
         });
+    }
+
+    /** The ids of its info's competitors, in its order; no competitor is loaded or queued for loading. */
+    @Override
+    public @Nullable List<URN> getCompetitorIds() {
+        return entities.guard(this, () -> new ArrayList<>(competitorIds()));
     }
 
     @Override
@@ -140,6 +145,11 @@ final class TournamentView implements Tournament {
 
     private Entry info(Locale locale) {
         return Entities.found(entities.profiles.tournament(id, locale, null), TOURNAMENT_INFO, locale, this);
+    }
+
+    private List<URN> competitorIds() {
+        List<URN> ids = shared().get(TOURNAMENT_COMPETITORS, null);
+        return ids == null ? List.of() : ids;
     }
 
     /** The info in every locale of the tournament, for its shared fields. */
