@@ -9,6 +9,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Competitor;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Player;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
+import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
@@ -119,8 +120,8 @@ class EntityDeadlockTest {
 
     @Test
     void theMatchFixtureAndLiveStateLoadedAndWrittenAtOnceDoNotDeadlock() throws Exception {
-        // CATCH: a read that two fixture changes overtake finds the match gone, which is no deadlock
-        try (var world = EntityWorld.onPlatformThreads(ExceptionHandlingStrategy.CATCH)) {
+        // THROW: a read that failed, or timed out waiting, must fail the round, not read as null
+        try (var world = EntityWorld.onPlatformThreads(ExceptionHandlingStrategy.THROW)) {
             slow(
                     world,
                     "/v1/sports/{lang}/sport_events/od:match:198314/summary",
@@ -132,13 +133,13 @@ class EntityDeadlockTest {
             var timestamps = new AtomicLong();
             race(
                     world,
-                    () -> requireNonNull(
+                    gone(() -> requireNonNull(
                                     world.entities.match(MATCH, List.of(EN)).getFixture())
-                            .getTvChannels(),
-                    () -> world.entities.match(MATCH, List.of(EN, DE)).getName(DE),
-                    () -> requireNonNull(
+                            .getTvChannels()),
+                    gone(() -> world.entities.match(MATCH, List.of(EN, DE)).getName(DE)),
+                    gone(() -> requireNonNull(
                                     world.entities.match(MATCH, List.of(EN)).getStatus())
-                            .getStatus(),
+                            .getStatus()),
                     () -> {
                         for (int i = 0; i < 20; i++) {
                             var live = new OFSportEventStatus();
@@ -148,7 +149,31 @@ class EntityDeadlockTest {
                         }
                     },
                     () -> world.matches.fixtureChange(MATCH));
+            // both paths ran: the summary and the fixture were each loaded, and the writes overtook them
+            assertThat(world.api.requests("GET", "/v1/sports/en/sport_events/od:match:198314/summary"))
+                    .isNotEmpty();
+            assertThat(world.api.requests("GET", "/v1/sports/en/sport_events/od:match:198314/fixture"))
+                    .isNotEmpty();
+            assertThat(timestamps.get()).isEqualTo(ROUNDS * 2 * 20);
         }
+    }
+
+    /**
+     * The one outcome a reader may have here: the match found gone because a fixture change dropped
+     * it between two of the reader's own reads, which is no deadlock. That is an {@link
+     * ItemNotFoundException} with no cause; one that carries the API's failure - a load that failed or
+     * a wait that timed out - and every other throwable fails the round.
+     */
+    private static Runnable gone(Runnable reader) {
+        return () -> {
+            try {
+                reader.run();
+            } catch (ItemNotFoundException e) {
+                if (e.getCause() != null) {
+                    throw e;
+                }
+            }
+        };
     }
 
     /** Answers the path in every locale after {@link #PAUSE}, so that loads started together land together. */
