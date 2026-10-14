@@ -65,4 +65,22 @@ final class RestartStats {
         }
         return new Waits(at.length, late, at.length == 0 ? -1 : at[0], lastLate, max);
     }
+
+    /**
+     * How much older a message was than the least a message ever took, in the unit of both: the one
+     * definition of late, for the run's live decision and for the report. No floor known yet
+     * ({@link Long#MAX_VALUE}) is none: the age counts whole.
+     */
+    static long beyondFloor(long age, long floor) {
+        return Math.max(0, age - (floor == Long.MAX_VALUE ? 0 : floor));
+    }
+
+    /**
+     * Whether a message teaches the floor: one made after the run began. A recovery's old messages say
+     * how old they are, not what the producer's clock and the network add, and would hold the floor too
+     * high until a live message came.
+     */
+    static boolean teachesFloor(long madeMillis, long runStartMillis) {
+        return madeMillis >= runStartMillis;
+    }
 }
