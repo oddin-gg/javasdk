@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.systemtests.support.GlobalEvents.EventRecovery;
 import com.oddin.oddsfeed.systemtests.support.NextOnly;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.api.entities.EventRecoveryStatus;
@@ -83,8 +84,11 @@ class EventRecoveryRefusalScenarioIT {
                     .isEqualTo(ProducerStatusReason.FIRST_RECOVERY_COMPLETED);
             feed.publish(snapshotComplete(LIVE, accepted));
             assertThat(sdk.events().pollEventRecovery(Duration.ofSeconds(10)))
-                    .as("onEventRecoveryCompleted for request " + accepted)
-                    .isPresent();
+                    .as("onEventRecoveryCompleted for the accepted request " + accepted + ", the first")
+                    .hasValue(new EventRecovery(MATCH, accepted));
+            assertThat(sdk.events().pollEventRecovery(Duration.ofSeconds(1)))
+                    .as("no completion for the refused request " + refusedId)
+                    .isEmpty();
             assertThat(state(recovery.getEventRecoveryStatus(accepted)))
                     .as("the accepted recovery, once its snapshot completed")
                     .isEqualTo(State.COMPLETED);
