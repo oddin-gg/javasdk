@@ -33,6 +33,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -64,6 +65,13 @@ final class ColdStart {
     private static final Pattern PROFILE = Pattern.compile("/v1/sports/en/competitors/od:competitor:(\\d+)/profile");
     private static final Pattern VARIANT = Pattern.compile("/v1/descriptions/en/markets/(\\d+)/variants/([^/]+)");
     private static final Pattern ID = Pattern.compile("od:[a-z]+:\\d+");
+
+    /** What the open's preload asks for (FeedCore.preload): the void reasons, and in the one preload locale the markets, statuses and sports. */
+    private static final List<String> PRELOADED = List.of(
+            "/v1/descriptions/void_reasons",
+            "/v1/descriptions/en/markets",
+            "/v1/descriptions/en/match_status",
+            "/v1/sports/en/sports");
 
     static final String SUMMARIES = "GET /v1/sports/en/sport_events/{id}/summary";
     static final String PROFILES = "GET /v1/sports/en/competitors/{id}/profile";
@@ -191,6 +199,7 @@ final class ColdStart {
                         .build();
                 feed.open();
                 awaitBound(broker, bound);
+                awaitPreload(bound);
             } catch (Throwable e) {
                 // the caller never gets a reference to close: a feed left open would send late
                 // requests into the next test's fake
@@ -221,6 +230,24 @@ final class ColdStart {
                 }
                 Thread.sleep(50);
             }
+        }
+
+        /**
+         * Waits until the open's preload has been answered, so the burst starts after it. A read that
+         * comes while a preload is in flight makes a fetch of its own, by design - a preload that
+         * fails must not back off the reads - so a callback reading a market name while the list is
+         * still on its way would fetch the list again, and the request counts would depend on timing.
+         */
+        private void awaitPreload(Duration bound) throws InterruptedException {
+            long until = System.nanoTime() + bound.toNanos();
+            while (!arrivals.arrived(PRELOADED)) {
+                if (System.nanoTime() > until) {
+                    throw new AssertionError("the preload's requests did not arrive within " + bound);
+                }
+                Thread.sleep(5);
+            }
+            // arrived is not answered, and an answer may start a request of its own
+            api.awaitQuiet();
         }
 
         FeedHealth health() {
@@ -397,8 +424,15 @@ final class ColdStart {
     private static final class Arrivals {
         private final AtomicLong last = new AtomicLong();
         private final Map<Pattern, AtomicInteger> perPattern = new ConcurrentHashMap<>();
+        private final Set<String> paths = ConcurrentHashMap.newKeySet();
+
+        /** Whether every one of the paths has been asked for. */
+        boolean arrived(List<String> asked) {
+            return paths.containsAll(asked);
+        }
 
         void arrived(String path) {
+            paths.add(path);
             last.accumulateAndGet(System.nanoTime(), Math::max);
             for (var pattern : List.of(SUMMARY, PROFILE, VARIANT)) {
                 if (pattern.matcher(path).matches()) {
