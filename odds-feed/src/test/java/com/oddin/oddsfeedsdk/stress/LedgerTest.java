@@ -6,7 +6,10 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /** The ledger accepts what the contract allows and fails what it does not. No broker. */
 class LedgerTest {
@@ -175,6 +178,72 @@ class LedgerTest {
         var message = new Ledger(1_000).message(OTHER, 5);
 
         assertThat(message).contains("timestamp=\"1005\"").contains("event_id=\"" + OTHER + "\"");
+    }
+
+    @Test
+    void aLedgerThatPublishedNothingFailsEveryCheck() {
+        var ledger = new Ledger(1_000);
+
+        assertThatThrownBy(ledger::assertExact).isInstanceOf(AssertionError.class);
+        assertThatThrownBy(ledger::assertPrefix).isInstanceOf(AssertionError.class);
+        assertThatThrownBy(() -> ledger.assertGapsOnlyAfterReconnect(Map.of())).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void theTrafficIsLiveNotSnapshotMessages() {
+        assertThat(new Ledger(1_000).message(MATCH, 0)).doesNotContain("request_id");
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aPublishStillInTheBrokerIsAfterTheMark() throws Exception {
+        var ledger = new Ledger(1_000);
+        ledger.publish(_ -> true, MATCH);
+        ledger.publish(_ -> true, MATCH);
+        var inBroker = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var publisher = new Thread(() -> ledger.publish(
+                _ -> {
+                    inBroker.countDown();
+                    try {
+                        release.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return true;
+                },
+                MATCH));
+        publisher.start();
+        try {
+            assertThat(inBroker.await(30, TimeUnit.SECONDS)).isTrue();
+
+            var mark = ledger.mark();
+
+            // sequence 2 is in the broker: it may be routed after the reconnect, so it is after the mark
+            assertThat(mark).containsEntry(MATCH, 2L);
+        } finally {
+            release.countDown();
+            publisher.join(30_000);
+        }
+        assertThat(ledger.publishedSince(Map.of(MATCH, 2L))).isEqualTo(1);
+        assertThat(ledger.mark()).containsEntry(MATCH, 3L);
+    }
+
+    @Test
+    void aPublishAdvancesTheMarkWhateverTheBrokerAnswers() {
+        var ledger = new Ledger(1_000);
+
+        ledger.publish(_ -> true, MATCH);
+        ledger.publish(_ -> false, MATCH);
+        assertThatThrownBy(() -> ledger.publish(
+                        _ -> {
+                            throw new IllegalStateException("channel closed");
+                        },
+                        MATCH))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(ledger.mark()).containsEntry(MATCH, 3L);
+        assertThat(ledger.publishedCount()).isEqualTo(1);
     }
 
     private static Ledger ledger(List<Long> published, List<Long> delivered) {
