@@ -88,7 +88,8 @@ final class ColdStart {
      * @param eager whether the eager entity preload is on
      * @param reads what the callbacks read
      * @param variantsPerMatch the variant markets, each with a variant of its own, that every odds
-     *     change carries after the corpus's markets; none unless the callbacks read the markets' names
+     *     change carries after the corpus's markets, whatever the callbacks read; only reading the
+     *     markets' names ({@link Reads#NAME_AND_MARKETS}) fetches their descriptions
      */
     record Settings(int matches, Duration latency, boolean eager, Reads reads, int variantsPerMatch) {
 
