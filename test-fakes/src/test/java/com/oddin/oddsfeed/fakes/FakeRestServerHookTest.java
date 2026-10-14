@@ -1,6 +1,7 @@
 package com.oddin.oddsfeed.fakes;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import java.io.IOException;
@@ -9,8 +10,11 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /** The per-request reply hook. The fake is local; no broker needed. */
 class FakeRestServerHookTest {
@@ -62,6 +66,43 @@ class FakeRestServerHookTest {
             api.releaseStalls();
 
             assertThat(answer.get(30, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
+        }
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void closingStopsTheServerEvenWhenARequestNeverEnds() throws Exception {
+        var api = FakeRestServer.start();
+        var stuck = new CountDownLatch(1);
+        var client = HttpClient.newBuilder().sslContext(TestTls.clientContext()).build();
+        CompletableFuture<?> pending = null;
+        try {
+            api.respondWith(_ -> {
+                try {
+                    stuck.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return Reply.of(200, "late");
+            });
+            var request = HttpRequest.newBuilder(URI.create("https://" + api.apiHost() + WHOAMI))
+                    .build();
+            pending = client.sendAsync(request, HttpResponse.BodyHandlers.discarding());
+            api.awaitRequest("GET", WHOAMI);
+
+            assertThatThrownBy(api::close)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("still calling the fake");
+
+            // the fake is stopped all the same: nothing listens any more
+            assertThatThrownBy(() -> client.send(request, HttpResponse.BodyHandlers.discarding()))
+                    .isInstanceOf(IOException.class);
+        } finally {
+            stuck.countDown();
+            if (pending != null) {
+                pending.cancel(true);
+            }
+            client.close();
         }
     }
 
