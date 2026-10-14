@@ -47,7 +47,8 @@ import org.slf4j.LoggerFactory;
  * <p>A call's deadline is the HTTP client timeout. Waiting for a permit, every attempt - its
  * headers and its whole body - and every pause between attempts come out of it, so a call takes
  * at most that long whatever the API does. A permit is held for one attempt, never across the
- * pause before the next.
+ * pause before the next; the attempt includes the body, so an answer that begins and then stalls
+ * keeps its permit until the call's deadline cuts it off.
  *
  * <p>Retries, the Go SDK's policy: at most three attempts, with a backoff from half a second
  * doubling up to five, each with some jitter. A 429 is retried for every call - the API did not do
