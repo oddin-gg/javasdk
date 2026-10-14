@@ -131,8 +131,13 @@ class EntityDeadlockTest {
                     "/v1/sports/{lang}/sport_events/od:match:198314/fixture",
                     "rest/fixtures_fixture/fixtures_fixture.xml");
             var timestamps = new AtomicLong();
+            // the summary in German, which the name reader always needs: the status reader may find the
+            // live state the writer made and ask for no summary at all
             race(
                     world,
+                    List.of(
+                            "/v1/sports/de/sport_events/od:match:198314/summary",
+                            "/v1/sports/en/sport_events/od:match:198314/fixture"),
                     gone(() -> requireNonNull(
                                     world.entities.match(MATCH, List.of(EN)).getFixture())
                             .getTvChannels()),
@@ -149,11 +154,6 @@ class EntityDeadlockTest {
                         }
                     },
                     () -> world.matches.fixtureChange(MATCH));
-            // both paths ran: the summary and the fixture were each loaded, and the writes overtook them
-            assertThat(world.api.requests("GET", "/v1/sports/en/sport_events/od:match:198314/summary"))
-                    .isNotEmpty();
-            assertThat(world.api.requests("GET", "/v1/sports/en/sport_events/od:match:198314/fixture"))
-                    .isNotEmpty();
             assertThat(timestamps.get()).isEqualTo(ROUNDS * 2 * 20);
         }
     }
@@ -191,10 +191,24 @@ class EntityDeadlockTest {
      * deadlock meanwhile.
      */
     private static void race(EntityWorld world, Runnable... readers) throws InterruptedException {
+        race(world, List.of(), readers);
+    }
+
+    /**
+     * The same, and each round also loads every one of {@code loaded} at least once: a round starts
+     * on cold caches with no load of the round before under way, so the first reader of each path
+     * must ask the API for it. This is what shows the race reached the loads whose writes it is about,
+     * not only that nothing failed.
+     */
+    private static void race(EntityWorld world, List<String> loaded, Runnable... readers) throws InterruptedException {
         ThreadMXBean threads = ManagementFactory.getThreadMXBean();
         for (int round = 0; round < ROUNDS; round++) {
             world.matches.clear();
             world.profiles.clear();
+            var before = new ArrayList<Integer>();
+            for (String path : loaded) {
+                before.add(world.api.requests("GET", path).size());
+            }
             var go = new CountDownLatch(1);
             var failures = new ConcurrentLinkedQueue<Throwable>();
             var running = new ArrayList<Thread>();
@@ -232,6 +246,15 @@ class EntityDeadlockTest {
             }
             assertThat(threads.findDeadlockedThreads()).isNull();
             assertThat(failures).as("round %d", round).isEmpty();
+            if (!loaded.isEmpty()) {
+                // every load of the round has ended, so none can be joined by the next round's reader
+                world.api.awaitQuiet();
+            }
+            for (int i = 0; i < loaded.size(); i++) {
+                assertThat(world.api.requests("GET", loaded.get(i)))
+                        .as("round %d loaded %s", round, loaded.get(i))
+                        .hasSizeGreaterThan(before.get(i));
+            }
         }
         world.api.awaitQuiet();
     }
