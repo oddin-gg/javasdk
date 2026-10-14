@@ -12,6 +12,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /** The test environment harness's own arithmetic and settings, which need no environment. */
@@ -114,5 +115,62 @@ class RestartStatsTest {
         assertThat(set.sessions()).isEqualTo(List.of(MessageInterest.LIVE_ONLY, MessageInterest.PREMATCH_ONLY));
         assertThat(set.lagLimit()).isEqualTo(Duration.ofSeconds(10));
         assertThat(set.label()).isEqualTo("names-3");
+    }
+
+    private static final String TOKEN = "a token";
+
+    private static TestEnvironmentRestart.Preflight decide(
+            Map<String, String> lookup, @Nullable String ci, @Nullable String token) {
+        return TestEnvironmentRestart.Preflight.decide(lookup::get, ci, token);
+    }
+
+    @Test
+    void ciThatNamesTheTestEnvironmentIsRefusedBeforeAnythingOpens() {
+        var decision = decide(Map.of(Settings.SELECTOR, "test"), "true", TOKEN);
+
+        assertThat(decision).isInstanceOf(TestEnvironmentRestart.Preflight.Refuse.class);
+        assertThat(((TestEnvironmentRestart.Preflight.Refuse) decision).reason())
+                .contains("CI");
+        // whatever else is set, and whether or not there is a token
+        assertThat(decide(Map.of(Settings.SELECTOR, "test"), "1", null))
+                .isInstanceOf(TestEnvironmentRestart.Preflight.Refuse.class);
+        assertThat(decide(Map.of(Settings.SELECTOR, " test "), "", TOKEN))
+                .isInstanceOf(TestEnvironmentRestart.Preflight.Refuse.class);
+    }
+
+    @Test
+    void ciThatNamesNothingSkips() {
+        assertThat(decide(Map.of(), "true", TOKEN)).isInstanceOf(TestEnvironmentRestart.Preflight.Skip.class);
+        assertThat(decide(Map.of(Settings.SELECTOR, " "), "true", TOKEN))
+                .isInstanceOf(TestEnvironmentRestart.Preflight.Skip.class);
+    }
+
+    @Test
+    void withoutANameNothingRunsOutsideCiEither() {
+        assertThat(decide(Map.of(), null, TOKEN)).isInstanceOf(TestEnvironmentRestart.Preflight.Skip.class);
+        assertThat(decide(Map.of(), null, null)).isInstanceOf(TestEnvironmentRestart.Preflight.Skip.class);
+    }
+
+    @Test
+    void aNameThatIsNotTheTestEnvironmentIsAnError() {
+        assertThatThrownBy(() -> decide(Map.of(Settings.SELECTOR, "production"), null, TOKEN))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void theTestEnvironmentNamedWithATokenOutsideCiRuns() {
+        var decision = decide(Map.of(Settings.SELECTOR, "test", Settings.SELECTOR + ".reads", "names"), null, TOKEN);
+
+        assertThat(decision).isInstanceOf(TestEnvironmentRestart.Preflight.Open.class);
+        assertThat(((TestEnvironmentRestart.Preflight.Open) decision).settings().reads())
+                .isEqualTo(Reads.NAMES);
+    }
+
+    @Test
+    void theTestEnvironmentNamedWithoutATokenIsRefused() {
+        assertThat(decide(Map.of(Settings.SELECTOR, "test"), null, null))
+                .isInstanceOf(TestEnvironmentRestart.Preflight.Refuse.class);
+        assertThat(decide(Map.of(Settings.SELECTOR, "test"), null, " "))
+                .isInstanceOf(TestEnvironmentRestart.Preflight.Refuse.class);
     }
 }

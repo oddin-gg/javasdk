@@ -1,6 +1,5 @@
 package com.oddin.oddsfeed.benchmarks;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Files;
@@ -27,20 +26,24 @@ class TestEnvironmentRestartTest {
     @Test
     @Timeout(value = 15, unit = TimeUnit.MINUTES, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void aRestartWithLiveMatches() throws Exception {
-        assumeTrue(System.getenv("CI") == null, "the test environment is not for CI");
-        var settings = TestEnvironmentRestart.Settings.from(TestEnvironmentRestart.Settings::system);
-        assumeTrue(settings.isPresent(), "BENCHMARKS_TESTENV=test names the test environment; it is not set");
-        var token = System.getenv(TOKEN);
-        assertThat(token).as(TOKEN).isNotBlank();
-
-        var result = TestEnvironmentRestart.run(settings.get(), token);
+        var preflight = TestEnvironmentRestart.Preflight.decide(
+                TestEnvironmentRestart.Settings::system, System.getenv("CI"), System.getenv(TOKEN));
+        TestEnvironmentRestart.Settings settings;
+        switch (preflight) {
+            case TestEnvironmentRestart.Preflight.Skip skip -> {
+                assumeTrue(false, skip.reason());
+                return;
+            }
+            case TestEnvironmentRestart.Preflight.Refuse refuse -> throw new AssertionError(refuse.reason());
+            case TestEnvironmentRestart.Preflight.Open open -> settings = open.settings();
+        }
+        var result = TestEnvironmentRestart.run(settings, System.getenv(TOKEN));
 
         System.out.println(result.report());
         var dir = Path.of("target", "testenv");
         Files.createDirectories(dir);
         Files.writeString(
-                dir.resolve(
-                        settings.get().label() + "-" + Instant.now().toString().replace(':', '-') + ".txt"),
+                dir.resolve(settings.label() + "-" + Instant.now().toString().replace(':', '-') + ".txt"),
                 result.report());
     }
 }
