@@ -56,6 +56,9 @@ class ColdStartBudgetTest {
     /** The SDK's deadline for one request: the HTTP client timeout, 30 s unless set. */
     private static final Duration CALL_DEADLINE = Duration.ofSeconds(30);
 
+    /** What the health check counts as a stalled callback: 65 s for the default timeout. */
+    private static final Duration STALL_LIMIT = Duration.ofSeconds(65);
+
     private static @Nullable FakeFeed broker;
     private static @Nullable List<Result> scenario;
     private static @Nullable List<Result> variantScenario;
@@ -307,8 +310,9 @@ class ColdStartBudgetTest {
 
     /**
      * The variant mode against its budget: the callbacks read the variants one by one on the session's
-     * thread, through the catalog's two permits. No read came near the call deadline, and the feed
-     * stayed healthy, which the budget's own headroom does not say.
+     * thread, through the catalog's two permits. No read came near the call deadline, no callback
+     * came near the health check's stall limit, and the feed told no health event, which the budget's
+     * own headroom does not say.
      */
     @Test
     void theVariantScenarioCatchesUpWithinItsBudget() throws IOException, InterruptedException {
@@ -324,9 +328,11 @@ class ColdStartBudgetTest {
             assertThat(result.longestRead())
                     .as("the longest market name read, against the %s call deadline", CALL_DEADLINE)
                     .isLessThan(CALL_DEADLINE.dividedBy(2));
-            assertThat(result.health())
-                    .as("health events %s", result.healthEvents())
-                    .isEqualTo(HealthState.HEALTHY);
+            assertThat(result.longestCallback())
+                    .as("the longest callback, against the %s stall limit of the health check", STALL_LIMIT)
+                    .isLessThan(STALL_LIMIT.dividedBy(2));
+            assertThat(result.healthEvents()).as("health events").isEmpty();
+            assertThat(result.health()).isEqualTo(HealthState.HEALTHY);
         }
         assertThat(caughtUp.toMillis())
                 .as(
