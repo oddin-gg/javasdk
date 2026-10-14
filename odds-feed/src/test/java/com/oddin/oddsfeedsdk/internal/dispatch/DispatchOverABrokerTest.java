@@ -13,6 +13,8 @@ import com.oddin.oddsfeedsdk.internal.amqp.AmqpTransport;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.amqp.RoutingKeys;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.message.MessageWorld;
 import com.oddin.oddsfeedsdk.internal.recovery.SessionFacts;
@@ -29,7 +31,6 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import java.time.Duration;
-import java.time.InstantSource;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -102,7 +103,7 @@ class DispatchOverABrokerTest {
                 new FixtureChanges(),
                 offsets,
                 events,
-                InstantSource.system());
+                FeedClock.system());
         dispatcher = new SessionDispatcher(
                 1,
                 new OddsFeedSession() {},
@@ -239,10 +240,10 @@ class DispatchOverABrokerTest {
 
     private final class Facts implements SessionFacts {
         @Override
-        public void processed(long producerId, long generatedAt, long takenAt, long requestId) {}
+        public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {}
 
         @Override
-        public void alive(long producerId, long generatedAt, long takenAt, boolean subscribed) {
+        public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
             heard.add("alive " + producerId + " " + Thread.currentThread().getName());
         }
 

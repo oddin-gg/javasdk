@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.amqp;
 
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
@@ -7,7 +8,6 @@ import com.rabbitmq.client.DefaultConsumer;
 import com.rabbitmq.client.Envelope;
 import com.rabbitmq.client.ShutdownSignalException;
 import java.io.IOException;
-import java.time.InstantSource;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -51,7 +51,7 @@ final class SessionChannel implements SessionTransport {
     private final List<String> bindings;
     private final Sink sink;
     private final int maxMessageSize;
-    private final InstantSource clock;
+    private final FeedClock clock;
     private final Supplier<@Nullable Connection> connection;
     private final BooleanSupplier closing;
     private final Consumer<SessionChannel> lost;
@@ -90,7 +90,7 @@ final class SessionChannel implements SessionTransport {
             List<String> bindings,
             Sink sink,
             int maxMessageSize,
-            InstantSource clock,
+            FeedClock clock,
             Supplier<@Nullable Connection> connection,
             BooleanSupplier closing,
             Consumer<SessionChannel> lost,
@@ -377,13 +377,17 @@ final class SessionChannel implements SessionTransport {
         public void handleDelivery(
                 String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) {
             var timestamp = properties.getTimestamp();
+            // both readings here, on the consumer thread: the delivery is handled later
+            var receivedAt = clock.wall().instant();
+            long receivedMono = clock.monoMillis();
             var delivery = new RawDelivery(
                     body.length > maxMessageSize ? null : body,
                     body.length,
                     envelope.getRoutingKey(),
                     envelope.getDeliveryTag(),
                     epochOfChannel,
-                    clock.instant(),
+                    receivedAt,
+                    receivedMono,
                     timestamp == null ? null : timestamp.toInstant());
             switch (sink) {
                 case Sink.Queued(var queue, var _, var queued) -> {

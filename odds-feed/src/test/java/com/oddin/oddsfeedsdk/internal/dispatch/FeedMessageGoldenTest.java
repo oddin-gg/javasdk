@@ -20,6 +20,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionQueue;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.message.MessageWorld;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -56,7 +57,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
-import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
@@ -568,7 +568,7 @@ class FeedMessageGoldenTest {
                 new FixtureChanges(),
                 new ClockOffsets(world.producers),
                 events,
-                InstantSource.system());
+                FeedClock.system());
         var dispatcher = new SessionDispatcher(
                 1,
                 new OddsFeedSession() {},
@@ -580,7 +580,7 @@ class FeedMessageGoldenTest {
                 false,
                 () -> false,
                 pipeline);
-        dispatcher.handle(new RawDelivery(body, body.length, FakeFeed.routingKey(xml), 1, 0, Instant.now(), null));
+        dispatcher.handle(new RawDelivery(body, body.length, FakeFeed.routingKey(xml), 1, 0, Instant.now(), 1, null));
         assertThat(delivered).as("delivered").hasSize(1);
         assertThat(dispatcher.sdkFailures() + dispatcher.callbackFailures())
                 .as("failures")

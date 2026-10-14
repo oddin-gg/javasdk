@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.amqp;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.rabbitmq.client.Address;
 import com.rabbitmq.client.AddressResolver;
@@ -13,7 +14,6 @@ import java.io.IOException;
 import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateException;
 import java.time.Duration;
-import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -68,7 +68,7 @@ public final class AmqpTransport implements AutoCloseable {
     private final AmqpSettings settings;
     private final ConnectionEvents events;
     private final String exchange;
-    private final InstantSource clock;
+    private final FeedClock clock;
     private final Refusals refusals;
     /** The SDK's alive channel, null for none. */
     private final @Nullable SessionChannel alive;
@@ -107,15 +107,18 @@ public final class AmqpTransport implements AutoCloseable {
      */
     public AmqpTransport(
             AmqpSettings settings, String exchange, ConnectionEvents events, @Nullable Consumer<RawDelivery> alives) {
-        this(settings, exchange, events, alives, InstantSource.system());
+        this(settings, exchange, events, alives, FeedClock.system());
     }
 
-    AmqpTransport(
+    /**
+     * @param clock the feed's, which stamps each delivery as the broker's consumer thread gets it
+     */
+    public AmqpTransport(
             AmqpSettings settings,
             String exchange,
             ConnectionEvents events,
             @Nullable Consumer<RawDelivery> alives,
-            InstantSource clock) {
+            FeedClock clock) {
         this(settings, exchange, events, alives, clock, REFUSAL_WINDOW);
     }
 
@@ -125,7 +128,7 @@ public final class AmqpTransport implements AutoCloseable {
             String exchange,
             ConnectionEvents events,
             @Nullable Consumer<RawDelivery> alives,
-            InstantSource clock,
+            FeedClock clock,
             Duration refusalWindow) {
         this.settings = settings;
         this.exchange = exchange;

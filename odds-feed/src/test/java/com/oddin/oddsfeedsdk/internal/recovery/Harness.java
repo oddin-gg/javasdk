@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.recovery;
 import static java.util.Objects.requireNonNull;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducer;
@@ -250,20 +251,20 @@ final class Harness {
 
     /** A subscribed alive generated now, as the alive channel sees it. */
     void alive(long producer) {
-        machine.alive(producer, now(), now(), true);
+        machine.alive(producer, now(), Stamp.of(now()), true);
     }
 
     void unsubscribed(long producer) {
-        machine.alive(producer, now(), now(), false);
+        machine.alive(producer, now(), Stamp.of(now()), false);
     }
 
     /** A session took a live message generated {@code agedBy} ago, now. */
     void live(int session, long producer, Duration agedBy) {
-        machine.processed(session, producer, now() - agedBy.toMillis(), now(), 0);
+        machine.processed(session, producer, now() - agedBy.toMillis(), Stamp.of(now()), 0);
     }
 
     void sessionAlive(int session, long producer) {
-        machine.sessionAlive(session, producer, now(), now(), true);
+        machine.sessionAlive(session, producer, now(), Stamp.of(now()), true);
     }
 
     /**

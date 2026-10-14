@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfigurationBuilder;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.feed.FeedCore;
 import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
@@ -81,6 +82,9 @@ public final class OddsFeed {
 
     /** The watch over the feed's threads, from its first start to its close, on its timer thread. */
     private final Watchdog watchdog;
+
+    /** The one clock the feed's deliveries, facts and recovery are read by. */
+    private final FeedClock clock;
 
     /** The event recoveries, over whatever the feed is when they are asked for. */
     private final RecoveryManager recovery = new FeedRecovery();
@@ -165,7 +169,27 @@ public final class OddsFeed {
             HealthMonitor.Log log,
             Duration catalogStaleLimit,
             LongSupplier nanos) {
+        this(listener, configuration, extListener, limits, log, catalogStaleLimit, nanos, FeedClock.system());
+    }
+
+    /**
+     * With the watchdog's limits, the health's log, the catalogs' stale limit, the clock the
+     * connection's time down is measured by and the feed's own clock, which stamps its messages and
+     * the recovery facts, a test sets.
+     *
+     * @param limits the watchdog's limits; null for the configuration's
+     */
+    OddsFeed(
+            GlobalEventsListener listener,
+            OddsFeedConfiguration configuration,
+            @Nullable OddsFeedExtListener extListener,
+            Watchdog.@Nullable Limits limits,
+            HealthMonitor.Log log,
+            Duration catalogStaleLimit,
+            LongSupplier nanos,
+            FeedClock clock) {
         requireNonNull(listener, "listener");
+        this.clock = requireNonNull(clock, "clock");
         this.configuration = requireNonNull(configuration, "configuration");
         this.sessions = new SessionRegistry(extListener);
         this.events = events(listener, extListener);
@@ -334,7 +358,7 @@ public final class OddsFeed {
         producers.opened();
         var plan = Sessions.plan(specs, producers.getAvailableProducers(), configuration.getSdkNodeId());
         plan.disabledProducers().forEach(id -> producers.setProducerState(id, false));
-        var run = OpenFeed.build(core, plan, configuration, health, () -> closed);
+        var run = OpenFeed.build(core, plan, configuration, health, () -> closed, clock);
         state.lock();
         try {
             if (closed) {

@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.feed;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.recovery.ProducerStatusChange;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
 import com.oddin.oddsfeedsdk.internal.recovery.SessionFacts;
@@ -69,12 +70,12 @@ class ConnectionTeeTest {
 
         late.bind(new SessionFacts() {
             @Override
-            public void processed(long producerId, long generatedAt, long takenAt, long requestId) {
+            public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
                 told.add("processed");
             }
 
             @Override
-            public void alive(long producerId, long generatedAt, long takenAt, boolean subscribed) {
+            public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
                 told.add("alive");
             }
 

@@ -5,9 +5,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import java.time.Duration;
-import java.time.InstantSource;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -54,7 +54,7 @@ class AmqpRefusalTest {
                 FakeFeed.EXCHANGE,
                 events,
                 null,
-                InstantSource.system(),
+                FeedClock.system(),
                 WINDOW);
         transport.addSession(RoutingKeys.forSession(MessageInterest.ALL, List.of(), null, true));
         return transport;

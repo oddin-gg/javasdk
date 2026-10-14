@@ -11,7 +11,7 @@ public final class Queues {
     public static SessionQueue holding(int capacity, int deliveries) {
         var queue = new SessionQueue(capacity);
         for (int tag = 1; tag <= deliveries; tag++) {
-            queue.offer(new RawDelivery(new byte[0], 0, "key", tag, 0, Instant.EPOCH, null));
+            queue.offer(new RawDelivery(new byte[0], 0, "key", tag, 0, Instant.EPOCH, 1, null));
         }
         return queue;
     }

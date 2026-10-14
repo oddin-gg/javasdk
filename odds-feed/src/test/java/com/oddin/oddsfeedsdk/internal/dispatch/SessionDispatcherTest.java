@@ -17,6 +17,8 @@ import com.oddin.oddsfeedsdk.internal.amqp.Queues;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionQueue;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.message.MessageWorld;
 import com.oddin.oddsfeedsdk.internal.recovery.SessionFacts;
@@ -45,7 +47,6 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -55,6 +56,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -87,6 +89,7 @@ class SessionDispatcherTest {
     private final Facts facts = new Facts();
     private final AtomicBoolean feedClosed = new AtomicBoolean();
     private final OddsFeedSession session = new OddsFeedSession() {};
+    private FeedClock clock = FeedClock.system();
     private long tag;
     private Instant lastReceived = Instant.EPOCH;
 
@@ -194,11 +197,36 @@ class SessionDispatcherTest {
                         "processed 2 1777832981632 request=0",
                         "alive 2 1777832981632 subscribed=false",
                         "snapshotComplete 2 712");
-        assertThat(facts.takenAt).allSatisfy(at -> assertThat(at).isPositive());
+        assertThat(facts.taken).hasSize(3).allSatisfy(at -> {
+            assertThat(at.wall()).isPositive();
+            assertThat(at.mono()).isPositive();
+        });
         assertThat(listener.messages)
                 .as("alives and snapshot completes reach no callback")
                 .hasSize(2);
         assertThat(transport.acked).hasSize(4);
+    }
+
+    @Test
+    void everyFactCarriesBothReadingsOfTheFeedClockFromWhenTheDispatcherTookTheDelivery() {
+        var wall = new AtomicLong(5_000);
+        var nanos = new AtomicLong(-3_000_000_000L);
+        // a monotonic origin of its own, apart from the wall one: the two readings are never the same number
+        clock = FeedClock.of(() -> Instant.ofEpochMilli(wall.get()), nanos::get);
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        // the clock moves while the facts are posted: the stamp is the dispatcher's, not the post's
+        facts.beforePost = () -> {
+            wall.addAndGet(100);
+            nanos.addAndGet(100_000_000L);
+        };
+
+        nanos.addAndGet(2_000_000_000L);
+        handle(dispatcher, Fixtures.read(ODDS_CHANGE));
+        wall.set(9_000);
+        nanos.set(10_000_000_000L);
+        handle(dispatcher, FeedMessages.alive(2, true));
+
+        assertThat(facts.taken).containsExactly(new Stamp(5_000, 2_001), new Stamp(9_000, 13_001));
     }
 
     @Test
@@ -453,7 +481,14 @@ class SessionDispatcherTest {
     void aBodyOverTheMaximumSizeIsUnparsableWithoutItsBytes() {
         SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
         dispatcher.handle(new RawDelivery(
-                null, 2 << 20, "hi.-.live.odds_change.-.od:match.198314.-", ++tag, 0, Instant.ofEpochMilli(1), null));
+                null,
+                2 << 20,
+                "hi.-.live.odds_change.-.od:match.198314.-",
+                ++tag,
+                0,
+                Instant.ofEpochMilli(1),
+                1,
+                null));
         UnparsableMessage<?> unparsable = requireNonNull(listener.unparsable.poll());
         assertThat(unparsable.getRawMessage()).isNull();
         assertThat(dispatcher.oversized()).isEqualTo(1);
@@ -734,7 +769,7 @@ class SessionDispatcherTest {
                 fixtureChanges,
                 offsets,
                 events,
-                InstantSource.system());
+                clock);
         return new SessionDispatcher(
                 1, session, interest, listener, ext, transport, facts, replay, feedClosed::get, pipeline);
     }
@@ -751,7 +786,15 @@ class SessionDispatcherTest {
         // received now: the live state takes a feed write as the feed's for the match status age from then
         Instant receivedAt = Instant.now();
         lastReceived = receivedAt;
-        return new RawDelivery(body, body.length, routingKey, ++tag, 0, receivedAt, receivedAt.minusMillis(500));
+        return new RawDelivery(
+                body,
+                body.length,
+                routingKey,
+                ++tag,
+                0,
+                receivedAt,
+                receivedAt.toEpochMilli(),
+                receivedAt.minusMillis(500));
     }
 
     private static String live(String fixture) {
@@ -881,22 +924,22 @@ class SessionDispatcherTest {
     /** Records the facts the recovery actor would get. */
     private static final class Facts implements SessionFacts {
         final List<String> facts = new CopyOnWriteArrayList<>();
-        final List<Long> takenAt = new CopyOnWriteArrayList<>();
+        final List<Stamp> taken = new CopyOnWriteArrayList<>();
         /** Runs as a fact is posted, before it is recorded. */
         volatile Runnable beforePost = () -> {};
 
         @Override
-        public void processed(long producerId, long generatedAt, long takenAt, long requestId) {
+        public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
             beforePost.run();
             facts.add("processed " + producerId + " " + generatedAt + " request=" + requestId);
-            this.takenAt.add(takenAt);
+            this.taken.add(taken);
         }
 
         @Override
-        public void alive(long producerId, long generatedAt, long takenAt, boolean subscribed) {
+        public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
             beforePost.run();
             facts.add("alive " + producerId + " " + generatedAt + " subscribed=" + subscribed);
-            this.takenAt.add(takenAt);
+            this.taken.add(taken);
         }
 
         @Override

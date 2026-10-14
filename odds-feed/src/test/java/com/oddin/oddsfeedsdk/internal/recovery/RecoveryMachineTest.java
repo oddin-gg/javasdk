@@ -10,6 +10,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import ch.qos.logback.classic.Level;
 import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.api.entities.RecoveryInfo;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatusReason;
 import java.time.Duration;
@@ -152,7 +153,7 @@ class RecoveryMachineTest {
             feed.start();
             feed.clock.advance(Duration.ofHours(1));
             // the producer's clock behind the SDK's by the offset, or ahead of it
-            feed.machine.alive(PRE, feed.now() - offset, feed.now(), true);
+            feed.machine.alive(PRE, feed.now() - offset, Stamp.of(feed.now()), true);
             assertThat(feed.lastSnapshot(PRE).after())
                     .as("with an offset of " + offset + " ms")
                     .isEqualTo(Instant.ofEpochMilli(
@@ -168,11 +169,11 @@ class RecoveryMachineTest {
             var feed = Harness.upWith(MessageInterest.ALL);
             feed.clock.advance(Duration.ofSeconds(5));
             // the producer's clock behind the SDK's by the offset, or ahead of it, as its alive says
-            feed.machine.alive(PRE, feed.now() - offset, feed.now(), true);
+            feed.machine.alive(PRE, feed.now() - offset, Stamp.of(feed.now()), true);
             long producerNow = feed.now() - offset;
             // one message stamped an hour ahead: a component's fast clock, or a bad value
             long ahead = producerNow + Duration.ofHours(1).toMillis();
-            feed.machine.processed(1, PRE, ahead, feed.now(), 0);
+            feed.machine.processed(1, PRE, ahead, Stamp.of(feed.now()), 0);
             assertThat(feed.machine.checkpoint(1, PRE))
                     .as("the checkpoint keeps it")
                     .isEqualTo(ahead);
@@ -183,7 +184,7 @@ class RecoveryMachineTest {
             feed.machine.connectionDown();
             feed.clock.advance(Duration.ofSeconds(10));
             feed.machine.connectionUp();
-            feed.machine.alive(PRE, feed.now() - offset, feed.now(), true);
+            feed.machine.alive(PRE, feed.now() - offset, Stamp.of(feed.now()), true);
             assertThat(feed.lastSnapshot(PRE).after())
                     .as("the recovery, with an offset of " + offset + " ms")
                     .isEqualTo(Instant.ofEpochMilli(feed.now() - offset));
@@ -196,7 +197,7 @@ class RecoveryMachineTest {
         var feed = Harness.upWith(MessageInterest.ALL);
         feed.clock.advance(Duration.ofSeconds(5));
         long ahead = feed.now() + Duration.ofHours(1).toMillis();
-        feed.machine.alive(PRE, ahead, feed.now(), true);
+        feed.machine.alive(PRE, ahead, Stamp.of(feed.now()), true);
         // the next alive is on time again: the offset is back to none
         feed.clock.advance(Duration.ofSeconds(10));
         feed.alive(PRE);
@@ -216,16 +217,16 @@ class RecoveryMachineTest {
             var feed = Harness.upWith(MessageInterest.ALL);
             feed.clock.advance(Duration.ofSeconds(5));
             long processed = feed.now();
-            feed.machine.processed(1, PRE, processed, feed.now(), 0);
+            feed.machine.processed(1, PRE, processed, Stamp.of(feed.now()), 0);
             feed.clock.advance(Duration.ofSeconds(1));
             // a bad value: as an offset it would put the producer's now at or before the epoch
-            feed.machine.alive(PRE, stamp, feed.now(), true);
+            feed.machine.alive(PRE, stamp, Stamp.of(feed.now()), true);
             assertThat(feed.timestampForRecovery(PRE))
                     .as("the resume point, after an alive stamped " + stamp)
                     .isEqualTo(Instant.ofEpochMilli(processed));
 
             int before = feed.snapshots(PRE).size();
-            feed.machine.alive(PRE, stamp, feed.now(), false);
+            feed.machine.alive(PRE, stamp, Stamp.of(feed.now()), false);
             assertThat(feed.snapshots(PRE))
                     .as("recoveries, after an unsubscribed alive stamped " + stamp)
                     .hasSize(before);
@@ -520,15 +521,15 @@ class RecoveryMachineTest {
 
         feed.clock.advance(Duration.ofMinutes(1));
         long t = feed.now();
-        feed.machine.processed(1, PRE, t - 10_000, t, 0);
+        feed.machine.processed(1, PRE, t - 10_000, Stamp.of(t), 0);
         assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t - 10_000);
-        feed.machine.processed(1, PRE, t - 50_000, t, 0);
+        feed.machine.processed(1, PRE, t - 50_000, Stamp.of(t), 0);
         assertThat(feed.machine.checkpoint(1, PRE)).as("an older message").isEqualTo(t - 10_000);
-        feed.machine.processed(1, PRE, t, t, feed.lastSnapshot(PRE).requestId());
+        feed.machine.processed(1, PRE, t, Stamp.of(t), feed.lastSnapshot(PRE).requestId());
         assertThat(feed.machine.checkpoint(1, PRE)).as("a snapshot message").isEqualTo(t - 10_000);
-        feed.machine.sessionAlive(1, PRE, t - 5_000, t, false);
+        feed.machine.sessionAlive(1, PRE, t - 5_000, Stamp.of(t), false);
         assertThat(feed.machine.checkpoint(1, PRE)).as("an unsubscribed alive").isEqualTo(t - 10_000);
-        feed.machine.sessionAlive(1, PRE, t - 5_000, t, true);
+        feed.machine.sessionAlive(1, PRE, t - 5_000, Stamp.of(t), true);
         assertThat(feed.machine.checkpoint(1, PRE)).as("a subscribed alive").isEqualTo(t - 5_000);
         assertThat(feed.machine.checkpoint(1, LIVE)).as("the other producer").isEqualTo(requestedAt);
     }
@@ -542,10 +543,10 @@ class RecoveryMachineTest {
         feed.bothUp(1, 2, 3);
         feed.clock.advance(Duration.ofMinutes(1));
         long t = feed.now();
-        feed.machine.processed(1, PRE, t - 10_000, t, 0);
-        feed.machine.processed(2, PRE, t - 40_000, t, 0);
-        feed.machine.processed(1, LIVE, t - 5_000, t, 0);
-        feed.machine.processed(3, LIVE, t - 2_000, t, 0);
+        feed.machine.processed(1, PRE, t - 10_000, Stamp.of(t), 0);
+        feed.machine.processed(2, PRE, t - 40_000, Stamp.of(t), 0);
+        feed.machine.processed(1, LIVE, t - 5_000, Stamp.of(t), 0);
+        feed.machine.processed(3, LIVE, t - 2_000, Stamp.of(t), 0);
 
         feed.machine.connectionDown();
         assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.CONNECTION_LOST);
@@ -572,8 +573,8 @@ class RecoveryMachineTest {
         feed.accept(first);
         // live messages and alives go on while the snapshot comes, and some of it arrives
         long t = feed.now();
-        feed.machine.processed(1, PRE, t - 1_000, t, first.requestId());
-        feed.machine.processed(1, PRE, t, t, 0);
+        feed.machine.processed(1, PRE, t - 1_000, Stamp.of(t), first.requestId());
+        feed.machine.processed(1, PRE, t, Stamp.of(t), 0);
         feed.sessionAlive(1, PRE);
         assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t);
 
@@ -909,8 +910,8 @@ class RecoveryMachineTest {
         feed.clock.advance(Duration.ofMinutes(1));
         // the alive channel has seen these two; the session has not finished either yet
         long lastWhileUp = feed.now() - 2_000;
-        feed.machine.alive(PRE, lastWhileUp, feed.now(), true);
-        feed.machine.alive(PRE, lastWhileUp + 1_000, feed.now(), false);
+        feed.machine.alive(PRE, lastWhileUp, Stamp.of(feed.now()), true);
+        feed.machine.alive(PRE, lastWhileUp + 1_000, Stamp.of(feed.now()), false);
 
         ProducerStatusChange down = requireNonNull(feed.lastStatus(PRE));
         assertThat(down.down()).isTrue();
@@ -1053,7 +1054,7 @@ class RecoveryMachineTest {
         feed.clock.advance(Duration.ofSeconds(2));
         feed.accept(recovery);
         // alives reach the actor apart from the answers: this one was received before the answer
-        feed.machine.alive(PRE, receivedEarlier, receivedEarlier, false);
+        feed.machine.alive(PRE, receivedEarlier, Stamp.of(receivedEarlier), false);
         assertThat(feed.machine.inFlightRecovery(PRE))
                 .as("joined, not given up")
                 .isEqualTo(recovery.requestId());
@@ -1152,8 +1153,8 @@ class RecoveryMachineTest {
         feed.bothUp(1, 2);
         feed.clock.advance(Duration.ofMinutes(1));
         long t = feed.now();
-        feed.machine.processed(1, PRE, t - 1_000, t, 0);
-        feed.machine.processed(2, PRE, t - 30_000, t, 0);
+        feed.machine.processed(1, PRE, t - 1_000, Stamp.of(t), 0);
+        feed.machine.processed(2, PRE, t - 30_000, Stamp.of(t), 0);
         feed.alive(PRE);
         feed.unsubscribed(PRE);
         Outbox.Call.Snapshot waiting = feed.lastSnapshot(PRE);
@@ -1223,7 +1224,7 @@ class RecoveryMachineTest {
         feed.bothUp(1);
         feed.clock.advance(Duration.ofMinutes(1));
         long t = feed.now();
-        feed.machine.processed(1, PRE, t - 5_000, t, 0);
+        feed.machine.processed(1, PRE, t - 5_000, Stamp.of(t), 0);
 
         feed.open(2, MessageInterest.PREMATCH_ONLY);
         feed.alive(PRE);
@@ -1308,13 +1309,13 @@ class RecoveryMachineTest {
         assertThat(feed.machine.checkpoint(2, PRE)).isEqualTo(-1);
 
         // the closed session's checkpoint no longer holds a recovery back
-        feed.machine.processed(1, PRE, feed.now(), feed.now(), 0);
+        feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), 0);
         feed.machine.connectionDown();
         feed.machine.connectionUp();
         feed.alive(PRE);
         assertThat(feed.lastSnapshot(PRE).after()).isEqualTo(Instant.ofEpochMilli(feed.now()));
         // a late fact of the closed session changes nothing
-        feed.machine.processed(2, PRE, 1, feed.now(), 0);
+        feed.machine.processed(2, PRE, 1, Stamp.of(feed.now()), 0);
         feed.machine.snapshotComplete(2, PRE, feed.lastSnapshot(PRE).requestId());
         assertThat(feed.producers.isProducerDown(PRE)).isTrue();
     }
@@ -1484,7 +1485,7 @@ class RecoveryMachineTest {
         Outbox.Call.Snapshot recovery = feed.lastSnapshot(PRE);
         feed.accept(recovery);
         // the session takes the snapshot, and live messages after it; its snapshot complete never comes
-        feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+        feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
         feed.runWithAlives(Duration.ofMinutes(5));
         assertThat(feed.snapshots(PRE)).as("at the deadline").hasSize(1);
         assertThat(feed.counters.timedOut()).as("at the deadline").isZero();
@@ -1513,13 +1514,13 @@ class RecoveryMachineTest {
         // a slow session: first what was queued before the request, then the snapshot
         for (int minute = 1; minute <= 6; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, requestedAt - 1_000, feed.now(), 0);
+            feed.machine.processed(1, PRE, requestedAt - 1_000, Stamp.of(feed.now()), 0);
         }
         for (int minute = 1; minute <= 4; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
             // a session that takes no snapshot completes is not waited for, nor heard
-            feed.machine.processed(2, PRE, feed.now(), feed.now(), recovery.requestId());
+            feed.machine.processed(2, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
         }
         assertThat(feed.counters.timedOut()).as("ten minutes in, still coming").isZero();
         feed.runWithAlives(Duration.ofMinutes(5));
@@ -1536,7 +1537,7 @@ class RecoveryMachineTest {
         Outbox.Call.Snapshot again = feed.lastSnapshot(PRE);
         for (int minute = 1; minute <= 5; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(2, PRE, feed.now(), feed.now(), again.requestId());
+            feed.machine.processed(2, PRE, feed.now(), Stamp.of(feed.now()), again.requestId());
         }
         feed.runWithAlives(Duration.ofSeconds(1));
         assertThat(feed.counters.timedOut()).isEqualTo(2);
@@ -1552,7 +1553,7 @@ class RecoveryMachineTest {
         // a slow session takes nothing but alives from before the request
         for (int minute = 1; minute <= 6; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.sessionAlive(1, PRE, requestedAt - 1_000, feed.now(), true);
+            feed.machine.sessionAlive(1, PRE, requestedAt - 1_000, Stamp.of(feed.now()), true);
         }
         assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
         feed.runWithAlives(Duration.ofMinutes(5));
@@ -1573,8 +1574,8 @@ class RecoveryMachineTest {
         // to put the deadline off
         for (int minute = 1; minute <= 4; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.sessionAlive(1, PRE, 0, feed.now(), true);
-            feed.machine.sessionAlive(1, PRE, -Duration.ofHours(1).toMillis(), feed.now(), true);
+            feed.machine.sessionAlive(1, PRE, 0, Stamp.of(feed.now()), true);
+            feed.machine.sessionAlive(1, PRE, -Duration.ofHours(1).toMillis(), Stamp.of(feed.now()), true);
         }
         assertThat(feed.counters.timedOut()).as("four minutes in").isZero();
         feed.runWithAlives(
@@ -1604,7 +1605,7 @@ class RecoveryMachineTest {
         // a slow session takes what the one given up had sent, which the new one's queues behind
         for (int minute = 1; minute <= 6; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), lost.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), lost.requestId());
         }
         assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
         feed.runWithAlives(Duration.ofMinutes(5));
@@ -1640,7 +1641,7 @@ class RecoveryMachineTest {
         // what the first of them sent no longer counts
         for (int minute = 1; minute <= 5; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), ended.getFirst());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), ended.getFirst());
         }
         assertThat(feed.counters.timedOut()).as("at the deadline").isZero();
         feed.runWithAlives(Duration.ofSeconds(1));
@@ -1655,7 +1656,7 @@ class RecoveryMachineTest {
         feed.accept(third);
         for (int minute = 1; minute <= 6; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), ended.get(2));
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), ended.get(2));
         }
         assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isEqualTo(1);
         feed.runWithAlives(Duration.ofMinutes(5));
@@ -1692,7 +1693,7 @@ class RecoveryMachineTest {
         for (long requestId : lost) {
             for (int minute = 1; minute <= 6; minute++) {
                 feed.runWithAlives(Duration.ofMinutes(1));
-                feed.machine.processed(1, PRE, feed.now(), feed.now(), requestId);
+                feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), requestId);
             }
         }
         assertThat(feed.counters.timedOut())
@@ -1718,7 +1719,7 @@ class RecoveryMachineTest {
             assertThat(feed.recoverEvent(PRE)).isNotDone();
             var event = (Outbox.Call.Event) feed.calls.getLast();
             feed.accept(event);
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), event.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), event.requestId());
             feed.machine.snapshotComplete(1, PRE, event.requestId());
         }
         assertThat(feed.counters.timedOut()).as("at the deadline").isZero();
@@ -1743,7 +1744,7 @@ class RecoveryMachineTest {
         // a slow session takes the event recovery's snapshot, which the recovery's queues behind
         for (int minute = 1; minute <= 6; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), event.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), event.requestId());
         }
         assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
         feed.runWithAlives(Duration.ofMinutes(5));
@@ -1780,7 +1781,7 @@ class RecoveryMachineTest {
         feed.accept(recovery);
         for (int minute = 1; minute <= 30; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
         }
         assertThat(feed.counters.timedOut()).as("at the maximum recovery time").isZero();
         feed.runWithAlives(Duration.ofSeconds(1));
@@ -1793,7 +1794,7 @@ class RecoveryMachineTest {
         feed.accept(again);
         for (int minute = 1; minute <= 6; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
         }
         assertThat(feed.counters.timedOut()).as("the next one, still behind it").isEqualTo(1);
         feed.runWithAlives(Duration.ofMinutes(5).plusSeconds(1));
@@ -1867,8 +1868,8 @@ class RecoveryMachineTest {
         feed.start();
         feed.alive(LIVE);
         feed.unsubscribed(LIVE);
-        feed.machine.alive(9, feed.now(), feed.now(), true);
-        feed.machine.processed(1, 9, feed.now(), feed.now(), 0);
+        feed.machine.alive(9, feed.now(), Stamp.of(feed.now()), true);
+        feed.machine.processed(1, 9, feed.now(), Stamp.of(feed.now()), 0);
         assertThat(feed.calls).isEmpty();
         assertThat(feed.statuses).isEmpty();
         assertThat(feed.counters.unknownProducers()).isEqualTo(2);
@@ -2025,7 +2026,7 @@ class RecoveryMachineTest {
         // four minutes apart, 16 in all: more than the deadline, never that long a silence
         for (int i = 0; i < 4; i++) {
             feed.advance(Duration.ofMinutes(4));
-            feed.machine.processed(1, LIVE, feed.now(), feed.now(), call.requestId());
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), call.requestId());
         }
         assertThat(feed.counters.eventExpired()).isZero();
         assertThat(statusOf(call).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
@@ -2042,7 +2043,7 @@ class RecoveryMachineTest {
         var call = feed.calls.getLast();
         feed.accept(call);
         feed.advance(Duration.ofMinutes(4));
-        feed.machine.processed(1, LIVE, feed.now(), feed.now(), call.requestId());
+        feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), call.requestId());
         feed.advance(feed.settings.snapshotCompleteTimeout());
         assertThat(feed.counters.eventExpired())
                 .as("five minutes after the last of it")
@@ -2081,7 +2082,7 @@ class RecoveryMachineTest {
         // the recovery's snapshot is taken for 16 minutes, with the event's snapshot queued behind it
         for (int i = 0; i < 4; i++) {
             feed.runWithAlives(Duration.ofMinutes(4));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
         }
         assertThat(feed.counters.eventExpired()).as("while the queue moves").isZero();
         assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
@@ -2140,7 +2141,7 @@ class RecoveryMachineTest {
         feed.accept(call);
         feed.advance(Duration.ofMinutes(4));
         // queued ahead of the snapshot: sent just before the request
-        feed.machine.processed(1, LIVE, askedAt - 1, feed.now(), 0);
+        feed.machine.processed(1, LIVE, askedAt - 1, Stamp.of(feed.now()), 0);
         feed.advance(feed.settings.snapshotCompleteTimeout());
         assertThat(feed.counters.eventExpired())
                 .as("five minutes after the last of it")
@@ -2158,7 +2159,7 @@ class RecoveryMachineTest {
         long askedAt = feed.now();
         feed.accept(call);
         feed.advance(Duration.ofMinutes(4));
-        feed.machine.sessionAlive(1, LIVE, askedAt - 1, feed.now(), true);
+        feed.machine.sessionAlive(1, LIVE, askedAt - 1, Stamp.of(feed.now()), true);
         feed.advance(feed.settings.snapshotCompleteTimeout());
         assertThat(feed.counters.eventExpired())
                 .as("five minutes after the last of it")
@@ -2177,10 +2178,10 @@ class RecoveryMachineTest {
         feed.accept(call);
         feed.advance(Duration.ofMinutes(4));
         // the snapshot does not queue behind what the producer sent since
-        feed.machine.processed(1, LIVE, askedAt, feed.now(), 0);
-        feed.machine.sessionAlive(1, LIVE, askedAt, feed.now(), true);
-        feed.machine.processed(1, LIVE, feed.now(), feed.now(), 0);
-        feed.machine.sessionAlive(1, LIVE, feed.now(), feed.now(), true);
+        feed.machine.processed(1, LIVE, askedAt, Stamp.of(feed.now()), 0);
+        feed.machine.sessionAlive(1, LIVE, askedAt, Stamp.of(feed.now()), true);
+        feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), 0);
+        feed.machine.sessionAlive(1, LIVE, feed.now(), Stamp.of(feed.now()), true);
         feed.advance(Duration.ofMinutes(1));
         assertThat(feed.counters.eventExpired()).as("five minutes in").isZero();
         feed.advance(Duration.ofSeconds(1));
@@ -2199,7 +2200,7 @@ class RecoveryMachineTest {
         var later = feed.calls.getLast();
         feed.accept(later);
         feed.advance(Duration.ofMinutes(4));
-        feed.machine.processed(1, LIVE, feed.now(), feed.now(), earlier.requestId());
+        feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), earlier.requestId());
         feed.advance(Duration.ofMinutes(1).plusSeconds(1));
         assertThat(feed.counters.eventExpired())
                 .as("five minutes after the later one was accepted: it is behind the snapshot that came")
@@ -2220,7 +2221,7 @@ class RecoveryMachineTest {
         var later = feed.calls.getLast();
         feed.accept(later);
         feed.advance(Duration.ofMinutes(4));
-        feed.machine.processed(1, LIVE, feed.now(), feed.now(), later.requestId());
+        feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), later.requestId());
         feed.advance(Duration.ofMinutes(1));
         assertThat(feed.counters.eventExpired())
                 .as("the earlier one's snapshot does not queue behind the later one's")
@@ -2242,7 +2243,7 @@ class RecoveryMachineTest {
         feed.accept(recovery);
         for (int i = 0; i < 4; i++) {
             feed.runWithAlives(Duration.ofSeconds(70));
-            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
         }
         feed.runWithAlives(Duration.ofSeconds(30));
         assertThat(feed.counters.eventExpired())
@@ -2260,7 +2261,7 @@ class RecoveryMachineTest {
         feed.accept(call);
         for (int i = 0; i < 90; i++) {
             feed.advance(Duration.ofMinutes(4));
-            feed.machine.processed(1, LIVE, feed.now(), feed.now(), call.requestId());
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), call.requestId());
         }
         assertThat(feed.counters.eventExpired()).as("six hours in").isZero();
         feed.advance(Duration.ofMinutes(4));
@@ -2693,10 +2694,10 @@ class RecoveryMachineTest {
         feed.open(1, MessageInterest.ALL);
         feed.start();
         long first = feed.now() - 5_000;
-        feed.machine.processed(1, PRE, first, feed.now(), 0);
+        feed.machine.processed(1, PRE, first, Stamp.of(feed.now()), 0);
         for (long stamp : new long[] {0, -Duration.ofHours(1).toMillis()}) {
             feed.clock.advance(Duration.ofSeconds(1));
-            feed.machine.processed(1, PRE, stamp, feed.now(), 0);
+            feed.machine.processed(1, PRE, stamp, Stamp.of(feed.now()), 0);
             var producer = requireNonNull(feed.producers.getProducer(PRE));
             assertThat(producer.getLastProcessedMessageGenTimestamp())
                     .as("after a message stamped " + stamp)
@@ -2706,7 +2707,7 @@ class RecoveryMachineTest {
                     .isEqualTo(feed.now());
         }
         long second = feed.now() - 1_000;
-        feed.machine.processed(1, PRE, second, feed.now(), 0);
+        feed.machine.processed(1, PRE, second, Stamp.of(feed.now()), 0);
         assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastProcessedMessageGenTimestamp())
                 .as("after a later message")
                 .isEqualTo(second);
@@ -2723,7 +2724,7 @@ class RecoveryMachineTest {
         for (int second = 1; second <= 25; second++) {
             feed.clock.advance(Duration.ofSeconds(1));
             feed.machine.processed(
-                    1, PRE, second % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), feed.now(), 0);
+                    1, PRE, second % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), Stamp.of(feed.now()), 0);
             if (second % 10 == 0) {
                 feed.alive(PRE);
                 feed.alive(LIVE);
@@ -2746,7 +2747,11 @@ class RecoveryMachineTest {
         for (int minute = 1; minute <= 6; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
             feed.machine.processed(
-                    1, PRE, minute % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), feed.now(), recovery.requestId());
+                    1,
+                    PRE,
+                    minute % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(),
+                    Stamp.of(feed.now()),
+                    recovery.requestId());
         }
         assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
         feed.runWithAlives(Duration.ofMinutes(5));
@@ -2768,7 +2773,7 @@ class RecoveryMachineTest {
         for (int minute = 1; minute <= 5; minute++) {
             feed.runWithAlives(Duration.ofMinutes(1));
             feed.machine.processed(
-                    1, PRE, minute % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), feed.now(), 0);
+                    1, PRE, minute % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), Stamp.of(feed.now()), 0);
         }
         assertThat(feed.counters.timedOut())
                 .as("five minutes in, still within it")
@@ -2787,7 +2792,7 @@ class RecoveryMachineTest {
         feed.clock.advance(Duration.ofSeconds(3));
         // the alive is handled while the session's callback for the message still runs
         feed.alive(PRE);
-        feed.machine.processed(1, PRE, taken - 1_000, taken, 0);
+        feed.machine.processed(1, PRE, taken - 1_000, Stamp.of(taken), 0);
         assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastMessageTimestamp())
                 .as("the alive's")
                 .isEqualTo(feed.now());

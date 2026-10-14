@@ -1,12 +1,12 @@
 package com.oddin.oddsfeedsdk.internal.dispatch;
 
 import com.oddin.oddsfeedsdk.ProducerManager;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.entity.MatchCaches;
 import com.oddin.oddsfeedsdk.internal.entity.ProfileCaches;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.message.MessageFactory;
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
-import java.time.InstantSource;
 
 /**
  * What every session dispatcher of a feed shares: one of each per {@code OddsFeed}.
@@ -18,7 +18,7 @@ import java.time.InstantSource;
  * @param fixtureChanges the fixture changes delivered, so each reaches the client once
  * @param offsets the producers' clock offsets, which the alive dispatcher measures
  * @param events where a failure is reported, to the client's {@code onCallbackFailure}
- * @param clock the SDK's clock, which a message's take time and age are read by
+ * @param clock the feed's clock, which a message's take time is read by, wall and monotonic
  */
 public record Pipeline(
         FeedDecoder decoder,
@@ -29,4 +29,4 @@ public record Pipeline(
         FixtureChanges fixtureChanges,
         ClockOffsets offsets,
         EventsDispatcher events,
-        InstantSource clock) {}
+        FeedClock clock) {}

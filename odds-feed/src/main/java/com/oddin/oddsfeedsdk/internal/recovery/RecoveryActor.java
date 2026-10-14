@@ -4,6 +4,8 @@ import com.oddin.oddsfeedsdk.internal.BusySince;
 import com.oddin.oddsfeedsdk.internal.Joins;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.rest.RecoveryRequests;
@@ -186,16 +188,53 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             RecoveryRequests api,
             RecoveryEvents events,
             Executor workers) {
+        this(producers, settings, api, events, workers, FeedClock.system());
+    }
+
+    /**
+     * @param workers where the requests and the resets run: REST workers, virtual threads
+     * @param clock the feed's, shared with the facts' stamps
+     */
+    public RecoveryActor(
+            Producers producers,
+            RecoverySettings settings,
+            RecoveryRequests api,
+            RecoveryEvents events,
+            Executor workers,
+            FeedClock clock) {
         this(
                 producers,
                 settings,
                 api,
                 events,
                 workers,
-                InstantSource.system(),
+                clock,
                 RandomGenerator.getDefault(),
                 CONTROL_CAPACITY,
                 SAMPLE_CAPACITY);
+    }
+
+    /** With a clock whose two sides move together, the random ids and the queue sizes a test sets. */
+    RecoveryActor(
+            Producers producers,
+            RecoverySettings settings,
+            RecoveryRequests api,
+            RecoveryEvents events,
+            Executor workers,
+            InstantSource clock,
+            RandomGenerator random,
+            int controlCapacity,
+            int sampleCapacity) {
+        this(
+                producers,
+                settings,
+                api,
+                events,
+                workers,
+                FeedClock.following(clock),
+                random,
+                controlCapacity,
+                sampleCapacity);
     }
 
     /** With the clock, the random ids and the queue sizes a test sets. */
@@ -205,7 +244,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             RecoveryRequests api,
             RecoveryEvents events,
             Executor workers,
-            InstantSource clock,
+            FeedClock clock,
             RandomGenerator random,
             int controlCapacity,
             int sampleCapacity) {
@@ -225,7 +264,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     /**
      * With the clock, what paces the turns, the random ids and the queue sizes a test sets.
      *
-     * @param clock the machine's time: the producers' timestamps and its durations
+     * @param clock the feed's: the machine's time, and what its facts are stamped by
      * @param nanos what paces the turns, a {@link System#nanoTime}
      */
     RecoveryActor(
@@ -234,7 +273,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             RecoveryRequests api,
             RecoveryEvents events,
             Executor workers,
-            InstantSource clock,
+            FeedClock clock,
             LongSupplier nanos,
             RandomGenerator random,
             int controlCapacity,
@@ -263,7 +302,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             RecoveryRequests api,
             RecoveryEvents events,
             Executor workers,
-            InstantSource clock,
+            FeedClock clock,
             LongSupplier nanos,
             RandomGenerator random,
             int controlCapacity,
@@ -278,9 +317,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         this.workers = workers;
         this.nanos = nanos;
         this.tickNanos = Math.max(1, settings.tick().toNanos());
-        this.statuses = new EventRecoveryStatuses(clock, counters);
+        // the machine and the statuses still read the wall side only
+        this.statuses = new EventRecoveryStatuses(clock.wall(), counters);
         this.machine = new RecoveryMachine(
-                producers, settings, new Work(), new Guarded(events), clock, counters, statuses, random);
+                producers, settings, new Work(), new Guarded(events), clock.wall(), counters, statuses, random);
         this.thread = Thread.ofPlatform().daemon().name("oddsfeed-recovery").unstarted(this::run);
     }
 
@@ -295,13 +335,13 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         int id = info.id();
         return new SessionFacts() {
             @Override
-            public void processed(long producerId, long generatedAt, long takenAt, long requestId) {
-                post(samples, new Fact.Processed(id, producerId, generatedAt, takenAt, requestId));
+            public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
+                post(samples, new Fact.Processed(id, producerId, generatedAt, taken, requestId));
             }
 
             @Override
-            public void alive(long producerId, long generatedAt, long takenAt, boolean subscribed) {
-                post(samples, new Fact.SessionAlive(id, producerId, generatedAt, takenAt, subscribed));
+            public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+                post(samples, new Fact.SessionAlive(id, producerId, generatedAt, taken, subscribed));
             }
 
             @Override
@@ -365,7 +405,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * producer of the list; one of a producer the list does not have is counted and dropped.
      */
     @Override
-    public void alive(long producerId, long generatedAt, long receivedAt, boolean subscribed) {
+    public void alive(long producerId, long generatedAt, Stamp received, boolean subscribed) {
         // one essential post, counted from its look at the close until its slot and fact are in:
         // the closing actor waits for it, or takes the points back without it
         posting.incrementAndGet();
@@ -384,7 +424,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 }
                 return;
             }
-            var alive = new AliveSlot.Seen(generatedAt, receivedAt, subscribed);
+            var alive = new AliveSlot.Seen(generatedAt, received, subscribed);
             var fresh = new boolean[1];
             alives.compute(producerId, (id, slot) -> {
                 AliveSlot joined = slot;
@@ -752,7 +792,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     AliveSlot slot = alives.remove(producer);
                     if (slot != null) {
                         for (AliveSlot.Seen alive : slot.inOrder()) {
-                            machine.alive(producer, alive.generatedAt(), alive.receivedAt(), alive.subscribed());
+                            machine.alive(producer, alive.generatedAt(), alive.received(), alive.subscribed());
                         }
                     }
                 }
@@ -959,7 +999,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * unsubscribed one, which opens the gap; and the latest. Guarded by its map's compute.
      */
     private static final class AliveSlot {
-        record Seen(long generatedAt, long receivedAt, boolean subscribed) {}
+        record Seen(long generatedAt, Stamp received, boolean subscribed) {}
 
         private Seen latest;
         private @Nullable Seen lastSubscribedBeforeUnsubscribed;
@@ -1088,10 +1128,9 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         /** A producer's alive slot has something in it. */
         record Alives(long producerId) implements Fact {}
 
-        record Processed(int session, long producerId, long generatedAt, long takenAt, long requestId)
-                implements Fact {}
+        record Processed(int session, long producerId, long generatedAt, Stamp taken, long requestId) implements Fact {}
 
-        record SessionAlive(int session, long producerId, long generatedAt, long takenAt, boolean subscribed)
+        record SessionAlive(int session, long producerId, long generatedAt, Stamp taken, boolean subscribed)
                 implements Fact {}
 
         record SnapshotComplete(int session, long producerId, long requestId) implements Fact {}

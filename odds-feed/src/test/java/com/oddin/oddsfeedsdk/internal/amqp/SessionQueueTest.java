@@ -76,6 +76,6 @@ class SessionQueueTest {
     }
 
     private static RawDelivery delivery(long epoch) {
-        return new RawDelivery(new byte[0], 0, "hi.-.live.alive.-.-.-.-", 1, epoch, Instant.EPOCH, null);
+        return new RawDelivery(new byte[0], 0, "hi.-.live.alive.-.-.-.-", 1, epoch, Instant.EPOCH, 1, null);
     }
 }
