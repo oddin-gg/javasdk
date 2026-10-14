@@ -51,6 +51,8 @@ final class Ledger {
     private final Map<String, AtomicLong> nextSequence = new ConcurrentHashMap<>();
     private final Map<String, List<Long>> published = new ConcurrentHashMap<>();
     private final Map<String, List<Long>> delivered = new ConcurrentHashMap<>();
+    /** Sent, and the broker's answer was an error: it may have been routed, and may arrive. */
+    private final Map<String, List<Long>> uncertain = new ConcurrentHashMap<>();
 
     Ledger(long base) {
         this.base = base;
@@ -70,11 +72,23 @@ final class Ledger {
     boolean publish(FakeFeed broker, String match) {
         long sequence =
                 nextSequence.computeIfAbsent(match, _ -> new AtomicLong()).getAndIncrement();
-        boolean routed = broker.publishAsIs(message(match, sequence));
+        boolean routed;
+        try {
+            routed = broker.publishAsIs(message(match, sequence));
+        } catch (RuntimeException e) {
+            // a broker taking a queue down can route a message to the others and still answer with an
+            // error: it is neither published nor known to be lost
+            sentWithError(match, sequence);
+            throw e;
+        }
         if (routed) {
             published(match, sequence);
         }
         return routed;
+    }
+
+    void sentWithError(String match, long sequence) {
+        record(uncertain, match, sequence);
     }
 
     void published(String match, long sequence) {
@@ -98,6 +112,27 @@ final class Ledger {
         var marks = new HashMap<String, Long>();
         nextSequence.forEach((match, next) -> marks.put(match, next.get()));
         return marks;
+    }
+
+    /** How many messages of every match were published at or after the {@link #mark}. */
+    long publishedSince(Map<String, Long> mark) {
+        return since(published, mark);
+    }
+
+    /** How many messages of every match arrived that were published at or after the {@link #mark}. */
+    long deliveredSince(Map<String, Long> mark) {
+        return since(delivered, mark);
+    }
+
+    private static long since(Map<String, List<Long>> in, Map<String, Long> mark) {
+        long count = 0;
+        for (var match : in.keySet()) {
+            long from = mark.getOrDefault(match, 0L);
+            count += copy(in, match).stream()
+                    .filter(sequence -> sequence >= from)
+                    .count();
+        }
+        return count;
     }
 
     /** Waits until as many messages arrived as were published, polling; false if it takes longer. */
@@ -128,6 +163,10 @@ final class Ledger {
     /** Per match, what arrived is the first part of what was published: no gap, repeat or reorder. */
     void assertPrefix() {
         for (var match : matches()) {
+            if (delivered(match).isEmpty()) {
+                // nothing arrived, which is the shortest start there is
+                continue;
+            }
             assertThat(published(match))
                     .as(
                             "%s: published, which the %d delivered must start",
@@ -138,15 +177,18 @@ final class Ledger {
 
     /**
      * Per match: only published messages arrived, in increasing order and without repeats, and every
-     * message published at or after the {@link #mark} arrived.
+     * message published at or after the {@link #mark} arrived. A message whose publishing failed with
+     * an error may have arrived, or not.
      */
     void assertGapsOnlyAfterReconnect(Map<String, Long> mark) {
         for (var match : matches()) {
             var arrived = delivered(match);
             var sent = published(match);
             assertThat(arrived).as("%s: delivered", match).isSorted().doesNotHaveDuplicates();
-            assertThat(sent)
-                    .as("%s: published, which holds all that arrived", match)
+            var possible = new ArrayList<>(sent);
+            possible.addAll(copy(uncertain, match));
+            assertThat(possible)
+                    .as("%s: published, or sent with an error, which holds all that arrived", match)
                     .containsAll(arrived);
             var afterMark = sent.stream()
                     .filter(sequence -> sequence >= mark.getOrDefault(match, 0L))
