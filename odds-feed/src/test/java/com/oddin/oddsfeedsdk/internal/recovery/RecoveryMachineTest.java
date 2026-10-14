@@ -1965,12 +1965,13 @@ class RecoveryMachineTest {
     }
 
     @Test
-    void eventRecoveriesInFlightAreBoundedPerProducerAndExpire() throws ExecutionException, InterruptedException {
+    void eventRecoveriesInFlightAreBoundedPerProducerAndOnesTheApiNeverAnsweredExpireAtTheMaximumRecoveryTime()
+            throws ExecutionException, InterruptedException {
         feed.open(1, MessageInterest.ALL);
         feed.start();
         for (int i = 0; i < 128; i++) {
+            // none answered: the REST worker has its own deadlines, and the maximum recovery time bounds it
             assertThat(feed.recoverEvent(LIVE)).isNotDone();
-            feed.accept(feed.calls.getLast());
         }
         assertThat(done(feed.recoverEvent(LIVE))).as("the 129th").isNull();
         assertThat(feed.recoverEvent(PRE)).as("another producer's").isNotDone();
@@ -1983,6 +1984,136 @@ class RecoveryMachineTest {
                 .as("128 of one producer, 1 of the other")
                 .isEqualTo(129);
         assertThat(feed.recoverEvent(LIVE)).as("room again").isNotDone();
+    }
+
+    private EventRecoveryStatus statusOf(Outbox.Call call) {
+        return requireNonNull(feed.recoveryStatuses.get(call.requestId()));
+    }
+
+    @Test
+    void anAcceptedEventRecoveryWhoseSnapshotCompleteNeverComesGivesUpItsSlotAfterTheDeadline()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var first = feed.calls.getLast();
+        feed.accept(first);
+        for (int i = 1; i < 128; i++) {
+            assertThat(feed.recoverEvent(LIVE)).isNotDone();
+            feed.accept(feed.calls.getLast());
+        }
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired()).as("at the deadline").isZero();
+        assertThat(done(feed.recoverEvent(LIVE))).as("the 129th").isNull();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(128);
+        assertThat(feed.recoverEvent(LIVE)).as("room again").isNotDone();
+        var status = statusOf(first);
+        assertThat(status.state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+        assertThat(status.reason())
+                .contains(feed.settings.snapshotCompleteTimeout().toString());
+        assertThat(feed.events).isEmpty();
+    }
+
+    @Test
+    void anAcceptedEventRecoveryWhoseSnapshotKeepsArrivingIsNotGivenUpAndCompletes() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        feed.accept(call);
+        // four minutes apart, 16 in all: more than the deadline, never that long a silence
+        for (int i = 0; i < 4; i++) {
+            feed.advance(Duration.ofMinutes(4));
+            feed.machine.processed(1, LIVE, feed.now(), feed.now(), call.requestId());
+        }
+        assertThat(feed.counters.eventExpired()).isZero();
+        assertThat(statusOf(call).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        assertThat(feed.events).containsExactly("event recovery " + call.requestId() + " of " + MATCH + " completed");
+        assertThat(statusOf(call).state()).isEqualTo(EventRecoveryStatus.State.COMPLETED);
+    }
+
+    @Test
+    void anEventRecoveryIsGivenUpAfterTheDeadlineSinceTheLastOfItsSnapshotWasHeard() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        feed.accept(call);
+        feed.advance(Duration.ofMinutes(4));
+        feed.machine.processed(1, LIVE, feed.now(), feed.now(), call.requestId());
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void theDeadlineOfAnEventRecoveryCountsFromTheApisAcceptanceNotFromTheRequest() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        feed.advance(Duration.ofMinutes(4));
+        feed.accept(call);
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after the acceptance")
+                .isZero();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void aSnapshotCompleteOfOneSessionPutsOffTheDeadlineForTheOthers() {
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        feed.accept(call);
+        feed.advance(Duration.ofMinutes(4));
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired()).isZero();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void theMaximumRecoveryTimeBoundsAnEventRecoveryWhoseSnapshotKeepsArriving() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        feed.accept(call);
+        for (int i = 0; i < 90; i++) {
+            feed.advance(Duration.ofMinutes(4));
+            feed.machine.processed(1, LIVE, feed.now(), feed.now(), call.requestId());
+        }
+        assertThat(feed.counters.eventExpired()).as("six hours in").isZero();
+        feed.advance(Duration.ofMinutes(4));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+        assertThat(statusOf(call).reason()).contains("PT6H");
+    }
+
+    @Test
+    void aSnapshotCompleteAfterAnEventRecoveryWasGivenUpIsCountedAndIgnored() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        feed.accept(call);
+        feed.advance(feed.settings.snapshotCompleteTimeout().plusSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+        long unknown = feed.counters.unknownCompletions();
+        feed.machine.snapshotComplete(1, LIVE, call.requestId());
+        assertThat(feed.events).as("no completion").isEmpty();
+        assertThat(feed.counters.unknownCompletions()).isEqualTo(unknown + 1);
+        assertThat(statusOf(call).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
     }
 
     @Test
