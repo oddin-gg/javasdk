@@ -181,12 +181,16 @@ class LedgerTest {
     }
 
     @Test
-    void aLedgerThatPublishedNothingFailsEveryCheck() {
+    void aLedgerThatPublishedNothingFailsExactAndGaps() {
         var ledger = new Ledger(1_000);
 
         assertThatThrownBy(ledger::assertExact).isInstanceOf(AssertionError.class);
-        assertThatThrownBy(ledger::assertPrefix).isInstanceOf(AssertionError.class);
         assertThatThrownBy(() -> ledger.assertGapsOnlyAfterReconnect(Map.of())).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void aRunCutShortBeforeAnyPublishIsAPrefix() {
+        assertThatCode(new Ledger(1_000)::assertPrefix).doesNotThrowAnyException();
     }
 
     @Test
