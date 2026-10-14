@@ -32,7 +32,10 @@ public record EventRecoveryStatus(
          * closed first.
          */
         FAILED,
-        /** No snapshot complete within the maximum recovery time. */
+        /**
+         * Nothing of its snapshot came for the snapshot complete timeout after the API accepted it,
+         * or no snapshot complete within the maximum recovery time.
+         */
         TIMED_OUT;
 
         /** The state as the client reads it. */

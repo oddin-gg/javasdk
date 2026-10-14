@@ -600,6 +600,10 @@ final class RecoveryMachine {
      * time.
      */
     private void heard(Track track, int id, long generatedAt, long requestId) {
+        EventRecovery event = requestId == 0 ? null : eventRecoveries.get(requestId);
+        if (event != null && event.producerId == track.id && event.awaited.contains(id) && !event.seen.contains(id)) {
+            event.heardAt = now();
+        }
         Active active = track.active;
         if (active != null
                 && active.awaited.contains(id)
@@ -653,6 +657,7 @@ final class RecoveryMachine {
                     // its status ends before a caller still waiting hears the API took it
                     eventCompleted(event);
                 } else {
+                    event.heardAt = now();
                     CompletableFuture<@Nullable Long> reply = replies.remove(requestId);
                     if (reply != null) {
                         // a snapshot complete says the API took the request: the caller hears so now
@@ -675,6 +680,9 @@ final class RecoveryMachine {
         if (reply != null) {
             EventRecovery event = eventRecoveries.get(requestId);
             if (failure == null) {
+                if (event != null) {
+                    event.heardAt = now;
+                }
                 if (event != null && event.awaited.isEmpty()) {
                     // no session takes snapshot completes: nothing would ever complete it. Its
                     // status ends first: a caller that reads it once the future completes sees it ended
@@ -829,22 +837,25 @@ final class RecoveryMachine {
             maybeRequest(track, now);
         }
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
+            String why = null;
             if (now - recovery.issuedAt > settings.maxRecoveryTime().toMillis()) {
+                why = "no snapshot complete within " + settings.maxRecoveryTime();
+            } else if (!replies.containsKey(recovery.requestId)
+                    && now - recovery.heardAt
+                            > settings.snapshotCompleteTimeout().toMillis()) {
+                // accepted, and nothing of it heard since: the snapshot complete is lost. One the API has
+                // not answered yet waits for its REST worker's deadlines
+                why = "no snapshot complete, nor anything of it heard, within " + settings.snapshotCompleteTimeout();
+            }
+            if (why != null) {
                 eventRecoveries.remove(recovery.requestId);
-                ended(
-                        recovery,
-                        EventRecoveryStatus.State.TIMED_OUT,
-                        "no snapshot complete within " + settings.maxRecoveryTime());
+                ended(recovery, EventRecoveryStatus.State.TIMED_OUT, why);
                 counters.eventExpired.incrementAndGet();
                 CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
                 if (reply != null) {
                     outbox.reply(reply, null);
                 }
-                LOG.debug(
-                        "Event recovery {} of {} got no snapshot complete within {}",
-                        recovery.requestId,
-                        recovery.eventId,
-                        settings.maxRecoveryTime());
+                LOG.debug("Event recovery {} of {}: {}", recovery.requestId, recovery.eventId, why);
             }
         }
         for (DeferredEvent event : new ArrayList<>(deferred)) {
@@ -1861,6 +1872,8 @@ final class RecoveryMachine {
         final long issuedAt;
         final Set<Integer> awaited;
         final Set<Integer> seen = new HashSet<>();
+        /** When the API accepted it, or a session that awaits it last took a message of it. */
+        long heardAt;
 
         EventRecovery(long requestId, long producerId, URN eventId, long issuedAt, Set<Integer> awaited) {
             this.requestId = requestId;
@@ -1868,6 +1881,7 @@ final class RecoveryMachine {
             this.eventId = eventId;
             this.issuedAt = issuedAt;
             this.awaited = awaited;
+            this.heardAt = issuedAt;
         }
     }
 

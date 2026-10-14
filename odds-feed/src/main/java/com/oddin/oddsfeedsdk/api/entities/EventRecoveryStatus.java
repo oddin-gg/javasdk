@@ -35,7 +35,10 @@ public record EventRecoveryStatus(
          * A producer going down for another reason fails none, since the snapshot can still come.
          */
         FAILED,
-        /** Its snapshot did not complete within the maximum recovery time. */
+        /**
+         * Nothing of its snapshot came for five minutes after the API accepted it, or its snapshot
+         * did not complete within the maximum recovery time.
+         */
         TIMED_OUT
     }
 }

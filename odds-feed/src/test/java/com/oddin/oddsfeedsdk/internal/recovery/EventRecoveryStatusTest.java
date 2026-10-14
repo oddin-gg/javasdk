@@ -177,12 +177,27 @@ class EventRecoveryStatusTest {
     }
 
     @Test
-    void oneWithNoSnapshotCompleteWithinTheMaximumRecoveryTimeHasTimedOut() {
+    void oneAcceptedWithNothingOfItHeardForTheSnapshotCompleteTimeoutHasTimedOut() {
         feed.open(1, MessageInterest.ALL);
         feed.start();
         assertThat(feed.recoverEvent(LIVE)).isNotDone();
         Outbox.Call call = feed.calls.getLast();
         feed.accept(call);
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(status(call).state()).as("at the deadline").isEqualTo(PENDING);
+        feed.advance(Duration.ofSeconds(1));
+        EventRecoveryStatus timedOut = status(call);
+        assertThat(timedOut.state()).isEqualTo(TIMED_OUT);
+        assertThat(timedOut.endedAt()).isEqualTo(Instant.ofEpochMilli(feed.now()));
+        assertThat(timedOut.reason()).isEqualTo("no snapshot complete, nor anything of it heard, within PT5M");
+    }
+
+    @Test
+    void oneTheApiNeverAnsweredHasTimedOutAtTheMaximumRecoveryTime() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        Outbox.Call call = feed.calls.getLast();
         feed.advance(Duration.ofHours(6));
         assertThat(status(call).state())
                 .as("at the maximum recovery time, pending longer than any ended one is kept")
