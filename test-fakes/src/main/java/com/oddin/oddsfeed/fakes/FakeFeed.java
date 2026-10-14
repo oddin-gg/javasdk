@@ -94,6 +94,7 @@ public final class FakeFeed implements AutoCloseable {
     private volatile boolean refusing;
     private volatile boolean refusingVirtualHost;
     private volatile Duration clockSkew = Duration.ZERO;
+    private volatile boolean refusingResources;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     // HTTP/1.1: the default first asks to upgrade to HTTP/2, and the management API hangs up on that
     private final HttpClient http = HttpClient.newBuilder()
@@ -181,6 +182,21 @@ public final class FakeFeed implements AutoCloseable {
      */
     public void refuseVirtualHost() {
         refusingVirtualHost = true;
+    }
+
+    /**
+     * Refuses every feed login's declaring of a queue or binding of one from now on, the way the
+     * broker answers a user without the permission: the channel is closed with a reason that quotes
+     * the user name, which for the SDK is its access token. Connections and channels already open
+     * stay open; {@link #allowResources} undoes it.
+     */
+    public void refuseResources() {
+        refusingResources = true;
+    }
+
+    /** Lets the feed's logins declare and bind again, as after {@link #refuseResources}. */
+    public void allowResources() {
+        refusingResources = false;
     }
 
     /** Lets logins and the virtual host in again, as after {@link #refuseLogins} or {@link #refuseVirtualHost}. */
@@ -688,7 +704,8 @@ public final class FakeFeed implements AutoCloseable {
                     }
                     yield "allow";
                 }
-                case "/resource", "/topic" -> "allow";
+                case "/resource" -> refusingResources && !username.equals(PUBLISHER) ? "deny" : "allow";
+                case "/topic" -> "allow";
                 default -> "deny";
             };
             byte[] body = answer.getBytes(UTF_8);
