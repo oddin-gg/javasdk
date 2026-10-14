@@ -7,6 +7,7 @@ import static com.oddin.oddsfeedsdk.internal.recovery.EventRecoveryStatus.State.
 import static com.oddin.oddsfeedsdk.internal.recovery.Harness.LIVE;
 import static com.oddin.oddsfeedsdk.internal.recovery.Harness.MATCH;
 import static com.oddin.oddsfeedsdk.internal.recovery.Harness.PRE;
+import static com.oddin.oddsfeedsdk.internal.recovery.Harness.START;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -17,6 +18,8 @@ import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * An event recovery's status by its request id, as the Go SDK keeps it: pending from the request,
@@ -259,16 +262,92 @@ class EventRecoveryStatusTest {
         assertThat(feed.recoveryStatuses.size()).as("forgotten at the tick").isZero();
     }
 
+    // ---- retention on the monotonic clock
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aStepOfTheWallClockNeitherForgetsAnEndedStatusEarlyNorKeepsItLonger(long minutes) {
+        var split = new Harness(Harness.settings(), true);
+        split.open(1, MessageInterest.ALL);
+        split.start();
+        assertThat(split.recoverEvent(PRE)).isNotDone();
+        Outbox.Call call = split.calls.getLast();
+        split.complete(call, 1);
+        long id = call.requestId();
+        Instant endedAt =
+                requireNonNull(requireNonNull(split.recoveryStatuses.get(id)).endedAt());
+
+        split.stepWall(Duration.ofMinutes(minutes));
+        split.advanceMono(Duration.ofMinutes(5));
+        assertThat(split.recoveryStatuses.get(id))
+                .as("five minutes of the monotonic clock after it ended, whatever the wall clock says")
+                .isNotNull();
+        assertThat(split.recoveryStatuses.size()).isEqualTo(1);
+
+        split.advanceMono(Duration.ofMillis(1));
+        assertThat(split.recoveryStatuses.get(id))
+                .as("past five minutes of the monotonic clock")
+                .isNull();
+        assertThat(split.recoveryStatuses.size()).as("forgotten at the tick").isZero();
+        assertThat(endedAt).as("published when it ended, by the wall clock").isEqualTo(START);
+    }
+
+    @Test
+    void theInstantsAStatusPublishesAreWallTimeAndAStepOfTheWallClockDoesNotChangeThem() {
+        var split = new Harness(Harness.settings(), true);
+        split.open(1, MessageInterest.ALL);
+        split.start();
+        assertThat(split.recoverEvent(PRE)).isNotDone();
+        Outbox.Call call = split.calls.getLast();
+        split.stepWall(Duration.ofMinutes(10));
+        split.advanceMono(Duration.ofSeconds(3));
+        long stepped = split.now();
+        split.complete(call, 1);
+
+        EventRecoveryStatus completed = requireNonNull(split.recoveryStatuses.get(call.requestId()));
+        assertThat(completed.startedAt()).isEqualTo(START);
+        assertThat(completed.endedAt())
+                .as("by the wall clock, not the monotonic one")
+                .isEqualTo(Instant.ofEpochMilli(stepped));
+
+        split.stepWall(Duration.ofMinutes(-30));
+        EventRecoveryStatus later = requireNonNull(split.recoveryStatuses.get(call.requestId()));
+        assertThat(later).isEqualTo(completed);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aStatusTheCloseAbandonedIsKeptFiveMonotonicMinutesFromTheAbandonAndPublishesItsWallTime(long minutes) {
+        var split = new Harness(Harness.settings(), true);
+        split.open(1, MessageInterest.ALL);
+        split.start();
+        assertThat(split.recoverEvent(PRE)).isNotDone();
+        long id = split.calls.getLast().requestId();
+        split.stepWall(Duration.ofMinutes(1));
+        long abandonedWall = split.now();
+        split.recoveryStatuses.abandon();
+
+        split.stepWall(Duration.ofMinutes(minutes));
+        split.advanceMono(Duration.ofMinutes(5));
+        EventRecoveryStatus failed = requireNonNull(split.recoveryStatuses.get(id));
+        assertThat(failed.state()).isEqualTo(FAILED);
+        assertThat(failed.reason()).isEqualTo(EventRecoveryStatuses.FEED_CLOSED);
+        assertThat(failed.endedAt()).isEqualTo(Instant.ofEpochMilli(abandonedWall));
+
+        split.advanceMono(Duration.ofMillis(1));
+        assertThat(split.recoveryStatuses.get(id)).isNull();
+    }
+
     @Test
     void pastTheBoundTheStatusThatEndedFirstIsForgottenAndCounted() {
         var counters = new RecoveryCounters();
-        var statuses = new EventRecoveryStatuses(feed.clock, counters, 3);
+        var statuses = new EventRecoveryStatuses(feed.feedClock, counters, 3);
         for (long id = 1; id <= 5; id++) {
             statuses.pending(id, PRE, MATCH, feed.clock.instant());
         }
         assertThat(statuses.size()).as("pending ones are never dropped").isEqualTo(5);
         for (long id = 1; id <= 4; id++) {
-            statuses.ended(id, COMPLETED, feed.clock.instant(), null);
+            statuses.ended(id, COMPLETED, feed.clock.instant(), null, feed.feedClock.monoMillis());
         }
         assertThat(statuses.get(1)).as("the first to end").isNull();
         assertThat(requireNonNull(statuses.get(2)).state()).isEqualTo(COMPLETED);
@@ -280,10 +359,10 @@ class EventRecoveryStatusTest {
     @Test
     void theActorsBoundIsTenThousandEndedStatuses() {
         var counters = new RecoveryCounters();
-        var statuses = new EventRecoveryStatuses(feed.clock, counters);
+        var statuses = new EventRecoveryStatuses(feed.feedClock, counters);
         for (long id = 1; id <= EventRecoveryStatuses.ENDED_KEPT + 1; id++) {
             statuses.pending(id, PRE, MATCH, feed.clock.instant());
-            statuses.ended(id, FAILED, feed.clock.instant(), "refused");
+            statuses.ended(id, FAILED, feed.clock.instant(), "refused", feed.feedClock.monoMillis());
         }
         assertThat(EventRecoveryStatuses.ENDED_KEPT).isEqualTo(10_000);
         assertThat(statuses.get(1)).isNull();
@@ -293,20 +372,20 @@ class EventRecoveryStatusTest {
 
     @Test
     void anEndedStatusEndsOnceAndAnIdAskedForAgainIsNotForgottenWithTheOldOne() {
-        var statuses = new EventRecoveryStatuses(feed.clock, new RecoveryCounters());
+        var statuses = new EventRecoveryStatuses(feed.feedClock, new RecoveryCounters());
         URN other = URN.parse("od:match:2");
         statuses.pending(1, PRE, MATCH, feed.clock.instant());
-        statuses.ended(1, COMPLETED, feed.clock.instant(), null);
-        statuses.ended(1, FAILED, feed.clock.instant(), "late");
+        statuses.ended(1, COMPLETED, feed.clock.instant(), null, feed.feedClock.monoMillis());
+        statuses.ended(1, FAILED, feed.clock.instant(), "late", feed.feedClock.monoMillis());
         assertThat(requireNonNull(statuses.get(1)).state()).as("ended once").isEqualTo(COMPLETED);
-        statuses.ended(2, FAILED, feed.clock.instant(), "never asked for");
+        statuses.ended(2, FAILED, feed.clock.instant(), "never asked for", feed.feedClock.monoMillis());
         assertThat(statuses.get(2)).isNull();
 
         // the id asked for again, within the five minutes of the first
         feed.clock.advance(Duration.ofMinutes(1));
         statuses.pending(1, LIVE, other, feed.clock.instant());
         feed.clock.advance(Duration.ofMinutes(5));
-        statuses.expire(feed.clock.instant());
+        statuses.expire(feed.feedClock.monoMillis());
         EventRecoveryStatus again = requireNonNull(statuses.get(1));
         assertThat(again.eventId()).isEqualTo(other);
         assertThat(again.state()).isEqualTo(PENDING);

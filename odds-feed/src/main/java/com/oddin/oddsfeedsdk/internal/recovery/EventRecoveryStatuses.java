@@ -1,9 +1,9 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.InstantSource;
 import java.util.ArrayDeque;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +16,11 @@ import org.slf4j.LoggerFactory;
  * The event recoveries' statuses by request id, as the Go SDK keeps them: from the request until
  * five minutes after the recovery ended, then forgotten. The recovery actor's thread writes them;
  * any thread reads them, and sees each status whole.
+ *
+ * <p>The five minutes are a duration between two local events, so they run on the feed clock's
+ * monotonic side: a step of the wall clock neither forgets a status early nor keeps it longer. The
+ * instants a status publishes, {@link EventRecoveryStatus#startedAt} and {@link
+ * EventRecoveryStatus#endedAt}, are wall time, as the caller gave them.
  *
  * <p>Bounded: the pending ones are the event recoveries in flight, at most {@link
  * RecoverySettings#eventRecoveries()} per producer; of the ended ones it keeps {@link #ENDED_KEPT}
@@ -42,24 +47,32 @@ final class EventRecoveryStatuses {
     /** Why a recovery the close left pending failed. */
     static final String FEED_CLOSED = "the feed closed";
 
-    private final Map<Long, EventRecoveryStatus> statuses = new ConcurrentHashMap<>();
+    /**
+     * A status and the monotonic reading of when it ended, which retention counts from; unused while it is pending.
+     */
+    private record Kept(EventRecoveryStatus status, long endedMono) {}
+
+    /** When the feed's close gave up waiting for the actor, on both sides of the clock. */
+    private record Abandoned(Instant at, long mono) {}
+
+    private final Map<Long, Kept> statuses = new ConcurrentHashMap<>();
     /** The ended statuses, in the order they ended; the actor's thread's only. */
-    private final ArrayDeque<EventRecoveryStatus> ended = new ArrayDeque<>();
+    private final ArrayDeque<Kept> ended = new ArrayDeque<>();
     /** Orders {@link #abandon} and {@link #ended}: nothing ends well after it, or a read sees it undone. */
     private final ReentrantLock lock = new ReentrantLock();
-    /** When the feed's close gave up waiting for the actor; null before. */
-    private volatile @Nullable Instant abandonedAt;
+    /** Null before the close gave up waiting for the actor. */
+    private volatile @Nullable Abandoned abandoned;
 
-    private final InstantSource clock;
+    private final FeedClock clock;
     private final RecoveryCounters counters;
     private final int endedKept;
 
-    EventRecoveryStatuses(InstantSource clock, RecoveryCounters counters) {
+    EventRecoveryStatuses(FeedClock clock, RecoveryCounters counters) {
         this(clock, counters, ENDED_KEPT);
     }
 
     /** With a bound a test sets. */
-    EventRecoveryStatuses(InstantSource clock, RecoveryCounters counters, int endedKept) {
+    EventRecoveryStatuses(FeedClock clock, RecoveryCounters counters, int endedKept) {
         this.clock = clock;
         this.counters = counters;
         this.endedKept = endedKept;
@@ -71,15 +84,18 @@ final class EventRecoveryStatuses {
      */
     @Nullable
     EventRecoveryStatus get(long requestId) {
-        EventRecoveryStatus status = statuses.get(requestId);
-        if (status == null) {
+        Kept kept = statuses.get(requestId);
+        if (kept == null) {
             return null;
         }
-        Instant abandoned = abandonedAt;
-        if (abandoned != null && status.state() == EventRecoveryStatus.State.PENDING) {
-            status = status.ended(EventRecoveryStatus.State.FAILED, abandoned, FEED_CLOSED);
+        var status = kept.status();
+        var endedMono = kept.endedMono();
+        var gone = abandoned;
+        if (gone != null && status.state() == EventRecoveryStatus.State.PENDING) {
+            status = status.ended(EventRecoveryStatus.State.FAILED, gone.at(), FEED_CLOSED);
+            endedMono = gone.mono();
         }
-        return expired(status, clock.instant()) ? null : status;
+        return expired(status, endedMono, clock.monoMillis()) ? null : status;
     }
 
     /**
@@ -90,8 +106,8 @@ final class EventRecoveryStatuses {
     void abandon() {
         lock.lock();
         try {
-            if (abandonedAt == null) {
-                abandonedAt = clock.instant();
+            if (abandoned == null) {
+                abandoned = new Abandoned(clock.wall().instant(), clock.monoMillis());
             }
         } finally {
             lock.unlock();
@@ -100,26 +116,28 @@ final class EventRecoveryStatuses {
 
     /** An event recovery asked for. The actor's thread only. */
     void pending(long requestId, long producerId, URN eventId, Instant at) {
-        statuses.put(requestId, EventRecoveryStatus.pending(requestId, producerId, eventId, at));
+        statuses.put(requestId, new Kept(EventRecoveryStatus.pending(requestId, producerId, eventId, at), 0));
     }
 
     /**
-     * A pending recovery reached its end; one not pending - unknown, or ended already - stays as it
-     * is. The actor's thread only.
+     * A pending recovery reached its end, at {@code at} by the wall clock, which is what it
+     * publishes, and {@code mono} by the monotonic one, which its retention counts from; one not
+     * pending - unknown, or ended already - stays as it is. The actor's thread only.
      */
-    void ended(long requestId, EventRecoveryStatus.State state, Instant at, @Nullable String reason) {
-        EventRecoveryStatus status = statuses.get(requestId);
-        if (status == null || status.state() != EventRecoveryStatus.State.PENDING) {
+    void ended(long requestId, EventRecoveryStatus.State state, Instant at, @Nullable String reason, long mono) {
+        Kept kept = statuses.get(requestId);
+        if (kept == null || kept.status().state() != EventRecoveryStatus.State.PENDING) {
             return;
         }
-        EventRecoveryStatus done;
+        Kept done;
         lock.lock();
         try {
-            Instant abandoned = abandonedAt;
+            var gone = abandoned;
             // what a read has shown since the close gave up is what it stays
-            done = abandoned == null
-                    ? status.ended(state, at, reason)
-                    : status.ended(EventRecoveryStatus.State.FAILED, abandoned, FEED_CLOSED);
+            done = gone == null
+                    ? new Kept(kept.status().ended(state, at, reason), mono)
+                    : new Kept(
+                            kept.status().ended(EventRecoveryStatus.State.FAILED, gone.at(), FEED_CLOSED), gone.mono());
             statuses.put(requestId, done);
         } finally {
             lock.unlock();
@@ -140,9 +158,9 @@ final class EventRecoveryStatuses {
     }
 
     /** Forgets the statuses that ended more than five minutes ago. The actor's thread only. */
-    void expire(Instant now) {
-        EventRecoveryStatus oldest;
-        while ((oldest = ended.peekFirst()) != null && expired(oldest, now)) {
+    void expire(long mono) {
+        Kept oldest;
+        while ((oldest = ended.peekFirst()) != null && expired(oldest.status(), oldest.endedMono(), mono)) {
             forget(ended.removeFirst());
         }
     }
@@ -153,12 +171,11 @@ final class EventRecoveryStatuses {
     }
 
     /** Removes the status, unless its id has been asked for again since. */
-    private void forget(EventRecoveryStatus status) {
-        statuses.remove(status.requestId(), status);
+    private void forget(Kept kept) {
+        statuses.remove(kept.status().requestId(), kept);
     }
 
-    private static boolean expired(EventRecoveryStatus status, Instant now) {
-        Instant endedAt = status.endedAt();
-        return endedAt != null && Duration.between(endedAt, now).compareTo(RETENTION) > 0;
+    private static boolean expired(EventRecoveryStatus status, long endedMono, long mono) {
+        return status.endedAt() != null && mono - endedMono > RETENTION.toMillis();
     }
 }

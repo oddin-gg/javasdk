@@ -73,7 +73,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>Time.</b> Every duration the machine measures between two local events - a producer's
  * inactivity, the deadlines of a recovery and of an event recovery, the backoffs, the cool-down, the
- * safety net's windows - runs on the feed clock's monotonic side, so a step of the wall clock
+ * safety net's windows, how long an event recovery's status is kept - runs on the feed clock's monotonic side, so a step of the wall clock
  * neither fires a deadline nor holds one back. What the machine publishes - the last message's
  * timestamp, the resume point, a recovery's start, the instants of status changes - and what it
  * compares with a producer's own timestamps - the clock offset, a message's age, the cap at the
@@ -922,7 +922,7 @@ final class RecoveryMachine {
                 }
             }
         }
-        statuses.expire(Instant.ofEpochMilli(wall()));
+        statuses.expire(mono);
     }
 
     // ---- recoveries
@@ -1190,7 +1190,7 @@ final class RecoveryMachine {
 
     /** The event recovery's status says it ended, now, in {@code state}. */
     private void ended(EventRecovery recovery, EventRecoveryStatus.State state, @Nullable String reason) {
-        statuses.ended(recovery.requestId, state, Instant.ofEpochMilli(wall()), reason);
+        statuses.ended(recovery.requestId, state, Instant.ofEpochMilli(wall()), reason, mono());
     }
 
     // ---- gaps and checkpoints
