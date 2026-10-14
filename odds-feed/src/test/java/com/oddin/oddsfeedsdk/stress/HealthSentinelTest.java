@@ -7,11 +7,15 @@ import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /** A stalled sample or event fails the sentinel; healthy ones do not, and an unused one fails too. */
 class HealthSentinelTest {
@@ -53,6 +57,78 @@ class HealthSentinelTest {
         var sentinel = new HealthSentinel(() -> health(HealthState.HEALTHY));
 
         assertThatThrownBy(sentinel::assertNeverStalled).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void closeWaitsForASampleInFlightSoItsResultCanBeRead() throws Exception {
+        var inSource = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var sentinel = new HealthSentinel(() -> {
+            inSource.countDown();
+            awaitUninterruptibly(release);
+            return health(HealthState.STALLED);
+        });
+        sentinel.start();
+        var closer = new Thread(sentinel::close, "closer");
+        try {
+            assertThat(inSource.await(30, TimeUnit.SECONDS)).isTrue();
+            closer.start();
+            // the sample cannot finish before the release: close() has to be waiting for it
+            while (closer.getState() == Thread.State.NEW || closer.getState() == Thread.State.RUNNABLE) {
+                Thread.onSpinWait();
+            }
+            assertThat(closer.isAlive())
+                    .as("close() returned with a sample in flight")
+                    .isTrue();
+        } finally {
+            release.countDown();
+            closer.join(30_000);
+        }
+
+        assertThat(closer.isAlive()).isFalse();
+        assertThatThrownBy(sentinel::assertNeverStalled)
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("STALLED");
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void closeFailsLoudlyWhenTheSamplerDoesNotStop() throws Exception {
+        var inSource = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var sentinel = new HealthSentinel(
+                () -> {
+                    inSource.countDown();
+                    awaitUninterruptibly(release);
+                    return health(HealthState.HEALTHY);
+                },
+                Duration.ofMillis(200));
+        sentinel.start();
+        try {
+            assertThat(inSource.await(30, TimeUnit.SECONDS)).isTrue();
+
+            assertThatThrownBy(sentinel::close)
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("did not stop");
+        } finally {
+            release.countDown();
+        }
+    }
+
+    private static void awaitUninterruptibly(CountDownLatch latch) {
+        boolean interrupted = false;
+        while (true) {
+            try {
+                latch.await();
+                break;
+            } catch (InterruptedException e) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static HealthEvent event(HealthState previous, HealthState state) {

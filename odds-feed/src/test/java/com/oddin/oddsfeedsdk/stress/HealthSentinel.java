@@ -19,15 +19,23 @@ import java.util.function.Supplier;
 final class HealthSentinel implements AutoCloseable {
 
     private static final Duration EVERY = Duration.ofMillis(250);
+    private static final Duration STOP_WAIT = Duration.ofSeconds(5);
 
     private final Supplier<FeedHealth> source;
+    private final Duration stopWait;
     private final List<HealthEvent> events = new CopyOnWriteArrayList<>();
     private final List<FeedHealth> stalled = new CopyOnWriteArrayList<>();
     private final AtomicInteger samples = new AtomicInteger();
     private volatile Thread sampler;
 
     HealthSentinel(Supplier<FeedHealth> source) {
+        this(source, STOP_WAIT);
+    }
+
+    /** @param stopWait how long {@link #close} waits for the sampler before it fails */
+    HealthSentinel(Supplier<FeedHealth> source, Duration stopWait) {
         this.source = source;
+        this.stopWait = stopWait;
     }
 
     /** Samples on a daemon thread until closed. */
@@ -53,10 +61,11 @@ final class HealthSentinel implements AutoCloseable {
     /** One sample. */
     void sample() {
         var health = source.get();
-        samples.incrementAndGet();
+        // the result first: a sample that is counted is one whose result can be read
         if (health.state() == HealthState.STALLED) {
             stalled.add(health);
         }
+        samples.incrementAndGet();
     }
 
     void onHealthEvent(HealthEvent event) {
@@ -84,11 +93,22 @@ final class HealthSentinel implements AutoCloseable {
                 .isEmpty();
     }
 
+    /** Stops the sampler and waits for it, so that no sample is half recorded once this has returned. */
     @Override
     public void close() {
         var thread = sampler;
-        if (thread != null) {
-            thread.interrupt();
+        if (thread == null) {
+            return;
+        }
+        thread.interrupt();
+        try {
+            thread.join(stopWait.toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("interrupted while waiting for the health sampler to stop", e);
+        }
+        if (thread.isAlive()) {
+            throw new IllegalStateException("the health sampler did not stop within " + stopWait);
         }
     }
 }
