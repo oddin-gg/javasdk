@@ -24,6 +24,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
 
 /**
  * Which messages were published and which reached the listener, per match, as sequence numbers.
@@ -49,6 +50,9 @@ final class Ledger {
 
     private final long base;
     private final Map<String, AtomicLong> nextSequence = new ConcurrentHashMap<>();
+    /** Per match, how many publishes have returned, whatever the outcome: the first sequence not yet through. */
+    private final Map<String, AtomicLong> returned = new ConcurrentHashMap<>();
+
     private final Map<String, List<Long>> published = new ConcurrentHashMap<>();
     private final Map<String, List<Long>> delivered = new ConcurrentHashMap<>();
     /** Sent, and the broker's answer was an error: it may have been routed, and may arrive. */
@@ -60,7 +64,9 @@ final class Ledger {
 
     /** The odds change of this match stamped with this sequence. */
     String message(String match, long sequence) {
-        var changed = Fixtures.replace(Fixtures.read(MATCH_FIXTURE), FIXTURE_EVENT, match);
+        // a request id makes the SDK take the message for a snapshot's, not for live traffic
+        var live = Fixtures.replace(Fixtures.read(MATCH_FIXTURE), " request_id=\"2049987833\"", "");
+        var changed = Fixtures.replace(live, FIXTURE_EVENT, match);
         return FeedMessages.stampedAt(changed, base + sequence);
     }
 
@@ -70,21 +76,32 @@ final class Ledger {
      * @return whether the broker routed it, which is when it counts as published
      */
     boolean publish(FakeFeed broker, String match) {
+        return publish(broker::publishAsIs, match);
+    }
+
+    /** As {@link #publish(FakeFeed, String)}, to any broker: its answer is whether it routed the message. */
+    boolean publish(Predicate<String> broker, String match) {
+        var done = returned.computeIfAbsent(match, _ -> new AtomicLong());
         long sequence =
                 nextSequence.computeIfAbsent(match, _ -> new AtomicLong()).getAndIncrement();
-        boolean routed;
         try {
-            routed = broker.publishAsIs(message(match, sequence));
-        } catch (RuntimeException e) {
-            // a broker taking a queue down can route a message to the others and still answer with an
-            // error: it is neither published nor known to be lost
-            sentWithError(match, sequence);
-            throw e;
+            boolean routed;
+            try {
+                routed = broker.test(message(match, sequence));
+            } catch (RuntimeException e) {
+                // a broker taking a queue down can route a message to the others and still answer with an
+                // error: it is neither published nor known to be lost
+                sentWithError(match, sequence);
+                throw e;
+            }
+            if (routed) {
+                published(match, sequence);
+            }
+            return routed;
+        } finally {
+            // last, so that a mark never counts a message whose broker call is still under way
+            done.incrementAndGet();
         }
-        if (routed) {
-            published(match, sequence);
-        }
-        return routed;
     }
 
     void sentWithError(String match, long sequence) {
@@ -107,10 +124,14 @@ final class Ledger {
         return count(delivered);
     }
 
-    /** For each match, the sequence its next message will have: what a probe's round trip marks. */
+    /**
+     * For each match, the first sequence whose publish had not returned when this was called: a
+     * publish still inside the broker call is after the mark, as it may be routed after the connection
+     * is back. What a probe's round trip marks.
+     */
     Map<String, Long> mark() {
         var marks = new HashMap<String, Long>();
-        nextSequence.forEach((match, next) -> marks.put(match, next.get()));
+        returned.forEach((match, done) -> marks.put(match, done.get()));
         return marks;
     }
 
@@ -156,6 +177,7 @@ final class Ledger {
 
     /** Per match, what arrived is what was published, in order. */
     void assertExact() {
+        assertSomethingWasPublished();
         for (var match : matches()) {
             assertThat(delivered(match))
                     .as(
@@ -174,6 +196,7 @@ final class Ledger {
      * one that is missing while a later one arrived is a gap.
      */
     void assertPrefix() {
+        assertSomethingWasPublished();
         for (var match : matches()) {
             var arrived = delivered(match);
             if (arrived.isEmpty()) {
@@ -201,6 +224,7 @@ final class Ledger {
      * an error may have arrived, or not.
      */
     void assertGapsOnlyAfterReconnect(Map<String, Long> mark) {
+        assertSomethingWasPublished();
         for (var match : matches()) {
             var arrived = delivered(match);
             var sent = published(match);
@@ -217,6 +241,13 @@ final class Ledger {
                     .as("%s: delivered, which must hold all published since the reconnect", match)
                     .containsAll(afterMark);
         }
+    }
+
+    /** A run that published nothing proves nothing: the listener may never have been wired. */
+    private void assertSomethingWasPublished() {
+        assertThat(publishedCount())
+                .as("messages published; the checks of an empty ledger prove nothing")
+                .isPositive();
     }
 
     private List<String> matches() {
