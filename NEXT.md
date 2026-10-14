@@ -908,6 +908,11 @@ and REST workers post facts to it; it decides and posts work out.
   left it closed (KD-27). The session is told of the loss before the new channel can
   deliver, and of the new channel once its queue is bound, and recovery covers what the
   old queue held.
+  A channel the broker keeps refusing - a queue limit, a binding it will not take - is
+  retried for as long as it takes, each failure counted (`getHealth().transport()
+  .channelRefusals()`, `transport.channel_refusals`); the connection is `DEGRADED` once one
+  channel has been refused three times in a row and the streak has gone on for the
+  connection's down limit, until the next channel opens (see Watchdog and health).
 - Authentication and authorisation failures and a wrong virtual host are treated as
   permanent once at least three refusals have gone on for a whole minute with no
   connection in between. They are counted by the time, by `System.nanoTime`, not by
@@ -980,7 +985,7 @@ counter plus, for anything that discards data, an event.
 
 `getHealth()` returns a `FeedHealth`: the feed's state, the worst of its parts', a state
 per `HealthComponent` the feed has now, and typed groups of counters - the transport
-(connected, reconnects), the alives, one record per session (its state, lagging, queue
+(connected, reconnects, channel refusals), the alives, one record per session (its state, lagging, queue
 depth, overflows, epoch discards, skipped acks, messages handled, unparsable, oversized,
 pipeline and callback failures, unknown producers, repeated fixture changes), the
 recovery (requests issued, re-issued, failed, timed out, abandoned, completed, unknown
@@ -1002,8 +1007,12 @@ has served a value stale for an hour or more (`setCatalogStaleLimit`) is `DEGRAD
 when the health is read (by `getHealth()`, and by the watchdog's tick, so no reader is
 needed); so is the broker connection once it has been down for longer than 60 s
 (`setConnectionDownLimit`), from the first loss the transport told, and it is `HEALTHY`
-again as soon as it is up, told at once. A session is `DEGRADED` while the recovery actor
-reports it lagging, told at once. The watchdog's limits sit above the SDK's own waits, so a
+again as soon as it is up, told at once. The connection is also `DEGRADED`, with its
+reason naming the channel (a session's or the alive one) and the last failure, while a
+channel the broker refuses to open again on the live connection has been refused three
+times in a row and the streak has lasted that same limit; the next channel to open ends the
+streak, so does a lost connection (its time down is counted instead) and the close. A
+session is `DEGRADED` while the recovery actor reports it lagging, told at once. The watchdog's limits sit above the SDK's own waits, so a
 slow API is no stall: a callback running (`setCallbackStallLimit`), or a queue not moving
 (`setQueueStallLimit`), for longer than the longest the SDK itself waits for the API in one
 getter - a read loads twice at most, each load waiting the HTTP timeout and the loaders'
@@ -1128,7 +1137,8 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
   tournaments, `Statistics` on match status and a settlement's void reason id and
   parameters are not on the list: the schema does not declare them yet, so they come
   after 1.0, once it does and the API is confirmed to send them.
-- Getters: recovery status by request id, `getHealth()`, a single sport, tournament and
+- Getters: recovery status by request id, `getHealth()` (its transport counts the channel
+  refusals, the broker's refusals to open a channel again on a live connection), a single sport, tournament and
   player by id on `SportsInfoManager` (`getSport`, `getTournament`, and `getPlayer` without
   a locale next to 0.0.x's with one), the active producers in a scope
   (`ProducerManager.getActiveProducersInScope`, the Go SDK's `ProducersInScope`), a

@@ -139,7 +139,7 @@ class HealthSentinelTest {
         return new FeedHealth(
                 state,
                 Map.of(),
-                new FeedHealth.Transport(true, 0),
+                new FeedHealth.Transport(true, 0, 0),
                 new FeedHealth.Alives(0, 0, 0, 0),
                 List.of(),
                 new FeedHealth.Recovery(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),

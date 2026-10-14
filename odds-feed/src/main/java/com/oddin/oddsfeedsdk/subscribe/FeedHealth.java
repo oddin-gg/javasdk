@@ -18,9 +18,10 @@ import java.util.Map;
  * value under a stable name, for a metrics exporter. New in 1.0.
  *
  * <p>A part is {@link HealthState#DEGRADED} while it works with a quality the SDK gave up: a session
- * lagging, with the safety net's resets spent, or a catalog that has served a value stale, its
- * refreshes failing, for an hour or more. It is {@link HealthState#STALLED} when the SDK's own watch finds it not
- * moving: in one callback, or with a queue that has not moved, for longer than the SDK itself can
+ * lagging, with the safety net's resets spent, a catalog that has served a value stale, its
+ * refreshes failing, for an hour or more, or the broker connection down, or a channel of it refused
+ * again and again, for longer than its limit. It is {@link HealthState#STALLED} when the SDK's own
+ * watch finds it not moving: in one callback, or with a queue that has not moved, for longer than the SDK itself can
  * wait for the API in one getter - twice the HTTP client timeout and 5 seconds, 30 seconds at
  * least - or held by a deadlock of the SDK's own threads; it is healthy again once that ends. The feed's state is the worst of its
  * parts'. Each change is also told to {@code GlobalEventsListener.onHealthEvent}.
@@ -73,6 +74,7 @@ public record FeedHealth(
                 named.put("component." + component.name().toLowerCase(Locale.ROOT) + ".state", level(health)));
         named.put("transport.connected", flag(transport.connected()));
         named.put("transport.reconnects", transport.reconnects());
+        named.put("transport.channel_refusals", transport.channelRefusals());
         named.put("alives.queued", (long) alives.queued());
         named.put("alives.handled", alives.handled());
         named.put("alives.dropped", alives.dropped());
@@ -151,8 +153,12 @@ public record FeedHealth(
      *
      * @param connected whether the feed has a connection to the broker now
      * @param reconnects connections made again after a loss; the first connect is none
+     * @param channelRefusals times the broker refused to open a session's channel or the alive channel
+     *     again on a live connection, a queue limit or a binding it would not take; each is retried,
+     *     and the connection is degraded once they have gone on in a row, for as long as the
+     *     connection may be down
      */
-    public record Transport(boolean connected, long reconnects) {}
+    public record Transport(boolean connected, long reconnects, long channelRefusals) {}
 
     /**
      * The SDK's own alive consumer, which tells the recovery how each producer is.

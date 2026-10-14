@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.feed;
 
 import com.oddin.oddsfeedsdk.OddsFeedSession;
+import com.oddin.oddsfeedsdk.internal.amqp.AmqpTransport.ChannelRefusals;
 import com.oddin.oddsfeedsdk.internal.amqp.ConnectionEvents;
 import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
 import com.oddin.oddsfeedsdk.internal.dispatch.AliveDispatcher;
@@ -68,6 +69,9 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * default, for a health built without the configuration.
      */
     public static final Duration CONNECTION_DOWN_LIMIT = Duration.ofSeconds(60);
+
+    /** How many refusals of one channel in a row, with the connection's down limit, degrade the connection. */
+    static final int CHANNEL_REFUSALS = 3;
 
     private static final Part CONNECTION = new Part(HealthComponent.CONNECTION, 0);
     /** What {@link #connectionDownSince} holds while the connection is up. */
@@ -294,13 +298,16 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
         long reading = nextReading();
         var sessionHealth = new ArrayList<FeedHealth.Session>();
         @Nullable RecoveryActor actor = null;
-        var transport = new FeedHealth.Transport(false, 0);
+        var transport = new FeedHealth.Transport(false, 0, 0);
+        var refusing = List.<ChannelRefusals.Streak>of();
         var aliveHealth = new FeedHealth.Alives(0, 0, 0, 0);
         if (run != null) {
             run.sessions().forEach(dispatcher -> sessionHealth.add(session(dispatcher)));
             actor = run.actor();
+            var refusals = run.transport().channelRefusals();
+            refusing = refusals.streaks();
             transport = new FeedHealth.Transport(
-                    run.transport().connectionOpen(), run.transport().reconnects());
+                    run.transport().connectionOpen(), run.transport().reconnects(), refusals.total());
             AliveDispatcher alives = run.alives();
             if (alives != null) {
                 aliveHealth =
@@ -313,6 +320,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
                 run != null,
                 actor != null,
                 transport,
+                refusing,
                 aliveHealth,
                 sessionHealth,
                 (actor == null ? new RecoveryCounters() : actor.counters()).snapshot(),
@@ -332,6 +340,9 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
      * @param opened whether it is open: its connection, consumer and sessions are parts from then on
      * @param recovers whether it runs a recovery, as a feed that is no replay feed does once open:
      *     its alives and recovery are parts from then on
+     * @param refusing the channels that could not be opened again on the live connection, each with
+     *     its refusals in a row: the connection is degraded when one has had {@link
+     *     #CHANNEL_REFUSALS} of them and they have gone on for the connection's down limit
      */
     FeedHealth assess(
             long reading,
@@ -339,6 +350,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
             boolean opened,
             boolean recovers,
             FeedHealth.Transport transport,
+            List<ChannelRefusals.Streak> refusing,
             FeedHealth.Alives alives,
             List<FeedHealth.Session> sessionHealth,
             FeedHealth.Recovery recovery,
@@ -354,7 +366,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
             found.put(new Part(HealthComponent.THREADS, 0), watchedOnly(HealthComponent.THREADS));
         }
         if (opened) {
-            found.put(CONNECTION, connectionFound());
+            found.put(CONNECTION, connectionFound(refusing));
             found.put(new Part(HealthComponent.CONSUMER, 0), watchedOnly(HealthComponent.CONSUMER));
         }
         if (recovers) {
@@ -465,13 +477,22 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     }
 
     private Found connectionFound() {
+        return connectionFound(List.of());
+    }
+
+    /**
+     * The connection's part: down for longer than its limit, or up with a channel the broker keeps
+     * refusing. The channels are the transport's word at the reading, and none once the feed is
+     * closed, which ends the retries.
+     */
+    private Found connectionFound(List<ChannelRefusals.Streak> refusing) {
         Found atClose = connectionAtClose;
         if (atClose != null) {
             return atClose;
         }
         long since = connectionDownSince.get();
         if (since == CONNECTION_UP) {
-            return new Found(HealthState.HEALTHY, "the broker connection is up");
+            return refusedFound(refusing);
         }
         var down = Duration.ofNanos(nanos.getAsLong() - since);
         return down.compareTo(connectionDownLimit) > 0
@@ -480,6 +501,26 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
                         "the broker connection has been down for " + seconds(down, RoundingMode.CEILING)
                                 + ", over its limit of " + seconds(connectionDownLimit, RoundingMode.UNNECESSARY))
                 : new Found(HealthState.HEALTHY, "the broker connection is down, within its limit so far");
+    }
+
+    /** The channel that has been refused the longest, once it is enough in a row for long enough. */
+    private Found refusedFound(List<ChannelRefusals.Streak> refusing) {
+        ChannelRefusals.@Nullable Streak worst = null;
+        for (var streak : refusing) {
+            if (streak.count() >= CHANNEL_REFUSALS
+                    && streak.lasted().compareTo(connectionDownLimit) >= 0
+                    && (worst == null || streak.lasted().compareTo(worst.lasted()) > 0)) {
+                worst = streak;
+            }
+        }
+        if (worst == null) {
+            return new Found(HealthState.HEALTHY, "the broker connection is up");
+        }
+        return new Found(
+                HealthState.DEGRADED,
+                "the broker connection is up, but " + worst.channel() + " has been refused " + worst.count()
+                        + " times in a row over " + seconds(worst.lasted(), RoundingMode.FLOOR) + ", the last: "
+                        + worst.failure());
     }
 
     private Found catalogsFound(List<CatalogHealth> catalogs) {

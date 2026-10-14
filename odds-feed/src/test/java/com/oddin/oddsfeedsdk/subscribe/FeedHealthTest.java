@@ -31,6 +31,7 @@ class FeedHealthTest {
                         Map.entry("component.catalogs.state", 2L),
                         Map.entry("transport.connected", 1L),
                         Map.entry("transport.reconnects", 2L),
+                        Map.entry("transport.channel_refusals", 3L),
                         Map.entry("alives.queued", 3L),
                         Map.entry("alives.handled", 4L),
                         Map.entry("alives.dropped", 5L),
@@ -111,7 +112,7 @@ class FeedHealthTest {
         var health = new FeedHealth(
                 HealthState.HEALTHY,
                 components,
-                new FeedHealth.Transport(false, 0),
+                new FeedHealth.Transport(false, 0, 0),
                 new FeedHealth.Alives(0, 0, 0, 0),
                 List.of(),
                 recovery(0),
@@ -158,7 +159,7 @@ class FeedHealthTest {
         return new FeedHealth(
                 HealthState.DEGRADED,
                 components,
-                new FeedHealth.Transport(true, 2),
+                new FeedHealth.Transport(true, 2, 3),
                 new FeedHealth.Alives(3, 4, 5, 6),
                 List.of(new FeedHealth.Session(
                         7, SESSION, HealthState.DEGRADED, true, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18)),
