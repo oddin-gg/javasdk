@@ -1,6 +1,7 @@
 package com.oddin.oddsfeed.fakes;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static java.util.Objects.requireNonNull;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -24,6 +25,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 import javax.xml.stream.XMLInputFactory;
 import javax.xml.stream.XMLStreamException;
@@ -91,6 +93,7 @@ public final class FakeFeed implements AutoCloseable {
     private final List<String> refusedLogins = new CopyOnWriteArrayList<>();
     private volatile boolean refusing;
     private volatile boolean refusingVirtualHost;
+    private volatile Duration clockSkew = Duration.ZERO;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     // HTTP/1.1: the default first asks to upgrade to HTTP/2, and the management API hangs up on that
     private final HttpClient http = HttpClient.newBuilder()
@@ -428,20 +431,51 @@ public final class FakeFeed implements AutoCloseable {
 
     /**
      * Publishes a feed message as the live feed would: the routing key comes from the message
-     * (see {@link #routingKey}) and its {@code timestamp} is set to now. The SDK judges producer
-     * health by message age, so a fixture's fixed timestamp would read as a feed long behind.
+     * (see {@link #routingKey}) and its {@code timestamp} is set to now, by the producers' clock
+     * (see {@link #skewClock}). The SDK judges producer health by message age, so a fixture's fixed
+     * timestamp would read as a feed long behind.
      *
      * @return whether the broker routed it to at least one queue; false when no SDK is bound for it
      */
     public boolean publish(String message) {
-        String stamped = stamped(message);
-        return publish(routingKey(stamped), stamped);
+        return publishStamped(EXCHANGE, message, FakeFeed::routingKey);
     }
 
-    /** The message with its root element's {@code timestamp} set to now. */
-    private static String stamped(String message) {
+    /**
+     * Publishes a feed message as the live feed would for one SDK node: like {@link #publish(String)},
+     * with the node id in the routing key (see {@link #routingKey(String, int)}). An SDK built with
+     * that node id takes it, so does one with no node id, and one built with another does not.
+     *
+     * @return whether the broker routed it to at least one queue
+     */
+    public boolean publishToNode(int node, String message) {
+        return publishStamped(EXCHANGE, message, stamped -> routingKey(stamped, node));
+    }
+
+    /**
+     * Sets how far the producers' clock is from this machine's: from now on, {@link #publish(String)},
+     * {@link #publishToNode} and {@link #publishReplay} stamp a message, and its AMQP timestamp, with
+     * now plus this offset. Positive is a producer ahead of the SDK, negative one behind it; zero,
+     * the start, is a clock that agrees. The SDK's own receipt time is never moved, so the offset is
+     * what it has to measure on the alives. {@link #publishAsIs} and {@link #publish(String, String)}
+     * keep the stamp they are given.
+     */
+    public void skewClock(Duration offset) {
+        clockSkew = requireNonNull(offset, "offset");
+    }
+
+    /** The offset {@link #skewClock} set; zero when none. */
+    public Duration clockSkew() {
+        return clockSkew;
+    }
+
+    /**
+     * The message with its root element's {@code timestamp} set to {@code now} plus {@code skew}; as
+     * it is when it carries none.
+     */
+    static String stamped(String message, long now, Duration skew) {
         return FeedMessages.ROOT_TIMESTAMP.matcher(message).find()
-                ? FeedMessages.stampedAt(message, System.currentTimeMillis())
+                ? FeedMessages.stampedAt(message, now + skew.toMillis())
                 : message;
     }
 
@@ -462,25 +496,33 @@ public final class FakeFeed implements AutoCloseable {
      * @return whether the broker routed it to at least one queue
      */
     public boolean publish(String routingKey, String message) {
-        return publish(EXCHANGE, routingKey, message);
+        return publish(EXCHANGE, routingKey, message, System.currentTimeMillis());
     }
 
     /**
      * Publishes a feed message as a replay would: like {@link #publish(String)}, stamped with the
-     * current time, but to the {@value #REPLAY_EXCHANGE} exchange that replay sessions bind to.
+     * producers' now, but to the {@value #REPLAY_EXCHANGE} exchange that replay sessions bind to.
      *
      * @return whether the broker routed it to at least one queue
      */
     public boolean publishReplay(String message) {
-        String stamped = stamped(message);
-        return publish(REPLAY_EXCHANGE, routingKey(stamped), stamped);
+        return publishStamped(REPLAY_EXCHANGE, message, FakeFeed::routingKey);
     }
 
-    private boolean publish(String exchange, String routingKey, String message) {
+    /** Stamps the message by the producers' clock, reading it once, and publishes it with its key. */
+    private boolean publishStamped(String exchange, String message, UnaryOperator<String> routingKey) {
+        long now = System.currentTimeMillis();
+        var skew = clockSkew;
+        var stamped = stamped(message, now, skew);
+        return publish(exchange, routingKey.apply(stamped), stamped, now + skew.toMillis());
+    }
+
+    /** @param sentAt the AMQP timestamp, epoch millis; the broker keeps whole seconds */
+    private boolean publish(String exchange, String routingKey, String message, long sentAt) {
         String body = "{\"routing_key\":" + json(routingKey)
                 + ",\"payload\":" + json(message)
                 + ",\"payload_encoding\":\"string\""
-                + ",\"properties\":{\"timestamp\":" + System.currentTimeMillis() / 1000
+                + ",\"properties\":{\"timestamp\":" + Math.floorDiv(sentAt, 1000)
                 + ",\"content_type\":\"application/xml\"}}";
         HttpRequest request = HttpRequest.newBuilder(URI.create("http://" + broker.getHost() + ":"
                         + broker.getMappedPort(MANAGEMENT) + "/api/exchanges/"
@@ -519,13 +561,29 @@ public final class FakeFeed implements AutoCloseable {
      * {@link #publish(String, String)}.
      */
     public static String routingKey(String message) {
+        return routingKey(message, "-");
+    }
+
+    /**
+     * The routing key the feed sends this message with for one SDK node: {@link #routingKey(String)}
+     * with the node id as its last part. A session bound with that node id takes it, as does one
+     * with no node id for a message addressed to no node; another node's session does not.
+     * Alives are taken by every session whatever their node.
+     *
+     * @param node the node id, as the SDK's {@code setSDKNodeId} takes it
+     */
+    public static String routingKey(String message, int node) {
+        return routingKey(message, Integer.toString(node));
+    }
+
+    private static String routingKey(String message, String node) {
         try {
             XMLStreamReader xml = XMLInputFactory.newFactory().createXMLStreamReader(new StringReader(message));
             try {
                 xml.nextTag();
                 String type = xml.getLocalName();
                 if (type.equals("alive") || type.equals("snapshot_complete")) {
-                    return "-.-.-." + type + ".-.-.-.-";
+                    return "-.-.-." + type + ".-.-.-." + node;
                 }
                 String scope = switch (String.valueOf(xml.getAttributeValue(null, "product"))) {
                     case "1" -> "pre.-";
@@ -535,7 +593,7 @@ public final class FakeFeed implements AutoCloseable {
                 String event = xml.getAttributeValue(null, "event_id");
                 int split = event == null ? -1 : event.lastIndexOf(':');
                 String eventPart = split < 0 ? "-.-" : event.substring(0, split) + "." + event.substring(split + 1);
-                return "hi." + scope + "." + type + ".-." + eventPart + ".-";
+                return "hi." + scope + "." + type + ".-." + eventPart + "." + node;
             } finally {
                 xml.close();
             }

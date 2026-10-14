@@ -39,4 +39,33 @@ class FakeFeedRoutingKeyTest {
     void somethingElseIsRefused() {
         assertThatThrownBy(() -> FakeFeed.routingKey("not xml")).isInstanceOf(IllegalArgumentException.class);
     }
+
+    @Test
+    void aNodeReplacesTheAnyNodeOfTheKey() {
+        assertThat(FakeFeed.routingKey(Fixtures.read("feed/odds_change/odds_change_markets_only.xml"), 7))
+                .isEqualTo("hi.-.live.odds_change.-.od:match.198314.7");
+        assertThat(FakeFeed.routingKey("<bet_stop product=\"1\" event_id=\"od:match:7\" timestamp=\"1\"/>", 0))
+                .isEqualTo("hi.pre.-.bet_stop.-.od:match.7.0");
+    }
+
+    @Test
+    void aSnapshotCompleteForANodeCarriesItAtTheEnd() {
+        // the key the SDK binds for its node: -.-.-.snapshot_complete.-.-.-.<node>
+        assertThat(FakeFeed.routingKey(Fixtures.read("feed/snapshot_complete/snapshot_complete.xml"), 8))
+                .isEqualTo("-.-.-.snapshot_complete.-.-.-.8");
+    }
+
+    @Test
+    void anAliveForANodeKeepsTheShapeTheAliveBindingTakes() {
+        assertThat(FakeFeed.routingKey(Fixtures.read("feed/alive/alive.xml"), 8))
+                .isEqualTo("-.-.-.alive.-.-.-.8");
+    }
+
+    @Test
+    void noNodeIsTheKeyForAnyNode() {
+        var message = Fixtures.read("feed/odds_change/odds_change_markets_only.xml");
+        assertThat(FakeFeed.routingKey(message)).endsWith(".-");
+        assertThat(FakeFeed.routingKey(message, 3))
+                .isEqualTo(FakeFeed.routingKey(message).replaceAll("-$", "3"));
+    }
 }

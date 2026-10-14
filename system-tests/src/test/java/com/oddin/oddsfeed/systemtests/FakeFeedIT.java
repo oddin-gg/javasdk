@@ -23,6 +23,9 @@ class FakeFeedIT {
 
     private static final String ODDS_CHANGE = "feed/odds_change/odds_change_markets_only.xml";
 
+    /** How far a stamp may be from the time it stands for, for the time it takes to get here. */
+    private static final long CLOSE = 15_000L;
+
     @Test
     void theSdkReceivesAnOddsChangeFromTheFake() throws InterruptedException {
         try (FakeRestServer rest = FakeRestServer.start();
@@ -84,6 +87,35 @@ class FakeFeedIT {
                 afterReconnect = received.poll(OddsChange.class, Duration.ofSeconds(1));
             }
             assertThat(afterReconnect).as("an odds change after the reconnect").isPresent();
+        }
+    }
+
+    @Test
+    void aSkewedClockMovesTheProducersStampsAndNotTheSdksReceipt() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            Received received = sdk.open(MessageInterest.ALL);
+            feed.skewClock(Duration.ofMinutes(10));
+            assertThat(feed.clockSkew()).isEqualTo(Duration.ofMinutes(10));
+            feed.publishFixture(ODDS_CHANGE);
+            var ahead = received.next(OddsChange.class).getTimestamp();
+            feed.skewClock(Duration.ZERO);
+            feed.publishFixture(ODDS_CHANGE);
+            var onTime = received.next(OddsChange.class).getTimestamp();
+
+            assertThat(ahead.getCreated())
+                    .as("created while skewed")
+                    .isCloseTo(System.currentTimeMillis() + 600_000, within(CLOSE));
+            assertThat(ahead.getSent())
+                    .as("sent while skewed: the AMQP timestamp is the producers' too")
+                    .isCloseTo(ahead.getCreated(), within(3_000L));
+            assertThat(ahead.getReceived())
+                    .as("received while skewed: the SDK's own clock")
+                    .isCloseTo(System.currentTimeMillis(), within(CLOSE));
+            assertThat(onTime.getCreated())
+                    .as("created once the skew is lifted")
+                    .isCloseTo(System.currentTimeMillis(), within(CLOSE));
         }
     }
 }
