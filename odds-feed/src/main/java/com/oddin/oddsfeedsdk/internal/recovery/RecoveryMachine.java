@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
 import com.oddin.oddsfeedsdk.api.entities.Producer;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.log.Throttle;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
@@ -9,7 +10,6 @@ import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.InstantSource;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -71,6 +71,14 @@ import org.slf4j.LoggerFactory;
  * RecoverySettings#resets()} times per cool-down, with backoff between resets; when spent the
  * session is lagging, and no producer goes down for it.
  *
+ * <p><b>Time.</b> Every duration the machine measures between two local events - a producer's
+ * inactivity, the deadlines of a recovery and of an event recovery, the backoffs, the cool-down, the
+ * safety net's windows - runs on the feed clock's monotonic side, so a step of the wall clock
+ * neither fires a deadline nor holds one back. What the machine publishes - the last message's
+ * timestamp, the resume point, a recovery's start, the instants of status changes - and what it
+ * compares with a producer's own timestamps - the clock offset, a message's age, the cap at the
+ * producer's now - is wall time. The monotonic side is at least 1, as 0 stands for "never" here.
+ *
  * <p>Not safe for concurrent use: the recovery actor's thread is the only one that calls it.
  */
 final class RecoveryMachine {
@@ -93,7 +101,7 @@ final class RecoveryMachine {
     private final RecoverySettings settings;
     private final Outbox outbox;
     private final RecoveryEvents events;
-    private final InstantSource clock;
+    private final FeedClock clock;
     private final RecoveryCounters counters;
     /** Every event recovery's status, which any thread reads; written here only. */
     private final EventRecoveryStatuses statuses;
@@ -137,7 +145,7 @@ final class RecoveryMachine {
             RecoverySettings settings,
             Outbox outbox,
             RecoveryEvents events,
-            InstantSource clock,
+            FeedClock clock,
             RecoveryCounters counters,
             EventRecoveryStatuses statuses,
             RandomGenerator random) {
@@ -168,7 +176,7 @@ final class RecoveryMachine {
             return;
         }
         var session = new SessionState(info);
-        long now = now();
+        long mono = mono();
         // a client's alive-only session receives no producer's messages: no lane, so its channel's
         // loss and its pace take no producer down, and no recovery waits for its snapshot complete
         boolean receives = info.interest() != MessageInterest.SYSTEM_ALIVE_ONLY;
@@ -187,8 +195,8 @@ final class RecoveryMachine {
         if (started) {
             for (Long producerId : session.lanes.keySet()) {
                 Track track = track(producerId);
-                markDown(track, StatusCause.SESSION_OPENED, now);
-                maybeRequest(track, now);
+                markDown(track, StatusCause.SESSION_OPENED);
+                maybeRequest(track, mono);
             }
         }
     }
@@ -204,7 +212,7 @@ final class RecoveryMachine {
         if (session == null || closing) {
             return;
         }
-        long now = now();
+        long mono = mono();
         for (Long producerId : session.lanes.keySet()) {
             Track track = track(producerId);
             Active active = track.active;
@@ -214,10 +222,10 @@ final class RecoveryMachine {
                 // a snapshot complete stands for the API's acceptance; with none seen, and none left
                 // to wait for, the API's answer decides
                 if (active.seen.containsAll(active.awaited) && (active.accepted || seenAny)) {
-                    complete(track, active, now);
+                    complete(track, active, mono);
                 }
             } else if (active == null) {
-                upIfNothingMissing(track, now);
+                upIfNothingMissing(track);
             }
         }
         releaseDeferred();
@@ -248,7 +256,7 @@ final class RecoveryMachine {
             return;
         }
         started = true;
-        startedAt = now();
+        startedAt = mono();
         for (SessionState session : sessions.values()) {
             for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
                 Lane lane = entry.getValue();
@@ -323,10 +331,10 @@ final class RecoveryMachine {
      */
     void connectionDown() {
         connected = false;
-        long now = now();
+        long mono = mono();
         for (Track track : tracks.values()) {
             if (track.active != null) {
-                giveUp(track, now, "its snapshot went with the connection");
+                giveUp(track, mono, "its snapshot went with the connection");
             }
         }
         for (SessionState session : sessions.values()) {
@@ -339,7 +347,7 @@ final class RecoveryMachine {
         giveUpEvents(null);
         for (Track track : tracks.values()) {
             if (receivers(track) > 0) {
-                markDown(track, StatusCause.CONNECTION_LOST, now);
+                markDown(track, StatusCause.CONNECTION_LOST);
             }
         }
     }
@@ -350,10 +358,10 @@ final class RecoveryMachine {
      */
     void connectionUp() {
         connected = true;
-        long now = now();
+        long mono = mono();
         for (Track track : tracks.values()) {
-            maybeRequest(track, now);
-            upIfNothingMissing(track, now);
+            maybeRequest(track, mono);
+            upIfNothingMissing(track);
         }
     }
 
@@ -370,7 +378,7 @@ final class RecoveryMachine {
         }
         session.pending = null;
         session.lost = true;
-        queueLost(session, StatusCause.CHANNEL_LOST, now());
+        queueLost(session, StatusCause.CHANNEL_LOST, mono());
     }
 
     /**
@@ -383,9 +391,9 @@ final class RecoveryMachine {
             return;
         }
         session.lost = false;
-        long now = now();
+        long mono = mono();
         for (Long producerId : session.lanes.keySet()) {
-            maybeRequest(track(producerId), now);
+            maybeRequest(track(producerId), mono);
         }
         releaseDeferred();
     }
@@ -408,24 +416,24 @@ final class RecoveryMachine {
             return;
         }
         session.underway = 0;
-        long now = now();
+        long mono = mono();
         if (replaced) {
             // only a reset made counts against the cap and the backoff
-            session.resets.addLast(now);
-            session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size());
+            session.resets.addLast(mono);
+            session.nextResetAt = mono + backoff(settings.firstResetBackoff(), session.resets.size());
             counters.resets.incrementAndGet();
             events.safetyNetReset(id, session.underwayProducer, session.underwayAge);
             if (session.lagging) {
                 session.lagging = false;
                 events.lagging(id, false);
             }
-            queueLost(session, StatusCause.SAFETY_NET_RESET, now);
+            queueLost(session, StatusCause.SAFETY_NET_RESET, mono);
         } else {
             // nothing was dropped, but the snapshot completes ignored meanwhile are gone; the net waits
             // as long as after the last reset made, and the backoff does not grow for one not made
             LOG.warn("The safety net's reset of session {} was not made", id);
-            session.nextResetAt = now + backoff(settings.firstResetBackoff(), Math.max(1, session.resets.size()));
-            notSeen(session, now);
+            session.nextResetAt = mono + backoff(settings.firstResetBackoff(), Math.max(1, session.resets.size()));
+            notSeen(session, mono);
         }
         releaseDeferred();
     }
@@ -445,32 +453,32 @@ final class RecoveryMachine {
      * The session's queue lost what it held: it misses everything after its checkpoints, and a
      * recovery or event recovery that waited for its snapshot complete will not see it.
      */
-    private void queueLost(SessionState session, StatusCause cause, long now) {
+    private void queueLost(SessionState session, StatusCause cause, long mono) {
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Lane lane = entry.getValue();
             lane.gap = openGap(lane.gap, lane.checkpoint, false);
             lane.above = false;
         }
         for (Long producerId : session.lanes.keySet()) {
-            markDown(track(producerId), cause, now);
+            markDown(track(producerId), cause);
         }
-        notSeen(session, now);
+        notSeen(session, mono);
     }
 
     /**
      * The session will not see the snapshot completes it has not seen yet: the recoveries and event
      * recoveries waiting for them are given up, and asked for again as far as anything is missing.
      */
-    private void notSeen(SessionState session, long now) {
+    private void notSeen(SessionState session, long mono) {
         int id = session.info.id();
         giveUpEvents(id);
         for (Long producerId : session.lanes.keySet()) {
             Track track = track(producerId);
             Active active = track.active;
             if (active != null && active.awaited.contains(id) && !active.seen.contains(id)) {
-                giveUp(track, now, "its snapshot went with session " + id + "'s queue");
+                giveUp(track, mono, "its snapshot went with session " + id + "'s queue");
             }
-            maybeRequest(track, now);
+            maybeRequest(track, mono);
         }
     }
 
@@ -483,11 +491,11 @@ final class RecoveryMachine {
      * positive timestamp is ignored: as the producer's clock it would put the producer's now at or
      * before the epoch, and every recovery and resume point capped at it with it.
      *
-     * @param received when the SDK received it; for now only its wall reading is read, epoch millis
-     *     by the SDK's clock
+     * @param received when the SDK received it: the wall reading is compared with the producer's
+     *     clock and published, the monotonic one measures the alive interval and orders it against
+     *     the recovery's acceptance
      */
     void alive(long producerId, long generatedAt, Stamp received, boolean subscribed) {
-        long receivedAt = received.wall();
         Track track = known(producerId);
         if (track == null || !enabled(track)) {
             return;
@@ -496,21 +504,21 @@ final class RecoveryMachine {
             // the alive dispatcher refuses and logs it before it gets here
             return;
         }
-        long now = now();
+        long mono = mono();
         // the alive after the one that gave a recovery up: it may be asked for again
         track.awaitsAlive = false;
         if (track.lastAliveAt != 0) {
             // a second at least, and the maximum inactivity at most, unless that is less
             long measured = Math.clamp(
-                    receivedAt - track.lastAliveAt,
+                    received.mono() - track.lastAliveAt,
                     1_000,
                     Math.max(1_000, settings.maxInactivity().toMillis()));
             track.aliveInterval += (measured - track.aliveInterval) / 4;
         }
-        track.lastAliveAt = receivedAt;
+        track.lastAliveAt = received.mono();
         track.lastAliveGen = generatedAt;
-        track.offset = receivedAt - generatedAt;
-        producers.setLastMessageTimestamp(producerId, Math.max(1, receivedAt));
+        track.offset = received.wall() - generatedAt;
+        producers.setLastMessageTimestamp(producerId, Math.max(1, received.wall()));
         if (track.inactive) {
             // an alive after a gap re-arms the cap at once
             track.inactive = false;
@@ -521,15 +529,15 @@ final class RecoveryMachine {
         } else {
             openProducerGap(track, generatedAt);
             Active active = track.active;
-            if (active != null && active.accepted && receivedAt >= active.acceptedAt) {
+            if (active != null && active.accepted && received.mono() >= active.acceptedAt) {
                 // still unsubscribed after the producer took the request: it lost it, restarting say,
                 // and will send neither the snapshot nor its snapshot complete
-                giveUp(track, now, "the producer says unsubscribed since it accepted it");
+                giveUp(track, mono, "the producer says unsubscribed since it accepted it");
                 track.awaitsAlive = true;
             }
-            markDown(track, StatusCause.UNSUBSCRIBED, now);
+            markDown(track, StatusCause.UNSUBSCRIBED);
         }
-        maybeRequest(track, now);
+        maybeRequest(track, mono);
     }
 
     /**
@@ -539,20 +547,20 @@ final class RecoveryMachine {
      * ignores, moves none: it was delivered, and a snapshot one still puts off the deadline for its
      * snapshot complete.
      *
-     * @param taken when the session's dispatcher took it; for now only its wall reading is read,
-     *     epoch millis by the SDK's clock
+     * @param taken when the session's dispatcher took it: the wall reading is published and
+     *     compared with the producer's clock, the monotonic one orders it against the recovery that
+     *     ended and times the safety net's window
      * @param requestId the recovery's request id a snapshot message carries, 0 for a live one
      */
     void processed(int id, long producerId, long generatedAt, Stamp taken, long requestId) {
-        long takenAt = taken.wall();
         Track track = known(producerId);
         SessionState session = sessions.get(id);
         Lane lane = session == null || track == null ? null : session.lanes.get(producerId);
         if (session == null || track == null || lane == null) {
             return;
         }
-        producers.setLastMessageTimestamp(producerId, Math.max(1, takenAt));
-        lane.lastAt = takenAt;
+        producers.setLastMessageTimestamp(producerId, Math.max(1, taken.wall()));
+        lane.lastAt = taken.mono();
         if (generatedAt <= 0) {
             // not a time: the stamp would publish 0 or less as the last processed timestamp, and as
             // the sample it would read as an age from the epoch, which starts a recovery. A snapshot
@@ -566,7 +574,7 @@ final class RecoveryMachine {
         heard(track, id, generatedAt, requestId);
         if (requestId == 0) {
             lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
-            sample(session, lane, track, generatedAt, takenAt);
+            sample(session, lane, track, generatedAt, taken);
         }
     }
 
@@ -576,7 +584,6 @@ final class RecoveryMachine {
      * a positive timestamp is ignored, as {@link #alive} ignores it.
      */
     void sessionAlive(int id, long producerId, long generatedAt, Stamp taken, boolean subscribed) {
-        long takenAt = taken.wall();
         if (generatedAt <= 0) {
             // not a time: the alive dispatcher logs the same alive on the SDK's own channel
             return;
@@ -588,12 +595,12 @@ final class RecoveryMachine {
             return;
         }
         producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
-        lane.lastAt = takenAt;
+        lane.lastAt = taken.mono();
         heard(track, id, generatedAt, 0);
         if (subscribed) {
             lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
         }
-        sample(session, lane, track, generatedAt, takenAt);
+        sample(session, lane, track, generatedAt, taken);
     }
 
     /**
@@ -612,7 +619,7 @@ final class RecoveryMachine {
                     && event.awaited.contains(id)
                     && !event.seen.contains(id)
                     && ahead(track, event, generatedAt, requestId)) {
-                event.heardAt = now();
+                event.heardAt = mono();
             }
         }
         Active active = track.active;
@@ -620,7 +627,7 @@ final class RecoveryMachine {
                 && active.awaited.contains(id)
                 && !active.seen.contains(id)
                 && (requestId == 0 ? generatedAt < active.requestedAt : ahead(track, active, requestId))) {
-            active.heardAt = now();
+            active.heardAt = mono();
         }
     }
 
@@ -638,10 +645,10 @@ final class RecoveryMachine {
         }
         Active active = track.active;
         if (active != null && active.requestId == requestId) {
-            return active.issuedAt < event.issuedAt;
+            return active.issuedMono < event.issuedMono;
         }
         EventRecovery other = eventRecoveries.get(requestId);
-        return other != null && other.producerId == track.id && other.issuedAt < event.issuedAt;
+        return other != null && other.producerId == track.id && other.issuedMono < event.issuedMono;
     }
 
     /** Whether a snapshot message of {@code requestId} is the recovery's own, or queued ahead of it. */
@@ -650,7 +657,7 @@ final class RecoveryMachine {
             return true;
         }
         EventRecovery event = eventRecoveries.get(requestId);
-        return event != null && event.producerId == track.id && event.issuedAt < active.issuedAt;
+        return event != null && event.producerId == track.id && event.issuedMono < active.issuedMono;
     }
 
     /** A session has seen a snapshot complete; an id the actor has not in flight is counted, and ignored. */
@@ -668,14 +675,14 @@ final class RecoveryMachine {
                 PendingReset pending = session == null ? null : session.pending;
                 if (session != null && pending != null && pending.producers.contains(producerId)) {
                     // the session has what the recovery sent: a reset now would drop it
-                    cancelReset(session, now());
+                    cancelReset(session, mono());
                 }
                 if (!active.accepted) {
                     // a snapshot complete says the API took the request, whatever it answers later
-                    accepted(track, active, now());
+                    accepted(track, active, mono());
                 }
                 if (track.active == active && active.seen.containsAll(active.awaited)) {
-                    complete(track, active, now());
+                    complete(track, active, mono());
                 }
             }
             return;
@@ -690,7 +697,7 @@ final class RecoveryMachine {
                     eventCompleted(event);
                 } else {
                     if (first) {
-                        event.heardAt = now();
+                        event.heardAt = mono();
                     }
                     CompletableFuture<@Nullable Long> reply = replies.remove(requestId);
                     if (reply != null) {
@@ -709,13 +716,13 @@ final class RecoveryMachine {
 
     /** A request's outcome: accepted when {@code failure} is null. */
     void answered(long requestId, @Nullable Exception failure) {
-        long now = now();
+        long mono = mono();
         CompletableFuture<@Nullable Long> reply = replies.remove(requestId);
         if (reply != null) {
             EventRecovery event = eventRecoveries.get(requestId);
             if (failure == null) {
                 if (event != null) {
-                    event.heardAt = now;
+                    event.heardAt = mono;
                 }
                 if (event != null && event.awaited.isEmpty()) {
                     // no session takes snapshot completes: nothing would ever complete it. Its
@@ -753,9 +760,9 @@ final class RecoveryMachine {
                     // a snapshot complete came first and said the API took it: the answer changes nothing
                     LOG.debug("Request {} answered after a snapshot complete of it", requestId);
                 } else if (failure == null) {
-                    accepted(track, active, now);
+                    accepted(track, active, mono);
                 } else {
-                    failed(track, active, now, "the API did not accept it: " + failure.getMessage());
+                    failed(track, active, mono, "the API did not accept it: " + failure.getMessage());
                 }
                 return;
             }
@@ -813,14 +820,15 @@ final class RecoveryMachine {
             // a session that receives it is being reset, or has lost its channel: its snapshot could
             // go to either channel, or to none
             LOG.debug("Event recovery of {} waits for a session's channel", eventId);
-            deferred.add(new DeferredEvent(producerId, eventId, stateful, reply, now()));
+            deferred.add(new DeferredEvent(producerId, eventId, stateful, reply, mono()));
             return;
         }
         long requestId = ids.next(this::inFlight);
-        long now = now();
-        var recovery = new EventRecovery(requestId, producerId, eventId, now, now - track.offset, awaited(track));
+        long wall = wall();
+        var recovery =
+                new EventRecovery(requestId, producerId, eventId, wall, mono(), wall - track.offset, awaited(track));
         eventRecoveries.put(requestId, recovery);
-        statuses.pending(requestId, producerId, eventId, Instant.ofEpochMilli(recovery.issuedAt));
+        statuses.pending(requestId, producerId, eventId, Instant.ofEpochMilli(recovery.issuedWall));
         replies.put(requestId, reply);
         counters.eventRequested.incrementAndGet();
         outbox.request(new Outbox.Call.Event(producerId, track.producer.getName(), requestId, eventId, stateful));
@@ -834,18 +842,18 @@ final class RecoveryMachine {
      * event recoveries expire.
      */
     void tick() {
-        long now = now();
-        cancelResetsWaitingForDisabledProducers(now);
+        long mono = mono();
+        cancelResetsWaitingForDisabledProducers(mono);
         for (Track track : tracks.values()) {
             if (!enabled(track)) {
                 continue;
             }
             Active active = track.active;
             if (active != null) {
-                if (now - active.issuedAt > settings.maxRecoveryTime().toMillis()) {
+                if (mono - active.issuedMono > settings.maxRecoveryTime().toMillis()) {
                     counters.timedOut.incrementAndGet();
-                    failed(track, active, now, "no snapshot complete within " + settings.maxRecoveryTime());
-                } else if (now - active.heardAt
+                    failed(track, active, mono, "no snapshot complete within " + settings.maxRecoveryTime());
+                } else if (mono - active.heardAt
                                 > settings.snapshotCompleteTimeout().toMillis()
                         && !underway(track)) {
                     // a reset underway gives it up once done; else its snapshot complete is lost
@@ -853,30 +861,30 @@ final class RecoveryMachine {
                     failed(
                             track,
                             active,
-                            now,
+                            mono,
                             "no snapshot complete, nor anything on its way, within "
                                     + settings.snapshotCompleteTimeout());
                 }
             }
             if (started) {
                 long last = track.lastAliveAt != 0 ? track.lastAliveAt : startedAt;
-                if (!track.inactive && now - last > settings.maxInactivity().toMillis()) {
+                if (!track.inactive && mono - last > settings.maxInactivity().toMillis()) {
                     track.inactive = true;
                     openProducerGap(track, track.lastAliveGen);
                     // a producer that went silent while a recovery was in flight may have lost it
-                    giveUp(track, now, "the producer sent no alive for " + settings.maxInactivity());
-                    markDown(track, StatusCause.ALIVE_INTERVAL_VIOLATION, now);
+                    giveUp(track, mono, "the producer sent no alive for " + settings.maxInactivity());
+                    markDown(track, StatusCause.ALIVE_INTERVAL_VIOLATION);
                 }
-                checkDelay(track, now);
+                checkDelay(track, mono);
             }
-            maybeRequest(track, now);
+            maybeRequest(track, mono);
         }
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
             String why = null;
-            if (now - recovery.issuedAt > settings.maxRecoveryTime().toMillis()) {
+            if (mono - recovery.issuedMono > settings.maxRecoveryTime().toMillis()) {
                 why = "no snapshot complete within " + settings.maxRecoveryTime();
             } else if (!replies.containsKey(recovery.requestId)
-                    && now - recovery.heardAt
+                    && mono - recovery.heardAt
                             > settings.snapshotCompleteTimeout().toMillis()) {
                 // accepted, and nothing of it heard since: the snapshot complete is lost. One the API has
                 // not answered yet waits for its REST worker's deadlines
@@ -894,7 +902,7 @@ final class RecoveryMachine {
             }
         }
         for (DeferredEvent event : new ArrayList<>(deferred)) {
-            if (now - event.deferredAt() > settings.maxRecoveryTime().toMillis()) {
+            if (mono - event.deferredAt() > settings.maxRecoveryTime().toMillis()) {
                 // the reset it waited for never ended: it expires as one asked for would
                 deferred.remove(event);
                 counters.eventExpired.incrementAndGet();
@@ -914,19 +922,19 @@ final class RecoveryMachine {
                 }
             }
         }
-        statuses.expire(Instant.ofEpochMilli(now));
+        statuses.expire(Instant.ofEpochMilli(wall()));
     }
 
     // ---- recoveries
 
     /** Asks for a recovery when the producer misses something and nothing holds the request back. */
-    private void maybeRequest(Track track, long now) {
-        if (hasGaps(track) && canRequest(track, now)) {
+    private void maybeRequest(Track track, long mono) {
+        if (hasGaps(track) && canRequest(track, mono)) {
             if (track.capSpentAt != 0) {
                 LOG.info("Recovery of producer {} re-armed after the cool-down", track.id);
                 rearm(track);
             }
-            request(track, now);
+            request(track, mono);
         }
     }
 
@@ -935,24 +943,25 @@ final class RecoveryMachine {
      * every channel that receives it bound, an alive that says the producer is there - after the one
      * that gave the last recovery up - and its backoff and its cap's cool-down over.
      */
-    private boolean canRequest(Track track, long now) {
+    private boolean canRequest(Track track, long mono) {
         return started
                 && connected
                 && track.active == null
                 && enabled(track)
                 && receivers(track) > 0
-                && aliveRecent(track, now)
+                && aliveRecent(track, mono)
                 && !track.awaitsAlive
                 && !awaitsChannel(track)
-                && now >= track.retryAt
+                && mono >= track.retryAt
                 && (track.capSpentAt == 0
-                        || now - track.capSpentAt >= settings.cooldown().toMillis());
+                        || mono - track.capSpentAt >= settings.cooldown().toMillis());
     }
 
-    private void request(Track track, long now) {
-        long after = after(track, now);
+    private void request(Track track, long mono) {
+        long wall = wall();
+        long after = after(track, wall);
         long requestId = ids.next(this::inFlight);
-        var active = new Active(requestId, after, now, now - track.offset, gapSeq, awaited(track));
+        var active = new Active(requestId, after, wall, mono, wall - track.offset, gapSeq, awaited(track));
         active.causes.add(track.cause);
         track.active = active;
         counters.requested.incrementAndGet();
@@ -973,7 +982,7 @@ final class RecoveryMachine {
      * window and capped at the producer's now; for none, 0.0.x's initial snapshot interval when
      * set, else 0 for a full snapshot.
      */
-    private long after(Track track, long now) {
+    private long after(Track track, long wall) {
         long after = track.gap == null ? Long.MAX_VALUE : track.gap.from;
         for (SessionState session : sessions.values()) {
             Lane lane = session.lanes.get(track.id);
@@ -985,9 +994,9 @@ final class RecoveryMachine {
         if (after != 0 && window > 0) {
             // the window counts back from now by the producer's clock, as the gaps' starts are
             after = Math.max(
-                    after, now - track.offset - Duration.ofMinutes(window).toMillis());
+                    after, wall - track.offset - Duration.ofMinutes(window).toMillis());
         }
-        return capped(track, after, now);
+        return capped(track, after, wall);
     }
 
     /**
@@ -996,24 +1005,24 @@ final class RecoveryMachine {
      * or a bad value, moves neither a recovery nor a resume point past what the producer has sent.
      * A point of 0, a full snapshot, or none stays as it is.
      */
-    private static long capped(Track track, long point, long now) {
-        return point > 0 ? Math.min(point, now - track.offset) : point;
+    private static long capped(Track track, long point, long wall) {
+        return point > 0 ? Math.min(point, wall - track.offset) : point;
     }
 
-    private void accepted(Track track, Active active, long now) {
+    private void accepted(Track track, Active active, long mono) {
         active.accepted = true;
-        active.acceptedAt = now;
+        active.acceptedAt = mono;
         producers.setRecoveryInfo(
-                track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), true));
+                track.id, new Recovery(active.after, active.issuedWall, active.requestId, settings.nodeId(), true));
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
             if (pending != null && pending.unaccepted.remove(track.id) && pending.unaccepted.isEmpty()) {
-                reset(session, pending, now);
+                reset(session, pending);
             }
         }
         if (track.active == active && active.awaited.isEmpty()) {
             // no session takes snapshot completes: nothing would ever complete it
-            complete(track, active, now);
+            complete(track, active, mono);
         }
     }
 
@@ -1026,13 +1035,13 @@ final class RecoveryMachine {
      * session next to a high-priority one sees none, so its reset goes ahead, and once it is done
      * what the recovery had sent into the old queue is asked for again.
      */
-    private void complete(Track track, Active active, long now) {
+    private void complete(Track track, Active active, long mono) {
         track.active = null;
-        track.pausedUntil = now;
+        track.pausedUntil = mono;
         if (!active.accepted) {
             // the snapshot complete was quicker than the API's answer
             producers.setRecoveryInfo(
-                    track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), true));
+                    track.id, new Recovery(active.after, active.issuedWall, active.requestId, settings.nodeId(), true));
         }
         if (track.gap != null && track.gap.seq <= active.covers) {
             track.gap = null;
@@ -1058,28 +1067,28 @@ final class RecoveryMachine {
                 "Recovery {} of producer {} completed in {} ms, for {}",
                 active.requestId,
                 track.id,
-                now - active.issuedAt,
+                mono - active.issuedMono,
                 active.causes);
         if (hasDownGaps(track)) {
-            maybeRequest(track, now);
+            maybeRequest(track, mono);
             return;
         }
-        bringUp(track, StatusCause.RECOVERY_COMPLETED, now);
+        bringUp(track, StatusCause.RECOVERY_COMPLETED);
     }
 
     /**
      * The API did not accept the recovery, or it timed out: asked for again after the backoff, or,
      * with the cap spent, not before the cool-down.
      */
-    private void failed(Track track, Active active, long now, String reason) {
-        ended(track, active, now);
+    private void failed(Track track, Active active, long mono, String reason) {
+        ended(track, active, mono);
         producers.setRecoveryInfo(
-                track.id, new Recovery(active.after, active.issuedAt, active.requestId, settings.nodeId(), false));
+                track.id, new Recovery(active.after, active.issuedWall, active.requestId, settings.nodeId(), false));
         counters.failed.incrementAndGet();
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
             if (pending != null && pending.unaccepted.contains(track.id)) {
-                cancelReset(session, now);
+                cancelReset(session, mono);
                 counters.resetRequestsFailed.incrementAndGet();
                 LOG.warn(
                         "The safety net did not reset session {}: recovery {} of producer {} failed, {}",
@@ -1093,12 +1102,12 @@ final class RecoveryMachine {
         if (!hasGaps(track)) {
             // nothing is missing, so nothing is asked for again, and nothing failed in a row
             track.failures = 0;
-            upIfNothingMissing(track, now);
+            upIfNothingMissing(track);
             return;
         }
         track.failures++;
         if (track.failures > settings.reissues()) {
-            track.capSpentAt = now;
+            track.capSpentAt = mono;
             LOG.warn(
                     "Recovery {} of producer {} failed, {}; {} in a row, so the producer stays down for {}",
                     active.requestId,
@@ -1106,9 +1115,9 @@ final class RecoveryMachine {
                     reason,
                     track.failures,
                     settings.cooldown());
-            markDown(track, StatusCause.RECOVERY_FAILED, now);
+            markDown(track, StatusCause.RECOVERY_FAILED);
         } else {
-            track.retryAt = now + backoff(settings.firstReissueBackoff(), track.failures);
+            track.retryAt = mono + backoff(settings.firstReissueBackoff(), track.failures);
             // the first failure of a streak is a warning; the rest, until a recovery or a cool-down ends it, are debug
             if (track.failures == 1) {
                 LOG.warn(
@@ -1116,14 +1125,14 @@ final class RecoveryMachine {
                         active.requestId,
                         track.id,
                         reason,
-                        track.retryAt - now);
+                        track.retryAt - mono);
             } else {
                 LOG.debug(
                         "Recovery {} of producer {} failed, {}; asked for again in {} ms",
                         active.requestId,
                         track.id,
                         reason,
-                        track.retryAt - now);
+                        track.retryAt - mono);
             }
         }
     }
@@ -1132,18 +1141,18 @@ final class RecoveryMachine {
      * The recovery's snapshot will not come, through no fault of the request: lost with a queue, or
      * by the producer. It is no longer waited for, its gaps stay open, and no failure is counted.
      */
-    private void giveUp(Track track, long now, String reason) {
+    private void giveUp(Track track, long mono, String reason) {
         Active active = track.active;
         if (active == null) {
             return;
         }
-        ended(track, active, now);
+        ended(track, active, mono);
         counters.abandoned.incrementAndGet();
         LOG.info("Recovery {} of producer {} given up: {}", active.requestId, track.id, reason);
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
             if (pending != null && pending.unaccepted.contains(track.id)) {
-                cancelReset(session, now);
+                cancelReset(session, mono);
             }
         }
     }
@@ -1152,9 +1161,9 @@ final class RecoveryMachine {
      * The recovery is no longer waited for, without completing: what it sent may still be on its
      * way, ahead of the snapshot of the next one asked for.
      */
-    private void ended(Track track, Active active, long now) {
+    private void ended(Track track, Active active, long mono) {
         track.active = null;
-        track.pausedUntil = now;
+        track.pausedUntil = mono;
         track.ended.addFirst(active.requestId);
         if (track.ended.size() > ENDED_REMEMBERED) {
             track.ended.removeLast();
@@ -1181,7 +1190,7 @@ final class RecoveryMachine {
 
     /** The event recovery's status says it ended, now, in {@code state}. */
     private void ended(EventRecovery recovery, EventRecoveryStatus.State state, @Nullable String reason) {
-        statuses.ended(recovery.requestId, state, Instant.ofEpochMilli(now()), reason);
+        statuses.ended(recovery.requestId, state, Instant.ofEpochMilli(wall()), reason);
     }
 
     // ---- gaps and checkpoints
@@ -1194,7 +1203,7 @@ final class RecoveryMachine {
         Duration initial = settings.initialSnapshotInterval();
         if (from == 0 && initial != null) {
             // fixed now, so asking again does not move it
-            from = now() - initial.toMillis();
+            from = wall() - initial.toMillis();
         }
         if (open == null) {
             return new Gap(from, ++gapSeq, pendingReset);
@@ -1260,7 +1269,7 @@ final class RecoveryMachine {
         if (!started) {
             return;
         }
-        long now = now();
+        long wall = wall();
         for (Track track : tracks.values()) {
             long point = resumePoint(track);
             Gap gap = track.gap;
@@ -1270,7 +1279,7 @@ final class RecoveryMachine {
                 // never published stays so, since NO_POINT is below any point
                 point = Math.min(track.published, gap.from);
             }
-            point = capped(track, point, now);
+            point = capped(track, point, wall);
             if (point != NO_POINT
                     && point != track.published
                     && (!closing || track.published == NO_POINT || point < track.published)) {
@@ -1318,20 +1327,20 @@ final class RecoveryMachine {
 
     // ---- the safety net
 
-    private void sample(SessionState session, Lane lane, Track track, long generatedAt, long takenAt) {
-        long now = now();
-        if (!offsetFresh(track, now)) {
+    private void sample(SessionState session, Lane lane, Track track, long generatedAt, Stamp taken) {
+        long mono = mono();
+        if (!offsetFresh(track, mono)) {
             lane.age = UNKNOWN_AGE;
             lane.above = false;
             return;
         }
-        long age = takenAt - generatedAt - track.offset;
+        long age = taken.wall() - generatedAt - track.offset;
         lane.age = age;
         if (track.active != null
                 || hasGaps(track)
                 || session.pending != null
                 || session.underway != 0
-                || takenAt <= track.pausedUntil) {
+                || taken.mono() <= track.pausedUntil) {
             // a recovery's snapshot ahead of a live message makes it old, on every session
             lane.above = false;
             return;
@@ -1347,9 +1356,9 @@ final class RecoveryMachine {
         }
         if (!lane.above) {
             lane.above = true;
-            lane.aboveSince = takenAt;
-        } else if (takenAt - lane.aboveSince >= settings.staleWindow().toMillis()) {
-            trigger(session, track, age, now);
+            lane.aboveSince = taken.mono();
+        } else if (taken.mono() - lane.aboveSince >= settings.staleWindow().toMillis()) {
+            trigger(session, track, age, mono);
         }
     }
 
@@ -1357,9 +1366,9 @@ final class RecoveryMachine {
      * The session has been too far behind for the window: a recovery for each of its producers
      * first, the reset once the API has accepted them all. Spent, the session is lagging instead.
      */
-    private void trigger(SessionState session, Track track, long age, long now) {
+    private void trigger(SessionState session, Track track, long age, long mono) {
         while (!session.resets.isEmpty()
-                && now - session.resets.getFirst() >= settings.cooldown().toMillis()) {
+                && mono - session.resets.getFirst() >= settings.cooldown().toMillis()) {
             session.resets.removeFirst();
         }
         if (session.resets.size() >= settings.resets()) {
@@ -1375,10 +1384,10 @@ final class RecoveryMachine {
             }
             return;
         }
-        if (now < session.nextResetAt) {
+        if (mono < session.nextResetAt) {
             return;
         }
-        if (session.underway != 0 || !canRequest(track, now)) {
+        if (session.underway != 0 || !canRequest(track, mono)) {
             return;
         }
         // wait for a recovery in flight; a producer that cannot be asked now - silent, its cap
@@ -1393,7 +1402,7 @@ final class RecoveryMachine {
         var unaccepted = new HashSet<Long>();
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Track other = track(entry.getKey());
-            if (enabled(other) && canRequest(other, now)) {
+            if (enabled(other) && canRequest(other, mono)) {
                 Lane lane = entry.getValue();
                 lane.gap = openGap(lane.gap, lane.checkpoint, true);
                 unaccepted.add(other.id);
@@ -1410,19 +1419,19 @@ final class RecoveryMachine {
                 age,
                 track.id);
         for (Long producerId : unaccepted) {
-            maybeRequest(track(producerId), now);
+            maybeRequest(track(producerId), mono);
         }
         // a producer disabled since the selection got no request, and none will answer for it
         for (Long producerId : unaccepted) {
             if (track(producerId).active == null) {
-                resetNotMadeForDisabledProducer(session, producerId, now);
+                resetNotMadeForDisabledProducer(session, producerId, mono);
                 return;
             }
         }
     }
 
     /** A reset waiting for a producer that has since been disabled would wait for ever: it is given up. */
-    private void cancelResetsWaitingForDisabledProducers(long now) {
+    private void cancelResetsWaitingForDisabledProducers(long mono) {
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
             if (pending == null) {
@@ -1430,15 +1439,15 @@ final class RecoveryMachine {
             }
             for (Long producerId : pending.unaccepted) {
                 if (!enabled(track(producerId))) {
-                    resetNotMadeForDisabledProducer(session, producerId, now);
+                    resetNotMadeForDisabledProducer(session, producerId, mono);
                     break;
                 }
             }
         }
     }
 
-    private void resetNotMadeForDisabledProducer(SessionState session, long producerId, long now) {
-        cancelReset(session, now);
+    private void resetNotMadeForDisabledProducer(SessionState session, long producerId, long mono) {
+        cancelReset(session, mono);
         counters.resetRequestsFailed.incrementAndGet();
         LOG.warn(
                 "The safety net did not reset session {}: producer {} was disabled before its recovery was accepted",
@@ -1453,7 +1462,7 @@ final class RecoveryMachine {
      * completes are ignored: they come from the queue being replaced. Its producers' recoveries are
      * in flight all the while, so nothing more is asked for them.
      */
-    private void reset(SessionState session, PendingReset pending, long now) {
+    private void reset(SessionState session, PendingReset pending) {
         session.pending = null;
         session.underway = pending.number;
         session.underwayProducer = pending.producerId;
@@ -1475,14 +1484,14 @@ final class RecoveryMachine {
                 pending.producerId);
         outbox.reset(session.info.id(), pending.number);
         for (Long producerId : session.lanes.keySet()) {
-            markDown(track(producerId), StatusCause.SAFETY_NET_RESET, now);
+            markDown(track(producerId), StatusCause.SAFETY_NET_RESET);
         }
     }
 
     /** A reset that will not be made: its gaps close, and the net waits before it tries again. */
-    private void cancelReset(SessionState session, long now) {
+    private void cancelReset(SessionState session, long mono) {
         session.pending = null;
-        session.nextResetAt = now + backoff(settings.firstResetBackoff(), session.resets.size() + 1);
+        session.nextResetAt = mono + backoff(settings.firstResetBackoff(), session.resets.size() + 1);
         for (Lane lane : session.lanes.values()) {
             Gap gap = lane.gap;
             if (gap != null && gap.pendingReset) {
@@ -1499,22 +1508,22 @@ final class RecoveryMachine {
      * that has taken nothing yet counts as on time. Late takes an up producer down, without a
      * recovery, as in 0.0.x; on time again brings it back.
      */
-    private void checkDelay(Track track, long now) {
+    private void checkDelay(Track track, long mono) {
         long max = settings.maxInactivity().toMillis();
         boolean delayed = false;
         for (SessionState session : sessions.values()) {
             Lane lane = session.lanes.get(track.id);
             if (lane != null
-                    && ((lane.age != UNKNOWN_AGE && lane.age > max && offsetFresh(track, now))
-                            || (lane.lastAt != 0 && now - lane.lastAt > max && aliveRecent(track, now)))) {
+                    && ((lane.age != UNKNOWN_AGE && lane.age > max && offsetFresh(track, mono))
+                            || (lane.lastAt != 0 && mono - lane.lastAt > max && aliveRecent(track, mono)))) {
                 delayed = true;
             }
         }
         track.delayed = delayed;
         if (delayed && !track.down) {
-            markDown(track, StatusCause.PROCESSING_DELAY, now);
+            markDown(track, StatusCause.PROCESSING_DELAY);
         } else if (!delayed && track.down && track.cause == StatusCause.PROCESSING_DELAY) {
-            markUp(track, StatusCause.DELAY_STABILIZED, now);
+            markUp(track, StatusCause.DELAY_STABILIZED);
         }
     }
 
@@ -1522,7 +1531,7 @@ final class RecoveryMachine {
      * A producer down only for gaps that went away with a closed session, or for a lost connection
      * that no session it has now missed anything of, comes back.
      */
-    private void upIfNothingMissing(Track track, long now) {
+    private void upIfNothingMissing(Track track) {
         if (track.down
                 && connected
                 && track.everRecovered
@@ -1531,7 +1540,7 @@ final class RecoveryMachine {
                 && !hasDownGaps(track)) {
             // nothing is missing: what failed before does not count against what comes next
             rearm(track);
-            bringUp(track, StatusCause.RECOVERY_COMPLETED, now);
+            bringUp(track, StatusCause.RECOVERY_COMPLETED);
         }
     }
 
@@ -1539,11 +1548,11 @@ final class RecoveryMachine {
      * Nothing is missing any more: the producer is up, unless a session processes it late, which
      * keeps it down for that until the session catches up.
      */
-    private void bringUp(Track track, StatusCause cause, long now) {
+    private void bringUp(Track track, StatusCause cause) {
         if (track.delayed) {
-            markDown(track, StatusCause.PROCESSING_DELAY, now);
+            markDown(track, StatusCause.PROCESSING_DELAY);
         } else {
-            markUp(track, cause, now);
+            markUp(track, cause);
         }
     }
 
@@ -1551,7 +1560,7 @@ final class RecoveryMachine {
      * Down for {@code cause}: reported at the cause's level when the producer was up or down for
      * another cause, and to 0.0.x's callback only when it was up or down for another public reason.
      */
-    private void markDown(Track track, StatusCause cause, long now) {
+    private void markDown(Track track, StatusCause cause) {
         if (!enabled(track) || (track.down && track.cause == cause)) {
             return;
         }
@@ -1565,14 +1574,14 @@ final class RecoveryMachine {
         track.cause = cause;
         producers.setDown(track.id, true);
         LOG.info("Producer {} down: {}", track.id, cause.description());
-        tell(new ProducerStatusChange(track.id, true, track.delayed, cause, now), publicChange);
+        tell(new ProducerStatusChange(track.id, true, track.delayed, cause, wall()), publicChange);
     }
 
     /**
      * Up for {@code cause}; the first time since the feed opened, whatever brought it up, it is up
      * for its first recovery, which the client hears of once per producer, as in 0.0.x.
      */
-    private void markUp(Track track, StatusCause given, long now) {
+    private void markUp(Track track, StatusCause given) {
         if (!enabled(track) || !track.down) {
             return;
         }
@@ -1582,7 +1591,7 @@ final class RecoveryMachine {
         track.cause = cause;
         producers.setDown(track.id, false);
         LOG.info("Producer {} up: {}", track.id, cause.description());
-        tell(new ProducerStatusChange(track.id, false, track.delayed, cause, now), true);
+        tell(new ProducerStatusChange(track.id, false, track.delayed, cause, wall()), true);
     }
 
     /** A status change: the cause-level event always, the public one when the flag or reason changed. */
@@ -1643,15 +1652,15 @@ final class RecoveryMachine {
         }
     }
 
-    private boolean aliveRecent(Track track, long now) {
+    private boolean aliveRecent(Track track, long mono) {
         return track.lastAliveAt != 0
                 && !track.inactive
-                && now - track.lastAliveAt <= settings.maxInactivity().toMillis();
+                && mono - track.lastAliveAt <= settings.maxInactivity().toMillis();
     }
 
     /** Whether the offset is recent enough to correct ages with: an alive within two intervals. */
-    private boolean offsetFresh(Track track, long now) {
-        return track.lastAliveAt != 0 && now - track.lastAliveAt <= 2 * track.aliveInterval;
+    private boolean offsetFresh(Track track, long mono) {
+        return track.lastAliveAt != 0 && mono - track.lastAliveAt <= 2 * track.aliveInterval;
     }
 
     private boolean enabled(Track track) {
@@ -1722,8 +1731,14 @@ final class RecoveryMachine {
         return first.toMillis() << Math.clamp(attempt - 1, 0, 20);
     }
 
-    private long now() {
-        return clock.millis();
+    /** Millis on the monotonic clock: for every duration between two local events, never published. */
+    private long mono() {
+        return clock.monoMillis();
+    }
+
+    /** Epoch millis by the SDK's wall clock: for what is published, and for comparisons with a producer's clock. */
+    private long wall() {
+        return clock.wallMillis();
     }
 
     // ---- what is read for tests and for getHealth()
@@ -1759,13 +1774,13 @@ final class RecoveryMachine {
         boolean everRecovered;
         /** Whether it has been reported up since the feed opened. */
         boolean reportedUp;
-        /** When the last alive arrived, by the SDK's clock; 0 before the first. */
+        /** When the last alive arrived, on the monotonic clock; 0 before the first. */
         long lastAliveAt;
 
         long lastAliveGen;
         /** The last subscribed alive's timestamp: the producer has sent everything before it. */
         long safePoint;
-        /** The SDK's clock minus the producer's, measured on the last alive. */
+        /** The SDK's wall clock minus the producer's, measured on the last alive. */
         long offset;
         /** How often the producer sends an alive, in millis, a moving average. */
         long aliveInterval;
@@ -1838,7 +1853,7 @@ final class RecoveryMachine {
         Gap gap;
         /** The last sample's age, or {@link #UNKNOWN_AGE}. */
         long age = UNKNOWN_AGE;
-        /** When the session last took a message or an alive of the producer, 0 before the first. */
+        /** When the session last took a message or an alive of the producer, monotonic; 0 before the first. */
         long lastAt;
         /** Whether the samples have been over the stale limit since {@link #aboveSince}. */
         boolean above;
@@ -1867,7 +1882,10 @@ final class RecoveryMachine {
         /** Epoch millis, 0 for a full snapshot. */
         final long after;
 
-        final long issuedAt;
+        /** When it was asked for, by the SDK's wall clock: what {@link Recovery} publishes. */
+        final long issuedWall;
+        /** When it was asked for, on the monotonic clock: what its deadlines and its order count from. */
+        final long issuedMono;
         /** When it was asked for, by the producer's clock. */
         final long requestedAt;
         /** The number of the last gap it covers. */
@@ -1880,7 +1898,7 @@ final class RecoveryMachine {
         final Set<StatusCause> causes = EnumSet.noneOf(StatusCause.class);
 
         boolean accepted;
-        /** When the API accepted it, or a snapshot complete said so, by the SDK's clock. */
+        /** When the API accepted it, or a snapshot complete said so, on the monotonic clock. */
         long acceptedAt;
         /**
          * When a session that awaits it last took something that says it is on its way, or when it
@@ -1888,14 +1906,22 @@ final class RecoveryMachine {
          */
         long heardAt;
 
-        Active(long requestId, long after, long issuedAt, long requestedAt, long covers, Set<Integer> awaited) {
+        Active(
+                long requestId,
+                long after,
+                long issuedWall,
+                long issuedMono,
+                long requestedAt,
+                long covers,
+                Set<Integer> awaited) {
             this.requestId = requestId;
             this.after = after;
-            this.issuedAt = issuedAt;
+            this.issuedWall = issuedWall;
+            this.issuedMono = issuedMono;
             this.requestedAt = requestedAt;
             this.covers = covers;
             this.awaited = awaited;
-            this.heardAt = issuedAt;
+            this.heardAt = issuedMono;
         }
     }
 
@@ -1904,7 +1930,10 @@ final class RecoveryMachine {
         final long requestId;
         final long producerId;
         final URN eventId;
-        final long issuedAt;
+        /** When it was asked for, by the SDK's wall clock: what its status publishes. */
+        final long issuedWall;
+        /** When it was asked for, on the monotonic clock: what its deadlines and its order count from. */
+        final long issuedMono;
         /** When it was asked for, by the producer's clock. */
         final long requestedAt;
 
@@ -1917,14 +1946,21 @@ final class RecoveryMachine {
         long heardAt;
 
         EventRecovery(
-                long requestId, long producerId, URN eventId, long issuedAt, long requestedAt, Set<Integer> awaited) {
+                long requestId,
+                long producerId,
+                URN eventId,
+                long issuedWall,
+                long issuedMono,
+                long requestedAt,
+                Set<Integer> awaited) {
             this.requestId = requestId;
             this.producerId = producerId;
             this.eventId = eventId;
-            this.issuedAt = issuedAt;
+            this.issuedWall = issuedWall;
+            this.issuedMono = issuedMono;
             this.requestedAt = requestedAt;
             this.awaited = awaited;
-            this.heardAt = issuedAt;
+            this.heardAt = issuedMono;
         }
     }
 

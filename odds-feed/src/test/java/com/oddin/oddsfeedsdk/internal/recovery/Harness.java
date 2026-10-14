@@ -3,7 +3,7 @@ package com.oddin.oddsfeedsdk.internal.recovery;
 import static java.util.Objects.requireNonNull;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
-import com.oddin.oddsfeedsdk.internal.clock.Stamp;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducer;
@@ -32,7 +32,12 @@ final class Harness {
     static final int NODE = 7;
     static final URN MATCH = URN.parse("od:match:1");
 
+    /** The wall side; with {@link #feedClock} it moves together with the monotonic one unless the test splits them. */
     final Clock clock = new Clock();
+    /** The monotonic side's source, in nanos, for a test that moves it apart from the wall. */
+    private final long[] monoNanos = {5_000_000_000L};
+
+    final FeedClock feedClock;
     final RecoverySettings settings;
     final Producers producers;
     final RecoveryCounters counters = new RecoveryCounters();
@@ -59,7 +64,18 @@ final class Harness {
     }
 
     Harness(RecoverySettings settings) {
+        this(settings, false);
+    }
+
+    /**
+     * @param split whether the monotonic side is a source of its own, starting at another number
+     *     than the wall: {@link #advance} moves both, {@link #stepWall} the wall only and {@link
+     *     #advanceMono} the monotonic side only. Otherwise the two sides move together and read the
+     *     same number.
+     */
+    Harness(RecoverySettings settings, boolean split) {
         this.settings = settings;
+        this.feedClock = split ? FeedClock.of(clock, () -> monoNanos[0]) : FeedClock.following(clock);
         this.producers = new Producers(list(), clock);
         Outbox outbox = new Outbox() {
             @Override
@@ -116,7 +132,7 @@ final class Harness {
             }
         };
         this.machine = new RecoveryMachine(
-                producers, settings, outbox, recorded, clock, counters, recoveryStatuses, new Random(42));
+                producers, settings, outbox, recorded, feedClock, counters, recoveryStatuses, new Random(42));
     }
 
     /** The design's numbers, with 0.0.x's defaults for what the configuration sets. */
@@ -146,6 +162,27 @@ final class Harness {
                 maxInactivity,
                 settings.maxRecoveryTime(),
                 settings.snapshotCompleteTimeout(),
+                settings.initialSnapshotInterval(),
+                settings.nodeId(),
+                settings.reissues(),
+                settings.firstReissueBackoff(),
+                settings.cooldown(),
+                settings.aliveInterval(),
+                settings.staleLimit(),
+                settings.staleWindow(),
+                settings.resets(),
+                settings.firstResetBackoff(),
+                settings.eventRecoveries(),
+                settings.tick());
+    }
+
+    /** The design's numbers, with other deadlines for a recovery. */
+    static RecoverySettings settings(Duration maxRecoveryTime, Duration snapshotCompleteTimeout) {
+        RecoverySettings settings = settings();
+        return new RecoverySettings(
+                settings.maxInactivity(),
+                maxRecoveryTime,
+                snapshotCompleteTimeout,
                 settings.initialSnapshotInterval(),
                 settings.nodeId(),
                 settings.reissues(),
@@ -206,8 +243,25 @@ final class Harness {
 
     /** Moves the clock, and ticks the machine once at the end, as the actor does at least once a second. */
     void advance(Duration by) {
+        moveClocks(by);
+        machine.tick();
+    }
+
+    /** Moves the wall clock only, as a step of the system's clock does, and ticks the machine. */
+    void stepWall(Duration by) {
         clock.advance(by);
         machine.tick();
+    }
+
+    /** Moves the monotonic clock only, and ticks the machine. */
+    void advanceMono(Duration by) {
+        monoNanos[0] += by.toNanos();
+        machine.tick();
+    }
+
+    private void moveClocks(Duration by) {
+        clock.advance(by);
+        monoNanos[0] += by.toNanos();
     }
 
     /**
@@ -216,7 +270,7 @@ final class Harness {
      */
     void runWithAlives(Duration total) {
         for (long second = 1; second <= total.toSeconds(); second++) {
-            clock.advance(Duration.ofSeconds(1));
+            moveClocks(Duration.ofSeconds(1));
             if (Duration.between(START, clock.instant()).toSeconds() % 10 == 0) {
                 for (long producer : List.of(PRE, LIVE)) {
                     alive(producer);
@@ -251,20 +305,20 @@ final class Harness {
 
     /** A subscribed alive generated now, as the alive channel sees it. */
     void alive(long producer) {
-        machine.alive(producer, now(), Stamp.of(now()), true);
+        machine.alive(producer, now(), feedClock.stamp(), true);
     }
 
     void unsubscribed(long producer) {
-        machine.alive(producer, now(), Stamp.of(now()), false);
+        machine.alive(producer, now(), feedClock.stamp(), false);
     }
 
     /** A session took a live message generated {@code agedBy} ago, now. */
     void live(int session, long producer, Duration agedBy) {
-        machine.processed(session, producer, now() - agedBy.toMillis(), Stamp.of(now()), 0);
+        machine.processed(session, producer, now() - agedBy.toMillis(), feedClock.stamp(), 0);
     }
 
     void sessionAlive(int session, long producer) {
-        machine.sessionAlive(session, producer, now(), Stamp.of(now()), true);
+        machine.sessionAlive(session, producer, now(), feedClock.stamp(), true);
     }
 
     /**
