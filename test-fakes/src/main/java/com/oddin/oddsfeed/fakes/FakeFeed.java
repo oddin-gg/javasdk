@@ -302,14 +302,16 @@ public final class FakeFeed implements AutoCloseable {
 
     /** The deliveries the clients' queues have handed out and not had acknowledged, all together. */
     public long unacknowledged() {
-        return rabbitmqctl(
-                        "list_queues",
-                        "--quiet",
-                        "--no-table-headers",
-                        "-p",
-                        virtualHost(),
-                        "name",
-                        "messages_unacknowledged")
+        return queueCounts("messages_unacknowledged");
+    }
+
+    /** The messages waiting in the clients' queues for the broker to hand out, all together: the broker's backlog. */
+    public long ready() {
+        return queueCounts("messages_ready");
+    }
+
+    private long queueCounts(String column) {
+        return rabbitmqctl("list_queues", "--quiet", "--no-table-headers", "-p", virtualHost(), "name", column)
                 .lines()
                 .map(String::trim)
                 .filter(line -> line.startsWith("amq.gen-"))
