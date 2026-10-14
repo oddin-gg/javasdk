@@ -442,10 +442,14 @@ class MatchCachesTest {
         assertThat(profiles.discardedFetches())
                 .as("both competitors, the tournament and its sport")
                 .isEqualTo(4);
+        // a side-load queued by the summary would be sent a moment after the read failed
+        api.awaitQuiet();
         assertThat(api.requests())
-                .as("no competitor is side-loaded for it")
+                .as("no competitor of the summary is side-loaded for it")
                 .extracting(request -> request.path())
-                .doesNotContain("/v1/sports/en/competitors/od:competitor:47214/profile");
+                .doesNotContain(
+                        "/v1/sports/en/competitors/od:competitor:47214/profile",
+                        "/v1/sports/en/competitors/od:competitor:47215/profile");
 
         // the same summary from a fetch that started after the clear does write and fill
         api.respond(SUMMARY_EN, 200, SUMMARY);
