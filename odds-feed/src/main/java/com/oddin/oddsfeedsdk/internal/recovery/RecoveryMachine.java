@@ -792,6 +792,7 @@ final class RecoveryMachine {
      */
     void tick() {
         long now = now();
+        cancelResetsWaitingForDisabledProducers(now);
         for (Track track : tracks.values()) {
             if (!enabled(track)) {
                 continue;
@@ -1352,6 +1353,10 @@ final class RecoveryMachine {
                 unaccepted.add(other.id);
             }
         }
+        if (unaccepted.isEmpty()) {
+            // the producer was disabled since the check above: nothing to ask for, so nothing to wait for
+            return;
+        }
         session.pending = new PendingReset(unaccepted, track.id, age, ++resetSeq);
         LOG.warn(
                 "Session {} is {} ms behind producer {}: the safety net asks for recoveries before it resets",
@@ -1361,6 +1366,39 @@ final class RecoveryMachine {
         for (Long producerId : unaccepted) {
             maybeRequest(track(producerId), now);
         }
+        // a producer disabled since the selection got no request, and none will answer for it
+        for (Long producerId : unaccepted) {
+            if (track(producerId).active == null) {
+                resetNotMadeForDisabledProducer(session, producerId, now);
+                return;
+            }
+        }
+    }
+
+    /** A reset waiting for a producer that has since been disabled would wait for ever: it is given up. */
+    private void cancelResetsWaitingForDisabledProducers(long now) {
+        for (SessionState session : sessions.values()) {
+            PendingReset pending = session.pending;
+            if (pending == null) {
+                continue;
+            }
+            for (Long producerId : pending.unaccepted) {
+                if (!enabled(track(producerId))) {
+                    resetNotMadeForDisabledProducer(session, producerId, now);
+                    break;
+                }
+            }
+        }
+    }
+
+    private void resetNotMadeForDisabledProducer(SessionState session, long producerId, long now) {
+        cancelReset(session, now);
+        counters.resetRequestsFailed.incrementAndGet();
+        LOG.warn(
+                "The safety net did not reset session {}: producer {} was disabled before its recovery was accepted",
+                session.info.id(),
+                producerId);
+        events.safetyNetRequestFailed(session.info.id(), producerId, "producer disabled");
     }
 
     /**

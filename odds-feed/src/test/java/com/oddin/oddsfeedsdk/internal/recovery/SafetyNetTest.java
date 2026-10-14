@@ -789,6 +789,80 @@ class SafetyNetTest {
     }
 
     @Test
+    void aProducerDisabledBetweenTheNetsSelectionAndItsRequestCancelsTheResetAndTheNetActsAgain() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        // the client disables live while the net's request for prematch goes out: live's turn comes after
+        feed.onRequest = call -> {
+            if (call.producerId() == PRE) {
+                feed.producers.setProducerState(LIVE, false);
+            }
+        };
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.onRequest = call -> {};
+
+        assertThat(feed.snapshots(LIVE)).as("live was never asked").hasSize(1);
+        assertThat(feed.resets).isEmpty();
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+
+        // the recovery that did go out ends, which pauses the net until then
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after))
+                .as("seconds to the net's next request: the net is not stuck on the disabled producer")
+                .isPositive();
+        assertThat(feed.calls).as("for the one that is enabled").hasSize(after + 1);
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.resets).containsExactly(1);
+    }
+
+    @Test
+    void aProducerDisabledWhileTheResetWaitsForItsAcceptanceCancelsTheResetOnTheNextTick() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+
+        feed.producers.setProducerState(LIVE, false);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+        feed.accept(live);
+        assertThat(feed.resets).as("the late answer finds no reset to make").isEmpty();
+
+        // enabled again, the net works on the session as before
+        feed.producers.setProducerState(LIVE, true);
+        feed.complete(pre, 1);
+        feed.complete(live, 1);
+        int after = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after);
+        assertThat(feed.calls).as("a recovery for each producer again").hasSize(after + 2);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
+    }
+
+    @Test
+    void aResetWaitingOnlyForEnabledProducersIsLeftAloneByTheTicks() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+
+        feed.advance(Duration.ofSeconds(1));
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.events).isEmpty();
+        assertThat(feed.counters.resetRequestsFailed()).isZero();
+        feed.accept(live);
+        assertThat(feed.resets).containsExactly(1);
+    }
+
+    @Test
     void theNetResetsASessionThreeTimesPerCooldownWithBackoffThenTheSessionLags() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         long start = feed.now();
