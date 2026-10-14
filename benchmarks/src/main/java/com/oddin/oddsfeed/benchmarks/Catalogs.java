@@ -21,7 +21,8 @@ import java.util.random.RandomGeneratorFactory;
  * {@link Corpus#MARKET_IDS}) has a description as long as there are that many. Most markets have two
  * or three outcomes, some up to twenty. Markets above the corpus's ids are the ones with a variant: a
  * third of them describe the players of one match, as the API does for a market with dynamic
- * outcomes.
+ * outcomes. A variant's own description, which the API serves from an endpoint per variant, is
+ * {@link #variantDescription}.
  *
  * <p>Ids of one kind are distinct. A match's competitors are derived from the match id and their
  * profile from the competitor id, so a scenario answers a request by reading the id from the path.
@@ -104,6 +105,40 @@ public final class Catalogs {
             xml.append("  </market>\n");
         }
         xml.append("</market_descriptions>\n");
+        return xml.toString().getBytes(UTF_8);
+    }
+
+    /**
+     * The description of one variant of a market, as the API answers for the variant's own endpoint:
+     * the market with that variant and the players of the match it belongs to, one outcome each. The
+     * same bytes for the same market and variant; a variant of another match has other players.
+     */
+    public static byte[] variantDescription(int marketId, String variant) {
+        require(marketId > 0, "marketId");
+        require(!variant.isEmpty(), "variant");
+        RandomGenerator random = random(2, marketId * 31 + variant.hashCode());
+        int players = 6 + random.nextInt(15);
+        var xml = new StringBuilder(players * 100 + 400);
+        xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<market_descriptions response_code=\"OK\">\n");
+        xml.append("  <market id=\"")
+                .append(marketId)
+                .append("\" name=\"Market ")
+                .append(marketId);
+        xml.append("\" groups=\"all|group_")
+                .append(marketId % 7)
+                .append("\" variant=\"")
+                .append(variant);
+        xml.append("\" includes_outcomes_of_type=\"od:player\" outcome_type=\"player\">\n    <outcomes>\n");
+        for (int p = 1; p <= players; p++) {
+            xml.append("      <outcome id=\"od:player:")
+                    .append(Math.abs(variant.hashCode() % 1_000_000) * 100L + p)
+                    .append("\" name=\"Player ")
+                    .append(p)
+                    .append("\"/>\n");
+        }
+        xml.append("    </outcomes>\n    <specifiers>\n")
+                .append("      <specifier name=\"variant\" type=\"variable_text\"/>\n")
+                .append("    </specifiers>\n  </market>\n</market_descriptions>\n");
         return xml.toString().getBytes(UTF_8);
     }
 

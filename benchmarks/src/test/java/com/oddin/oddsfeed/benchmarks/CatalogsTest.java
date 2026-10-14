@@ -123,6 +123,25 @@ class CatalogsTest {
     }
 
     @Test
+    void aVariantsDescriptionIsTheMarketWithThatVariantAndItsPlayers() throws Exception {
+        var variant = "od:dynamic_outcomes:401:5000000:3";
+        var described = decode(Catalogs.variantDescription(401, variant), RAMarketDescriptions.class);
+
+        assertThat(described.getMarket()).hasSize(1);
+        var market = described.getMarket().get(0);
+        assertThat(market.getId()).isEqualTo(401);
+        assertThat(market.getVariant()).isEqualTo(variant);
+        assertThat(market.getOutcomes().getOutcome())
+                .hasSizeBetween(6, 20)
+                .allSatisfy(outcome -> assertThat(outcome.getId()).startsWith("od:player:"));
+        assertThat(Catalogs.variantDescription(401, variant)).isEqualTo(Catalogs.variantDescription(401, variant));
+        assertThat(Catalogs.variantDescription(401, variant))
+                .as("another match's variant has other players")
+                .isNotEqualTo(Catalogs.variantDescription(401, "od:dynamic_outcomes:401:5000001:3"));
+        assertThatThrownBy(() -> Catalogs.variantDescription(401, "")).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void sizesAreParameters() throws Exception {
         assertThat(decode(Catalogs.marketDescriptions(7), RAMarketDescriptions.class)
                         .getMarket())
@@ -157,6 +176,7 @@ class CatalogsTest {
                 Catalogs.marketDescriptions(Catalogs.MARKET_DESCRIPTIONS),
                 Catalogs.sports(Catalogs.SPORTS),
                 Catalogs.matchSummary(198_314),
+                Catalogs.variantDescription(401, "od:dynamic_outcomes:401:5000000:3"),
                 Catalogs.competitorProfile(100_123))) {
             restSchema.newValidator().validate(new StreamSource(new java.io.ByteArrayInputStream(document)));
         }
