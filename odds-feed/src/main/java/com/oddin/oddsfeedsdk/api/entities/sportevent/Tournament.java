@@ -35,4 +35,16 @@ public interface Tournament extends LongTermEvent {
 
     @Nullable
     String getAbbreviation(Locale locale);
+
+    /**
+     * The location of the tournament's icon, as the tournament's info in the API says it; null when
+     * the info sends none. Only the info carries it, in every locale the same, so the value does not
+     * depend on the locale; a later response without it, in any locale, keeps what an earlier one
+     * said. Loads what the other getters load of the tournament, its info in every locale, and fails
+     * as they do by the exception strategy. New in 1.0, as the Go SDK has it; an implementation of
+     * the interface that does not override it answers null.
+     */
+    default @Nullable String getIconPath() {
+        return null;
+    }
 }

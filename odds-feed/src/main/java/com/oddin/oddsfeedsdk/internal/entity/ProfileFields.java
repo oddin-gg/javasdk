@@ -67,9 +67,13 @@ final class ProfileFields {
     static final Field<Instant> START_DATE = Field.shared("start date");
     static final Field<Instant> END_DATE = Field.shared("end date");
     static final Field<Integer> RISK_TIER = Field.shared("risk tier");
+    static final Field<String> TOURNAMENT_ICON_PATH = Field.shared("tournament icon path");
     static final Field<List<URN>> TOURNAMENT_COMPETITORS = Field.shared("tournament competitors");
 
-    /** The tournament info: name, sport and risk tier are always sent. */
+    /**
+     * The tournament info: name, sport and risk tier are always sent. The icon path is optional and
+     * only this response carries it, so a response without it keeps what an earlier one said.
+     */
     static final Endpoint TOURNAMENT_INFO = new Endpoint(
             "tournament info",
             Set.of(
@@ -81,6 +85,7 @@ final class ProfileFields {
                     START_DATE,
                     END_DATE,
                     RISK_TIER,
+                    TOURNAMENT_ICON_PATH,
                     TOURNAMENT_COMPETITORS),
             Set.of(TOURNAMENT_NAME, TOURNAMENT_SPORT_ID, RISK_TIER));
 

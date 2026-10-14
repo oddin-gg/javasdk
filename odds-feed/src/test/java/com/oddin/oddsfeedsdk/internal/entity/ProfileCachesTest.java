@@ -400,6 +400,30 @@ class ProfileCachesTest {
     }
 
     @Test
+    void aTournamentsIconPathIsItsInfosAndAnotherLocalesInfoWithoutItKeepsIt() {
+        String info = Fixtures.read("rest/tournament_info/tournament_info.xml");
+        api.respond(
+                TOURNAMENT_INFO_EN,
+                200,
+                info.replace("risk_tier=\"1\"", "risk_tier=\"1\" icon_path=\"/icons/tt.svg\""));
+        Entry entry = caches.tournament(TOURNAMENT, EN, null);
+        assertThat(entry.get(TOURNAMENT_ICON_PATH, null)).isEqualTo("/icons/tt.svg");
+        assertThat(entry.isAuthoritative(TOURNAMENT_ICON_PATH, null)).isTrue();
+
+        api.respond("/v1/sports/de/tournaments/od:tournament:1042/info", 200, info);
+        assertThat(caches.tournament(TOURNAMENT, Locale.GERMAN, null).get(TOURNAMENT_ICON_PATH, null))
+                .as("optional: the info that leaves it out keeps it")
+                .isEqualTo("/icons/tt.svg");
+    }
+
+    @Test
+    void aTournamentWhoseInfoSendsNoIconPathHasNone() {
+        api.respond(TOURNAMENT_INFO_EN, 200, Fixtures.read("rest/tournament_info/tournament_info.xml"));
+        assertThat(caches.tournament(TOURNAMENT, EN, null).get(TOURNAMENT_ICON_PATH, null))
+                .isNull();
+    }
+
+    @Test
     void anEmptyListInTheTournamentElementGivesWayToTheInfosOwn() {
         api.respond(
                 TOURNAMENT_INFO_EN,
