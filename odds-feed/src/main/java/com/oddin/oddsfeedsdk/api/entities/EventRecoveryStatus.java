@@ -7,7 +7,8 @@ import org.jspecify.annotations.Nullable;
 /**
  * Where an event recovery is, by its request id, when it was asked: pending, then completed, failed
  * or timed out. Kept five minutes after it ends, then forgotten - sooner once 10,000 event
- * recoveries have ended after it, the most the feed keeps. New in 1.0.
+ * recoveries have ended after it, the most the feed keeps. Readable after the feed's close too: the
+ * recoveries it closed on are failed. New in 1.0.
  *
  * @param requestId the request id the recovery was started with
  * @param startedAt when it was asked for, by the SDK's clock
