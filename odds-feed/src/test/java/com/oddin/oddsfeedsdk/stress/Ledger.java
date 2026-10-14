@@ -119,6 +119,11 @@ final class Ledger {
         return since(published, mark);
     }
 
+    /** How many messages of every match were sent with an error at or after the {@link #mark}: each may have arrived. */
+    long uncertainSince(Map<String, Long> mark) {
+        return since(uncertain, mark);
+    }
+
     /** How many messages of every match arrived that were published at or after the {@link #mark}. */
     long deliveredSince(Map<String, Long> mark) {
         return since(delivered, mark);
@@ -160,18 +165,33 @@ final class Ledger {
         }
     }
 
-    /** Per match, what arrived is the first part of what was published: no gap, repeat or reorder. */
+    /**
+     * Per match, what arrived is the first part of what was published, with no gap, repeat or
+     * reorder. A message sent with an error may have been routed all the same, so it is neither
+     * required nor refused: of the published and the uncertain messages together, in order, what
+     * arrived must be increasing without repeats, hold only those, and hold every published one
+     * below the last that arrived. An uncertain message may be among them or missing; a published
+     * one that is missing while a later one arrived is a gap.
+     */
     void assertPrefix() {
         for (var match : matches()) {
-            if (delivered(match).isEmpty()) {
+            var arrived = delivered(match);
+            if (arrived.isEmpty()) {
                 // nothing arrived, which is the shortest start there is
                 continue;
             }
-            assertThat(published(match))
-                    .as(
-                            "%s: published, which the %d delivered must start",
-                            match, delivered(match).size())
-                    .startsWith(delivered(match).toArray(Long[]::new));
+            var sent = published(match);
+            assertThat(arrived).as("%s: delivered", match).isSorted().doesNotHaveDuplicates();
+            var possible = new ArrayList<>(sent);
+            possible.addAll(copy(uncertain, match));
+            assertThat(possible)
+                    .as("%s: published, or sent with an error, which holds all that arrived", match)
+                    .containsAll(arrived);
+            long last = arrived.getLast();
+            assertThat(arrived)
+                    .as("%s: delivered, which must hold every published message up to %d", match, last)
+                    .containsAll(
+                            sent.stream().filter(sequence -> sequence < last).toList());
         }
     }
 
