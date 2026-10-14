@@ -324,7 +324,7 @@ class AmqpTransportTest {
             assertThat(refusals.streaks()).allSatisfy(streak -> {
                 assertThat(streak.count()).isGreaterThanOrEqualTo(3);
                 assertThat(streak.lasted()).isGreaterThanOrEqualTo(Duration.ofSeconds(90));
-                assertThat(streak.failure()).startsWith("java.io.IOException: ").doesNotContain("test-token");
+                assertThat(streak.failure()).startsWith("java.io.IOException: ");
             });
         } finally {
             feed().restoreExchange(FakeFeed.EXCHANGE);
@@ -334,6 +334,33 @@ class AmqpTransportTest {
         var opened = transport.channelRefusals();
         assertThat(opened.streaks()).as("the next successful open ends them").isEmpty();
         assertThat(opened.total()).as("what was refused stays counted").isGreaterThanOrEqualTo(6);
+    }
+
+    @Test
+    void theFailureOfAChannelTheBrokerRefusesToOpenIsReportedWithoutTheAccessToken() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), false);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        // the broker closes the channel that declares a queue the user may not: its reason quotes the user
+        feed().refuseResources();
+        try {
+            feed().deleteClientQueues();
+            awaitQuietly(() -> session.failedReopens() >= 1
+                    && !transport.channelRefusals().streaks().isEmpty());
+
+            var streak = requireNonNull(session.streak());
+            assertThat(Failure.describe(streak.last(), ""))
+                    .as("what the broker said, as it was")
+                    .contains("test-token");
+            assertThat(transport.channelRefusals().streaks())
+                    .singleElement()
+                    .satisfies(reported -> assertThat(reported.failure())
+                            .contains(Failure.TOKEN)
+                            .doesNotContain("test-token"));
+        } finally {
+            feed().allowResources();
+        }
+        awaitOpen(session);
     }
 
     @Test
