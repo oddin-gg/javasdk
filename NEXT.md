@@ -697,7 +697,7 @@ and REST workers post facts to it; it decides and posts work out.
   Go SDK's deadline (recoveries completed there in 83 to 139 s), and 0.0.58's, checked
   there at each alive; 0.0.57 and older and the .NET SDK have none and wait out the
   maximum recovery time (KD-25). That time stays the bound on
-  a recovery that keeps coming, and on event recoveries. The builder's
+  a recovery that keeps coming, and on an event recovery the API has not answered. The builder's
   `setMaxRecoveryExecutionMinutes` sets it; its default stays 0.0.x's 360 minutes, and it
   takes no less. 0.0.x had no setter; its public constructor, which 1.0 keeps, takes any value.
 - Recovery that the API does not accept, or that times out (either deadline), is
@@ -707,9 +707,14 @@ and REST workers post facts to it; it decides and posts work out.
   alive arrives after a gap. Nothing stays down for the process lifetime without a
   further attempt.
 - Event recoveries take their ids from the same sequence. At most 128 are in flight per
-  producer, and one without a `snapshot_complete` within the maximum recovery time is
-  dropped and counted, as is one whose `snapshot_complete` went with a lost queue; a
-  caller still waiting for the API's answer then hears it was not accepted. The first
+  producer, and one the API accepted but whose `snapshot_complete` does not come is
+  dropped and counted, as is one whose `snapshot_complete` went with a lost queue: it
+  times out - status `TIMED_OUT` - five minutes after the API accepted it or after a
+  session that awaits it last took a message of its snapshot, so a slow, big snapshot
+  that keeps arriving is not cut; one the API has not answered yet waits for the maximum
+  recovery time, which stays the outer bound. The client is not asked again: event
+  recoveries are the client's to ask for. A caller still waiting for the API's answer
+  then hears it was not accepted. The first
   `snapshot_complete` of a request, from any session, says the API took it: an event
   recovery's caller hears the request id then, while the completion still waits for the
   other sessions, and for a producer or an event recovery alike a late answer, even a
@@ -719,7 +724,8 @@ and REST workers post facts to it; it decides and posts work out.
   actor's, so nothing the caller chains to it can hold the actor up.
 - Each event recovery has a status by its request id, as in the Go SDK: pending from
   the request, then completed, failed or timed out. Failed means the API refused it, its
-  `snapshot_complete` went with a lost queue, or the feed closed first. Unlike the Go
+  `snapshot_complete` went with a lost queue, or the feed closed first; timed out means
+  nothing of its snapshot came for five minutes after the API accepted it. Unlike the Go
   SDK, a producer going down for another reason fails none, since its snapshot can still
   arrive. A status is kept five minutes after it ends, then forgotten; an id never asked
   for, or forgotten, has none, and producer recoveries have none. Pending ones are bounded
@@ -1494,7 +1500,7 @@ Woodstox, JAXB takes 0.32 ms, so there is no parsing code to keep in step with t
 schema. Woodstox is Apache 2.0, its one dependency BSD.
 The maximum recovery time's default (2026-10-06): it stays 0.0.x's 360 minutes, and
 ticket 28 makes it settable. With the five-minute deadline it bounds only a recovery
-that keeps coming, and event recoveries.
+that keeps coming, and an event recovery the API has not answered.
 The relocation of the old coordinates (2026-10-06): published when 0.0.x support ends,
 after the last 0.0.x fix, once someone has confirmed by hand that the remaining Java 8
 clients have pinned a version, and only to a final release that is on Maven Central
