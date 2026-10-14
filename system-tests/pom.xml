@@ -24,6 +24,13 @@
     <!-- Not a library. Nothing here is published. -->
     <maven.deploy.skip>true</maven.deploy.skip>
     <maven.install.skip>true</maven.install.skip>
+    <!--
+      The JUnit tags the test runs leave out, for surefire and failsafe both and for the guard
+      (NextOnlyGuardTest), which reads it as a system property. Empty on 1.0, which runs every
+      scenario. The legacy-sdk profile sets it to the tag of the scenarios that only 1.0 can run:
+      see KNOWN-DIFFERENCES.md, "Scenarios only 1.0 has".
+    -->
+    <systemtests.excludedGroups></systemtests.excludedGroups>
   </properties>
 
   <repositories>
@@ -136,9 +143,13 @@
         <configuration>
           <!-- Nothing to run until the first scenarios land. -->
           <failIfNoTests>false</failIfNoTests>
+          <excludedGroups>${systemtests.excludedGroups}</excludedGroups>
           <systemPropertyVariables>
             <!-- KnownDifferenceListTest reads KNOWN-DIFFERENCES.md next to this POM. -->
             <module.basedir>${project.basedir}</module.basedir>
+            <!-- NextOnlyGuardTest checks the line under test against what is left out of it. -->
+            <sdk.version>${sdk.version}</sdk.version>
+            <systemtests.excludedGroups>${systemtests.excludedGroups}</systemtests.excludedGroups>
           </systemPropertyVariables>
         </configuration>
       </plugin>
@@ -151,6 +162,7 @@
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
         <configuration>
+          <excludedGroups>${systemtests.excludedGroups}</excludedGroups>
           <systemPropertyVariables>
             <!-- BuildWiringIT reads both POMs; the working directory alone would not say which. -->
             <module.basedir>${project.basedir}</module.basedir>
@@ -198,6 +210,14 @@
           <name>!sdk.next</name>
         </property>
       </activation>
+      <properties>
+        <!--
+          Scenarios only 1.0 can run: tagged next-only by @NextOnly, left out here, and kept out of
+          the compilation as well, since they use API 0.0.x does not have. The package is the one
+          NextOnlyGuardTest holds them to.
+        -->
+        <systemtests.excludedGroups>next-only</systemtests.excludedGroups>
+      </properties>
       <dependencies>
         <dependency>
           <groupId>org.glassfish.jaxb</groupId>
@@ -206,6 +226,19 @@
           <scope>test</scope>
         </dependency>
       </dependencies>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-compiler-plugin</artifactId>
+            <configuration>
+              <testExcludes>
+                <testExclude>com/oddin/oddsfeed/systemtests/next/**</testExclude>
+              </testExcludes>
+            </configuration>
+          </plugin>
+        </plugins>
+      </build>
     </profile>
   </profiles>
 </project>
