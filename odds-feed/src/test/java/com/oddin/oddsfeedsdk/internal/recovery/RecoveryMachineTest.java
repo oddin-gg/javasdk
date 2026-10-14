@@ -2068,6 +2068,32 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void anEventRecoveryBehindAProducerRecoveryWhoseSnapshotIsStillBeingTakenIsNotGivenUp() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        var recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        feed.clock.advance(Duration.ofSeconds(1));
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var event = (Outbox.Call.Event) feed.calls.getLast();
+        feed.accept(event);
+        // the recovery's snapshot is taken for 16 minutes, with the event's snapshot queued behind it
+        for (int i = 0; i < 4; i++) {
+            feed.runWithAlives(Duration.ofMinutes(4));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+        }
+        assertThat(feed.counters.eventExpired()).as("while the queue moves").isZero();
+        assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.runWithAlives(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
     void aSnapshotCompleteOfOneSessionPutsOffTheDeadlineForTheOthers() {
         feed.open(1, MessageInterest.ALL);
         feed.open(2, MessageInterest.ALL);
