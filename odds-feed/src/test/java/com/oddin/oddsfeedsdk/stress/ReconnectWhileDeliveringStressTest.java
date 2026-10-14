@@ -144,6 +144,7 @@ class ReconnectWhileDeliveringStressTest {
             for (var why : List.of("limit", "refusal")) {
                 var leaks = LeakCheck.begin().broker(broker).rest(api);
                 var states = new CopyOnWriteArrayList<ConnectionStateChange>();
+                long retryAt;
                 var feed = StressFeed.feed(
                         new StressFeed.QuietEvents() {
                             @Override
@@ -178,6 +179,8 @@ class ReconnectWhileDeliveringStressTest {
                     assertThat(inBackoff(states, why, broker.refusedLogins().size() - refused))
                             .as("in the backoff after a %s: %s", why, states)
                             .isTrue();
+                    long inBackoffAt = System.nanoTime();
+                    retryAt = inBackoffAt + backoffOf(states).toNanos();
                     assertThat(StressFeed.timed(feed::close))
                             .as("close() during the backoff after a %s", why)
                             .isLessThan(SHUTDOWN.plus(MARGIN));
@@ -187,11 +190,28 @@ class ReconnectWhileDeliveringStressTest {
                     feed.close();
                 }
                 leaks.assertClean(WAIT);
+                // a worker that close() left asleep would retry as its pause ends, and no thread scan sees it
+                while (System.nanoTime() < retryAt + MARGIN.toNanos()) {
+                    assertThat(broker.openConnections())
+                            .as("broker connections, while the pause of the %s lasts", why)
+                            .isEmpty();
+                    Thread.sleep(100);
+                }
+                leaks.assertClean(WAIT);
                 assertThat(states.getLast().state())
                         .as("the last state told, once closed")
                         .isNotEqualTo(ConnectionState.UP);
             }
         }
+    }
+
+    /** The longest pause the SDK told it was about to take. */
+    private static Duration backoffOf(List<ConnectionStateChange> states) {
+        return states.stream()
+                .filter(change -> change.state() == ConnectionState.RECOVERING)
+                .map(ConnectionStateChange::retryIn)
+                .max(Duration::compareTo)
+                .orElse(Duration.ZERO);
     }
 
     private static boolean inBackoff(List<ConnectionStateChange> states, String why, int refusals) {
@@ -233,6 +253,9 @@ class ReconnectWhileDeliveringStressTest {
         private final AtomicReference<Runnable> onUp = new AtomicReference<>();
         private final AtomicLong lastDelivered = new AtomicLong();
         private final AtomicLong lastAlive = new AtomicLong();
+        /** For each recovery of the live producer the fake received, the latest message handled or alive sent then. */
+        private final List<Long> recoveryBounds = new CopyOnWriteArrayList<>();
+
         private final AtomicInteger publishFailures = new AtomicInteger();
         private final AtomicInteger snapshotsSent = new AtomicInteger();
         private final List<ConnectionStateChange> states = new CopyOnWriteArrayList<>();
@@ -256,6 +279,12 @@ class ReconnectWhileDeliveringStressTest {
         void execute() throws Exception {
             feed = StressFeed.feed(new Events(), broker, api, builder -> builder);
             feedRef.set(feed);
+            api.respondWith(request -> {
+                if (request.method().equals("POST") && request.path().equals(LIVE)) {
+                    recoveryBounds.add(Math.max(lastDelivered.get(), lastAlive.get()));
+                }
+                return null;
+            });
             feed.getSessionBuilder()
                     .setListener(new Listener())
                     .setMessageInterest(MessageInterest.ALL)
@@ -370,9 +399,13 @@ class ReconnectWhileDeliveringStressTest {
                     ledger.ledger().assertExact();
                 } else {
                     eventually(() -> ledger.ledger().assertGapsOnlyAfterReconnect(mark), WAIT);
+                    // a send the broker answered with an error may have been routed all the same
+                    long publishedSince = ledger.ledger().publishedSince(mark);
                     assertThat(ledger.ledger().deliveredSince(mark))
                             .as("delivered since the reconnect, of what was published then")
-                            .isEqualTo(ledger.ledger().publishedSince(mark))
+                            .isBetween(
+                                    publishedSince,
+                                    publishedSince + ledger.ledger().uncertainSince(mark))
                             .isPositive();
                 }
                 await(
@@ -458,15 +491,18 @@ class ReconnectWhileDeliveringStressTest {
         private void assertRecoveryPoints(int liveBefore) {
             var requests = api.requests("POST", LIVE);
             assertThat(requests).as("recoveries asked for since the fault").hasSizeGreaterThan(liveBefore);
-            long latest = Math.max(lastDelivered.get(), lastAlive.get());
-            for (var request : requests.subList(liveBefore, requests.size())) {
+            assertThat(recoveryBounds)
+                    .as("the bound noted for every recovery asked for")
+                    .hasSameSizeAs(requests);
+            for (int i = liveBefore; i < requests.size(); i++) {
+                var request = requests.get(i);
                 assertThat(request.parameter("after"))
                         .as("where the recovery starts; none would mean a full snapshot: %s", request)
                         .isNotNull();
                 assertThat(Long.parseLong(request.parameter("after")))
-                        .as("where the recovery starts, against the last message handled")
+                        .as("where the recovery starts, against the last message handled when it was asked for")
                         .isPositive()
-                        .isLessThanOrEqualTo(latest);
+                        .isLessThanOrEqualTo(recoveryBounds.get(i));
             }
         }
 
@@ -560,9 +596,10 @@ class ReconnectWhileDeliveringStressTest {
                     try {
                         for (int producer : new int[] {1, 2}) {
                             long stamp = System.currentTimeMillis();
+                            // noted first: a recovery asked for as the SDK handles it must not look ahead of it
+                            lastAlive.accumulateAndGet(stamp, Math::max);
                             try {
                                 broker.publishAsIs(FeedMessages.stampedAt(FeedMessages.alive(producer, true), stamp));
-                                lastAlive.accumulateAndGet(stamp, Math::max);
                             } catch (RuntimeException e) {
                                 publishFailures.incrementAndGet();
                             }
