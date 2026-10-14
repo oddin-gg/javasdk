@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.SplittableRandom;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
@@ -65,8 +66,6 @@ class LifecycleLoopStressTest {
     private static final Duration WAIT = Duration.ofSeconds(20);
     /** What a reader blocked in a call may take to return once the feed is closed. */
     private static final Duration PROMPTLY = Duration.ofSeconds(5);
-    /** How long the API keeps a blocked reader's call waiting: long enough to be caught in it. */
-    private static final Duration SLOW_CALL = Duration.ofMillis(1500);
 
     private static final String PREMATCH_RECOVERY = "/v1/pre/recovery/initiate_request";
     private static final URN SLOW_COMPETITOR = URN.parse("od:competitor:55701");
@@ -142,6 +141,9 @@ class LifecycleLoopStressTest {
         private final AtomicInteger publishFailures = new AtomicInteger();
         private final LongAccumulator slowestClose = new LongAccumulator(Math::max, 0);
         private final CountDownLatch sourceClosed = new CountDownLatch(1);
+        /** What the API holds the blocked reader's call on, until the cycle lets it go. */
+        private final CountDownLatch heldCall = new CountDownLatch(1);
+
         private final List<Thread> threads = new ArrayList<>();
         private volatile OddsFeed feed;
 
@@ -164,7 +166,6 @@ class LifecycleLoopStressTest {
                     .setListener(listener)
                     .setMessageInterest(MessageInterest.ALL)
                     .build();
-            Thread blockedReader = null;
             try {
                 open();
                 health.start();
@@ -175,9 +176,7 @@ class LifecycleLoopStressTest {
                             "the probe",
                             WAIT);
                 }
-                if (source == Source.READER_BLOCKED) {
-                    blockedReader = blockReader();
-                }
+                var blockedReader = source == Source.READER_BLOCKED ? blockReader() : null;
                 startBurst();
                 switch (source) {
                     case EVENTS_CALLBACK -> bringProducerUp();
@@ -187,7 +186,15 @@ class LifecycleLoopStressTest {
                     }
                     case READER_BLOCKED -> {
                         awaitPublished(closeAfter);
+                        assertThat(blockedReader.isAlive())
+                                .as("the reader, still held in its API call when the close begins")
+                                .isTrue();
                         closeAndMark();
+                        // the API still holds the call: only the close can have ended it
+                        blockedReader.join(PROMPTLY.toMillis());
+                        assertThat(blockedReader.isAlive())
+                                .as("the reader blocked in an API call, within %s of the close", PROMPTLY)
+                                .isFalse();
                     }
                     default -> {
                         // the source closes the feed itself
@@ -198,17 +205,14 @@ class LifecycleLoopStressTest {
                         .isTrue();
             } finally {
                 stop.set(true);
+                // a reader the cycle gave up on is let go, whatever the close did
+                heldCall.countDown();
+                api.respondWith(null);
                 // a no-op once the source has closed: only a cycle that failed before it needs this
                 feed.close();
                 for (var thread : threads) {
                     thread.join(WAIT.toMillis());
                 }
-            }
-            if (blockedReader != null) {
-                blockedReader.join(PROMPTLY.toMillis());
-                assertThat(blockedReader.isAlive())
-                        .as("the reader blocked in an API call, after the close")
-                        .isFalse();
             }
             for (var thread : threads) {
                 assertThat(thread.isAlive()).as(thread.getName()).isFalse();
@@ -244,13 +248,25 @@ class LifecycleLoopStressTest {
             }
         }
 
-        /** A reader of the SDK's whose call the API holds up, until the feed's close ends it. */
+        /**
+         * A reader of the SDK's whose call the API holds, until the cycle lets it go at its end: so
+         * the call can only return in time because the feed's close ended it.
+         */
         private Thread blockReader() throws InterruptedException {
             var path = "/v1/sports/en/competitors/" + SLOW_COMPETITOR + "/profile";
-            api.respond(
-                    path,
-                    Reply.of(200, Fixtures.read("rest/competitor/competitor_profile.xml"))
-                            .after(SLOW_CALL));
+            var inCall = new CountDownLatch(1);
+            api.respond(path, Reply.of(200, Fixtures.read("rest/competitor/competitor_profile.xml")));
+            api.respondWith(request -> {
+                if (request.path().equals(path)) {
+                    inCall.countDown();
+                    try {
+                        heldCall.await(2 * WAIT.toSeconds(), TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return null;
+            });
             var reader = thread("stress-blocked-reader", () -> {
                 try {
                     feed.getSportsInfoManager().getCompetitor(SLOW_COMPETITOR).getName(Locale.ENGLISH);
@@ -258,7 +274,9 @@ class LifecycleLoopStressTest {
                     // either answer is the SDK's: what matters is that the call returns
                 }
             });
-            api.awaitRequest("GET", path);
+            assertThat(inCall.await(WAIT.toSeconds(), TimeUnit.SECONDS))
+                    .as("the reader's call reached the API")
+                    .isTrue();
             return reader;
         }
 
@@ -329,18 +347,20 @@ class LifecycleLoopStressTest {
         private void closeTwice() throws Exception {
             var together = new CyclicBarrier(2);
             var closers = new ArrayList<Thread>();
+            var failures = new ConcurrentLinkedQueue<String>();
             for (int i = 0; i < 2; i++) {
+                var name = "stress-closer-" + i;
                 var closer = new Thread(
                         () -> {
                             try {
                                 together.await(WAIT.toSeconds(), TimeUnit.SECONDS);
-                            } catch (Exception e) {
-                                throw new IllegalStateException(e);
+                                slowestClose.accumulate(
+                                        StressFeed.timed(feed::close).toNanos());
+                            } catch (Throwable e) {
+                                failures.add(name + ": " + e);
                             }
-                            slowestClose.accumulate(
-                                    StressFeed.timed(feed::close).toNanos());
                         },
-                        "stress-closer-" + i);
+                        name);
                 closer.setDaemon(true);
                 closers.add(closer);
                 closer.start();
@@ -349,6 +369,9 @@ class LifecycleLoopStressTest {
                 closer.join(WAIT.toMillis());
                 assertThat(closer.isAlive()).as(closer.getName()).isFalse();
             }
+            assertThat(failures)
+                    .as("closes of the feed that did not return normally")
+                    .isEmpty();
             closeReturned.set(true);
             sourceClosed.countDown();
         }
