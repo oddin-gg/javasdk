@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Random;
 import java.util.SplittableRandom;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -72,8 +73,6 @@ class ReconnectWhileDeliveringStressTest {
     private static final int CYCLES = 6;
     private static final int MATCHES = 4;
     private static final int READERS = 2;
-    /** One cycle's ledger starts this far above the last, so the session's checkpoints only grow. */
-    private static final long STEP = 100_000;
 
     private static final Duration WAIT = Duration.ofSeconds(20);
     /** One reconnect takes a backoff of 1 s, 0.7 to 1.3 times, per refused try, and a login; this is the cap. */
@@ -123,10 +122,14 @@ class ReconnectWhileDeliveringStressTest {
         try (var api = FakeRestServer.start()) {
             leaks.rest(api);
             var run = new Run(api, seed);
+            Throwable failure = null;
             try {
                 run.execute();
+            } catch (Throwable e) {
+                failure = e;
+                throw e;
             } finally {
-                run.shutDown();
+                run.shutDown(failure);
             }
             run.afterClose();
         }
@@ -253,8 +256,11 @@ class ReconnectWhileDeliveringStressTest {
         private final AtomicReference<Runnable> onUp = new AtomicReference<>();
         private final AtomicLong lastDelivered = new AtomicLong();
         private final AtomicLong lastAlive = new AtomicLong();
-        /** For each recovery of the live producer the fake received, the latest message handled or alive sent then. */
-        private final List<Long> recoveryBounds = new CopyOnWriteArrayList<>();
+        /**
+         * For each recovery of the live producer the fake received, by its request id, the latest message handled
+         * or alive sent then, and the time of the request: nothing it asks from may be later than either.
+         */
+        private final Map<String, long[]> recoveryBounds = new ConcurrentHashMap<>();
 
         private final AtomicInteger publishFailures = new AtomicInteger();
         private final AtomicInteger snapshotsSent = new AtomicInteger();
@@ -281,7 +287,9 @@ class ReconnectWhileDeliveringStressTest {
             feedRef.set(feed);
             api.respondWith(request -> {
                 if (request.method().equals("POST") && request.path().equals(LIVE)) {
-                    recoveryBounds.add(Math.max(lastDelivered.get(), lastAlive.get()));
+                    recoveryBounds.put(
+                            request.parameter("request_id"),
+                            new long[] {Math.max(lastDelivered.get(), lastAlive.get()), System.currentTimeMillis()});
                 }
                 return null;
             });
@@ -346,7 +354,9 @@ class ReconnectWhileDeliveringStressTest {
                 }
                 // everything sent so far has been handled, so none of it can be told to the next ledger
                 await("the session drained", WAIT, () -> session().queueDepth() == 0 && broker.unacknowledged() == 0);
-                var ledger = new Current(new Ledger(base + (index + 1) * STEP));
+                // stamped by the clock, as the session's alives are: what a recovery may ask from is then comparable
+                // to the time of a message, and the cycle that follows begins seconds later than this one's stamps
+                var ledger = new Current(new Ledger(System.currentTimeMillis()));
                 current.set(ledger);
                 long discards = counters().get(counter("epoch_discards"));
                 long skipped = counters().get(counter("skipped_acks"));
@@ -488,21 +498,23 @@ class ReconnectWhileDeliveringStressTest {
          * Every recovery of the live producer asked for since the fault begins at a time that is
          * given, and no later than the last message the session handled or alive it was sent.
          */
-        private void assertRecoveryPoints(int liveBefore) {
+        private void assertRecoveryPoints(int liveBefore) throws InterruptedException {
             var requests = api.requests("POST", LIVE);
             assertThat(requests).as("recoveries asked for since the fault").hasSizeGreaterThan(liveBefore);
-            assertThat(recoveryBounds)
-                    .as("the bound noted for every recovery asked for")
-                    .hasSameSizeAs(requests);
             for (int i = liveBefore; i < requests.size(); i++) {
                 var request = requests.get(i);
+                var id = request.parameter("request_id");
+                // the fake records a request just before it calls the hook that notes the bound
+                await("the bound noted for the recovery " + id, WAIT, () -> recoveryBounds.containsKey(id));
+                var bound = recoveryBounds.get(id);
                 assertThat(request.parameter("after"))
                         .as("where the recovery starts; none would mean a full snapshot: %s", request)
                         .isNotNull();
                 assertThat(Long.parseLong(request.parameter("after")))
                         .as("where the recovery starts, against the last message handled when it was asked for")
                         .isPositive()
-                        .isLessThanOrEqualTo(recoveryBounds.get(i));
+                        .isLessThanOrEqualTo(bound[0])
+                        .isLessThanOrEqualTo(bound[1]);
             }
         }
 
@@ -520,24 +532,36 @@ class ReconnectWhileDeliveringStressTest {
         }
 
         /** Whatever happened above, the load stops and the feed is closed. */
-        void shutDown() throws Exception {
+        void shutDown(Throwable failure) throws Exception {
             stopLoad.set(true);
             holdSnapshots.set(false);
             release(aliveGate);
             release(ledgerGate);
             readerThreads.forEach(Thread::interrupt);
+            // every step runs, and a failure of the run itself is the one that is reported
+            var cleanup = new StressFeed.Cleanup();
+            var closeTook = new AtomicReference<Duration>();
             if (feed != null) {
-                assertThat(StressFeed.timed(feed::close)).isLessThan(SHUTDOWN.plus(MARGIN));
+                cleanup.step(() ->
+                        closeTook.set(StressFeed.timedWithin(SHUTDOWN.plus(WAIT), "close() of the feed", feed::close)));
             }
-            health.close();
-            try {
-                deadlock.close();
-            } catch (AssertionError found) {
-                System.err.println("the deadlock sentinel found: " + found.getMessage());
-            }
+            cleanup.step(health::close);
+            cleanup.step(() -> {
+                try {
+                    deadlock.close();
+                } catch (AssertionError found) {
+                    System.err.println("the deadlock sentinel found: " + found.getMessage());
+                }
+            });
             for (var thread : threads) {
-                thread.join(WAIT.toMillis());
+                cleanup.step(() -> thread.join(WAIT.toMillis()));
             }
+            cleanup.step(() -> {
+                if (closeTook.get() != null) {
+                    assertThat(closeTook.get()).as("close() of the feed").isLessThan(SHUTDOWN.plus(MARGIN));
+                }
+            });
+            cleanup.finish(failure);
         }
 
         void afterClose() {
