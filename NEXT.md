@@ -290,7 +290,7 @@ to one of them:
 | Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second, paced by `System.nanoTime`, so a wall clock set back stops none of its ticks | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
 | Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, fatal errors, listener exceptions, API call events, recovery completion | message callbacks |
 | REST workers | virtual threads | HTTP calls, posting results back to whoever asked; an event recovery caller's answer, on a thread of its own | client code |
-| Side-loads | four virtual threads | background profile loads, the eager preload's match loads | client code |
+| Side-loads | virtual threads, half the REST concurrency limit (8 by default, 1 to 16) | background profile loads, the eager preload's match loads | client code |
 | Watchdog | one thread, from the feed's first start to its close | every 5 s: the stall checks, the JVM's deadlock search, a read of the health | blocking work, client code |
 | Keep-alive | one non-daemon thread, from `open()` to `close()` | nothing: it keeps the JVM up while the feed is open (section 3) | anything |
 
@@ -393,6 +393,9 @@ because the health event itself would queue behind the wedge.
   covers market descriptions, void reasons, status descriptions and sports, size 2. The
   data pool covers entity loading, default 16, configurable. Nothing else can delay a
   producer's recovery request behind it.
+  The side-load workers are half the data pool's size, at least one and at most 16, so
+  the eager preload never takes more than half the permits and the client's own reads
+  keep the rest, and it uses more of them the more the limit allows.
 - Every REST call runs under one deadline, the configured HTTP timeout, which covers
   permit wait, the call, and every retry. Retries happen only inside the deadline. A
   load therefore waits at most the HTTP timeout and a second, and that is the number the
@@ -1719,3 +1722,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   and a producer's recovery request; the recovery pool of two carries only the requests of
   single events, which are best effort, where a producer's is the safety net. Only the pool a
   request waits on changed: the recovery actor, its limits and the retry policy are as they were.
+- 2026-10-14, the side-load workers follow the REST concurrency limit: four fixed workers
+  paced a restart at four loads at a time whatever the limit, so at the default of 16 the
+  eager preload used a quarter of the data permits, and with a limit under four the workers
+  could take every one of them. The workers are now half the limit, at least one and at most
+  16, eight by default: the preload's pace follows the option that already says how hard the
+  SDK may hit the API, and half the permits stay free for the client's reads. No new option.
+  The permits are fair, so a read was never starved, only queued behind the workers' requests.
+  With a limit under four there is one worker, which a warm-up can hold, as the side-loads'
+  rule for one worker says.
