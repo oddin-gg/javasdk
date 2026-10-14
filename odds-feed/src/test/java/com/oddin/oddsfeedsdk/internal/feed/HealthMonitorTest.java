@@ -8,6 +8,7 @@ import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.internal.amqp.AmqpTransport.ChannelRefusals;
 import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.session.SessionRegistry;
@@ -188,6 +189,95 @@ class HealthMonitorTest {
     }
 
     @Test
+    void aChannelRefusedThreeTimesInARowForTheConnectionsLimitDegradesTheConnectionUntilItOpens()
+            throws InterruptedException {
+        events.start();
+        // the limit is the health's own, 60 s, which the transport's streaks are measured against
+        var limit = health.connectionDownLimit();
+        assertThat(limit).isEqualTo(Duration.ofSeconds(60));
+
+        assertThat(readRefusing(streak("a session's channel", 1, Duration.ZERO)).components())
+                .as("one refusal")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        assertThat(readRefusing(streak("a session's channel", 2, limit.multipliedBy(5)))
+                        .components())
+                .as("two refusals, however long")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        assertThat(readRefusing(streak("a session's channel", 9, limit.minusMillis(1)))
+                        .components())
+                .as("many refusals, within the limit")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        heard.nothingMore("a streak that is not enough");
+
+        var reading = readRefusing(streak("a session's channel", 3, limit));
+        assertThat(reading.components()).containsEntry(HealthComponent.CONNECTION, HealthState.DEGRADED);
+        assertThat(reading.state()).isEqualTo(HealthState.DEGRADED);
+        var degraded = heard.next();
+        assertThat(degraded.component()).isEqualTo(HealthComponent.CONNECTION);
+        assertThat(degraded.previous()).isEqualTo(HealthState.HEALTHY);
+        assertThat(degraded.state()).isEqualTo(HealthState.DEGRADED);
+        assertThat(degraded.reason())
+                .isEqualTo("the broker connection is up, but a session's channel has been refused 3 times in a row"
+                        + " over 60 s, the last: java.io.IOException: 404 NOT_FOUND - no exchange");
+
+        readRefusing(streak("a session's channel", 4, limit.plusSeconds(30)));
+        heard.nothingMore("still degraded");
+
+        // the next successful open ends the streak
+        var opened = read();
+        assertThat(opened.components()).containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        var healthy = heard.next();
+        assertThat(healthy.previous()).isEqualTo(HealthState.DEGRADED);
+        assertThat(healthy.state()).isEqualTo(HealthState.HEALTHY);
+        heard.nothingMore("told once each way");
+        assertThat(logged).extracting(HealthEvent::state).containsExactly(HealthState.DEGRADED, HealthState.HEALTHY);
+    }
+
+    @Test
+    void ofSeveralChannelsRefusedTheOneThatQualifiesIsNamedAndItsStreakIsNotMixedWithAnothers()
+            throws InterruptedException {
+        events.start();
+        var limit = health.connectionDownLimit();
+        // many in a row on one, long on the other: neither is both
+        var neither = readRefusing(
+                streak("a session's channel", 7, limit.dividedBy(2)),
+                streak("the alive channel", 2, limit.multipliedBy(3)));
+        assertThat(neither.components()).containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        heard.nothingMore("no channel is both");
+
+        readRefusing(
+                streak("a session's channel", 3, limit.plusSeconds(1)),
+                streak("the alive channel", 5, limit.plusSeconds(20)));
+        assertThat(heard.next().reason()).contains("the alive channel has been refused 5 times in a row over 80 s");
+    }
+
+    @Test
+    void aConnectionDownIsTheDownLimitsToTellNotTheChannelsAndAClosedFeedTellsNothingMore()
+            throws InterruptedException {
+        var nanos = new AtomicLong(1_000);
+        var limit = Duration.ofSeconds(60);
+        var health =
+                new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), nanos::get, HOUR, limit, logged::add);
+        events.start();
+        health.down("connection reset");
+        assertThat(readRefusing(health, streak("a session's channel", 5, limit)).components())
+                .as("down within its limit, and a streak the transport no longer reports as one")
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        health.up();
+
+        readRefusing(health, streak("a session's channel", 3, limit));
+        var degraded = heard.next();
+        assertThat(degraded.state()).isEqualTo(HealthState.DEGRADED);
+        // closing ends the retries: the part is kept as it is found without them, and nothing is told
+        health.closed();
+        assertThat(readRefusing(health, streak("a session's channel", 8, limit.multipliedBy(2)))
+                        .components())
+                .containsEntry(HealthComponent.CONNECTION, HealthState.HEALTHY);
+        heard.nothingMore("after the close");
+        assertThat(logged).containsExactly(degraded);
+    }
+
+    @Test
     void aConnectionDegradedAtTheCloseStaysSoAndNothingMoreIsTold() throws InterruptedException {
         var nanos = new AtomicLong(1_000);
         var limit = Duration.ofSeconds(60);
@@ -360,6 +450,7 @@ class HealthMonitorTest {
                 false,
                 false,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(),
                 recovery(),
@@ -375,6 +466,7 @@ class HealthMonitorTest {
                 false,
                 false,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(),
                 recovery(),
@@ -390,6 +482,7 @@ class HealthMonitorTest {
                 false,
                 false,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(),
                 recovery(),
@@ -413,6 +506,7 @@ class HealthMonitorTest {
                 true,
                 true,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(session(1, true)),
                 recovery(),
@@ -434,6 +528,7 @@ class HealthMonitorTest {
                 true,
                 true,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(session(1, false)),
                 recovery(),
@@ -451,6 +546,7 @@ class HealthMonitorTest {
                 false,
                 false,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(),
                 recovery(),
@@ -466,6 +562,7 @@ class HealthMonitorTest {
                 false,
                 false,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(),
                 recovery(),
@@ -485,6 +582,7 @@ class HealthMonitorTest {
                 true,
                 false,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(session(1, false)),
                 recovery(),
@@ -508,6 +606,7 @@ class HealthMonitorTest {
                 true,
                 true,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(session(1, false)),
                 recovery(),
@@ -610,7 +709,7 @@ class HealthMonitorTest {
                         .containsExactly(
                                 "market descriptions", "market variants", "void reasons", "match status descriptions");
                 assertThat(notOpen.sessions()).isEmpty();
-                assertThat(notOpen.transport()).isEqualTo(new FeedHealth.Transport(false, 0));
+                assertThat(notOpen.transport()).isEqualTo(new FeedHealth.Transport(false, 0, 0));
 
                 var registry = new SessionRegistry(null);
                 var built = registry.builder()
@@ -749,8 +848,34 @@ class HealthMonitorTest {
                 true,
                 true,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(sessions),
+                recovery(),
+                List.of(),
+                caches(),
+                noEvents());
+    }
+
+    private static ChannelRefusals.Streak streak(String channel, int count, Duration lasted) {
+        return new ChannelRefusals.Streak(channel, count, lasted, "java.io.IOException: 404 NOT_FOUND - no exchange");
+    }
+
+    /** As the feed reads one once open, with these channels refused. */
+    private FeedHealth readRefusing(ChannelRefusals.Streak... refusing) {
+        return readRefusing(health, refusing);
+    }
+
+    private FeedHealth readRefusing(HealthMonitor health, ChannelRefusals.Streak... refusing) {
+        return health.assess(
+                health.nextReading(),
+                true,
+                true,
+                true,
+                transport(),
+                List.of(refusing),
+                alives(),
+                List.of(),
                 recovery(),
                 List.of(),
                 caches(),
@@ -764,6 +889,7 @@ class HealthMonitorTest {
                 false,
                 false,
                 transport(),
+                List.of(),
                 alives(),
                 List.of(),
                 recovery(),
@@ -806,7 +932,7 @@ class HealthMonitorTest {
     }
 
     private static FeedHealth.Transport transport() {
-        return new FeedHealth.Transport(true, 0);
+        return new FeedHealth.Transport(true, 0, 0);
     }
 
     private static FeedHealth.Alives alives() {

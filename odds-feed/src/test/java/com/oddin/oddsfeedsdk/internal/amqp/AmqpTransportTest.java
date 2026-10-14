@@ -18,6 +18,7 @@ import java.net.Socket;
 import java.security.KeyStore;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -297,6 +298,81 @@ class AmqpTransportTest {
                 .as("reset by the reopen that worked")
                 .isZero();
         assertThat(events.events).as("the connection stayed up").containsExactly("connecting", "up");
+    }
+
+    @Test
+    void channelsTheBrokerKeepsRefusingAreCountedAsStreaksUntilTheyOpen() throws Exception {
+        var nanos = new AtomicLong(1_000);
+        AmqpTransport transport =
+                transport(settings(10, 1 << 20), true, FeedClock.of(InstantSource.system(), nanos::get));
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        assertThat(transport.channelRefusals().total()).as("none before").isZero();
+        assertThat(transport.channelRefusals().streaks()).isEmpty();
+
+        feed().removeExchange(FakeFeed.EXCHANGE);
+        try {
+            feed().deleteClientQueues();
+            awaitQuietly(() -> session.failedReopens() >= 3 && alive(transport).failedReopens() >= 3);
+            nanos.addAndGet(Duration.ofSeconds(90).toNanos());
+
+            var refusals = transport.channelRefusals();
+            assertThat(refusals.total()).as("refusals of both").isGreaterThanOrEqualTo(6);
+            assertThat(refusals.streaks())
+                    .extracting(AmqpTransport.ChannelRefusals.Streak::channel)
+                    .containsExactlyInAnyOrder("a session's channel", "the alive channel");
+            assertThat(refusals.streaks()).allSatisfy(streak -> {
+                assertThat(streak.count()).isGreaterThanOrEqualTo(3);
+                assertThat(streak.lasted()).isGreaterThanOrEqualTo(Duration.ofSeconds(90));
+                assertThat(streak.failure()).startsWith("java.io.IOException: ").doesNotContain("test-token");
+            });
+        } finally {
+            feed().restoreExchange(FakeFeed.EXCHANGE);
+        }
+        awaitOpen(session);
+        awaitQuietly(() -> alive(transport).isOpen());
+        var opened = transport.channelRefusals();
+        assertThat(opened.streaks()).as("the next successful open ends them").isEmpty();
+        assertThat(opened.total()).as("what was refused stays counted").isGreaterThanOrEqualTo(6);
+    }
+
+    @Test
+    void aStreakEndsWithTheConnectionItHappenedOnAndWithTheClose() throws Exception {
+        AmqpTransport transport = transport(settings(10, 1 << 20), true);
+        var session = (SessionChannel) transport.addSession(allKeys());
+        transport.open();
+        feed().removeExchange(FakeFeed.EXCHANGE);
+        try {
+            feed().deleteClientQueues();
+            awaitQuietly(() -> session.failedReopens() >= 2);
+            assertThat(transport.channelRefusals().streaks()).isNotEmpty();
+
+            // the connection lost while the channel is refused: its time down is the connection's
+            feed().closeConnections();
+            events.await("down"::equals, WAIT);
+            assertThat(transport.channelRefusals().streaks())
+                    .as("a lost connection's streak, with the new ones failing to bind")
+                    .isEmpty();
+            assertThat(transport.channelRefusals().total()).isGreaterThanOrEqualTo(2);
+        } finally {
+            feed().restoreExchange(FakeFeed.EXCHANGE);
+        }
+        events.await(e -> e.equals("up") && events.count("up") == 2, WAIT);
+        awaitOpen(session);
+        assertThat(transport.channelRefusals().streaks()).isEmpty();
+
+        // refused again on the new connection, then closed during the retry
+        feed().removeExchange(FakeFeed.EXCHANGE);
+        try {
+            feed().deleteClientQueues();
+            awaitQuietly(() -> session.failedReopens() >= 1);
+            assertThat(session.streak()).as("a streak under way").isNotNull();
+            transport.close();
+            assertThat(session.streak()).as("closed during the retry").isNull();
+            assertThat(transport.channelRefusals().streaks()).isEmpty();
+        } finally {
+            feed().restoreExchange(FakeFeed.EXCHANGE);
+        }
     }
 
     @Test
@@ -1500,7 +1576,12 @@ class AmqpTransportTest {
     }
 
     private AmqpTransport transport(AmqpSettings settings, boolean withAlives) {
-        var transport = new AmqpTransport(settings, FakeFeed.EXCHANGE, events, withAlives ? events::alive : null);
+        return transport(settings, withAlives, FeedClock.system());
+    }
+
+    private AmqpTransport transport(AmqpSettings settings, boolean withAlives, FeedClock clock) {
+        var transport =
+                new AmqpTransport(settings, FakeFeed.EXCHANGE, events, withAlives ? events::alive : null, clock);
         open.add(transport);
         return transport;
     }

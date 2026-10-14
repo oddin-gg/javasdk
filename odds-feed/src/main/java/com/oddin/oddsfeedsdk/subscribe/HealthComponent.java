@@ -18,6 +18,10 @@ public enum HealthComponent {
     THREADS,
     /** The market descriptions, void reasons and match statuses the SDK keeps from the API. */
     CATALOGS,
-    /** The broker connection: degraded once it has been down for longer than its limit, until it is up. */
+    /**
+     * The broker connection: degraded once it has been down for longer than its limit, until it is
+     * up, and while a session's channel or the alive channel is refused again and again on it for
+     * as long, until one opens.
+     */
     CONNECTION
 }

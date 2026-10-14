@@ -47,6 +47,17 @@ final class SessionChannel implements SessionTransport {
         record Handled(Consumer<RawDelivery> handler) implements Sink {}
     }
 
+    /**
+     * Reopens that failed in a row on one connection: a new connection starts a new streak, and a
+     * streak of a connection that is gone is nobody's.
+     *
+     * @param on the connection the channel could not be opened on
+     * @param count how many failed
+     * @param sinceMono when the first failed, by the feed clock's monotonic reading in millis
+     * @param last why the last one did
+     */
+    record Streak(Connection on, int count, long sinceMono, Exception last) {}
+
     private final String exchange;
     private final List<String> bindings;
     private final Sink sink;
@@ -62,6 +73,10 @@ final class SessionChannel implements SessionTransport {
     private final AtomicLong handlerFailures = new AtomicLong();
     /** Reopens that failed in a row: the transport pauses longer before each next one. */
     private final AtomicInteger failedReopens = new AtomicInteger();
+    /** Reopens that failed since the channel was built: the streak starts again, this never does. */
+    private final AtomicLong refusals = new AtomicLong();
+    /** The streak of failed reopens as it stands, null for none; changed under the lock, read without it. */
+    private volatile @Nullable Streak streak;
     /** Whether a reopen is waiting or running, so the broker's closing and cancelling start one. */
     private final AtomicBoolean reopening = new AtomicBoolean();
     /** Changed under the lock; read without it. */
@@ -138,7 +153,7 @@ final class SessionChannel implements SessionTransport {
             }
             // a cancel from here on or before marks this consumer, which isOpen reads
             current = consumer;
-            failedReopens.set(0);
+            streakEnded();
             if (lossTold) {
                 lossTold = false;
                 told.reopened();
@@ -200,14 +215,15 @@ final class SessionChannel implements SessionTransport {
                 // a loss told stays told, for that open to tell the new channel
                 closeChannel();
                 removeEpochsBefore(epoch.incrementAndGet());
-                failedReopens.set(0);
+                // the connection's loss is the connection's to tell: no refusal of the channel's goes on
+                streakEnded();
                 return true;
             }
             try {
                 open(now);
                 return true;
             } catch (IOException | RuntimeException e) {
-                failedReopens.incrementAndGet();
+                refused(now, e);
                 reopenFailed.accept(e);
                 return false;
             }
@@ -278,6 +294,33 @@ final class SessionChannel implements SessionTransport {
         return failedReopens.get();
     }
 
+    /** Reopens that failed since the channel was built. */
+    long refusals() {
+        return refusals.get();
+    }
+
+    /** The reopens that fail in a row now, null when the last one worked or none failed. */
+    @Nullable
+    Streak streak() {
+        return streak;
+    }
+
+    /** Counts a reopen that failed on {@code on}; under the lock. */
+    private void refused(Connection on, Exception cause) {
+        failedReopens.incrementAndGet();
+        refusals.incrementAndGet();
+        var running = streak;
+        streak = running != null && running.on().equals(on)
+                ? new Streak(on, running.count() + 1, running.sinceMono(), cause)
+                : new Streak(on, 1, clock.monoMillis(), cause);
+    }
+
+    /** A channel opened, or no connection is left to open one on, or it closed: the streak ends; under the lock. */
+    private void streakEnded() {
+        failedReopens.set(0);
+        streak = null;
+    }
+
     /** Claims the one reopen that may wait or run; false when one already does. */
     boolean startReopen() {
         return reopening.compareAndSet(false, true);
@@ -309,6 +352,8 @@ final class SessionChannel implements SessionTransport {
         lock.lock();
         try {
             closed = true;
+            // nothing retries any more
+            streakEnded();
             closeChannel();
             if (sink instanceof Sink.Queued(var queue, var _, var _)) {
                 queue.close();

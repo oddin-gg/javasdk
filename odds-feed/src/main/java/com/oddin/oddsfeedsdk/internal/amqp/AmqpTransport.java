@@ -317,6 +317,57 @@ public final class AmqpTransport implements AutoCloseable {
         return reconnects.get();
     }
 
+    /**
+     * The channels that could not be opened again on the live connection, for {@code getHealth()}:
+     * how many reopens failed in all, and each channel whose latest reopens failed in a row. A
+     * streak ends with the channel's next open, with the connection's loss - a lost connection is
+     * the connection's to tell - and with the close.
+     */
+    public ChannelRefusals channelRefusals() {
+        long total = 0;
+        var streaks = new ArrayList<ChannelRefusals.Streak>();
+        Connection live = connection;
+        long now = clock.monoMillis();
+        for (SessionChannel channel : channels) {
+            total += channel.refusals();
+            var streak = channel.streak();
+            // one of the connection that is up: a lost one's is the connection's to tell
+            if (live != null && streak != null && streak.on().equals(live) && live.isOpen()) {
+                streaks.add(new ChannelRefusals.Streak(
+                        channel == alive ? "the alive channel" : "a session's channel",
+                        streak.count(),
+                        // a duration between two local events: by the monotonic reading
+                        Duration.ofMillis(now - streak.sinceMono()),
+                        String.valueOf(Failure.redacted(streak.last(), settings.accessToken())
+                                .getMessage())));
+            }
+        }
+        return new ChannelRefusals(total, streaks);
+    }
+
+    /**
+     * What the channels' failed reopens came to.
+     *
+     * @param total reopens that failed since the transport was built
+     * @param streaks the channels whose latest reopens failed in a row, and are not open again
+     */
+    public record ChannelRefusals(long total, List<Streak> streaks) {
+
+        public ChannelRefusals {
+            streaks = List.copyOf(streaks);
+        }
+
+        /**
+         * One channel's failed reopens in a row.
+         *
+         * @param channel which channel: a session's or the alive one
+         * @param count how many failed since it was last open
+         * @param lasted how long since the first
+         * @param failure the last one's class and text, with the access token taken out
+         */
+        public record Streak(String channel, int count, Duration lasted, String failure) {}
+    }
+
     /** What the watchdog reads of the consumer threads; nothing running or taken before the open. */
     public ConsumerState consumerState() {
         ConsumerPool pool = consumers;
