@@ -313,8 +313,15 @@ class AmqpTransportTest {
         feed().removeExchange(FakeFeed.EXCHANGE);
         try {
             feed().deleteClientQueues();
-            awaitQuietly(() -> session.failedReopens() >= 3 && alive(transport).failedReopens() >= 3);
-            nanos.addAndGet(Duration.ofSeconds(90).toNanos());
+            // the clock moves 30 s after the first failure of both channels, after their second and after
+            // their third, so the span is 90 s only when it runs from the first failure, not the latest
+            var alive = alive(transport);
+            awaitQuietly(() -> session.streak() != null && alive.streak() != null);
+            nanos.addAndGet(Duration.ofSeconds(30).toNanos());
+            awaitQuietly(() -> streakCount(session) >= 2 && streakCount(alive) >= 2);
+            nanos.addAndGet(Duration.ofSeconds(30).toNanos());
+            awaitQuietly(() -> streakCount(session) >= 3 && streakCount(alive) >= 3);
+            nanos.addAndGet(Duration.ofSeconds(30).toNanos());
 
             var refusals = transport.channelRefusals();
             assertThat(refusals.total()).as("refusals of both").isGreaterThanOrEqualTo(6);
@@ -323,7 +330,9 @@ class AmqpTransportTest {
                     .containsExactlyInAnyOrder("a session's channel", "the alive channel");
             assertThat(refusals.streaks()).allSatisfy(streak -> {
                 assertThat(streak.count()).isGreaterThanOrEqualTo(3);
-                assertThat(streak.lasted()).isGreaterThanOrEqualTo(Duration.ofSeconds(90));
+                assertThat(streak.lasted())
+                        .as("measured from the first failure")
+                        .isEqualTo(Duration.ofSeconds(90));
                 assertThat(streak.failure()).startsWith("java.io.IOException: ");
             });
         } finally {
@@ -1674,6 +1683,12 @@ class AmqpTransportTest {
             Thread.sleep(200);
         }
         assertThat(events.alives).as("an alive to the SDK's own consumer").hasSizeGreaterThan(before);
+    }
+
+    /** How many reopens of the channel failed in a row, 0 for none. */
+    private static int streakCount(SessionChannel channel) {
+        var streak = channel.streak();
+        return streak == null ? 0 : streak.count();
     }
 
     /** Waits for the session's channel to be open. */
