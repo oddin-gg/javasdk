@@ -386,10 +386,13 @@ because the health event itself would queue behind the wedge.
 
 ### REST
 
-- Three permit pools per `OddsFeed`. The recovery pool covers recovery requests and
-  producer and whoami calls, size 2. The catalog pool covers market descriptions, void
-  reasons, status descriptions and sports, size 2. The data pool covers entity loading,
-  default 16, configurable. Nothing else can delay a recovery request behind it.
+- Four permit pools per `OddsFeed`. The producer pool covers a producer's recovery
+  requests and the producer and whoami calls, size 1. The recovery pool covers the
+  recovery requests of single events, size 2: up to 128 of them can be in flight, and
+  they must not queue ahead of a producer's, which is the safety net. The catalog pool
+  covers market descriptions, void reasons, status descriptions and sports, size 2. The
+  data pool covers entity loading, default 16, configurable. Nothing else can delay a
+  producer's recovery request behind it.
 - Every REST call runs under one deadline, the configured HTTP timeout, which covers
   permit wait, the call, and every retry. Retries happen only inside the deadline. A
   load therefore waits at most the HTTP timeout and a second, and that is the number the
@@ -1291,7 +1294,7 @@ review of 2026-10-03 take the next free number and sit under the ticket they fol
         Done.
 13. Generated REST models with name-preserving bindings plus golden tests. One PR per
     endpoint family. Same list.
-14. HTTP client: all endpoints, three permit pools, one deadline per call covering
+14. HTTP client: all endpoints, four permit pools, one deadline per call covering
     permit, call and retries, retry for idempotent calls only, error mapping including
     permanent failures with the fatal event, 429 handling, startup deadline, API call
     events. Also the version headers and getter from ticket 29, and the HTTP timeout,
@@ -1708,3 +1711,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   though the API, asked by the language, answers both alike: keying the caches by the
   language would change the locales 0.0.x's `getNames()` maps hold. A preload the feed's
   close cuts short is neither counted nor logged.
+- 2026-10-14, a producer's recovery request has a permit of its own: the recovery pool's two
+  permits were shared by whoami, the producer list, a producer's recovery request and every
+  event recovery request, and up to 128 event recoveries can be in flight, so a producer's
+  request waited behind each event request queued before it, which at a slow API is longer
+  than the call's deadline. A fourth pool of one permit now carries whoami, the producer list
+  and a producer's recovery request; the recovery pool of two carries only the requests of
+  single events, which are best effort, where a producer's is the safety net. Only the pool a
+  request waits on changed: the recovery actor, its limits and the retry policy are as they were.
