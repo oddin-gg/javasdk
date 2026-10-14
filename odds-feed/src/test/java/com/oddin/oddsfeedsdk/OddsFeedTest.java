@@ -401,6 +401,27 @@ class OddsFeedTest {
         }
     }
 
+    @Test
+    void aFailedStartKeepsItsTwoIdleDaemonThreadsUntilTheCloseEndsThem() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            Set<Thread> before = Thread.getAllStackTraces().keySet();
+            api.respond(WHOAMI, 403, FORBIDDEN);
+            var failed = feedAgainst(api);
+            assertThatThrownBy(failed::getBookMakerDetail).isInstanceOf(InitException.class);
+
+            // the events dispatcher and the watchdog stay, for the next start and its callbacks
+            var kept = Thread.getAllStackTraces().keySet().stream()
+                    .filter(thread -> !before.contains(thread) && thread.isAlive())
+                    .filter(thread -> thread.getName().startsWith("oddsfeed"))
+                    .toList();
+            assertThat(kept).extracting(Thread::getName).containsExactlyInAnyOrder("oddsfeed-events", "oddsfeed-timer");
+            assertThat(kept).allMatch(Thread::isDaemon);
+
+            failed.close();
+            awaitNoThreadsBut(before);
+        }
+    }
+
     /** A listener that hears only the API calls, each with {@code call}. */
     private static GlobalEventsListener apiCalls(Consumer<ApiCallEvent> call) {
         return new GlobalEventsListener() {
