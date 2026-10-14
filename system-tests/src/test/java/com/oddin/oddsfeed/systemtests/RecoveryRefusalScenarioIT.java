@@ -57,9 +57,15 @@ class RecoveryRefusalScenarioIT {
                         assertThat(requestsWhileAlive(rest, feed, 2, Duration.ofSeconds(3)))
                                 .as("recovery requests of producer 1, with an alive every second")
                                 .hasSize(1);
+                        assertThat(rest.recoveriesRefused())
+                                .as("recoveries refused: the one request, and it was turned away")
+                                .isEqualTo(1);
                         assertThat(producers.isProducerDown(1))
                                 .as("producer 1 down, its recovery refused")
                                 .isTrue();
+                        assertThat(sdk.events().producerStatuses())
+                                .as("status changes while the recovery was refused")
+                                .isEmpty();
                     },
                     () -> {
                         // the backoff is the recovery actor's to choose: five seconds, then ten
