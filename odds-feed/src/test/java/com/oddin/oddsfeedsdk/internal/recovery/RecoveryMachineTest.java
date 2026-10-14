@@ -2131,6 +2131,127 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aLiveMessageGeneratedBeforeAnEventRecoveryWasAskedForPutsOffItsDeadline() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        long askedAt = feed.now();
+        feed.accept(call);
+        feed.advance(Duration.ofMinutes(4));
+        // queued ahead of the snapshot: sent just before the request
+        feed.machine.processed(1, LIVE, askedAt - 1, feed.now(), 0);
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void anAliveGeneratedBeforeAnEventRecoveryWasAskedForPutsOffItsDeadline() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        long askedAt = feed.now();
+        feed.accept(call);
+        feed.advance(Duration.ofMinutes(4));
+        feed.machine.sessionAlive(1, LIVE, askedAt - 1, feed.now(), true);
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void aLiveMessageOrAnAliveGeneratedWhenAnEventRecoveryWasAskedForOrAfterDoesNotPutOffItsDeadline() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var call = feed.calls.getLast();
+        long askedAt = feed.now();
+        feed.accept(call);
+        feed.advance(Duration.ofMinutes(4));
+        // the snapshot does not queue behind what the producer sent since
+        feed.machine.processed(1, LIVE, askedAt, feed.now(), 0);
+        feed.machine.sessionAlive(1, LIVE, askedAt, feed.now(), true);
+        feed.machine.processed(1, LIVE, feed.now(), feed.now(), 0);
+        feed.machine.sessionAlive(1, LIVE, feed.now(), feed.now(), true);
+        feed.advance(Duration.ofMinutes(1));
+        assertThat(feed.counters.eventExpired()).as("five minutes in").isZero();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryAskedForEarlierPutsOffTheDeadlineOfOneAskedForAfterIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var earlier = feed.calls.getLast();
+        feed.accept(earlier);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.accept(later);
+        feed.advance(Duration.ofMinutes(4));
+        feed.machine.processed(1, LIVE, feed.now(), feed.now(), earlier.requestId());
+        feed.advance(Duration.ofMinutes(1).plusSeconds(1));
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after the later one was accepted: it is behind the snapshot that came")
+                .isZero();
+        feed.advance(Duration.ofMinutes(4));
+        assertThat(feed.counters.eventExpired()).as("five minutes after it").isEqualTo(2);
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryAskedForAfterDoesNotPutOffTheDeadlineOfAnEarlierOne() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var earlier = feed.calls.getLast();
+        feed.accept(earlier);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.accept(later);
+        feed.advance(Duration.ofMinutes(4));
+        feed.machine.processed(1, LIVE, feed.now(), feed.now(), later.requestId());
+        feed.advance(Duration.ofMinutes(1));
+        assertThat(feed.counters.eventExpired())
+                .as("the earlier one's snapshot does not queue behind the later one's")
+                .isEqualTo(1);
+        assertThat(statusOf(earlier).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+    }
+
+    @Test
+    void theSnapshotOfAProducerRecoveryAskedForAfterAnEventRecoveryDoesNotPutOffItsDeadline() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var event = (Outbox.Call.Event) feed.calls.getLast();
+        feed.accept(event);
+        feed.clock.advance(Duration.ofSeconds(1));
+        feed.alive(PRE);
+        var recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        for (int i = 0; i < 4; i++) {
+            feed.runWithAlives(Duration.ofSeconds(70));
+            feed.machine.processed(1, PRE, feed.now(), feed.now(), recovery.requestId());
+        }
+        feed.runWithAlives(Duration.ofSeconds(30));
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes since it was accepted")
+                .isEqualTo(1);
+        assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+    }
+
+    @Test
     void theMaximumRecoveryTimeBoundsAnEventRecoveryWhoseSnapshotKeepsArriving() {
         feed.open(1, MessageInterest.ALL);
         feed.start();
