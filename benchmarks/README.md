@@ -96,12 +96,50 @@ The budget (`cold-budgets.properties`) is the measurement with room, 3 times, an
 counted exactly: a match costs one summary and one profile per competitor, nothing else, and each
 catalog is read once. The time is mostly the injected latency, so it holds on a shared runner; a
 change that makes a match cost another request, or keeps the preload from overlapping, fails the
-build. Two things are not measured: the market variants - each is a request of its own the first
-time a client reads the name of such a market, production has many, and the scenario reads none -
-and how often a competitor is already cached in production (here every match brings two new
-ones, the worst case). The JVM is warm from
-the other tests, so this is the REST and the caches cold, not a JVM that has just started.
+build. One thing is not measured: how often a competitor is already cached in production (here every match
+brings two new ones, the worst case). The JVM is warm from the other tests, so this is the REST and
+the caches cold, not a JVM that has just started.
+
+### The variant mode
+
+A client's callbacks often read market names, and a market with a variant of dynamic outcomes (the
+players of one match, in a player-props market) has its description in a request of its own, per
+variant, the first time its name is read - on the thread of the callback that reads it. This mode is
+the same restart with every odds change carrying 5 such markets after the corpus's 150, each with a
+variant of its own (no two matches share one), and every callback reading the name of every market of
+its message. The fake API answers the variant's endpoint from the generator, after the same 50 ms.
+The corpus's one other variant specifier is left out in this mode: it is a variant the generated list
+has no row for, which would fail the name read. The sizes are the generator's: 5 variants a match is
+not a production figure.
+
+Measured on the same box, median of 7 runs, with the 200 matches:
+
+| | variant mode |
+|---|---:|
+| caught up | 53.0 s (51.9 to 53.8 s), of which 49 to 52 s after the last publish |
+| requests | 1606: the 606 above and 1000 variants, each once |
+| most answered at once | 5 |
+| longest callback | 0.31 to 0.37 s (5 variants and the plain names) |
+| longest single name read | 58 to 104 ms |
+| the feed's health, health events | healthy, none |
+
+The pace is not the catalog's two permits. The callbacks of a session run one after another, and
+each read of a cold variant is one request that the reader waits for, so the variants are fetched one
+at a time: 1000 variants of 50 ms are 50 s, and what the preload does in parallel (the 606 requests,
+done in 7.5 s) is hidden behind it. The time follows the number of variants and the latency, not the
+matches: 50 matches took 2.2 s with no variant (only the plain names read), 13.6 s with 5 variants each (250 variants) and 52.7 s with 20
+(1000 variants), a latency each and about 0.9 s besides; so 20 variants in each of 200 matches
+would take about 200 s. No read was near the SDK's deadline for one request (30 s: the longest took
+0.1 s), and no callback near the stall limit of the health check (65 s: the longest, 20 variants, took
+1.2 s), so the feed stayed healthy and no health event was told. What it costs is the wait: a
+callback that reads 20 variants holds its session's thread for about a second, and every message
+waits behind the messages before it.
+
+The budget for the mode is the measurement with the same room, 3 times
+(`cold.variants.caughtUp.ms`), and the requests are counted exactly: a variant market costs one
+request the first time and none after, and none at all when the callbacks do not read its name.
 
 It needs Docker, as the system tests do: the fake feed is a RabbitMQ container. Without Docker the
 tests skip with a message, unless the environment variable `CI` is set, where they fail.
-`-Dbenchmarks.cold.matches=` and `-Dbenchmarks.cold.runs=` change the burst and the repeats.
+`-Dbenchmarks.cold.matches=`, `-Dbenchmarks.cold.runs=` and `-Dbenchmarks.cold.variants=` change
+the burst, the repeats and the variant mode's variants a match.
