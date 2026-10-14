@@ -36,8 +36,11 @@ public record EventRecoveryStatus(
          */
         FAILED,
         /**
-         * Nothing of its snapshot came for five minutes after the API accepted it, or its snapshot
-         * did not complete within the maximum recovery time.
+         * Nothing of its snapshot came for five minutes after the API accepted it or after the last
+         * of it came - nor anything the snapshot queues behind, as the snapshot of the producer's
+         * recovery in flight, or a message sent before the request - or its snapshot did not
+         * complete within the maximum recovery time. A snapshot that keeps arriving, or is still
+         * queued behind one that does, is not cut.
          */
         TIMED_OUT
     }
