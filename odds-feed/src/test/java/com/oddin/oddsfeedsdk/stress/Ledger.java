@@ -193,10 +193,12 @@ final class Ledger {
      * required nor refused: of the published and the uncertain messages together, in order, what
      * arrived must be increasing without repeats, hold only those, and hold every published one
      * below the last that arrived. An uncertain message may be among them or missing; a published
-     * one that is missing while a later one arrived is a gap.
+     * one that is missing while a later one arrived is a gap. Unlike the other checks it accepts a
+     * ledger that published nothing, for a close that came before any publish; the caller counts
+     * what arrived over all its runs.
      */
     void assertPrefix() {
-        assertSomethingWasPublished();
+        // no guard against an empty ledger: a close that wins its race with open() leaves nothing published
         for (var match : matches()) {
             var arrived = delivered(match);
             if (arrived.isEmpty()) {
