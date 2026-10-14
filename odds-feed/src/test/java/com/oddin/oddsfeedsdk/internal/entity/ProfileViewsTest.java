@@ -22,6 +22,7 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
@@ -436,6 +437,96 @@ class ProfileViewsTest {
     }
 
     @Test
+    void aTournamentsCompetitorIdsAreItsInfosInItsOrderAndLoadNoCompetitor() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    TOURNAMENT_EN,
+                    200,
+                    Fixtures.read("rest/tournament_info/tournament_info.xml")
+                            .replace(
+                                    "</tournament>",
+                                    "<competitors><competitor id=\"od:competitor:2\" name=\"Two\" abbreviation=\"T2\""
+                                            + " underage=\"0\"/><competitor id=\"od:competitor:1\" name=\"One\""
+                                            + " abbreviation=\"T1\" underage=\"0\"/></competitors></tournament>"));
+            Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN));
+
+            List<URN> ids = requireNonNull(tournament.getCompetitorIds());
+            assertThat(ids).containsExactly(URN.parse("od:competitor:2"), URN.parse("od:competitor:1"));
+            assertThat(world.api.requests())
+                    .as("the info, and no competitor's profile")
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", TOURNAMENT_EN)).hasSize(1);
+            assertThat(requireNonNull(tournament.getCompetitors()))
+                    .as("the ids its competitors have")
+                    .extracting(Competitor::getId)
+                    .containsExactlyElementsOf(ids);
+            ids.clear();
+            assertThat(tournament.getCompetitorIds())
+                    .as("the caller's own list")
+                    .hasSize(2);
+        }
+    }
+
+    @Test
+    void aTournamentWhoseInfoListsNoCompetitorsHasNoCompetitorIds() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    TOURNAMENT_EN, 200, withLength(Fixtures.read("rest/tournament_info/tournament_info.xml")));
+            Tournament tournament = world.entities.tournament(TOURNAMENT, null, List.of(EN));
+            assertThat(tournament.getCompetitorIds()).isNotNull().isEmpty();
+            assertThat(tournament.getCompetitors()).isEmpty();
+        }
+    }
+
+    @Test
+    void aTournamentWhoseInfoCannotLoadFailsItsCompetitorIdsAsItsCompetitors() {
+        for (var strategy : ExceptionHandlingStrategy.values()) {
+            try (var world = EntityWorld.start(strategy)) {
+                world.api.respond(TOURNAMENT_EN, 500, "");
+                Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN));
+                if (strategy == ExceptionHandlingStrategy.THROW) {
+                    assertThatThrownBy(tournament::getCompetitors).isInstanceOf(ItemNotFoundException.class);
+                    assertThatThrownBy(tournament::getCompetitorIds)
+                            .isInstanceOf(ItemNotFoundException.class)
+                            .hasCauseInstanceOf(ApiException.class);
+                } else {
+                    assertThat(tournament.getCompetitors()).isNull();
+                    assertThat(tournament.getCompetitorIds()).isNull();
+                }
+            }
+        }
+    }
+
+    @Test
+    void aClientsOwnTournamentListsTheIdsOfItsCompetitors() {
+        Competitor one = stub(Competitor.class, Map.of("getId", URN.parse("od:competitor:1")));
+        Competitor two = stub(Competitor.class, Map.of("getId", URN.parse("od:competitor:2")));
+        Tournament tournament = stub(Tournament.class, Map.of("getCompetitors", List.of(two, one)));
+        assertThat(tournament.getCompetitorIds())
+                .containsExactly(URN.parse("od:competitor:2"), URN.parse("od:competitor:1"));
+        assertThat(stub(Tournament.class, Map.of()).getCompetitorIds()).isNull();
+    }
+
+    @Test
+    void aClientsOwnSportListsTheIdsOfItsTournaments() {
+        Tournament named = stub(Tournament.class, Map.of("getId", TOURNAMENT));
+        assertThat(stub(Sport.class, Map.of("getTournaments", List.of(named))).getTournamentIds())
+                .containsExactly(TOURNAMENT);
+        assertThat(stub(Sport.class, Map.of()).getTournamentIds()).isNull();
+    }
+
+    /** An implementation written without the new getters: answers the named getters, runs the defaults. */
+    private static <T> T stub(Class<T> type, Map<String, Object> answers) {
+        return type.cast(java.lang.reflect.Proxy.newProxyInstance(
+                type.getClassLoader(), new Class<?>[] {type}, (proxy, method, args) -> {
+                    if (method.isDefault()) {
+                        return java.lang.reflect.InvocationHandler.invokeDefault(proxy, method, args);
+                    }
+                    return answers.get(method.getName());
+                }));
+    }
+
+    @Test
     void aTournamentListsManyCompetitorsWithoutWaitingForProfilesThatHang() {
         try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
             int many = 40;
@@ -621,6 +712,61 @@ class ProfileViewsTest {
             assertThat(world.api.requests("GET", TOURNAMENT_EN))
                     .as("a tournament loads when read")
                     .isEmpty();
+        }
+    }
+
+    @Test
+    void aSportsTournamentIdsAreItsListsInItsOrderAndBuildAndLoadNoTournament() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            Sport sport = world.entities.sport(CS2, List.of(EN, DE));
+
+            List<URN> ids = requireNonNull(sport.getTournamentIds());
+            assertThat(ids).containsExactly(TOURNAMENT, URN.parse("od:tournament:1043"));
+            assertThat(world.api.requests())
+                    .as("the first locale's tournament list, and no tournament's info")
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", "/v1/sports/en/sports/od:sport:2/tournaments"))
+                    .hasSize(1);
+            assertThat(requireNonNull(sport.getTournaments()))
+                    .as("the ids its tournaments have")
+                    .extracting(Tournament::getId)
+                    .containsExactlyElementsOf(ids);
+            ids.clear();
+            assertThat(sport.getTournamentIds()).as("the caller's own list").hasSize(2);
+        }
+    }
+
+    @Test
+    void aSportTheApiListsNoTournamentsForHasNoTournamentIds() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(
+                    "/v1/sports/en/sports/od:sport:2/tournaments",
+                    200,
+                    "<sport_tournaments generated_at=\"2026-08-26T12:00:00\">"
+                            + "<sport id=\"od:sport:2\" name=\"Counter-Strike 2\" abbreviation=\"CS2\"/>"
+                            + "</sport_tournaments>");
+            Sport sport = world.entities.sport(CS2, List.of(EN));
+            assertThat(sport.getTournamentIds()).isNotNull().isEmpty();
+            assertThat(sport.getTournaments()).isEmpty();
+        }
+    }
+
+    @Test
+    void aSportWhoseTournamentListCannotLoadFailsItsTournamentIdsAsItsTournaments() {
+        for (var strategy : ExceptionHandlingStrategy.values()) {
+            try (var world = EntityWorld.start(strategy)) {
+                world.api.respond("/v1/sports/en/sports/od:sport:2/tournaments", 500, "");
+                Sport sport = world.entities.sport(CS2, List.of(EN));
+                if (strategy == ExceptionHandlingStrategy.THROW) {
+                    assertThatThrownBy(sport::getTournaments).isInstanceOf(ItemNotFoundException.class);
+                    assertThatThrownBy(sport::getTournamentIds)
+                            .isInstanceOf(ItemNotFoundException.class)
+                            .hasCauseInstanceOf(ApiException.class);
+                } else {
+                    assertThat(sport.getTournaments()).isNull();
+                    assertThat(sport.getTournamentIds()).isNull();
+                }
+            }
         }
     }
 
