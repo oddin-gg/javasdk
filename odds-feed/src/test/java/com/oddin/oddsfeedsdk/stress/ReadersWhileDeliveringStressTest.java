@@ -13,6 +13,7 @@ import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
+import com.oddin.oddsfeedsdk.exceptions.ItemNotFoundException;
 import com.oddin.oddsfeedsdk.exceptions.OddsFeedSdkException;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
@@ -39,6 +40,7 @@ import java.util.SplittableRandom;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -47,7 +49,6 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
-import java.util.stream.LongStream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Tag;
@@ -126,10 +127,14 @@ class ReadersWhileDeliveringStressTest {
         try (var api = FakeRestServer.start()) {
             run.api = api;
             leaks.rest(api);
+            Throwable failure = null;
             try {
                 run.execute(seconds);
+            } catch (Throwable e) {
+                failure = e;
+                throw e;
             } finally {
-                run.shutDown();
+                run.shutDown(failure);
             }
             run.afterClose();
         }
@@ -167,11 +172,13 @@ class ReadersWhileDeliveringStressTest {
         private final Map<String, LongAdder> allowed = new ConcurrentHashMap<>();
         private final LongAdder reads = new LongAdder();
         private final LongAdder clears = new LongAdder();
+        private final LongAdder sportClears = new LongAdder();
 
         // every message routed to the session, by kind: the session handles each exactly once
         private final AtomicLong alives = new AtomicLong();
         private final AtomicLong snapshots = new AtomicLong();
         private final AtomicLong fixtureChanges = new AtomicLong();
+        private final AtomicLong fixtureChangesDelivered = new AtomicLong();
         private final AtomicLong unrouted = new AtomicLong();
         private final AtomicLong poisonPublished = new AtomicLong();
         private final AtomicLong poisonDelivered = new AtomicLong();
@@ -183,6 +190,8 @@ class ReadersWhileDeliveringStressTest {
         private OddsFeed feed;
         private int sessionId;
         private int requestsBeforeChaos;
+        private ChaosApi chaos;
+
         private final Map<String, Duration> probes = new ConcurrentHashMap<>();
 
         Run(long seed, ExceptionHandlingStrategy strategy) {
@@ -229,7 +238,8 @@ class ReadersWhileDeliveringStressTest {
             probeEviction();
 
             requestsBeforeChaos = api.requests().size();
-            new ChaosApi(seed, STALL).install(api);
+            chaos = new ChaosApi(seed, STALL);
+            chaos.install(api);
 
             startLoad();
             startProbes();
@@ -256,28 +266,38 @@ class ReadersWhileDeliveringStressTest {
             check();
         }
 
-        /** Whatever happened above, the feed is closed, within its timeout, and the threads are gone. */
-        void shutDown() throws Exception {
+        /**
+         * Whatever happened above, the feed is closed, within its timeout, and the threads are gone. Every
+         * step runs, and a failure of the run itself is the one that is reported.
+         */
+        void shutDown(Throwable failure) throws Exception {
             stopLoad.set(true);
             stopReaders.set(true);
             readerThreads.forEach(Thread::interrupt);
+            var cleanup = new StressFeed.Cleanup();
+            var closeTook = new AtomicReference<Duration>();
             if (feed != null) {
-                long started = System.nanoTime();
-                feed.close();
-                assertThat(Duration.ofNanos(System.nanoTime() - started))
-                        .as("close() of the feed")
-                        .isLessThan(SHUTDOWN.plusSeconds(2));
+                cleanup.step(() ->
+                        closeTook.set(StressFeed.timedWithin(SHUTDOWN.plus(WAIT), "close() of the feed", feed::close)));
             }
-            health.close();
-            try {
-                // afterClose() reports what it found; this only stops the polling
-                deadlock.close();
-            } catch (AssertionError found) {
-                System.err.println("the deadlock sentinel found: " + found.getMessage());
-            }
-            join(loadThreads, WAIT);
-            join(probeThreads, WAIT);
-            join(readerThreads, WAIT);
+            cleanup.step(health::close);
+            cleanup.step(() -> {
+                try {
+                    // afterClose() reports what it found; this only stops the polling
+                    deadlock.close();
+                } catch (AssertionError found) {
+                    System.err.println("the deadlock sentinel found: " + found.getMessage());
+                }
+            });
+            cleanup.step(() -> join(loadThreads, WAIT));
+            cleanup.step(() -> join(probeThreads, WAIT));
+            cleanup.step(() -> join(readerThreads, WAIT));
+            cleanup.step(() -> {
+                if (closeTook.get() != null) {
+                    assertThat(closeTook.get()).as("close() of the feed").isLessThan(SHUTDOWN.plusSeconds(2));
+                }
+            });
+            cleanup.finish(failure);
         }
 
         /** Once the feed is closed: the managers it handed out answer promptly, and the sentinels are clean. */
@@ -356,7 +376,19 @@ class ReadersWhileDeliveringStressTest {
         private void probeCoalescedMiss() throws Exception {
             var id = urn("competitor", 55602);
             var path = profilePath(id);
-            api.respond(path, Reply.of(200, Fixtures.read(COMPETITOR_PROFILE)).after(Duration.ofMillis(300)));
+            // the API holds the one load until every reader is waiting for it, and only then answers
+            var allWaiting = new CountDownLatch(1);
+            api.respondWith(request -> {
+                if (request.path().equals(path)) {
+                    try {
+                        allWaiting.await(WAIT.toSeconds(), TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return Reply.of(200, Fixtures.read(COMPETITOR_PROFILE));
+                }
+                return null;
+            });
             int readers = 6;
             var barrier = new CyclicBarrier(readers);
             var names = new ConcurrentLinkedQueue<String>();
@@ -374,6 +406,21 @@ class ReadersWhileDeliveringStressTest {
                 });
                 thread.start();
                 threads.add(thread);
+            }
+            try {
+                api.awaitRequest("GET", path);
+                long until = System.nanoTime() + WAIT.toNanos();
+                // none of them has finished, none is yet to begin: each is parked on the load, or in the call
+                while (!threads.stream()
+                                .allMatch(thread -> thread.getState() != Thread.State.NEW
+                                        && thread.getState() != Thread.State.RUNNABLE
+                                        && thread.getState() != Thread.State.TERMINATED)
+                        && System.nanoTime() < until) {
+                    Thread.sleep(10);
+                }
+            } finally {
+                allWaiting.countDown();
+                api.respondWith(null);
             }
             join(threads, WAIT);
             assertThat(failures).as("failures of readers sharing a load").isEmpty();
@@ -483,9 +530,13 @@ class ReadersWhileDeliveringStressTest {
                 long next = System.nanoTime();
                 while (!stopLoad.get()) {
                     attempt("clear", () -> {
-                        switch (random.nextInt(8)) {
+                        switch (random.nextInt(9)) {
                             case 0, 1 -> sports.clearMatch(pick(random, MATCH_IDS));
                             case 2 -> sports.clearTournament(TOURNAMENT);
+                            case 7 -> {
+                                sports.clearSport(SPORT);
+                                sportClears.increment();
+                            }
                             case 3, 4 -> sports.clearCompetitor(pick(random, COMPETITOR_IDS));
                             case 5 -> sports.clearPlayer(pick(random, PLAYER_IDS));
                             case 6 -> markets.clearMarketDescription(1, random.nextBoolean() ? null : "way:two");
@@ -528,6 +579,8 @@ class ReadersWhileDeliveringStressTest {
                         assertThat(strategy)
                                 .as("%s: threw under CATCH", probe.name())
                                 .isEqualTo(ExceptionHandlingStrategy.THROW);
+                        // the documented outcome of a read the API failed, not any exception of the SDK's
+                        assertThat(e).as("%s: what it threw", probe.name()).isInstanceOf(ItemNotFoundException.class);
                     }
                     probes.put(probe.name(), Duration.ofNanos(System.nanoTime() - started));
                     tick.run();
@@ -695,7 +748,9 @@ class ReadersWhileDeliveringStressTest {
                     // a call that an interrupt ended is the thread being told to stop
                     return;
                 }
-                unexpected.add(what + " threw " + e + " at " + e.getStackTrace()[0]);
+                // a hot exception of the JVM's own may come with no stack trace at all
+                var trace = e.getStackTrace();
+                unexpected.add(what + " threw " + e + " at " + (trace.length > 0 ? trace[0] : "(no stack trace)"));
             }
         }
 
@@ -727,15 +782,15 @@ class ReadersWhileDeliveringStressTest {
         }
 
         private void promptly(String what, Runnable call) {
-            long started = System.nanoTime();
-            try {
-                call.run();
-            } catch (OddsFeedSdkException e) {
-                // a closed feed may refuse, in the SDK's own words
-            }
-            assertThat(Duration.ofNanos(System.nanoTime() - started))
-                    .as("%s on a closed feed", what)
-                    .isLessThan(PROMPTLY);
+            // a call that never returns fails here, at its deadline, not at the end of the job
+            var took = StressFeed.timedWithin(PROMPTLY, what + " on a closed feed", () -> {
+                try {
+                    call.run();
+                } catch (OddsFeedSdkException e) {
+                    // a closed feed may refuse, in the SDK's own words
+                }
+            });
+            assertThat(took).as("%s on a closed feed", what).isLessThan(PROMPTLY);
         }
 
         // ------------------------------------------------------------------ traffic
@@ -749,14 +804,9 @@ class ReadersWhileDeliveringStressTest {
         }
 
         private boolean sendFixtureChange(URN match, int changeType) {
-            var message = Fixtures.replace(
-                    Fixtures.replace(
-                            Fixtures.read("feed/fixture_change/fixture_change.xml"),
-                            "od:match:198314",
-                            match.toString()),
-                    "change_type=\"1\"",
-                    "change_type=\"" + changeType + "\"");
-            boolean routed = broker.publish(message);
+            // the broker stamps each with the time it is published: the SDK drops a change of an event and
+            // time it has handled already, and these are 50 ms apart
+            boolean routed = broker.publish(StressFeed.fixtureChange(match.toString(), changeType));
             if (routed) {
                 fixtureChanges.incrementAndGet();
             }
@@ -850,22 +900,23 @@ class ReadersWhileDeliveringStressTest {
 
             // eviction and invalidation happened
             assertThat(clears.sum()).as("clears").isPositive();
+            assertThat(sportClears.sum()).as("clears of the sport").isPositive();
             assertThat(fixtureChanges.get()).as("fixture changes sent").isGreaterThan(1);
+            // none dropped as a repeat of one handled: each came with a time of its own, so each reached the listener
+            assertThat(fixtureChangesDelivered.get())
+                    .as("fixture changes delivered, of those sent")
+                    .isEqualTo(fixtureChanges.get());
 
             // The REST calls stayed within their permits. The fake counts a request until its answer
             // ends, and a stalled one outlives the client's deadline, which gave its permit back: so
-            // each stall the chaos could have injected, and the stall probe's, may add one.
-            long underChaos = (long) api.requests().size() - requestsBeforeChaos;
-            var chaos = new ChaosApi(seed, STALL);
-            long stalls = 1
-                    + LongStream.range(0, underChaos)
-                            .filter(ordinal -> chaos.faultFor(ordinal).kind() == ChaosApi.Kind.STALL)
-                            .count();
+            // each stall that began within the time a stall outlasts that deadline - with a second of
+            // margin - may add one, and the stall probe's.
+            int abandoned = 1 + chaos.mostStallsWithin(STALL.minus(HTTP_TIMEOUT).plusSeconds(1));
             assertThat(api.mostInFlight())
                     .as(
                             "most REST requests in flight, of %d data permits, %d others, and up to %d abandoned stalls",
-                            REST_LIMIT, OTHER_PERMITS, stalls)
-                    .isLessThanOrEqualTo(REST_LIMIT + OTHER_PERMITS + (int) stalls);
+                            REST_LIMIT, OTHER_PERMITS, abandoned)
+                    .isLessThanOrEqualTo(REST_LIMIT + OTHER_PERMITS + abandoned);
             assertThat(api.requests().size() - requestsBeforeChaos)
                     .as("requests under the chaos")
                     .isPositive();
@@ -893,9 +944,13 @@ class ReadersWhileDeliveringStressTest {
             return from.get(random.nextInt(from.size()));
         }
 
-        /** About one message in a hundred, by the seed and the message alone. */
+        /**
+         * About one message in a hundred, by the seed and the message alone, and always the third of the
+         * first match: a run too short for the seed to pick one still has a poisoned callback to count.
+         */
         private static boolean poisoned(long seed, String match, long sequence) {
-            return Math.floorMod(Seed.mix(seed ^ Seed.mix(match.hashCode() * 1_000_003L + sequence)), 100) == 0;
+            return (sequence == 2 && match.equals(MATCH_IDS.getFirst().toString()))
+                    || Math.floorMod(Seed.mix(seed ^ Seed.mix(match.hashCode() * 1_000_003L + sequence)), 100) == 0;
         }
 
         /** Sleeps until the instant, as System.nanoTime reads it. */
@@ -953,7 +1008,9 @@ class ReadersWhileDeliveringStressTest {
             public void onBetCancel(OddsFeedSession session, BetCancel<SportEvent> message) {}
 
             @Override
-            public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {}
+            public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {
+                fixtureChangesDelivered.incrementAndGet();
+            }
         }
 
         private final class Events implements GlobalEventsListener {
