@@ -1434,6 +1434,56 @@ class RecoveryActorTest {
     }
 
     @Test
+    void aDeferredEventRecoveryDoesNotMakeTheCloseWait() throws Exception {
+        var held = new Held();
+        var actor = new RecoveryActor(
+                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+        this.actor = actor;
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        long now = System.currentTimeMillis();
+        actor.alive(PRE, now, now, true);
+        actor.alive(LIVE, now, now, true);
+        held.runNext();
+        held.runNext();
+        for (Request first : List.of(api.next(), api.next())) {
+            session.snapshotComplete(producerOf(first), first.requestId());
+        }
+        awaitUp(PRE);
+        awaitUp(LIVE);
+        // the reset never gets its channel back: the session awaits one, so an event recovery waits
+        transport.reopenLater = true;
+        stale(session);
+        held.runNext();
+        held.runNext();
+        api.next();
+        api.next();
+        Thread worker = Thread.ofVirtual().start(held.next());
+        assertThat(transport.resets.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+
+        var requested = actor.counters().eventRequested();
+        var reply = actor.recoverEvent(PRE, MATCH, false);
+        awaitHandled(actor);
+        assertThat(reply).as("deferred: waiting for the session's channel").isNotDone();
+        assertThat(actor.counters().eventRequested())
+                .as("no request made for it")
+                .isEqualTo(requested);
+        assertThat(held.tasks).as("no call handed out for it").isEmpty();
+
+        var closing = System.nanoTime();
+        actor.close();
+        // the reply is completed on a thread of its own, so it may come just after the close returns
+        assertThat(reply.get(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("a deferred recovery has no id")
+                .isNull();
+        var took = Duration.ofNanos(System.nanoTime() - closing);
+        // at once, not after the close's deadline of five seconds
+        assertThat(took).isLessThan(Duration.ofSeconds(3));
+        assertThat(worker.join(Duration.ofSeconds(WAIT_SECONDS))).isTrue();
+    }
+
+    @Test
     void anAliveIsNeverDroppedForWantOfRoom() throws InterruptedException, ExecutionException, TimeoutException {
         // not started: nothing takes from the queues, and the requests' queue holds two
         var actor = new RecoveryActor(
@@ -2316,6 +2366,20 @@ class RecoveryActorTest {
         assertThat(producers.isProducerDown(producer))
                 .as("producer " + producer + " down")
                 .isFalse();
+    }
+
+    /** Waits until the actor has handled every fact posted so far, of every queue. */
+    private static void awaitHandled(RecoveryActor actor) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.pending() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        // a turn begun after the queues were empty: the one that took the last fact has ended
+        long turns = actor.turns();
+        while (actor.turns() < turns + 2 && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.pending()).as("facts waiting").isZero();
     }
 
     /** Waits until the actor has handled every essential fact posted so far. */

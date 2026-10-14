@@ -43,8 +43,9 @@ import org.slf4j.LoggerFactory;
  * down a start takes that long to fail. When it fails the call throws an {@link InitException}
  * saying "Failed to init odds feed", with the reason as its cause, and the next call tries again.
  * The managers work before the feed opens; {@link #close} releases what the start built. The
- * feed's events thread and the watch over its threads stay from its first start to its close, so a
- * feed the client gives up on is closed.
+ * feed's events thread and the watch over its threads stay from its first start to its close, a
+ * start that failed included, so a feed the client gives up on is closed, whatever its start or its
+ * open threw.
  *
  * <p>Sessions are built before {@link #open}, which connects to the broker and starts delivering to
  * them, once: see {@link #open} and {@link #close}.
@@ -244,7 +245,8 @@ public final class OddsFeed {
      * answer, for the HTTP timeout and a second at most, and returns the request id, or null when it
      * was not accepted. Until the feed opens, a request is not accepted: it returns null, since no
      * session's queue exists yet that the recovered messages could reach; nor on a replay feed,
-     * which runs no recovery, or once the feed is closed.
+     * which runs no recovery, or once the feed is closed. A recovery's status stays readable after
+     * the close, with what the close made of the recoveries in flight: failed.
      */
     public RecoveryManager getRecoveryManager() {
         core();
@@ -296,11 +298,13 @@ public final class OddsFeed {
      * closed again, nothing is left running or connected, and this throws; the managers stay, until
      * {@link #close}. One-shot: once the sessions are taken, a second call throws, whatever came of
      * the first, where 0.0.x let a failed open be tried again; the client closes the feed and makes
-     * a new one. From the open to the close the feed keeps one non-daemon thread, as 0.0.x did, so
-     * the JVM does not exit while the feed is open, not even while it reconnects; a feed that is never
-     * closed keeps it running. Once open, it starts loading the catalogs of the configured preload
-     * locales in the background; nothing waits for them, and one that fails is logged and loaded
-     * again on its first read.
+     * a new one. When this throws, the feed's events thread and the watch over its threads stay,
+     * idle daemon threads, until {@link #close}: call it whatever this threw. From the open to the
+     * close the feed keeps one non-daemon thread, as 0.0.x did, so the JVM does not exit while the
+     * feed is open, not even while it reconnects; a feed that is never closed keeps it running.
+     * Once open, it starts loading the catalogs of the configured preload locales in the
+     * background; nothing waits for them, and one that fails is logged and loaded again on its
+     * first read.
      *
      * @throws IllegalStateException without a session, with 0.0.x's message; the feed can then still
      *     be opened once one is built
@@ -368,9 +372,11 @@ public final class OddsFeed {
      * interrupt does not cut short the wait for the sessions and the recovery, so the resume points
      * are final when it returns. A callback still running then is left to end on its own and said so
      * in the log. From one of the feed's own callbacks it does not wait for that callback. Closing
-     * twice does nothing more, and closing a feed whose start failed has nothing to release and logs
-     * nothing. Once closed, the feed does not start or open again; the managers it had already handed
-     * out stay, closed.
+     * twice does nothing more. A feed whose start failed has nothing built to release, but its events
+     * thread and the watch over its threads stay until this is called, so call it after a failed
+     * start or open too; it logs nothing then. The event recoveries' statuses stay readable after
+     * it, as {@link RecoveryManager#getEventRecoveryStatus} says. Once closed, the feed does not
+     * start or open again; the managers it had already handed out stay, closed.
      */
     public void close() {
         @Nullable FeedCore built;
@@ -542,11 +548,15 @@ public final class OddsFeed {
         return run.recoverEvent(producerId, eventId, stateful);
     }
 
+    /**
+     * Read after the close too: the recoveries it failed are kept, as any ended one, so the client
+     * finds out what became of them.
+     */
     private @Nullable EventRecoveryStatus recoveryStatus(long requestId) {
         @Nullable OpenFeed run;
         state.lock();
         try {
-            run = closed ? null : running;
+            run = running;
         } finally {
             state.unlock();
         }
