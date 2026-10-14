@@ -182,7 +182,9 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   and allows 30 s for a request with a new one.
 - **Why:** A short API outage at the wrong moment keeps a producer down for five minutes on
   0.0.58, for hours on 0.0.57 and older.
-- **Pinned by:** `RestOutageScenarioIT.aRecoveryRequestTheApiRefusedIsAskedForAgain`
+- **Pinned by:** `RestOutageScenarioIT.aRecoveryRequestTheApiRefusedIsAskedForAgain`, with the whole API
+  down, and `RecoveryRefusalScenarioIT.aProducersRecoveryRefusedTwiceIsAskedForAgainAndTheProducerComesUpOnceItIsAccepted`,
+  with the API refusing the one request
 - **Found:** by test against 0.0.56.
 
 ## KD-12 A reconnect does not lead to a recovery
