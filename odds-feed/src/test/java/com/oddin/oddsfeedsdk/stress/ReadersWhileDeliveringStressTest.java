@@ -77,8 +77,8 @@ class ReadersWhileDeliveringStressTest {
     private static final int MATCHES = 8;
     private static final int READERS = 8;
     private static final int REST_LIMIT = 4;
-    /** The catalog and recovery pools beside the data one, as RestTransport has them. */
-    private static final int OTHER_PERMITS = 2 + 2;
+    /** The producer, catalog and recovery pools beside the data one, as RestTransport has them. */
+    private static final int OTHER_PERMITS = 2 + 2 + 2;
 
     private static final Duration HTTP_TIMEOUT = Duration.ofSeconds(2);
     /** A stalled body outlasts the HTTP timeout. */
