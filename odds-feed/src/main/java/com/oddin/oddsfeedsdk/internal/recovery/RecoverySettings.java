@@ -14,7 +14,10 @@ import org.jspecify.annotations.Nullable;
  * @param snapshotCompleteTimeout how long a producer's recovery waits for its snapshot complete
  *     after it was asked for, or after a session that awaits it last took something that says it
  *     is on its way, before it counts as failed: well under the maximum recovery time, so a lost
- *     snapshot complete keeps the producer down for minutes, not hours
+ *     snapshot complete keeps the producer down for minutes, not hours. An event recovery the API
+ *     accepted waits the same, counted from the acceptance, or from the first snapshot complete of
+ *     a session, or from what a session that still awaits it last took of its snapshot or of what
+ *     queues ahead of it, before it times out
  * @param initialSnapshotInterval how far back a cold start with no recovery point asks for, or null
  *     for a full snapshot
  * @param nodeId the node id the requests carry, for the recovery info the client reads

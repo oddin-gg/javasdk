@@ -33,8 +33,9 @@ public record EventRecoveryStatus(
          */
         FAILED,
         /**
-         * Nothing of its snapshot came for the snapshot complete timeout after the API accepted it,
-         * or no snapshot complete within the maximum recovery time.
+         * Nothing of its snapshot, nor of what queues ahead of it, came for the snapshot complete
+         * timeout after the API accepted it or after the last of it came, or no snapshot complete
+         * within the maximum recovery time.
          */
         TIMED_OUT;
 

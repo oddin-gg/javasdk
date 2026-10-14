@@ -710,10 +710,14 @@ and REST workers post facts to it; it decides and posts work out.
 - Event recoveries take their ids from the same sequence. At most 128 are in flight per
   producer, and one the API accepted but whose `snapshot_complete` does not come is
   dropped and counted, as is one whose `snapshot_complete` went with a lost queue: it
-  times out - status `TIMED_OUT` - five minutes after the API accepted it or after a
-  session that awaits it last took a message of its snapshot, so a slow, big snapshot
-  that keeps arriving is not cut; one the API has not answered yet waits for the maximum
-  recovery time, which stays the outer bound. The client is not asked again: event
+  times out - status `TIMED_OUT` - five minutes after the API accepted it, or after the
+  first `snapshot_complete` of a session, or after a session that still awaits it last
+  took a message of its snapshot or one the snapshot queues behind - a message or an alive
+  sent before the request, a message of the producer's recovery in flight asked for before
+  it, or of an event recovery asked for before it - so a slow, big snapshot that keeps
+  arriving, or waits behind one that does, is not cut; a repeated `snapshot_complete` of
+  a session that gave one already is no sign of life; one the API has not answered yet
+  waits for the maximum recovery time, which stays the outer bound. The client is not asked again: event
   recoveries are the client's to ask for. A caller still waiting for the API's answer
   then hears it was not accepted. The first
   `snapshot_complete` of a request, from any session, says the API took it: an event
@@ -726,7 +730,8 @@ and REST workers post facts to it; it decides and posts work out.
 - Each event recovery has a status by its request id, as in the Go SDK: pending from
   the request, then completed, failed or timed out. Failed means the API refused it, its
   `snapshot_complete` went with a lost queue, or the feed closed first; timed out means
-  nothing of its snapshot came for five minutes after the API accepted it. Unlike the Go
+  nothing of its snapshot, nor of what queues ahead of it, came for five minutes after the
+  API accepted it or after the last of it came. Unlike the Go
   SDK, a producer going down for another reason fails none, since its snapshot can still
   arrive. A status is kept five minutes after it ends, then forgotten; an id never asked
   for, or forgotten, has none, and producer recoveries have none. Pending ones are bounded
@@ -960,7 +965,7 @@ data, callback failures). `counters()` has every value under a stable dotted nam
 (`session.1.queue_depth`, `catalog.void_reasons.stale_for_millis`) for a metrics
 exporter. It reads counters and flags on the caller's thread, never waits for a thread of
 the feed and never starts it: before the start it has no part, once started the events,
-the catalogs, the timers and the JVM's threads, once open the consumer and the sessions,
+the catalogs, the timers and the SDK's own threads, once open the consumer and the sessions,
 and the alives and the recovery unless it is a replay feed; once closed it still reads
 what was counted.
 
