@@ -89,6 +89,27 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <!--
+        The load harness's corpus, generated catalogs and telemetry (LoadHarnessIT). Nothing of the SDK
+        comes with it: the SDK under test is the one declared above, and neither a second copy of the
+        SDK nor its parser may reach the classpath of the line being measured.
+      -->
+      <groupId>gg.oddin.oddsfeed</groupId>
+      <artifactId>benchmarks</artifactId>
+      <version>${project.version}</version>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>gg.oddin.oddsfeed</groupId>
+          <artifactId>odds-feed</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>com.fasterxml.woodstox</groupId>
+          <artifactId>woodstox-core</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
       <scope>test</scope>
