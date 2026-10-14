@@ -299,7 +299,7 @@ to one of them:
 | AMQP reconnect and reopen | virtual threads | the reconnect loop; reopening a lost channel | client code |
 | Session dispatcher | one thread per session | decode, build, cache write, client callback, ack, age sampling | nothing else |
 | Alive dispatcher | one thread | alive decode, clock offsets, posting liveness facts to the recovery actor | REST, client code |
-| Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second, paced by `System.nanoTime`, so a wall clock set back stops none of its ticks | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
+| Recovery actor | one thread | **all** producer and recovery state: liveness, checkpoints, completions, caps, resets, the safety-net decision; it looks at the clock itself at least once a second, paced by `System.nanoTime`, so a wall clock set back stops none of its ticks, and every duration it measures runs on the same clock | REST calls and channel resets (it posts them to REST workers and receives the result as a message), client code |
 | Events dispatcher | one thread | every non-message client callback: connection state, producer status, health, fatal errors, listener exceptions, API call events, recovery completion | message callbacks |
 | REST workers | virtual threads | HTTP calls, posting results back to whoever asked; an event recovery caller's answer, on a thread of its own | client code |
 | Side-loads | virtual threads, half the REST concurrency limit (8 by default, 1 to 16) | background profile loads, the eager preload's match loads | client code |
@@ -745,13 +745,29 @@ and REST workers post facts to it; it decides and posts work out.
   nothing of its snapshot, nor of what queues ahead of it, came for five minutes after the
   API accepted it or after the last of it came. Unlike the Go
   SDK, a producer going down for another reason fails none, since its snapshot can still
-  arrive. A status is kept five minutes after it ends, then forgotten; an id never asked
+  arrive. A status is kept five minutes after it ends, counted by the monotonic clock,
+  then forgotten; an id never asked
   for, or forgotten, has none, and producer recoveries have none. Pending ones are bounded
   by the event recoveries in flight; of the ended ones at most 10,000 are kept, and past
   that the first to end is forgotten early, and counted. The actor writes the statuses
   and any thread reads them; `RecoveryManager.getEventRecoveryStatus(requestId)` returns
   them as the public `EventRecoveryStatus`, whose `State` is `PENDING`, `COMPLETED`,
   `FAILED` or `TIMED_OUT`.
+- Clocks. Every duration the recovery machine measures between two local events - the
+  inactivity of a producer, the deadlines of a recovery and of an event recovery, the
+  backoffs, the cool-down, the safety net's windows, and how long an event recovery's status
+  is kept - runs on a monotonic clock (`System.nanoTime`), so a change of the wall clock
+  cannot take a producer down, fire a deadline or hold one back: a wall clock that steps by
+  more than the maximum inactivity, or a virtual machine that resumes after a pause, leaves the
+  producers up and asks for no recovery. Every time the SDK publishes stays wall time:
+  `getLastMessageTimestamp`, the resume point and a recovery's start, the issue time of a
+  recovery, the instants of status changes and of event recovery statuses. Only the producer's
+  timestamps are compared with the SDK's wall clock - the clock offset, a message's age and the
+  cap at the producer's now - so a real step shows in an age until the next alive measures the
+  offset again. A fact carries both readings, taken where it is received, because the actor
+  handles it later. One `FeedClock` per feed gives both readings to the transport, the
+  dispatchers and the actor. The live-state ages that the entity caches compare between two
+  local wall readings are not the machine's and stay on the wall clock.
 - The facts posted to the actor are of two kinds. Those whose loss would leave the
   state wrong for good - sessions opening and closing, the connection going and coming,
   the alives from the SDK's alive channel (an unsubscribed one is the only word of a
@@ -1763,7 +1779,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
 - 2026-10-07, ticket 26, clocks after the final review: the recovery actor paces its ticks and
   its park by `System.nanoTime`, so a wall clock set back no longer stops its ticks nor makes
   an idle actor read `STALLED`; the login-refusal minute is measured the same way. The
-  machine's own durations stay on the wall clock for now. The published resume point and a
+  machine's own durations stayed on the wall clock then, until the 2026-10-14 entry on clocks.
+  The published resume point and a
   recovery's start are capped at the producer's now, so a timestamp from the producer's
   future moves neither past it; the tolerance on the checkpoints and watermarks follows.
 - 2026-10-08, documentation for the release candidate: KNOWN-DIFFERENCES.md is written against
@@ -1833,3 +1850,16 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   The permits are fair, so a read was never starved, only queued behind the workers' requests.
   With a limit under four there is one worker, which a warm-up can hold, as the side-loads'
   rule for one worker says.
+- 2026-10-14, clocks of the recovery machine (ticket K3 of the hardening list): the owner chose
+  to measure every duration the machine takes between two local events on a monotonic clock,
+  in three steps, which overtakes the sentence of 2026-10-07 that kept them on the wall clock.
+  A wall clock that steps forward by more than the maximum inactivity, or a virtual machine that
+  resumes, took every producer down by the wall reading of its last alive, and a step back
+  stretched every deadline by as much; now neither happens. The first step gives each feed one
+  clock and stamps each fact with both readings where it is received, the second moves the
+  machine's durations to the monotonic one, the third moves how long an event recovery's status
+  is kept, and adds a test that steps the wall clock under an open feed. What is published,
+  and what is compared with a producer's own timestamps, stays wall time, as the Clocks
+  paragraph of the recovery section says. KD-43 lists the difference from 0.0.x. Left as they
+  are: the live-state and match-cache ages, which compare two local wall readings. No public
+  API changes.

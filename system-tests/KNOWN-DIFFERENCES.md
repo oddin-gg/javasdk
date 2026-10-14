@@ -794,3 +794,32 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   `aMessageStampedNoPositiveTimeIsNoAgeForTheSafetyNet` and
   `aSnapshotMessageStampedNoPositiveTimeStillPutsOffTheDeadlineForItsSnapshotComplete`).
 - **Found:** by reading the source (`RecoveryMachine.processed`, against its `sessionAlive`).
+
+## KD-43 A step of the wall clock does not move the recovery's deadlines
+
+- **0.0.x:** The recovery manager measures its durations on the wall clock: its `clock` is
+  `System::currentTimeMillis`, and its timer, every 10 seconds, takes a producer down for an alive
+  interval over the maximum inactivity as that clock minus the time the producer's last alive was
+  received, also by `System.currentTimeMillis` (`ChannelConsumer.handleDelivery`). The deadlines for
+  a recovery's snapshot complete and its maximum time, and the age of a processed message, use the
+  same clock. So a wall clock that steps forward by more than the maximum inactivity, or a
+  virtual machine that resumes after a pause, takes every producer down at the next timer, with
+  the reason `ALIVE_INTERVAL_VIOLATION`, and asks for recoveries when their alives come back; a
+  step back puts every deadline off by as much.
+- **1.0:** Every duration between two local events - a producer's inactivity, the deadlines of a
+  recovery and of an event recovery, the backoffs, the cool-down, the safety net's windows, and how
+  long an event recovery's status is kept - runs on the monotonic clock, so a step of the wall clock
+  takes no producer down, fires no deadline and holds none back (NEXT.md section 4, Recovery and
+  producers, Clocks). What is published stays wall time: the last message's timestamp, the resume
+  point, a recovery's start, the instants of status changes. A message's age is still the wall
+  clock against the producer's, so a real step shows in it until the next alive measures the
+  offset again.
+- **Why:** A client that runs on a host whose clock is corrected by more than the maximum
+  inactivity, 20 seconds unless set, or that resumes from a suspend, sees every producer go down
+  and recover with 0.0.x, and none with 1.0. This is an improvement, not a behaviour a client
+  should rely on either way.
+- **Pinned by:** none in the system tests, which cannot step the JVM's clocks; the unit and
+  feed-level tests pin it (`RecoveryClockTest`, `EventRecoveryStatusTest` and
+  `OddsFeedClockStepTest`).
+- **Found:** by reading the 0.0.58 source (`RecoveryManager`, `ChannelConsumer`); the 0.0.x side
+  was not run with a stepped clock.
