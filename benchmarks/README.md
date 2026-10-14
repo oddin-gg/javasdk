@@ -66,7 +66,39 @@ keeping one unmarshaller instead of one per message changed nothing.
 Both are small next to the decode: a typical live odds change of 150 markets spends about 330 µs
 decoding, 13 µs being built and under a microsecond in the cache.
 
-## Not here yet
+## The cold scenario
 
-The cold scenario - a restart where every entity is a miss, against the fake API with
-realistic latency - is ticket 40's.
+`ColdStartBudgetTest` is a restart: a feed opens against the fake API, which answers every request
+after a fixed 50 ms, with catalogs sized like a large deployment's (assumed: 600 market descriptions,
+250 sports - an assumption, not a production figure), and 200 matches nothing is cached for each get
+their first odds change at once, with the eager entity preload on and English as the preload locale.
+A callback reads the match's name, as a client does.
+
+- Time to caught up: from the first publish until every callback ran and the requests they caused are
+  done. This decides whether a restarted client trips its safety net.
+- First message: one odds change for a cold match on a fresh feed, until its callback has read the
+  match's name and a market's.
+
+Measured on this Linux box (Intel Pentium Gold 8505, JDK 25, Docker for the broker), median of 7 runs:
+
+| | time |
+|---|---:|
+| caught up, 200 matches | 7.9 s (7.88 to 8.10 s), of which 6.4 s after the last publish |
+| first message | 152 ms (71 to 161 ms) |
+
+The 600 requests the 200 matches cost (a summary and two competitor profiles each) are answered
+4 at a time, by the side-load workers the preload shares, so 50 ms each is 7.5 s: the pace is the
+workers', not the broker's. With the preload off, the same 40 matches take 1.4 times as long, the
+callbacks loading them one by one.
+
+The budget (`cold-budgets.properties`) is the measurement with room, 3 times, and the requests are
+counted exactly: a match costs one summary and one profile per competitor, nothing else, and each
+catalog is read once. The time is mostly the injected latency, so it holds on a shared runner; a
+change that makes a match cost another request, or keeps the preload from overlapping, fails the
+build. Two things are not measured: the catalogs' real size, and how often a competitor is already
+cached in production (here every match brings two new ones, the worst case). The JVM is warm from
+the other tests, so this is the REST and the caches cold, not a JVM that has just started.
+
+It needs Docker, as the system tests do: the fake feed is a RabbitMQ container. Without Docker the
+tests skip with a message, unless the environment variable `CI` is set, where they fail.
+`-Dbenchmarks.cold.matches=` and `-Dbenchmarks.cold.runs=` change the burst and the repeats.
