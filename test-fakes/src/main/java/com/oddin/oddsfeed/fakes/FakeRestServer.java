@@ -34,7 +34,8 @@ import java.util.regex.Pattern;
  * {@link Fixtures}. Anything without a route gets the API's 404. Requests other than GET -
  * recovery and replay control - are accepted with 202. Every request is recorded, in order, for
  * tests to check what the SDK asked for. A path can also be given replies in turn, each with its
- * own headers and delay, for a client that retries, waits or gives up.
+ * own headers and delay, for a client that retries, waits or gives up, and a recovery request can
+ * be refused while everything else works ({@link #refuseRecovery}).
  *
  * <p>It speaks HTTPS because the old SDK allows nothing else, with a certificate the test JVM
  * trusts (see {@link TestTls}).
@@ -78,14 +79,26 @@ public final class FakeRestServer implements AutoCloseable {
       </response>
       """;
 
+    private static final int UNTIL_CLEARED = -1;
+    private static final String REFUSAL_BODY = """
+      <?xml version="1.0" encoding="UTF-8"?>
+      <response response_code="REFUSED">
+          <action>recovery</action>
+          <message>the fake REST server refused the recovery request</message>
+      </response>
+      """;
+
     private final HttpsServer server;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     private final List<RecordedRequest> requests = new CopyOnWriteArrayList<>();
     private final Map<String, Script> overrides = new ConcurrentHashMap<>();
+    private final List<Refusal> refusals = new CopyOnWriteArrayList<>();
     private volatile Reply outage;
     private volatile Function<RecordedRequest, Reply> hook = _ -> null;
     /** Per method and path, the outage replies answered to their last byte. */
     private final Map<String, AtomicInteger> outageAnswers = new ConcurrentHashMap<>();
+
+    private final AtomicInteger refused = new AtomicInteger();
 
     private final AtomicInteger inFlight = new AtomicInteger();
     /** What the stalled replies wait on: opened by {@link #releaseStalls}, and replaced by a closed one. */
@@ -137,7 +150,7 @@ public final class FakeRestServer implements AutoCloseable {
     }
 
     /**
-     * Asks this function for the reply to every request, after the outage and before the overrides
+     * Asks this function for the reply to every request, after the outage and the refusals and before the overrides
      * and routes: a reply it returns is sent, and null leaves the request to them. For faults
      * decided per request across all paths, which {@link #respond} cannot express. It runs on the
      * request's own thread, so it must be thread-safe and quick; the reply's delay is waited out
@@ -145,6 +158,63 @@ public final class FakeRestServer implements AutoCloseable {
      */
     public void respondWith(Function<RecordedRequest, Reply> decide) {
         hook = decide == null ? _ -> null : decide;
+    }
+
+    /**
+     * Refuses the recovery request of this producer ({@code live}, {@code pre}) with this status, as
+     * the API does for one it will not take, while every other request is answered as usual. Each
+     * request it refuses counts, so a client that retries an answer of its own accord - the SDK does
+     * for a 429 and a 5xx - uses up several; a 4xx is final, so it counts one. Those after the
+     * {@code times}-th are accepted.
+     */
+    public void refuseRecovery(String producer, int status, int times) {
+        refuse("/v1/" + producer + "/recovery/initiate_request", refusalReply(status), times);
+    }
+
+    /** As {@link #refuseRecovery(String, int, int)}, for every request until {@link #acceptRecoveries}. */
+    public void refuseRecovery(String producer, int status) {
+        refuse("/v1/" + producer + "/recovery/initiate_request", refusalReply(status), UNTIL_CLEARED);
+    }
+
+    /**
+     * Refuses this producer's odds recovery of this event, the request {@code
+     * initiateEventOddsMessagesRecovery} sends, with this status for the next {@code times}
+     * requests; the rest are accepted. Other events of the producer are not affected.
+     */
+    public void refuseEventOddsRecovery(String producer, String eventId, int status, int times) {
+        refuse("/v1/" + producer + "/odds/events/" + eventId + "/initiate_request", refusalReply(status), times);
+    }
+
+    /** As {@link #refuseEventOddsRecovery}, for the stateful recovery of the event. */
+    public void refuseEventStatefulRecovery(String producer, String eventId, int status, int times) {
+        refuse(
+                "/v1/" + producer + "/stateful_messages/events/" + eventId + "/initiate_request",
+                refusalReply(status),
+                times);
+    }
+
+    /** Accepts every recovery request again, whatever is left of the refusals. */
+    public void acceptRecoveries() {
+        refusals.clear();
+    }
+
+    /**
+     * How many recovery requests the refusals have turned away since the fake started, whether
+     * lifted since or used up.
+     */
+    public int recoveriesRefused() {
+        return refused.get();
+    }
+
+    private void refuse(String path, Reply reply, int times) {
+        if (times <= 0 && times != UNTIL_CLEARED) {
+            throw new IllegalArgumentException("refusing " + path + " " + times + " times");
+        }
+        refusals.add(new Refusal(path, reply, new AtomicInteger(times)));
+    }
+
+    private static Reply refusalReply(int status) {
+        return Reply.of(status, REFUSAL_BODY);
     }
 
     /**
@@ -317,8 +387,10 @@ public final class FakeRestServer implements AutoCloseable {
             requests.add(request);
 
             Reply down = outage;
-            Reply hooked = down == null ? hook.apply(request) : null;
-            Reply reply = down != null ? down : hooked != null ? hooked : answer(method, path);
+            Reply refusal = down == null ? refusal(request) : null;
+            Reply hooked = down == null && refusal == null ? hook.apply(request) : null;
+            Reply reply =
+                    down != null ? down : refusal != null ? refusal : hooked != null ? hooked : answer(method, path);
             if (down != null) {
                 answeredDown = method + " " + path;
             }
@@ -388,6 +460,20 @@ public final class FakeRestServer implements AutoCloseable {
         }
     }
 
+    /** The refusal that takes this request, or null; a POST only, as a recovery request is. */
+    private Reply refusal(RecordedRequest request) {
+        if (!"POST".equals(request.method())) {
+            return null;
+        }
+        for (Refusal refusal : refusals) {
+            if (refusal.path().equals(request.path()) && refusal.take()) {
+                refused.incrementAndGet();
+                return refusal.reply();
+            }
+        }
+        return null;
+    }
+
     private Reply answer(String method, String path) {
         Script override = overrides.get(path);
         if (override != null) {
@@ -454,6 +540,13 @@ public final class FakeRestServer implements AutoCloseable {
         /** The same reply, dropping the connection after the headers and half the body. */
         public Reply cutOffMidBody() {
             return new Reply(status, body, headers, delay, stall, true);
+        }
+    }
+
+    /** Turns away the requests of one path, {@code left} more of them, or all while it is negative. */
+    private record Refusal(String path, Reply reply, AtomicInteger left) {
+        boolean take() {
+            return left.getAndUpdate(n -> n < 0 ? n : Math.max(n - 1, 0)) != 0;
         }
     }
 
