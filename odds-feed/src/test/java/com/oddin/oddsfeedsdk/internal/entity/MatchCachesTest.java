@@ -412,6 +412,110 @@ class MatchCachesTest {
     }
 
     @Test
+    void aSummaryFetchedBeforeAClearFillsNoProfilesAndWritesNothing() throws Exception {
+        // the repeat after the clear fails, so that only what the first summary wrote could be there
+        api.respond(
+                SUMMARY_EN, Reply.of(200, SUMMARY).stallingMidBody(Duration.ofSeconds(30)), Reply.of(500, "<error/>"));
+        Future<Entry> reading = threads.submit(() -> caches.match(MATCH, Locale.ENGLISH));
+        try {
+            api.awaitRequest("GET", SUMMARY_EN);
+            caches.clear();
+            profiles.clear();
+        } finally {
+            api.releaseStalls();
+        }
+        assertThatThrownBy(() -> reading.get(10, TimeUnit.SECONDS))
+                .as("asked again after the clear, and the API failed")
+                .hasCauseInstanceOf(com.oddin.oddsfeedsdk.exceptions.ApiException.class);
+        assertThat(profiles.cachedCompetitor(URN.parse("od:competitor:47214"))).isNull();
+        assertThat(profiles.cachedCompetitor(URN.parse("od:competitor:47215"))).isNull();
+        assertThat(profiles.cachedTournament(URN.parse("od:tournament:1042"))).isNull();
+        assertThat(profiles.cachedSport(URN.parse("od:sport:23"))).isNull();
+        assertThat(caches.cachedMatch(MATCH))
+                .as("the tombstone only")
+                .satisfiesAnyOf(
+                        entry -> assertThat(entry).isNull(),
+                        entry -> assertThat(requireNonNull(entry).get(NAME, Locale.ENGLISH))
+                                .isNull());
+        assertThat(caches.cachedLive(MATCH)).as("no live state").isNull();
+        assertThat(caches.discardedFetches()).as("the match from before").isEqualTo(1);
+        assertThat(profiles.discardedFetches())
+                .as("both competitors, the tournament and its sport")
+                .isEqualTo(4);
+        assertThat(api.requests())
+                .as("no competitor is side-loaded for it")
+                .extracting(request -> request.path())
+                .doesNotContain("/v1/sports/en/competitors/od:competitor:47214/profile");
+
+        // the same summary from a fetch that started after the clear does write and fill
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
+                .isEqualTo("Team Alpha vs Team Beta");
+        assertThat(requireNonNull(profiles.cachedCompetitor(URN.parse("od:competitor:47214")))
+                        .get(ProfileFields.COMPETITOR_NAME, Locale.ENGLISH))
+                .isEqualTo("Team Alpha");
+        assertThat(requireNonNull(profiles.cachedTournament(URN.parse("od:tournament:1042")))
+                        .get(ProfileFields.TOURNAMENT_NAME, Locale.ENGLISH))
+                .isEqualTo("Test Tournament");
+    }
+
+    @Test
+    void aReadAfterAClearLoadsAMatchAgainThoughALoadFromBeforeWasUnderWay() throws Exception {
+        api.respond(
+                SUMMARY_EN,
+                Reply.of(200, SUMMARY).stallingMidBody(Duration.ofSeconds(30)),
+                Reply.of(200, SUMMARY.replace("Team Alpha vs Team Beta", "Team Alpha vs Team Gamma")));
+        Future<Entry> before = threads.submit(() -> caches.match(MATCH, Locale.ENGLISH));
+        try {
+            api.awaitRequest("GET", SUMMARY_EN);
+            caches.clear();
+        } finally {
+            api.releaseStalls();
+        }
+        assertThat(before.get(10, TimeUnit.SECONDS).get(NAME, Locale.ENGLISH))
+                .as("the reader that was under way")
+                .isEqualTo("Team Alpha vs Team Gamma");
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
+                .as("a read after the clear")
+                .isEqualTo("Team Alpha vs Team Gamma");
+        assertThat(api.requests("GET", SUMMARY_EN))
+                .as("the load, and its repeat")
+                .hasSize(2);
+        assertThat(caches.discardedFetches()).as("the match from before").isEqualTo(1);
+    }
+
+    @Test
+    void aReadAfterAClearLoadsAFixtureAgainThoughALoadFromBeforeWasUnderWay() throws Exception {
+        String fixture = Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml");
+        api.respond(
+                FIXTURE_EN,
+                Reply.of(200, fixture).stallingMidBody(Duration.ofSeconds(30)),
+                Reply.of(
+                        200,
+                        Fixtures.replace(
+                                fixture, "start_time=\"2026-08-26T18:00:00\"", "start_time=\"2026-08-26T19:00:00\"")));
+        Future<Entry> before = threads.submit(() -> caches.fixture(MATCH));
+        try {
+            api.awaitRequest("GET", FIXTURE_EN);
+            caches.clear();
+        } finally {
+            api.releaseStalls();
+        }
+        assertThat(before.get(10, TimeUnit.SECONDS).get(START_TIME, null))
+                .as("the reader that was under way")
+                .isEqualTo(Instant.parse("2026-08-26T19:00:00Z"));
+        assertThat(caches.fixture(MATCH).get(START_TIME, null))
+                .as("a read after the clear")
+                .isEqualTo(Instant.parse("2026-08-26T19:00:00Z"));
+        assertThat(api.requests("GET", FIXTURE_EN))
+                .as("the load, and its repeat")
+                .hasSize(2);
+        assertThat(caches.discardedFetches())
+                .as("the fixture and its fill of the match")
+                .isEqualTo(2);
+    }
+
+    @Test
     void aSummaryWithoutAStatusKeepsTheWinnerAndIsNotAskedAgainForTheLiveState() {
         String withoutStatus = SUMMARY.substring(0, SUMMARY.indexOf("    <sport_event_status")) + "</match_summary>\n";
         api.respond(SUMMARY_EN, 200, SUMMARY);
