@@ -29,7 +29,49 @@ public final class Corpus {
         "", "", "map=1", "map=2", "threshold=2.5", "threshold=26.5", "map=1|threshold=10.5", "variant=way:two|way=two"
     };
 
+    /** The market ids of the variant markets: the ones above the corpus's, which the catalogs describe as variants. */
+    private static final int FIRST_VARIANT_MARKET = MARKET_IDS + 1;
+
+    private static final int VARIANT_MARKET_IDS = 200;
+
     private Corpus() {}
+
+    /**
+     * An odds change with {@code markets} markets and, after them, {@code variants} player-prop
+     * markets of dynamic outcomes, each with a variant of its own: {@code unique} (a match number)
+     * and the market's place make the variant, so no two matches share one, as player props of
+     * different matches do not. The corpus's markets are those of {@link #oddsChange(int)}, but for
+     * the one specifier that names a variant of another kind, which the generated market list has no
+     * row for: every market's name can be read from the generated REST documents. The same bytes for
+     * the same arguments.
+     */
+    public static byte[] oddsChange(int markets, int variants, long unique) {
+        // the corpus's own variant specifier is a variant the list has no row for, so its market's name
+        // cannot be read: the generated list has the dynamic variants' rows only. The specifier it
+        // goes with stays.
+        var base = new String(oddsChange(markets), UTF_8).replace("variant=way:two|way=two", "way=two");
+        var xml = new StringBuilder(base.length() + variants * 250);
+        for (int k = 0; k < variants; k++) {
+            int id = FIRST_VARIANT_MARKET + k % VARIANT_MARKET_IDS;
+            xml.append("<market id=\"")
+                    .append(id)
+                    .append("\" specifiers=\"variant=od:dynamic_outcomes:")
+                    .append(id)
+                    .append(':')
+                    .append(unique)
+                    .append(':')
+                    .append(k)
+                    .append("\" status=\"1\">");
+            for (int o = 1; o <= 3; o++) {
+                xml.append("<outcome id=\"od:player:")
+                        .append(unique * 100 + o)
+                        .append("\" odds=\"1.85\" probabilities=\"0.5000\" active=\"1\"/>");
+            }
+            xml.append("</market>");
+        }
+        int end = base.lastIndexOf("</odds>");
+        return (base.substring(0, end) + xml + base.substring(end)).getBytes(UTF_8);
+    }
 
     /** An odds change with {@code markets} markets; the same bytes for the same count. */
     public static byte[] oddsChange(int markets) {

@@ -31,6 +31,34 @@ class CorpusTest {
     }
 
     @Test
+    void variantMarketsFollowTheCorpusWithAVariantOfTheirOwn() throws Exception {
+        FeedDecoder strict = FeedDecoder.strict(FeedDecoder.DEFAULT_MAX_BYTES, feedSchema());
+        var change = (OFOddsChange) strict.decode(Corpus.oddsChange(Corpus.TYPICAL, 20, 5_000_000));
+        var markets = change.getOdds().getMarket();
+        assertThat(markets).hasSize(Corpus.TYPICAL + 20);
+        var variants = markets.subList(Corpus.TYPICAL, markets.size()).stream()
+                .map(m -> m.getSpecifiers())
+                .toList();
+        assertThat(variants)
+                .doesNotHaveDuplicates()
+                .allSatisfy(s -> assertThat(s).startsWith("variant=od:dynamic_outcomes:"));
+
+        var other = (OFOddsChange) strict.decode(Corpus.oddsChange(Corpus.TYPICAL, 20, 5_000_001));
+        assertThat(other.getOdds().getMarket().subList(Corpus.TYPICAL, Corpus.TYPICAL + 20).stream()
+                        .map(m -> m.getSpecifiers()))
+                .as("no variant of another match's")
+                .doesNotContainAnyElementsOf(variants);
+        assertThat(Corpus.oddsChange(Corpus.TYPICAL, 20, 5_000_000))
+                .isEqualTo(Corpus.oddsChange(Corpus.TYPICAL, 20, 5_000_000));
+        assertThat(new String(Corpus.oddsChange(Corpus.TYPICAL), java.nio.charset.StandardCharsets.UTF_8))
+                .as("the plain corpus does have such a market, which the variant mode leaves out")
+                .contains("variant=way:two");
+        assertThat(markets.subList(0, Corpus.TYPICAL))
+                .as("no market of the corpus names a variant but the dynamic ones")
+                .noneMatch(m -> m.getSpecifiers() != null && m.getSpecifiers().contains("variant="));
+    }
+
+    @Test
     void theSameSizeIsTheSameBytes() {
         assertThat(Corpus.oddsChange(Corpus.TYPICAL)).isEqualTo(Corpus.oddsChange(Corpus.TYPICAL));
     }
