@@ -8,8 +8,11 @@ import com.oddin.oddsfeed.systemtests.support.NextOnly;
 import com.oddin.oddsfeed.systemtests.support.Sdk;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
+import java.util.Map;
+import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -31,6 +34,7 @@ class HealthScenarioIT {
         try (FakeRestServer rest = FakeRestServer.start();
                 FakeFeed feed = FakeFeed.start()) {
             var sdk = Sdk.against(rest, feed);
+            FeedHealth opened;
             try {
                 var before = sdk.oddsFeed().getHealth();
                 assertThat(before.state()).as("state before the start").isEqualTo(HealthState.HEALTHY);
@@ -39,6 +43,10 @@ class HealthScenarioIT {
                         .as("connected before the start")
                         .isFalse();
                 assertThat(before.sessions()).as("sessions before the start").isEmpty();
+                assertThat(counted(before))
+                        .as("what the feed counted before the start")
+                        .isNotEmpty()
+                        .allSatisfy((name, value) -> assertThat(value).as(name).isZero());
 
                 var received = sdk.open(MessageInterest.ALL);
                 feed.publishFixture(ODDS_CHANGE);
@@ -54,6 +62,7 @@ class HealthScenarioIT {
                         .as("connected while open")
                         .isTrue();
                 assertThat(open.sessions()).as("sessions of the open feed").hasSize(1);
+                opened = open;
             } finally {
                 sdk.close();
             }
@@ -66,7 +75,31 @@ class HealthScenarioIT {
                     .as("sessions of the closed feed, with what they handled")
                     .singleElement()
                     .satisfies(session -> assertThat(session.handled()).isGreaterThanOrEqualTo(1));
-            assertThat(closed.counters()).as("counters once closed").containsKey("transport.connected");
+            var sessionHandled = "session." + closed.sessions().getFirst().id() + ".handled";
+            assertThat(closed.counters().get(sessionHandled))
+                    .as(sessionHandled + " once closed")
+                    .isGreaterThanOrEqualTo(1L);
+            assertThat(counted(closed))
+                    .as("what the feed counted, once closed: none of it less than when open")
+                    .isNotEmpty()
+                    .allSatisfy((name, value) -> assertThat(value)
+                            .as(name)
+                            .isGreaterThanOrEqualTo(counted(opened).get(name)));
         }
+    }
+
+    /** What the health counted: the totals of the transport, the alives and the recoveries, which only grow. */
+    private static Map<String, Long> counted(FeedHealth health) {
+        return health.counters().entrySet().stream()
+                .filter(entry -> isTotal(entry.getKey()))
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
+    }
+
+    private static boolean isTotal(String name) {
+        if (name.equals("alives.queued")) {
+            // the alives waiting now, which comes and goes
+            return false;
+        }
+        return name.equals("transport.reconnects") || name.startsWith("alives.") || name.startsWith("recovery.");
     }
 }
