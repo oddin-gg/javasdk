@@ -244,9 +244,13 @@ public final class FakeRestServer implements AutoCloseable {
 
     @Override
     public void close() {
-        awaitQuiet();
-        server.stop(0);
-        executor.shutdownNow();
+        try {
+            awaitQuiet();
+        } finally {
+            // a fake that was not quiet is still stopped: its port and threads must not outlive the test
+            server.stop(0);
+            executor.shutdownNow();
+        }
     }
 
     /**
