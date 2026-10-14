@@ -273,8 +273,8 @@ class ColdStartBudgetTest {
 
     /**
      * With the preload the summaries load at once, side by side on the side-load workers, instead of
-     * one by one as each callback asks. Measured 0.69 to 0.72 of the time in 14 runs of 40 and 200
-     * matches; the bound leaves room.
+     * one by one as each callback asks. Measured 0.36 to 0.38 of the time in 7 runs of 40 matches,
+     * with 8 side-load workers; the bound leaves room.
      */
     @Test
     void eagerOnIsFasterToCatchUpThanOff() throws InterruptedException {

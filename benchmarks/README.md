@@ -84,13 +84,15 @@ Measured on this Linux box (Intel Pentium Gold 8505, JDK 25, Docker for the brok
 
 | | time |
 |---|---:|
-| caught up, 200 matches | 7.9 s (7.88 to 8.10 s), of which 6.4 s after the last publish |
+| caught up, 200 matches | 3.9 s (3.93 to 3.95 s), of which 2.6 s after the last publish |
 | first message | 152 ms (71 to 161 ms) |
 
 The 600 requests the 200 matches cost (a summary and two competitor profiles each) are answered
-4 at a time, by the side-load workers the preload shares, so 50 ms each is 7.5 s: the pace is the
-workers', not the broker's. With the preload off, the same 40 matches take 1.4 times as long, the
-callbacks loading them one by one.
+8 at a time, by the side-load workers the preload shares - half the REST concurrency limit, 16 by
+default - so 50 ms each is 3.75 s: the pace is the workers', not the broker's. Before the workers
+followed the limit there were four fixed ones, and the same restart took 7.9 s. With the preload
+off, the same 40 matches take 2.7 times as long (2.3 s against 0.85 s), the callbacks loading them
+one by one.
 
 The budget (`cold-budgets.properties`) is the measurement with room, 3 times, and the requests are
 counted exactly: a match costs one summary and one profile per competitor, nothing else, and each
@@ -116,20 +118,21 @@ Measured on the same box, median of 7 runs, with the 200 matches:
 
 | | variant mode |
 |---|---:|
-| caught up | 53.0 s (51.9 to 53.8 s), of which 49 to 52 s after the last publish |
+| caught up | 53.2 s (53.0 to 54.8 s), of which 51.5 to 52.4 s after the last publish |
 | requests | 1606: the 606 above and 1000 variants, each once |
-| most answered at once | 5 |
-| longest callback | 0.31 to 0.37 s (5 variants and the plain names) |
-| longest single name read | 58 to 104 ms |
+| most answered at once | 9 |
+| longest callback | 0.31 to 0.35 s (5 variants and the plain names) |
+| longest single name read | 58 to 81 ms |
 | the feed's health, health events | healthy, none |
 
 The pace is not the catalog's two permits. The callbacks of a session run one after another, and
 each read of a cold variant is one request that the reader waits for, so the variants are fetched one
 at a time: 1000 variants of 50 ms are 50 s, and what the preload does in parallel (the 606 requests,
-done in 7.5 s) is hidden behind it. The time follows the number of variants and the latency, not the
-matches: 50 matches took 2.2 s with no variant (only the plain names read), 13.6 s with 5 variants each (250 variants) and 52.7 s with 20
-(1000 variants), a latency each and about 0.9 s besides; so 20 variants in each of 200 matches
-would take about 200 s. No read was near the SDK's deadline for one request (30 s: the longest took
+done in 3.75 s) is hidden behind it, which is why the worker count did not move this figure (53.0 s
+before). The time follows the number of variants and the latency, not the matches: 50 matches took
+1.1 s with no variant (only the plain names read), 13.7 s with 5 variants each (250 variants) and
+53.5 s with 20 (1000 variants), a latency each and about 1 s besides (median of 3 runs); so 20
+variants in each of 200 matches would take about 200 s. No read was near the SDK's deadline for one request (30 s: the longest took
 0.1 s), and no callback near the stall limit of the health check (65 s: the longest, 20 variants, took
 1.2 s), so the feed stayed healthy and no health event was told. What it costs is the wait: a
 callback that reads 20 variants holds its session's thread for about a second, and every message
