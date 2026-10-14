@@ -52,14 +52,23 @@ class NextOnlyGuardTest {
             var tagged = files.filter(file -> file.toString().endsWith(".java"))
                     .filter(file -> !file.startsWith(sources.resolve(PACKAGE_PATH)))
                     .filter(file -> !file.getFileName().toString().startsWith("NextOnly"))
-                    .filter(file -> read(file).stream()
-                            .anyMatch(line -> line.strip().matches("@(NextOnly|Tag\\(.*next-only.*)")))
+                    .filter(file -> read(file).stream().anyMatch(NextOnlyGuardTest::tagsAsNextOnly))
                     .map(file -> sources.relativize(file).toString())
                     .toList();
             assertThat(tagged)
                     .as("classes tagged next-only outside " + NextOnly.PACKAGE + ", which 0.0.x would compile")
                     .isEmpty();
         }
+    }
+
+    @Test
+    void theTagIsRecognisedWhateverWayItIsWritten() {
+        assertThat(List.of("@NextOnly", "  @NextOnly  ", "@Tag(\"next-only\")", "@Tag(NextOnly.TAG)"))
+                .as("the ways a class is tagged")
+                .allMatch(NextOnlyGuardTest::tagsAsNextOnly);
+        assertThat(List.of("@Tag(\"slow\")", "// see NextOnly", "class NextOnlyThing {}", "@Test"))
+                .as("what is not a tag")
+                .noneMatch(NextOnlyGuardTest::tagsAsNextOnly);
     }
 
     @Test
@@ -117,6 +126,11 @@ class NextOnlyGuardTest {
         } catch (ClassNotFoundException e) {
             throw new AssertionError(className + " is not compiled", e);
         }
+    }
+
+    /** A line that tags a class as next-only: the annotation, or a {@code @Tag} of the literal or the constant. */
+    private static boolean tagsAsNextOnly(String line) {
+        return line.strip().matches("@(NextOnly|Tag\\(.*(next-only|NextOnly\\.TAG).*)");
     }
 
     private static List<String> read(Path file) {
