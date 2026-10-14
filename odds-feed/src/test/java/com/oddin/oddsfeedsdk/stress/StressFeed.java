@@ -19,6 +19,9 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.UnaryOperator;
 
@@ -75,6 +78,86 @@ final class StressFeed {
         long started = System.nanoTime();
         call.run();
         return Duration.ofNanos(System.nanoTime() - started);
+    }
+
+    /**
+     * How long the call took, with its own deadline: the call runs in a thread of its own, so that one that
+     * never returns fails here, on time, instead of holding the test until something outside ends it. What
+     * the call throws is thrown here.
+     */
+    static Duration timedWithin(Duration limit, String what, Runnable call) {
+        var failure = new AtomicReference<Throwable>();
+        long started = System.nanoTime();
+        var thread = new Thread(
+                () -> {
+                    try {
+                        call.run();
+                    } catch (Throwable e) {
+                        failure.set(e);
+                    }
+                },
+                "stress-bounded-" + what);
+        thread.setDaemon(true);
+        thread.start();
+        try {
+            thread.join(limit.toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError(what + " was interrupted", e);
+        }
+        var took = Duration.ofNanos(System.nanoTime() - started);
+        if (thread.isAlive()) {
+            throw new AssertionError(what + " did not return within " + limit);
+        }
+        if (failure.get() instanceof RuntimeException e) {
+            throw e;
+        }
+        if (failure.get() instanceof Error e) {
+            throw e;
+        }
+        return took;
+    }
+
+    /**
+     * The steps of a scenario's cleanup, each run whatever the one before did. What they throw is kept
+     * until the end, and then thrown, or, when the scenario had failed already, attached to that failure:
+     * the first failure of a run is the one that gets reported.
+     */
+    static final class Cleanup {
+
+        /** One step. */
+        interface Step {
+            void run() throws Exception;
+        }
+
+        private final List<Throwable> problems = new ArrayList<>();
+
+        void step(Step step) {
+            try {
+                step.run();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                problems.add(e);
+            } catch (Throwable e) {
+                problems.add(e);
+            }
+        }
+
+        void finish(Throwable primary) throws Exception {
+            if (problems.isEmpty()) {
+                return;
+            }
+            if (primary != null) {
+                problems.forEach(primary::addSuppressed);
+                return;
+            }
+            var first = problems.getFirst();
+            problems.stream().skip(1).forEach(first::addSuppressed);
+            if (first instanceof Error error) {
+                throw error;
+            }
+            throw (Exception) first;
+        }
     }
 
     /** A session's listener that is told of odds changes only. */

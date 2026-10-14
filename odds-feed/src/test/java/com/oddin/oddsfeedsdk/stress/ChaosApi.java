@@ -4,8 +4,10 @@ import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.RecordedRequest;
 import java.time.Duration;
+import java.util.List;
 import java.util.Set;
 import java.util.SplittableRandom;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -41,6 +43,8 @@ final class ChaosApi {
     private final long seed;
     private final Duration stall;
     private final AtomicLong ordinal = new AtomicLong();
+    /** When each stalling answer began, as System.nanoTime reads it. */
+    private final List<Long> stallStarts = new CopyOnWriteArrayList<>();
 
     /**
      * @param stall how long a stalling answer pauses; make it longer than the SDK's HTTP timeout
@@ -85,7 +89,32 @@ final class ChaosApi {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+        if (fault.kind() == Kind.STALL) {
+            noteStall(System.nanoTime());
+        }
         return replyTo(fault);
+    }
+
+    void noteStall(long nanoTime) {
+        stallStarts.add(nanoTime);
+    }
+
+    /**
+     * The most stalling answers that began within one window of this length: the stalls the SDK can have
+     * given up on, and the fake still holds, at one instant, when the window is how long a stall outlasts
+     * the SDK's timeout, with some margin.
+     */
+    int mostStallsWithin(Duration window) {
+        var starts = stallStarts.stream().mapToLong(Long::longValue).sorted().toArray();
+        int most = 0;
+        int from = 0;
+        for (int to = 0; to < starts.length; to++) {
+            while (starts[to] - starts[from] > window.toNanos()) {
+                from++;
+            }
+            most = Math.max(most, to - from + 1);
+        }
+        return most;
     }
 
     Reply replyTo(Fault fault) {

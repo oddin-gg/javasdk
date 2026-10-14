@@ -63,6 +63,21 @@ class ChaosApiTest {
         assertThat(chaos.replyTo(new Fault(Duration.ZERO, Kind.STALL)).stall()).isEqualTo(STALL);
     }
 
+    @Test
+    void theMostStallsWithinAWindowAreCountedFromWhenTheyBegan() {
+        var chaos = new ChaosApi(0, STALL);
+        assertThat(chaos.mostStallsWithin(Duration.ofSeconds(2))).isZero();
+
+        // 0, 1 and 2 s: three in a window of 2 s (inclusive), two in a window of 1.5 s; then 10 s, 10.5 s
+        for (long second : new long[] {0, 1000, 2000, 10_000, 10_500}) {
+            chaos.noteStall(Duration.ofMillis(second).toNanos());
+        }
+
+        assertThat(chaos.mostStallsWithin(Duration.ofSeconds(2))).isEqualTo(3);
+        assertThat(chaos.mostStallsWithin(Duration.ofMillis(1500))).isEqualTo(2);
+        assertThat(chaos.mostStallsWithin(Duration.ZERO)).isEqualTo(1);
+    }
+
     private static List<Fault> run(long seed, int requests) {
         var chaos = new ChaosApi(seed, STALL);
         var faults = new ArrayList<Fault>();
