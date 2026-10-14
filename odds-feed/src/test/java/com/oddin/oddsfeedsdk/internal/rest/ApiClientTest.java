@@ -30,13 +30,17 @@ import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.UnaryOperator;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -472,6 +476,90 @@ class ApiClientTest {
         assertThat(api.requests("POST", "/v1/replay/stop")).hasSize(1);
     }
 
+    /**
+     * A permit is held for the whole attempt, the body included: an answer that starts and then
+     * stalls keeps it until the call's deadline, however good its status was. A read fails there.
+     */
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void aSuccessWhoseBodyStallsHoldsItsPermitUntilTheDeadlineAndTheReadFails() throws Exception {
+        String summary = Fixtures.read("rest/match_summary/match_summary.xml");
+        api.respond(SUMMARY, Reply.of(200, summary).stallingMidBody(Duration.ofSeconds(60)));
+        var held = holdingAPermitUntilTheDeadline(
+                "GET", SUMMARY, client -> client.fetchMatchSummary(MATCH, Locale.ENGLISH));
+        assertThat(held.failure())
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("not done within 2000 ms, waiting for the answer");
+        assertThat(api.requests("GET", SUMMARY))
+                .as("a stalled body is not read again")
+                .hasSize(1);
+    }
+
+    /** Control that the API answered 202 is done, but it too returns only at the deadline. */
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void aSuccessWhoseBodyStallsHoldsItsPermitUntilTheDeadlineAndControlIsDone() throws Exception {
+        String stop = "/v1/replay/stop";
+        api.respond(stop, Reply.of(202, "<accepted/>").stallingMidBody(Duration.ofSeconds(60)));
+        var held = holdingAPermitUntilTheDeadline("POST", stop, ApiClient::postReplayStop);
+        assertThat(held.failure()).isNull();
+        assertThat(api.requests("POST", stop)).hasSize(1);
+    }
+
+    /** How a call ended, and how long after its start it did and the next call's request reached the API. */
+    private record Held(@Nullable Throwable failure, Duration endedAfter, Duration nextArrivedAfter) {}
+
+    /**
+     * Makes {@code stalled}, whose answer the API has set to stall, with a 2 s deadline and one data
+     * permit, then a second call for that permit with time enough. The second request reaches the API
+     * only once the first call has ended at its deadline: the permit was held that long, and is free
+     * right after.
+     */
+    private Held holdingAPermitUntilTheDeadline(String method, String path, Consumer<ApiClient> stalled)
+            throws Exception {
+        var budget = Duration.ofSeconds(2);
+        ApiClient client = client(b -> b.setHttpClientTimeout(budget).setRestConcurrencyLimit(1));
+        URN other = URN.parse("od:match:2");
+        String otherPath = "/v1/sports/en/sport_events/od:match:2/summary";
+        api.respond(otherPath, 200, Fixtures.read("rest/match_summary/match_summary.xml"));
+        var arrived = new CompletableFuture<Long>();
+        var failure = new AtomicReference<@Nullable Throwable>();
+        api.respondWith(request -> {
+            if (request.path().equals(otherPath)) {
+                arrived.complete(System.nanoTime());
+            }
+            return null;
+        });
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            try {
+                long started = System.nanoTime();
+                Future<Long> first = calls.submit(() -> {
+                    try {
+                        stalled.accept(client);
+                    } catch (RuntimeException e) {
+                        failure.set(e);
+                    }
+                    return System.nanoTime();
+                });
+                api.awaitRequest(method, path);
+                Future<?> second = calls.submit(
+                        () -> client.fetchMatchSummary(other, Locale.ENGLISH, Deadline.in(Duration.ofSeconds(10))));
+                long ended = first.get(15, TimeUnit.SECONDS);
+                assertThat(second.get(15, TimeUnit.SECONDS)).isNotNull();
+                var held = new Held(
+                        failure.get(),
+                        Duration.ofNanos(ended - started),
+                        Duration.ofNanos(arrived.get(15, TimeUnit.SECONDS) - started));
+                assertThat(held.endedAfter()).isGreaterThanOrEqualTo(budget);
+                assertThat(held.nextArrivedAfter()).as("the permit was held").isGreaterThanOrEqualTo(budget);
+                assertThat(held.nextArrivedAfter()).as("and then free").isLessThan(budget.plusSeconds(5));
+                return held;
+            } finally {
+                api.releaseStalls();
+            }
+        }
+    }
+
     @Test
     void aSuccessWhoseBodyBreaksOffIsReadAgainUnlessItWasControl() {
         ApiClient client = client(b -> b);
@@ -534,6 +622,85 @@ class ApiClientTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("the feed is closed");
         assertThat(api.requests()).isEmpty();
+    }
+
+    /**
+     * A control request is on the wire when the feed is closed: the call ends at once as closed, and
+     * nothing is sent again. A request the API answered with a success just before the close is
+     * reported as closed too, since the close is looked at first: the caller cannot tell whether the
+     * API did the work.
+     */
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void closingEndsAReplayRequestOnTheWireAndFreesItsPermit() throws Exception {
+        closeWithARequestOnTheWire("POST", "/v1/replay/stop", ApiClient::postReplayStop, ApiClient::postReplayClear);
+    }
+
+    /** The recovery request is repeatable after a failure, but not after the close. */
+    @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void closingEndsAProducerRecoveryOnTheWireAndFreesItsPermit() throws Exception {
+        closeWithARequestOnTheWire(
+                "POST",
+                PRODUCER_RECOVERY,
+                client -> client.postRecovery("pre", 1, null),
+                client -> client.postRecovery("live", 2, null));
+    }
+
+    /**
+     * Holds the request {@code onTheWire} makes at the API, with {@code queued} waiting for the same
+     * permit behind it (both pools have one: the REST concurrency limit is 1), then closes the client.
+     * Both calls must end as closed within a few seconds, not at their 20 s deadline: the first because
+     * the close cuts it off, the second because that gives the permit back - it would wait for it to
+     * its deadline otherwise. The API sees the first request only.
+     */
+    private void closeWithARequestOnTheWire(
+            String method, String path, Consumer<ApiClient> onTheWire, Consumer<ApiClient> queued) throws Exception {
+        ApiClient client =
+                client(b -> b.setHttpClientTimeout(Duration.ofSeconds(20)).setRestConcurrencyLimit(1));
+        var release = new CountDownLatch(1);
+        api.respondWith(request -> {
+            if (request.method().equals(method) && request.path().equals(path)) {
+                await(release);
+            }
+            return null;
+        });
+        try (ExecutorService calls = Executors.newVirtualThreadPerTaskExecutor()) {
+            try {
+                Future<?> first = calls.submit(() -> onTheWire.accept(client));
+                api.awaitRequest(method, path);
+                var thread = new CompletableFuture<Thread>();
+                Future<?> second = calls.submit(() -> {
+                    thread.complete(Thread.currentThread());
+                    queued.accept(client);
+                });
+                awaitWaiting(thread.get(10, TimeUnit.SECONDS));
+
+                long started = System.nanoTime();
+                client.close();
+                assertThatThrownBy(() -> first.get(10, TimeUnit.SECONDS))
+                        .cause()
+                        .isInstanceOf(ApiException.class)
+                        .hasMessageContaining("the feed is closed");
+                assertThatThrownBy(() -> second.get(10, TimeUnit.SECONDS))
+                        .cause()
+                        .isInstanceOf(ApiException.class)
+                        .hasMessageContaining("the feed is closed");
+                assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(5));
+                assertThat(api.requests()).as("one request, not repeated").hasSize(1);
+            } finally {
+                release.countDown();
+            }
+        }
+    }
+
+    /** Waits until the thread is parked, as one is that waits for a permit. */
+    private static void awaitWaiting(Thread thread) {
+        long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (thread.getState() != Thread.State.TIMED_WAITING && thread.getState() != Thread.State.WAITING) {
+            assertThat(System.nanoTime()).as("the call waits for its permit").isLessThan(deadline);
+            Thread.onSpinWait();
+        }
     }
 
     @Test
@@ -601,6 +768,47 @@ class ApiClientTest {
     void tooManyRequestsFailsAtOnceWhenTheApiAsksForLongerThanTheDeadline() {
         ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(2)));
         api.respond(WHOAMI, Reply.of(429, "").withHeader("Retry-After", "30"));
+        long started = System.nanoTime();
+        assertThatThrownBy(client::fetchWhoAmI)
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("before it could try again")
+                .satisfies(e -> assertThat(HttpStatusException.statusOf(e)).isEqualTo(429));
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofSeconds(1));
+        assertThat(api.requests("GET", WHOAMI)).hasSize(1);
+    }
+
+    @Test
+    void tooManyRequestsIsRetriedAfterTheDateTheApiAsksFor() {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(5)));
+        api.respond(
+                "/v1/replay/play",
+                Reply.of(429, "").withHeader("Retry-After", RestTransportRetryAfterTest.httpDate(3)),
+                Reply.of(202, ""));
+        long started = System.nanoTime();
+        client.postReplayStart(null, null, null, null, null);
+        // the date has whole seconds, so the wait is 2 to 3 s; more than any backoff (at most 0.65 s) gives
+        assertThat(Duration.ofNanos(System.nanoTime() - started))
+                .isBetween(Duration.ofMillis(1500), Duration.ofSeconds(5));
+        assertThat(api.requests("POST", "/v1/replay/play")).hasSize(2);
+    }
+
+    @Test
+    void aDateInThePastLeavesTheBackoffAlone() {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(5)));
+        api.respond(
+                WHOAMI,
+                Reply.of(429, "").withHeader("Retry-After", "Sun, 06 Nov 1994 08:49:37 GMT"),
+                Reply.of(200, Fixtures.read("rest/whoami/bookmaker_details.xml")));
+        long started = System.nanoTime();
+        assertThat(client.fetchWhoAmI()).isNotNull();
+        assertThat(Duration.ofNanos(System.nanoTime() - started)).isLessThan(Duration.ofMillis(1500));
+        assertThat(api.requests("GET", WHOAMI)).hasSize(2);
+    }
+
+    @Test
+    void tooManyRequestsFailsAtOnceWhenTheDateTheApiAsksForIsAfterTheDeadline() {
+        ApiClient client = client(b -> b.setHttpClientTimeout(Duration.ofSeconds(2)));
+        api.respond(WHOAMI, Reply.of(429, "").withHeader("Retry-After", RestTransportRetryAfterTest.httpDate(30)));
         long started = System.nanoTime();
         assertThatThrownBy(client::fetchWhoAmI)
                 .isInstanceOf(ApiException.class)
