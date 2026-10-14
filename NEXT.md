@@ -1081,7 +1081,8 @@ call logging with `setApiCallLogging(true)`: one INFO line per attempt.
 
 The system test `QuietTrafficScenarioIT` stands in for the hour: it sends a few hundred
 messages over three matches and checks that what is logged at INFO or above is a state
-change from a short list, and nothing else.
+change from a short list, and nothing else. The real hour on the test environment is a
+check of the first release candidate (section 7).
 
 ---
 
@@ -1199,6 +1200,77 @@ Three layers. No ticket is done without its tests.
 
 Two rules from the last hotfix review: a regression test must be shown to fail on
 the broken code before it counts, and a test that cannot fail is a bug.
+
+### Soak scenarios
+
+The soak is the third layer run against the real thing: the first release candidate on the
+test environment (section 10, ticket 34), with a client that logs at INFO, persists its
+resume points and exports `getHealth().counters()`. The fakes already prove each
+scenario's logic; the soak proves the timings, and the real broker and API. The client
+cannot restart the environment's broker or API, so the faults are made between them, with
+a TCP proxy (such as Toxiproxy) in front of the broker and of the REST host: cutting or
+resetting a connection, refusing or stalling one, answering 5xx. Where the environment's
+operators can restart a broker node or a producer, that is the better fault; the table says
+what the proxy does instead.
+
+Watched in every scenario: the `onHealthEvent` stream, and `getHealth()` every minute
+(states, `session.N.queue_depth`, lag, the recovery and safety-net counters, dropped
+side-loads, stale catalogs); `onProducerStatusChange` and `onProducerCauseChange`; the
+recovery requests, from the API call log (`setApiCallLogging`); the log at INFO and above;
+heap after a full collection, live threads (the `oddsfeed-*` ones and the virtual
+threads) and file descriptors. A failure in every scenario: any part `STALLED`; a heap
+after collection, a thread count or a descriptor count that climbs from one run of a
+scenario to the next; a WARN or ERROR line that repeats past the throttle (section 4,
+logging); a message lost with no counter and no event; a producer that is down with no
+attempt to bring it back pending.
+
+| Scenario | How | Watched, beyond the above | Passes when | Fails when |
+|---|---|---|---|---|
+| Broker restart | Reset every connection through the proxy, or restart the broker node. Three runs: back within seconds; held down for two minutes; refusing the login for a minute, then accepting it | the connection part; `onConnectionDown`; reconnects; per producer the cause (connection lost, channel lost) and the recovery after it; any request sent while the connection is down | the connection is `DEGRADED` only after 60 s down (`setConnectionDownLimit`) and `HEALTHY` as soon as it is up; no recovery request while it is down or before the transport's first up; each producer is up again after a recovery, within five minutes of the broker's return (the snapshot deadline); a minute of refusals is not permanent unless three went on for it with no connection between (section 4, connection) | a producer down past five minutes with nothing asked; a request sent while down; a fatal error after a restart the broker came back from; a "down" on a normal `close()`. Against the fakes: `ReconnectScenarioIT` |
+| API outage | Stall or refuse the REST host with the feed running: ten minutes, then 70 minutes. In the short one, cut a broker connection once | catalog state and how long it was stale; getter latency in callbacks; recovery requests, re-issues and failures; the API's answers | messages keep arriving and are delivered; a getter returns or fails within `2 × (timeout + 1 s) + 1 s`, so a slow API is no stall (limit 65 s by default); a refused recovery is re-issued from 5 s, doubling, three times in a row, then the producer stays down with the reason, and is asked for again after ten minutes or at the first alive after a gap; a catalog is `DEGRADED` after an hour stale (the 70-minute run) and `HEALTHY` once the API is back; every producer is up within the cool-down after it | `STALLED` for a slow API; a producer down with no attempt pending; a log line per failed call; the preload or the recoveries flooding the API as it returns. Against the fakes: `RestOutageScenarioIT`, `RecoveryRefusalScenarioIT` |
+| Producer restart during a recovery | Right after a reconnect, while a recovery is in flight, stop the producer's alives (the proxy drops its alive and feed messages) for 30 s to two minutes; once with the alives returning unsubscribed | the producer's cause (no alive, unsubscribed); recoveries issued, given up, re-issued; the cap | the producer is down after 20 s without an alive (`setMaxInactivitySeconds`); the recovery in flight is given up uncounted and the next alive asks for one again (KD-26), or joins it when it comes before the API's answer; the producer is up when its `snapshot_complete` arrives; the cap is not spent by it | two recoveries in flight for one producer; a producer down while its alives flow; another instance's request id taken as its own. Against the fakes: `ProducerRecoveryScenarioIT`, `ProducerStatusScenarioIT` |
+| Slow client | One session's callback sleeps 5 s per message; then one callback of 90 s; then the client is cured | that session's queue depth and lag; `onSafetyNetEvent`; resets; `onSessionLagChange`; the other sessions | at 20 s behind, the producer is down without a recovery and comes back (`RETURNED_FROM_INACTIVITY`) when on time; two minutes stale for a minute (`setStaleMessageLimit`, `setStaleMessageWindow`) make the net ask for recoveries, then replace the channel, a minute apart at least, three resets in ten minutes at most; then the session is lagging and the producer stays up; the 90 s callback is `STALLED` after 65 s and healthy when it returns; other sessions are untouched; all of it clears after the cure | a reset before its recoveries were accepted; a fourth reset in ten minutes; a producer down for a lagging session after the cap; another session delayed; the lag not cleared once caught up. Against the fakes: `StaleFeedScenarioIT`, `ThrowingCallbackScenarioIT` |
+| Close during a recovery | `close()` while a recovery is in flight, at random points, 50 times, a new feed each time; once from a callback | how long `close()` takes; the resume point read after it, twice; callbacks and events after it; threads left; event recovery statuses | `close()` returns within the shutdown timeout (5 s by default); no callback starts after it begins; no producer-up or recovery completion comes from the close; the resume point is the same on both reads and not ahead of what was processed; a feed opened with it recovers from there; every `oddsfeed-*` thread, the keep-alive included, is gone | a hang; a thread left; an event after `close()`; a point that differs between two reads; a recovery cut short reported completed. Against the fakes: `ReconnectScenarioIT` (a close is no connection loss) |
+| Restart with many live matches | Restart the client with `setEagerEntityPreload(true)` and the default REST limit while as many matches as the environment has are live | the API's concurrent requests against the limit; the side-load workers (half the limit, eight by default); dropped and failed side-loads; time until the sessions are caught up; getter latency in callbacks; the safety net | the preload takes no more than half the data permits, so callbacks' own reads stay inside their deadline; the API sees no more concurrent requests than the limit; dropped side-loads are 0, or the burst the queue of 1 000 could not hold, counted and logged; the sessions are caught up within the cold benchmark's budget (section 8, scaled to the environment's size); no safety-net reset comes from the restart | 429s; a session reset by the cold start; a read past its deadline; a failed preload neither logged nor counted. Against the fakes: the cold benchmark (section 8), no system test |
+| Long run | Normal traffic for the length below, the scenarios above repeated in it | the whole list above, as trends over days | no trend in heap, threads, descriptors or queue depth; nothing grows in quiet traffic but a state change's counters; every fault healed on its own | a leak; a counter climbing in quiet traffic; a producer never up; a part still `DEGRADED` after its cause ended |
+
+**Soak length: proposed, to be agreed.** 72 hours on the test environment, a weekend day
+among them. The longest timer the scenarios depend on is the catalog stale limit of one
+hour, so the API outage needs 70 minutes of its own, and the ten-minute cool-downs have to
+be seen to expire; together the scenarios take most of a working day. What a day cannot
+show is the daily cycle of matches coming and going, cache expiry and eviction across it,
+and weekend traffic, so after the scenarios the feed runs at least two more days with
+nothing done to it but one fault a day, one of them on the weekend. Shorter would miss a
+slow leak; a week would show little the second and third day have not. The owner has not
+agreed a length, and what the first candidate shows may change it.
+
+**Two checks that move to the first release candidate**, because they need the real thing:
+
+1. **One hour of normal traffic logs only state changes at INFO.** On the test environment,
+   a feed with several sessions and the default locale, no fault, one hour: what is logged
+   at INFO or above is a state change from section 4's list (opened, a producer up or
+   down, a recovery, a session caught up, a part healthy again), with the API call log off,
+   and nothing per message. `QuietTrafficScenarioIT` stands in until then.
+2. **The first release candidate is the first signed publish to Maven Central.** Check on
+   `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/<version>/` and on
+   `odds-feed-parent` beside it (`RELEASING.md`, "Every release", step 6):
+   - the jar, the sources jar, the javadoc jar and the POM are there, each with a `.asc`
+     and its checksums;
+   - every `.asc` verifies against the release key fetched from `keyserver.ubuntu.com` or
+     `keys.openpgp.org`, not from the build, and the key is the one the release uses and
+     has not expired;
+   - the POM is the flattened one: the right coordinates, no `${revision}` left, the
+     licence, SCM and developer entries Central requires, and the dependencies the module
+     needs and no others;
+   - the jar's manifest has `Automatic-Module-Name: gg.oddin.oddsfeed`;
+   - a clean project with an empty local repository and Central as its only repository
+     resolves the candidate under Maven and under Gradle, and the examples compile
+     against it;
+   - the GitHub Release has the jar, the POM and their signatures, byte for byte those on
+     Central (compare digests).
+
+   The relocation POM on the old coordinates is not part of this: it is the old line's last
+   act, published when 0.0.x support ends on 31 March 2027 (ticket 33).
 
 ---
 
