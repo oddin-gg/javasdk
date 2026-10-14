@@ -206,14 +206,17 @@ class LoadHarnessIT {
                 String publisherReport;
                 long beforeMeasure;
                 long afterMeasure;
+                var backlog = new Backlog(broker);
                 try (var publisher = new LoadPublisher(broker, pool, rate, warmup + duration + 120)) {
                     publisher.start(Math.max(2, rate / 250));
                     Thread.sleep(Duration.ofSeconds(warmup));
                     subject.send("measure");
                     beforeMeasure = publisher.published();
+                    backlog.start();
                     Thread.sleep(Duration.ofSeconds(duration));
                     afterMeasure = publisher.published();
                     publisherReport = publisher.report();
+                    backlog.stop();
                 }
                 // what is still on its way to the callback
                 Thread.sleep(5_000);
@@ -235,6 +238,7 @@ class LoadHarnessIT {
                 out.append("published in the measured stretch: ")
                         .append(afterMeasure - beforeMeasure)
                         .append("\n");
+                out.append(backlog.report());
                 out.append(requests(api.requests()));
                 out.append("\n").append(subject.report());
                 finish(label() + "-rate", out.toString());
@@ -288,6 +292,59 @@ class LoadHarnessIT {
         return "API requests: " + requests.size() + " (summaries " + summaries + ", profiles " + profiles
                 + ", variants " + variants + ", recovery requests " + recoveries + ", others "
                 + (requests.size() - summaries - profiles - variants - recoveries) + ")\n";
+    }
+
+    /**
+     * What the broker holds for the SDK, sampled every two seconds: the messages waiting at the broker
+     * and the ones handed out and not yet acknowledged (the prefetch). A message's age is the sum of its
+     * wait here and its wait in the SDK, so this says which of the two a lag is.
+     */
+    private static final class Backlog {
+        private final FakeFeed broker;
+        private final List<long[]> samples = new java.util.concurrent.CopyOnWriteArrayList<>();
+        private volatile boolean sampling = true;
+        private Thread thread;
+
+        Backlog(FakeFeed broker) {
+            this.broker = broker;
+        }
+
+        void start() {
+            thread = Thread.ofPlatform().name("load-backlog").start(() -> {
+                try {
+                    while (sampling) {
+                        samples.add(new long[] {broker.ready(), broker.unacknowledged()});
+                        Thread.sleep(2_000);
+                    }
+                } catch (InterruptedException | RuntimeException stopped) {
+                    // the run is over, or the broker is
+                }
+            });
+        }
+
+        void stop() throws InterruptedException {
+            sampling = false;
+            thread.interrupt();
+            thread.join(10_000);
+        }
+
+        String report() {
+            var ready = samples.stream().mapToLong(sample -> sample[0]).sorted().toArray();
+            var unacknowledged =
+                    samples.stream().mapToLong(sample -> sample[1]).sorted().toArray();
+            if (ready.length == 0) {
+                return "broker backlog: not sampled\n";
+            }
+            return String.format(
+                    Locale.ROOT,
+                    "broker backlog, %d samples 2 s apart: waiting at the broker median %d, most %d; handed out"
+                            + " and unacknowledged median %d, most %d (prefetch 200)%n",
+                    ready.length,
+                    ready[ready.length / 2],
+                    ready[ready.length - 1],
+                    unacknowledged[unacknowledged.length / 2],
+                    unacknowledged[unacknowledged.length - 1]);
+        }
     }
 
     /** The parent's own view of the restart, in milliseconds from the moment the SDK's JVM said it was starting. */
