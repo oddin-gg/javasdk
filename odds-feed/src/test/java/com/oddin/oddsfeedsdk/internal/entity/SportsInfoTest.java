@@ -3,7 +3,9 @@ package com.oddin.oddsfeedsdk.internal.entity;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.entry;
 
+import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.fakes.RecordedRequest;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.FixtureChange;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
@@ -16,6 +18,7 @@ import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import org.junit.jupiter.api.Test;
 
@@ -173,6 +176,85 @@ class SportsInfoTest {
     }
 
     @Test
+    void theActiveTournamentsOfASportAreFoundByItsNameInTheLocaleAsked() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            inGerman(world);
+            assertThat(world.sportsInfo.getActiveTournaments("zaehlstreik 2", DE))
+                    .extracting(Tournament::getId, Tournament::getSportId)
+                    .containsExactly(
+                            org.assertj.core.groups.Tuple.tuple(TOURNAMENT, CS2),
+                            org.assertj.core.groups.Tuple.tuple(SECOND_TOURNAMENT, CS2));
+            assertThat(world.api.requests("GET", "/v1/sports/de/sports")).hasSize(1);
+            assertThat(world.api.requests("GET", "/v1/sports/de/sports/od:sport:2/tournaments"))
+                    .as("the list of the locale asked for")
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", CS2_TOURNAMENTS))
+                    .as("not the default locale's")
+                    .isEmpty();
+            assertThat(world.api.requests("GET", LOL_TOURNAMENTS)).isEmpty();
+            assertThat(world.sportsInfo.getActiveTournaments("Counter-Strike 2", DE))
+                    .as("the default locale's name for the sport is not its name in German")
+                    .isNotNull()
+                    .isEmpty();
+            assertThat(world.sportsInfo.getActiveTournaments("Zaehlstreik 2", EN))
+                    .as("nor the German name in English")
+                    .isNotNull()
+                    .isEmpty();
+            assertThat(world.sportsInfo.getActiveTournaments("Counter-Strike 2", EN))
+                    .extracting(Tournament::getId)
+                    .containsExactly(TOURNAMENT, SECOND_TOURNAMENT);
+            assertThat(world.api.requests("GET", CS2_TOURNAMENTS)).hasSize(1);
+        }
+    }
+
+    @Test
+    void aSportsTournamentsAreThoseOfItsFirstLocaleAndEachNamesItselfInEveryLocale() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            inGerman(world);
+            var sport = world.entities.sport(CS2, List.of(DE, EN));
+            assertThat(sport.getNames()).containsExactly(entry(DE, "Zaehlstreik 2"), entry(EN, "Counter-Strike 2"));
+            var tournaments = requireNonNull(sport.getTournaments());
+            assertThat(tournaments).extracting(Tournament::getId).containsExactly(TOURNAMENT, SECOND_TOURNAMENT);
+            assertThat(world.api.requests("GET", "/v1/sports/de/sports/od:sport:2/tournaments"))
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", CS2_TOURNAMENTS))
+                    .as("the first locale's list is the list")
+                    .isEmpty();
+            var first = tournaments.getFirst();
+            assertThat(first.getName(DE)).isEqualTo("Testturnier");
+            assertThat(first.getName(EN)).isEqualTo("Test Tournament");
+            assertThat(world.api.requests("GET", "/v1/sports/de/tournaments/od:tournament:1042/info"))
+                    .hasSize(1);
+            assertThat(world.api.requests("GET", "/v1/sports/en/tournaments/od:tournament:1042/info"))
+                    .hasSize(1);
+        }
+    }
+
+    /** The fake answers each language with the same fixture; German gets names of its own here. */
+    private static void inGerman(EntityWorld world) {
+        world.api.respond(
+                "/v1/sports/de/sports",
+                200,
+                Fixtures.replace(Fixtures.read("rest/sports/sports.xml"), "Counter-Strike 2", "Zaehlstreik 2"));
+        world.api.respond(
+                "/v1/sports/de/sports/od:sport:2/tournaments",
+                200,
+                Fixtures.replace(
+                        Fixtures.read("rest/sport_tournaments/sport_tournaments.xml"),
+                        "First Tournament",
+                        "Erstes Turnier"));
+        for (var tournament : List.of(TOURNAMENT, SECOND_TOURNAMENT)) {
+            world.api.respond(
+                    "/v1/sports/de/tournaments/" + tournament + "/info",
+                    200,
+                    Fixtures.replace(
+                            Fixtures.read("rest/tournament_info/tournament_info.xml"),
+                            "Test Tournament",
+                            "Testturnier"));
+        }
+    }
+
+    @Test
     void theSchedulesListTheirMatchesAndFillWhatTheySayOfThem() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             assertThat(world.sportsInfo.getLiveMatches())
@@ -284,8 +366,8 @@ class SportsInfoTest {
     void aSportByIdIsTheListsThoughATournamentNamedAnotherOne() {
         var unlisted = URN.parse("od:sport:99");
         String info = "/v1/sports/en/tournaments/od:tournament:1042/info";
-        String namingIt = com.oddin.oddsfeed.fakes.Fixtures.replace(
-                com.oddin.oddsfeed.fakes.Fixtures.read("rest/tournament_info/tournament_info.xml"),
+        String namingIt = Fixtures.replace(
+                Fixtures.read("rest/tournament_info/tournament_info.xml"),
                 "<sport id=\"od:sport:1\" name=\"League of Legends\" abbreviation=\"LoL\"/>",
                 "<sport id=\"od:sport:99\" name=\"Unlisted\" abbreviation=\"UL\"/>");
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
