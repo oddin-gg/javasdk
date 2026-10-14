@@ -29,6 +29,21 @@ test pins it, and whether it was found by a test against 0.0.56 or by reading th
 The 0.0.x side is that of 0.0.58, the release the system tests run against; where an older 0.0.x
 release behaved otherwise, the entry says so.
 
+## Scenarios only 1.0 has
+
+A `KnownDifference` is for behaviour both lines have and handle differently: the scenario runs on
+both, with an expectation for each. Behaviour only 1.0 has - a feed's health, which 0.0.x cannot
+report - is no difference to list: there is nothing 0.0.x does to pin, and a scenario that calls
+API 0.0.x lacks does not even compile against it. Such a scenario is a class of its own, in the
+package `systemtests.next`, annotated `@NextOnly` (in `support`, which tags it `next-only`). The
+`legacy-sdk` profile of `pom.xml` leaves the package out of the compilation and the tag out of
+surefire and failsafe, so the 0.0.x run never sees it, and `build.sh <worktree> next` and the CI job
+against 1.0 run it with every other scenario. `NextOnlyGuardTest` fails if a class of the group is
+not tagged, if a tagged class is outside the package, or if the POM stops leaving the group out of
+the 0.0.x run; it also fails if the group is empty. To run these scenarios alone against 1.0, add
+`-Dgroups=next-only`. A scenario that is mostly shared and differs in one step stays a shared class
+with a `KnownDifference`.
+
 ## KD-1 An event recovery is never reported complete
 
 - **0.0.x:** `onEventRecoveryCompleted` is never called. The event recovery request goes out with
