@@ -444,7 +444,8 @@ public final class FakeFeed implements AutoCloseable {
     /**
      * Publishes a feed message as the live feed would for one SDK node: like {@link #publish(String)},
      * with the node id in the routing key (see {@link #routingKey(String, int)}). An SDK built with
-     * that node id takes it, so does one with no node id, and one built with another does not.
+     * that node id takes it, and one built with another does not; one with no node id takes a data
+     * message or an alive, but not a snapshot complete.
      *
      * @return whether the broker routed it to at least one queue
      */
@@ -566,9 +567,10 @@ public final class FakeFeed implements AutoCloseable {
 
     /**
      * The routing key the feed sends this message with for one SDK node: {@link #routingKey(String)}
-     * with the node id as its last part. A session bound with that node id takes it, as does one
-     * with no node id for a message addressed to no node; another node's session does not.
-     * Alives are taken by every session whatever their node.
+     * with the node id as its last part. A session bound with that node id takes it, and another
+     * node's session does not. A session with no node id takes what is addressed to any node, but for
+     * a snapshot complete, which it takes only when addressed to no node, as the session of a node
+     * takes only the one addressed to it. Alives are taken by every session whatever their node.
      *
      * @param node the node id, as the SDK's {@code setSDKNodeId} takes it
      */
