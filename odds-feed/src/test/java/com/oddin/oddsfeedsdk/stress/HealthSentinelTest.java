@@ -1,0 +1,75 @@
+package com.oddin.oddsfeedsdk.stress;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
+import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
+import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
+import com.oddin.oddsfeedsdk.subscribe.HealthState;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
+import org.junit.jupiter.api.Test;
+
+/** A stalled sample or event fails the sentinel; healthy ones do not, and an unused one fails too. */
+class HealthSentinelTest {
+
+    @Test
+    void healthySamplesAndTransitionsPass() {
+        var sentinel = new HealthSentinel(() -> health(HealthState.HEALTHY));
+        sentinel.sample();
+        sentinel.onHealthEvent(event(HealthState.HEALTHY, HealthState.DEGRADED));
+
+        sentinel.assertNeverStalled();
+        assertThat(sentinel.events()).hasSize(1);
+    }
+
+    @Test
+    void aStalledSampleFails() {
+        var current = new AtomicReference<>(HealthState.HEALTHY);
+        var sentinel = new HealthSentinel(() -> health(current.get()));
+        sentinel.sample();
+        current.set(HealthState.STALLED);
+        sentinel.sample();
+
+        assertThatThrownBy(sentinel::assertNeverStalled)
+                .isInstanceOf(AssertionError.class)
+                .hasMessageContaining("STALLED");
+    }
+
+    @Test
+    void aStalledEventFails() {
+        var sentinel = new HealthSentinel(() -> health(HealthState.HEALTHY));
+        sentinel.sample();
+        sentinel.onHealthEvent(event(HealthState.DEGRADED, HealthState.STALLED));
+
+        assertThatThrownBy(sentinel::assertNeverStalled).isInstanceOf(AssertionError.class);
+    }
+
+    @Test
+    void aSentinelThatNeverSampledFailsRatherThanPassingVacuously() {
+        var sentinel = new HealthSentinel(() -> health(HealthState.HEALTHY));
+
+        assertThatThrownBy(sentinel::assertNeverStalled).isInstanceOf(AssertionError.class);
+    }
+
+    private static HealthEvent event(HealthState previous, HealthState state) {
+        return new HealthEvent(HealthComponent.THREADS, null, previous, state, "test", Instant.now());
+    }
+
+    private static FeedHealth health(HealthState state) {
+        return new FeedHealth(
+                state,
+                Map.of(),
+                new FeedHealth.Transport(true, 0),
+                new FeedHealth.Alives(0, 0, 0, 0),
+                List.of(),
+                new FeedHealth.Recovery(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0),
+                List.of(),
+                new FeedHealth.Caches(0, 0, 0, 0, 0, 0),
+                new FeedHealth.Events(0, 0, 0, 0),
+                Instant.now());
+    }
+}

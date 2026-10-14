@@ -1,0 +1,220 @@
+package com.oddin.oddsfeedsdk.stress;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.oddin.oddsfeed.fakes.FakeFeed;
+import com.oddin.oddsfeed.fakes.FeedMessages;
+import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.OddsFeedSession;
+import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
+import com.oddin.oddsfeedsdk.mq.entities.BetSettlement;
+import com.oddin.oddsfeedsdk.mq.entities.BetStop;
+import com.oddin.oddsfeedsdk.mq.entities.FixtureChange;
+import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
+import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
+import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
+import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+
+/**
+ * Which messages were published and which reached the listener, per match, as sequence numbers.
+ *
+ * <p>A publisher thread per match stamps the sequence into the odds change's {@code timestamp}
+ * (base plus sequence) and publishes it as it is; a message counts as published only once the broker
+ * says it routed it. The listener from {@link #listener} reads the sequence back. What may then differ
+ * between the two is the lost-message contract of the stress suite:
+ * <ul>
+ *   <li>{@link #assertExact}: nothing lost, repeated or reordered; for a run without a reconnect.
+ *   <li>{@link #assertPrefix}: what arrived is the start of what was published, with no gap; for a
+ *       run cut short by a close, which drops what was queued.
+ *   <li>{@link #assertGapsOnlyAfterReconnect}: for a run with the connection cut under the
+ *       publishers, whatever the dead queue held is gone, so a gap is allowed - but no repeat, no
+ *       reorder, and no loss from what was published after the SDK was back.
+ * </ul>
+ * Choose a base near the present: the SDK judges a producer by the age of its messages.
+ */
+final class Ledger {
+
+    private static final String MATCH_FIXTURE = "feed/odds_change/odds_change_markets_only.xml";
+    private static final String FIXTURE_EVENT = "od:match:198314";
+
+    private final long base;
+    private final Map<String, AtomicLong> nextSequence = new ConcurrentHashMap<>();
+    private final Map<String, List<Long>> published = new ConcurrentHashMap<>();
+    private final Map<String, List<Long>> delivered = new ConcurrentHashMap<>();
+
+    Ledger(long base) {
+        this.base = base;
+    }
+
+    /** The odds change of this match stamped with this sequence. */
+    String message(String match, long sequence) {
+        var changed = Fixtures.replace(Fixtures.read(MATCH_FIXTURE), FIXTURE_EVENT, match);
+        return FeedMessages.stampedAt(changed, base + sequence);
+    }
+
+    /**
+     * Publishes the next message of this match; call it from one thread per match.
+     *
+     * @return whether the broker routed it, which is when it counts as published
+     */
+    boolean publish(FakeFeed broker, String match) {
+        long sequence =
+                nextSequence.computeIfAbsent(match, _ -> new AtomicLong()).getAndIncrement();
+        boolean routed = broker.publishAsIs(message(match, sequence));
+        if (routed) {
+            published(match, sequence);
+        }
+        return routed;
+    }
+
+    void published(String match, long sequence) {
+        record(published, match, sequence);
+    }
+
+    void delivered(String match, long sequence) {
+        record(delivered, match, sequence);
+    }
+
+    long publishedCount() {
+        return count(published);
+    }
+
+    long deliveredCount() {
+        return count(delivered);
+    }
+
+    /** For each match, the sequence its next message will have: what a probe's round trip marks. */
+    Map<String, Long> mark() {
+        var marks = new HashMap<String, Long>();
+        nextSequence.forEach((match, next) -> marks.put(match, next.get()));
+        return marks;
+    }
+
+    /** Waits until as many messages arrived as were published, polling; false if it takes longer. */
+    boolean awaitCaughtUp(Duration limit) throws InterruptedException {
+        long until = System.nanoTime() + limit.toNanos();
+        while (deliveredCount() < publishedCount() && System.nanoTime() < until) {
+            Thread.sleep(20);
+        }
+        return deliveredCount() >= publishedCount();
+    }
+
+    /** Records an odds change's sequence per match; every other message is ignored. */
+    OddsFeedListener listener() {
+        return new Recorder();
+    }
+
+    /** Per match, what arrived is what was published, in order. */
+    void assertExact() {
+        for (var match : matches()) {
+            assertThat(delivered(match))
+                    .as(
+                            "%s: delivered against published (%d)",
+                            match, published(match).size())
+                    .containsExactlyElementsOf(published(match));
+        }
+    }
+
+    /** Per match, what arrived is the first part of what was published: no gap, repeat or reorder. */
+    void assertPrefix() {
+        for (var match : matches()) {
+            assertThat(published(match))
+                    .as(
+                            "%s: published, which the %d delivered must start",
+                            match, delivered(match).size())
+                    .startsWith(delivered(match).toArray(Long[]::new));
+        }
+    }
+
+    /**
+     * Per match: only published messages arrived, in increasing order and without repeats, and every
+     * message published at or after the {@link #mark} arrived.
+     */
+    void assertGapsOnlyAfterReconnect(Map<String, Long> mark) {
+        for (var match : matches()) {
+            var arrived = delivered(match);
+            var sent = published(match);
+            assertThat(arrived).as("%s: delivered", match).isSorted().doesNotHaveDuplicates();
+            assertThat(sent)
+                    .as("%s: published, which holds all that arrived", match)
+                    .containsAll(arrived);
+            var afterMark = sent.stream()
+                    .filter(sequence -> sequence >= mark.getOrDefault(match, 0L))
+                    .toList();
+            assertThat(arrived)
+                    .as("%s: delivered, which must hold all published since the reconnect", match)
+                    .containsAll(afterMark);
+        }
+    }
+
+    private List<String> matches() {
+        var all = new TreeMap<String, Boolean>();
+        published.keySet().forEach(match -> all.put(match, true));
+        delivered.keySet().forEach(match -> all.put(match, true));
+        return List.copyOf(all.keySet());
+    }
+
+    private List<Long> published(String match) {
+        return copy(published, match);
+    }
+
+    private List<Long> delivered(String match) {
+        return copy(delivered, match);
+    }
+
+    private static List<Long> copy(Map<String, List<Long>> in, String match) {
+        var list = in.get(match);
+        if (list == null) {
+            return List.of();
+        }
+        synchronized (list) {
+            return new ArrayList<>(list);
+        }
+    }
+
+    private static void record(Map<String, List<Long>> into, String match, long sequence) {
+        into.computeIfAbsent(match, _ -> Collections.synchronizedList(new ArrayList<>()))
+                .add(sequence);
+    }
+
+    private static long count(Map<String, List<Long>> in) {
+        return in.values().stream().mapToLong(List::size).sum();
+    }
+
+    private final class Recorder implements OddsFeedListener {
+        @Override
+        public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {
+            delivered(
+                    message.getEvent().getId().toString(),
+                    message.getTimestamp().getCreated() - base);
+        }
+
+        @Override
+        public void onBetStop(OddsFeedSession session, BetStop<SportEvent> message) {}
+
+        @Override
+        public void onBetSettlement(OddsFeedSession session, BetSettlement<SportEvent> message) {}
+
+        @Override
+        public void onRollbackBetSettlement(OddsFeedSession session, RollbackBetSettlement<SportEvent> message) {}
+
+        @Override
+        public void onRollbackBetCancel(OddsFeedSession session, RollbackBetCancel<SportEvent> message) {}
+
+        @Override
+        public void onBetCancel(OddsFeedSession session, BetCancel<SportEvent> message) {}
+
+        @Override
+        public void onFixtureChange(OddsFeedSession session, FixtureChange<SportEvent> message) {}
+    }
+}
