@@ -16,6 +16,10 @@ import java.util.concurrent.atomic.AtomicLong;
  * <p>The calls the SDK makes while it opens are exempt and take no ordinal, so a run's fault sequence
  * starts the same whatever the start-up did. {@link #install} puts it on a fake; install it after
  * {@code open()} to leave the start alone as well.
+ *
+ * <p>A stalled answer is held until its pause is over or the fake's {@code awaitQuiet}/{@code close}
+ * releases it, which they do: the SDK gives up on a stall at its own timeout, and what the fake still
+ * holds then must not count as a request in flight.
  */
 final class ChaosApi {
 
@@ -71,7 +75,7 @@ final class ChaosApi {
     }
 
     /** The hook: waits out the latency, then answers the fault, or null to let the routes answer. */
-    private Reply reply(RecordedRequest request) {
+    Reply reply(RecordedRequest request) {
         var fault = next(request);
         if (fault == null) {
             return null;

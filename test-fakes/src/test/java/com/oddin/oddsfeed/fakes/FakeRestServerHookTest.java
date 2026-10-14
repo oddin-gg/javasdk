@@ -8,6 +8,8 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /** The per-request reply hook. The fake is local; no broker needed. */
@@ -39,6 +41,27 @@ class FakeRestServerHookTest {
             api.endOutage();
             api.respondWith(null);
             assertThat(get(api, WHOAMI)).isEqualTo(418);
+        }
+    }
+
+    @Test
+    void releasingTheStallsEndsAStalledReplyAtOnce() throws Exception {
+        try (var api = FakeRestServer.start();
+                var client = HttpClient.newBuilder()
+                        .sslContext(TestTls.clientContext())
+                        .build()) {
+            api.respond(
+                    WHOAMI,
+                    Reply.of(200, "<response>" + "x".repeat(64) + "</response>")
+                            .stallingMidBody(Duration.ofMinutes(5)));
+            var request = HttpRequest.newBuilder(URI.create("https://" + api.apiHost() + WHOAMI))
+                    .build();
+            var answer = client.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+            api.awaitRequest("GET", WHOAMI);
+
+            api.releaseStalls();
+
+            assertThat(answer.get(30, TimeUnit.SECONDS).statusCode()).isEqualTo(200);
         }
     }
 
