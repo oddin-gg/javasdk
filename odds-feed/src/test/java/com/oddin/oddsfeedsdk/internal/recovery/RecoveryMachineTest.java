@@ -2459,6 +2459,28 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aLiveMessageStampedNoPositiveTimeDoesNotPutOffTheDeadlineForTheSnapshotComplete() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        var recovery = feed.lastSnapshot(PRE);
+        feed.accept(recovery);
+        // live messages with no time keep coming, and every one would look older than the request
+        for (int minute = 1; minute <= 5; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(
+                    1, PRE, minute % 2 == 0 ? 0 : -Duration.ofHours(1).toMillis(), feed.now(), 0);
+        }
+        assertThat(feed.counters.timedOut())
+                .as("five minutes in, still within it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut())
+                .as("the timeout since the request, whatever came in between")
+                .isEqualTo(1);
+    }
+
+    @Test
     void aMessageTakenBeforeAnAliveDoesNotTakeTheLastMessageTimestampBack() {
         feed.open(1, MessageInterest.ALL);
         feed.start();
