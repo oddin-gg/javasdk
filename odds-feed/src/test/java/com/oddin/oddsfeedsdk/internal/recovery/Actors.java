@@ -22,4 +22,13 @@ public final class Actors {
             }
         };
     }
+
+    /**
+     * Runs {@code hook} on the actor's thread before each take from the samples, in the loop and
+     * outside the handling of a fact: what it throws ends the loop, and with it the thread, as a fact's
+     * failure does not.
+     */
+    public static void beforeSamplePoll(RecoveryActor actor, Runnable hook) {
+        actor.beforeSamplePoll = hook;
+    }
 }
