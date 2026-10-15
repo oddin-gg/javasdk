@@ -83,20 +83,7 @@ class OddsFeedClockStepTest {
         var heard = new Heard();
         var ticks = new Semaphore(0);
         try (var api = FakeRestServer.start()) {
-            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
-                    .selectEnvironment(broker.host(), api.apiHost(), broker.port())
-                    .setMessagingSslContext(TestTls.clientContext())
-                    .setAccessToken("token")
-                    .build();
-            var feed = new OddsFeed(
-                    heard,
-                    configuration,
-                    null,
-                    null,
-                    HealthMonitor.Log.SLF4J,
-                    configuration.getCatalogStaleLimit(),
-                    System::nanoTime,
-                    FeedClock.of(wall, System::nanoTime));
+            var feed = newFeed(broker, api, wall, heard);
             try {
                 feed.getSessionBuilder()
                         .setListener(new Silent())
@@ -128,8 +115,7 @@ class OddsFeedClockStepTest {
 
                 // a step, another to the other side of where the clock was, and one back to where it was:
                 // the ticks after each would have taken the producer down by the wall clock. No alive
-                // comes meanwhile: the first one after a step is read against an offset measured before it
-                // (NEXT.md, Recovery and producers, Clocks)
+                // comes meanwhile; the next test sends one after each step
                 long lastMessage = producer.getLastMessageTimestamp();
                 heard.forget();
                 for (long step : new long[] {seconds, -2 * seconds, seconds}) {
@@ -167,6 +153,85 @@ class OddsFeedClockStepTest {
                 feed.close();
             }
         }
+    }
+
+    /**
+     * The same steps, with an alive after each: the session's copy of it can be handled before the
+     * alive channel's copy measures the clock offset anew, and read against the offset measured before
+     * the step it would be as old as the step. It must not be.
+     */
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void anAliveAfterAStepOfTheWallClockIsNotTakenForAProcessingDelay(long seconds) throws Exception {
+        var broker = requireNonNull(OddsFeedClockStepTest.broker);
+        var shift = new AtomicLong();
+        InstantSource wall = () -> Instant.now().plusMillis(shift.get());
+        var heard = new Heard();
+        var ticks = new Semaphore(0);
+        try (var api = FakeRestServer.start()) {
+            var feed = newFeed(broker, api, wall, heard);
+            try {
+                feed.getSessionBuilder()
+                        .setListener(new Silent())
+                        .setMessageInterest(MessageInterest.ALL)
+                        .build();
+                feed.open();
+                var actor = requireNonNull(OpenFeeds.actor(requireNonNull(feed.running())));
+                Actors.beforeTick(actor, ticks::release);
+
+                assertThat(broker.publish(FeedMessages.alive(1, true))).isTrue();
+                var recovery = api.awaitRequest("POST", INITIATE);
+                assertThat(broker.publish(
+                                FeedMessages.snapshotComplete(1, Long.parseLong(recovery.parameter("request_id")))))
+                        .isTrue();
+                assertThat(heard.awaitStatus(false)).as("producer 1 up").isTrue();
+                heard.awaitCause(false, WAIT);
+                var producer = requireNonNull(feed.getProducerManager().getProducer(PRODUCER));
+                int statusChanges = heard.statuses.size();
+                int causeChanges = heard.causes.size();
+                int requests = recoveryRequests(api);
+                heard.forget();
+
+                for (long step : new long[] {seconds, -2 * seconds, seconds}) {
+                    shift.addAndGet(Duration.ofSeconds(step).toMillis());
+                    long processed = producer.getLastProcessedMessageGenTimestamp();
+                    assertThat(broker.publish(FeedMessages.alive(1, true))).isTrue();
+                    awaitTicks(ticks, 3);
+
+                    assertThat(producer.getLastProcessedMessageGenTimestamp())
+                            .as("the session took the alive after a step of " + step + " s")
+                            .isGreaterThan(processed);
+                    assertThat(heard.statuses)
+                            .as("status changes after an alive after a step of " + step + " s")
+                            .hasSize(statusChanges);
+                    assertThat(heard.causes).hasSize(causeChanges);
+                    assertThat(producer.isFlaggedDown()).isFalse();
+                    assertThat(recoveryRequests(api)).as("recoveries asked for").isEqualTo(requests);
+                }
+                assertThat(shift.get()).as("the clock is where it was").isZero();
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
+    /** A feed over the fake broker and API, its clock's wall side the given source; not yet opened. */
+    private static OddsFeed newFeed(FakeFeed broker, FakeRestServer api, InstantSource wall, Heard heard) {
+        var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment(broker.host(), api.apiHost(), broker.port())
+                .setMessagingSslContext(TestTls.clientContext())
+                .setAccessToken("token")
+                .build();
+        return new OddsFeed(
+                heard,
+                configuration,
+                null,
+                null,
+                HealthMonitor.Log.SLF4J,
+                configuration.getCatalogStaleLimit(),
+                System::nanoTime,
+                FeedClock.of(wall, System::nanoTime));
     }
 
     /** The health without what a step could legitimately move: when it was read, and the queues' and the alives' counts. */
