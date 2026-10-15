@@ -194,10 +194,12 @@ public final class MatchCaches {
         clear(id);
     }
 
-    /** Drops what is cached of the match and of its fixture, as the public clear of one match does. */
+    /** Drops what is cached of the match and of its fixture, and the backoff of their failed loads, as the public clear does. */
     public void clear(URN id) {
         matches.invalidate(id);
         fixtures.invalidate(id);
+        summaries.forget(key -> key.id().equals(id));
+        fixtureLoads.forget(id::equals);
     }
 
     /**
@@ -288,10 +290,12 @@ public final class MatchCaches {
         return defaultLocale;
     }
 
-    /** Drops every cached match and fixture; the live state is the feed's, and stays. */
+    /** Drops every cached match and fixture, and every backoff; the live state is the feed's, and stays. */
     public void clear() {
         matches.clear();
         fixtures.clear();
+        summaries.forgetAll();
+        fixtureLoads.forgetAll();
     }
 
     /** Fetch results of matches and fixtures thrown away as stale; for {@code getHealth()}. */

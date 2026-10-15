@@ -194,36 +194,47 @@ public final class ProfileCaches {
         fillSport(tournament.getSport(), locale, started.sports());
     }
 
-    /** Drops what is cached of the competitor, as the public clear of one competitor does. */
+    /** Drops what is cached of the competitor, and the backoff of its failed loads, as the public clear does. */
     public void clearCompetitor(URN id) {
         competitors.invalidate(id);
+        competitorLoads.forget(key -> key.id().equals(id));
     }
 
-    /** Drops what is cached of the tournament, as the public clear of one tournament does. */
+    /** Drops what is cached of the tournament, and the backoff of its failed loads, as the public clear does. */
     public void clearTournament(URN id) {
         tournaments.invalidate(id);
+        tournamentLoads.forget(key -> key.id().equals(id));
     }
 
-    /** Drops what is cached of the player, as the public clear of one player does. */
+    /** Drops what is cached of the player, and the backoff of its failed loads, as the public clear does. */
     public void clearPlayer(URN id) {
         players.invalidate(id);
+        playerLoads.forget(key -> key.id().equals(id));
     }
 
     /**
-     * Drops what is cached of the sport, its tournament list with it, as the public clear of one sport
-     * does. A sport list that names it stays, and its next read loads the list again for the sport.
+     * Drops what is cached of the sport, its tournament list with it, and the backoff of their failed
+     * loads, as the public clear of one sport does. A sport list that names it stays, and its next read loads the list again for the sport.
      */
     public void clearSport(URN id) {
         sports.invalidate(id);
+        sportTournamentLoads.forget(key -> key.id().equals(id));
+        // the list's next read loads it again for the sport
+        sportListLoads.forgetAll();
     }
 
-    /** Drops every cached competitor, player, tournament and sport, as the public clear does. */
+    /** Drops every cached competitor, player, tournament and sport, and every backoff, as the public clear does. */
     public void clear() {
         competitors.clear();
         players.clear();
         tournaments.clear();
         sports.clear();
         sportLists.clear();
+        competitorLoads.forgetAll();
+        playerLoads.forgetAll();
+        tournamentLoads.forgetAll();
+        sportTournamentLoads.forgetAll();
+        sportListLoads.forgetAll();
     }
 
     /**
