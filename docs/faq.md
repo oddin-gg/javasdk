@@ -117,6 +117,11 @@ and returns null; a collection getter never returns a partial list. As in 0.0.x,
 the sports, active tournaments and market descriptions are an empty list when they cannot load, and
 a market description by id is null.
 
+A getter whose load failed does not ask the API again at once: that entity backs off for a second,
+doubling with each failure in a row up to a minute, and a getter that asks meanwhile fails the same
+way, `ItemNotFoundException` or null, without a request. The next success, or a clear of the
+entity, ends it.
+
 ## Producers and recovery
 
 ### Why is a producer down?

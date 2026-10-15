@@ -35,7 +35,7 @@ minutes after the feed or the API last wrote it.
 
 | Option | Default | Bounds, and what it does |
 |---|---|---|
-| `setHttpClientTimeout(Duration)` | 30 s | Positive. The deadline of one API call, covering the wait for a permit, every attempt and every pause between them. A getter can wait longer: it loads twice at most, and a fan-out waits about twice the timeout. |
+| `setHttpClientTimeout(Duration)` | 30 s | Positive. The deadline of one API call, covering the wait for a permit, every attempt and every pause between them. A getter can wait longer: it loads twice at most, and a fan-out waits about twice the timeout. An entity whose load failed is not asked for again for a second, then two, up to a minute, and a getter meanwhile fails at once. |
 | `setRestConcurrencyLimit(int)` | 16 | At least 1. Entity requests in flight at once. Half of it, 1 to 16, goes to the background loaders (below). |
 | `setStartupTimeout(Duration)` | 3 x HTTP timeout, 90 s | Positive. How long the feed's start keeps trying the API before it throws `InitException`. |
 | `setAmqpPrefetch(int)` | 200 | 1 to 10 000; 0 is refused because the broker reads it as unlimited. Unacknowledged messages the broker hands each session. |

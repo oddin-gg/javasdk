@@ -414,8 +414,24 @@ because the health event itself would queue behind the wedge.
   load therefore waits at most the HTTP timeout and a second, and that is the number the
   configuration option documents. A getter can wait longer: it loads a second time when
   the first write was refused as stale, and a fan-out waits up to twice the timeout and
-  three seconds, a long list more. Nothing remembers a failed load, so during an outage
-  every cold getter waits that long again; a backoff per key comes later.
+  three seconds, a long list more. A failed load backs its key off, so during an outage a
+  cold getter waits that long once per key and backoff, not on every call: see the next
+  item.
+- A failed entity load - a match summary or fixture, a competitor, a player, a tournament, a
+  sport's tournaments, the sport list - backs its key off, the loaders' own rule and the
+  catalogs' numbers: one second, doubling with each failure in a row to a minute. A read of
+  the key during the backoff fails at once, with an `ApiException` that says it is backing
+  off and has the last failure as its cause, and no request and no permit; the exception
+  strategy then does what it does for a failed load (`ItemNotFoundException` under
+  `THROW`, null under `CATCH`). A success ends the backoff, and so does a clear of the
+  key's cache, one entity or all; a fixture change clears the match. A key is a locale of
+  an entity, so one locale backing off leaves the others. Every failure of the fetch counts,
+  a 404 and a refused token too, and a side-load's or the eager preload's like a reader's:
+  they are the same fetch. A fetch that overran its callers' time, or was cleared while it
+  ran, backs nothing off when it fails late. The failures are kept on the feed clock's
+  monotonic side, at most 4096 of them, and one nobody read again for two minutes is
+  forgotten, so a key read now and then starts at one second again. The Go SDK has no such
+  backoff for entities; it backs off market descriptions only.
 - A permit is held for one HTTP call only, never across a fan-out. A match load
   releases its permit before its competitor loads acquire theirs, so nested loads
   cannot hold every permit in parents while children wait.
@@ -1356,8 +1372,8 @@ Performance is a requirement, not a follow-up.
 - Cold path: parallel bounded fan-out for competitors and players, single-flight,
   under the data permit pool.
 - Outage: serve stale data while a refresh is failing, back off per locale. Never
-  collapse to one message per HTTP timeout. The catalogs do; the entity loads have no
-  backoff yet (section 4, REST).
+  collapse to one message per HTTP timeout. The catalogs back off per locale and the
+  entity loads per key (section 4, REST).
 - JAXB's unmarshal cost, measured early: on the JDK's own parser three times a
   hand-written StAX reader's, on Woodstox about a sixth slower than it. The decoder reads with
   Woodstox, and the generated classes stay without a reader to maintain.
@@ -1915,3 +1931,7 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   reads a system one, for a test, and the feed passes its own. A test over a clock whose two
   sides are moved apart pins each group, and a dependency test fails the build for a cache
   package that reads a clock of its own. No public API changes.
+- 2026-10-15, entity loads checked against the Go SDK: its entity caches retry a failed load
+  on every read, and only market descriptions back off. The Java loaders now back each key
+  off after a failed fetch (section 4, REST), because a hot entity whose endpoint fails was
+  requested again by every reader, side-load and preload. No public API changes.
