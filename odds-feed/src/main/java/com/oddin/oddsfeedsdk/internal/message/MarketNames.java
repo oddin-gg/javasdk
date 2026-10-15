@@ -48,8 +48,11 @@ final class MarketNames {
     private final @Nullable String variant;
     private final Map<String, String> specifiers;
     private final SportEvent event;
-    /** The market's description per locale once read, empty when the catalog does not have it. */
-    private final Map<Locale, Optional<LocalizedMarket>> described = new ConcurrentHashMap<>();
+    /**
+     * The market's description per locale once read, empty when the catalog does not have it. Made when a name
+     * is first asked for: a message builds one of these for every market, and most clients never read a name.
+     */
+    private volatile @Nullable Map<Locale, Optional<LocalizedMarket>> described;
 
     MarketNames(Naming naming, int marketId, Map<String, String> specifiers, SportEvent event) {
         this.naming = naming;
@@ -112,17 +115,32 @@ final class MarketNames {
     }
 
     private @Nullable LocalizedMarket described(Locale locale) {
-        Optional<LocalizedMarket> held = described.get(locale);
+        Map<Locale, Optional<LocalizedMarket>> descriptions = descriptions();
+        Optional<LocalizedMarket> held = descriptions.get(locale);
         if (held == null) {
             // read outside the map, so a fetch holds up no other locale's reader
             held = Optional.ofNullable(naming.catalog().market(marketId, variant, locale));
             // of two first readers, both keep the one stored, so every name reads the same description
-            Optional<LocalizedMarket> first = described.putIfAbsent(locale, held);
+            Optional<LocalizedMarket> first = descriptions.putIfAbsent(locale, held);
             if (first != null) {
                 held = first;
             }
         }
         return held.orElse(null);
+    }
+
+    private Map<Locale, Optional<LocalizedMarket>> descriptions() {
+        var held = described;
+        if (held == null) {
+            synchronized (this) {
+                held = described;
+                if (held == null) {
+                    held = new ConcurrentHashMap<>();
+                    described = held;
+                }
+            }
+        }
+        return held;
     }
 
     /** The outcome named {@code home} or {@code away} is the match's competitor; null when it has none. */
