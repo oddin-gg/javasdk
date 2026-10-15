@@ -118,6 +118,81 @@ class RecoveryClockTest {
                 .isEqualTo(delayed);
     }
 
+    // ---- a step after the offset was measured
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aMessageTakenAfterAStepOfTheWallClockIsNotAgedByTheStepBeforeTheNextAliveMeasuresTheOffset(long step) {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+
+        feed.stepWall(Duration.ofSeconds(step));
+        // the producer's clock did not move: its message, taken now, is as old as it was sent. A session's
+        // copy of an alive is handled before the alive channel's copy measures the offset anew
+        long producerNow = feed.now() - Duration.ofSeconds(step).toMillis();
+        feed.machine.sessionAlive(1, PRE, producerNow, feed.feedClock.stamp(), true);
+        feed.machine.processed(1, LIVE, producerNow, feed.feedClock.stamp(), 0);
+        feed.machine.tick();
+
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("producer 1 after an alive")
+                .isFalse();
+        assertThat(feed.producers.isProducerDown(LIVE))
+                .as("producer 2 after a message")
+                .isFalse();
+        assertThat(feed.statuses).extracting(ProducerStatusChange::cause).doesNotContain(StatusCause.PROCESSING_DELAY);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aMessageThatIsReallyLateIsLateAfterAStepOfTheWallClockToo(long step) {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+
+        feed.stepWall(Duration.ofSeconds(step));
+        long producerNow = feed.now() - Duration.ofSeconds(step).toMillis();
+        feed.machine.processed(1, PRE, producerNow - Duration.ofSeconds(25).toMillis(), feed.feedClock.stamp(), 0);
+        feed.machine.tick();
+
+        assertThat(feed.producers.isProducerDown(PRE))
+                .as("25 s old, over the 20 s limit")
+                .isTrue();
+        assertThat(requireNonNull(feed.lastStatus(PRE)).cause()).isEqualTo(StatusCause.PROCESSING_DELAY);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"900, true", "1100, false"})
+    void aMovementOfTheWallClockUnderASecondIsNotAStepAndOneOverItIs(long millis, boolean delayed) {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+
+        feed.stepWall(Duration.ofMillis(millis));
+        // 19.5 s old by the producer's clock: 20.4 s as the unmoved offset reads it, over the limit
+        long producerNow = feed.now() - millis;
+        feed.machine.processed(1, PRE, producerNow - 19_500, feed.feedClock.stamp(), 0);
+        feed.machine.tick();
+
+        assertThat(feed.producers.isProducerDown(PRE)).isEqualTo(delayed);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aResumePointIsCappedAtTheProducersNowWhateverTheWallClockStepped(long step) {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+
+        feed.stepWall(Duration.ofSeconds(step));
+        long producerNow = feed.now() - Duration.ofSeconds(step).toMillis();
+        feed.machine.processed(1, PRE, producerNow + Duration.ofSeconds(10).toMillis(), feed.feedClock.stamp(), 0);
+        feed.machine.processed(1, LIVE, producerNow + Duration.ofSeconds(10).toMillis(), feed.feedClock.stamp(), 0);
+
+        assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(producerNow));
+    }
+
     // ---- the deadlines of a recovery
 
     @ParameterizedTest
@@ -309,6 +384,8 @@ class RecoveryClockTest {
         assertThat(stale(10, () -> feed.calls.size() > before)).isEqualTo(-1);
 
         feed.stepWall(Duration.ofSeconds(step));
+        // the producer's clock stepped with the SDK's, as its next alive says
+        feed.alive(PRE);
         assertThat(feed.calls).as("after the step").hasSize(before);
         assertThat(stale(100, () -> feed.calls.size() > before))
                 .as("seconds on to the net's request: 61 from the first stale message")
@@ -333,6 +410,7 @@ class RecoveryClockTest {
 
         // the third reset waits for the backoff of two minutes, not the window of 61 s
         feed.stepWall(Duration.ofSeconds(300 * direction));
+        feed.alive(PRE);
         int before = feed.calls.size();
         assertThat(stale(300, () -> feed.calls.size() > before))
                 .as("seconds to the net's request in round 3")
@@ -341,6 +419,7 @@ class RecoveryClockTest {
 
         // three resets spend the cap: the session lags, whatever the wall clock says of the cool-down
         feed.stepWall(Duration.ofMinutes(20 * direction));
+        feed.alive(PRE);
         int spent = feed.calls.size();
         assertThat(stale(300, () -> feed.machine.lagging(1))).isEqualTo(61);
         assertThat(feed.calls).as("no more requests with the cap spent").hasSize(spent);
@@ -427,9 +506,11 @@ class RecoveryClockTest {
         // on from there the wall clock only moves forward: a producer's last message timestamp never goes back
         feed.stepWall(Duration.ofSeconds(Math.abs(step)));
         long later = feed.now();
-        feed.live(1, PRE, Duration.ZERO);
+        // the producer's clock did not step with the SDK's: its now is where the step left it
+        long producerNow = later - Duration.ofSeconds(Math.abs(step)).toMillis();
+        feed.machine.processed(1, PRE, producerNow, feed.feedClock.stamp(), 0);
         assertThat(pre.getLastMessageTimestamp()).isEqualTo(later);
-        assertThat(feed.timestampForRecovery(PRE)).as("the resume point").isEqualTo(Instant.ofEpochMilli(later));
+        assertThat(feed.timestampForRecovery(PRE)).as("the resume point").isEqualTo(Instant.ofEpochMilli(producerNow));
 
         feed.stepWall(Duration.ofSeconds(Math.abs(step)));
         feed.unsubscribed(PRE);
