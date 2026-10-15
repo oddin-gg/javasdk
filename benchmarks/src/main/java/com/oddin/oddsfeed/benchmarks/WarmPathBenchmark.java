@@ -7,6 +7,7 @@ import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.entity.CacheSizes;
 import com.oddin.oddsfeedsdk.internal.entity.Entities;
 import com.oddin.oddsfeedsdk.internal.entity.MatchCaches;
@@ -29,7 +30,6 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducer;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAProducers;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -74,7 +74,11 @@ public class WarmPathBenchmark {
     private @Nullable MessageFactory factory;
     private @Nullable Producer producer;
     private final RoutingKeyInfo route = Routes.parse("hi.-.live.odds_change.5.od:match.198314.-");
-    private final Instant receivedAt = Instant.now();
+    /** The feed's clock, which the caches count by and a delivery's receipt is stamped with. */
+    private final FeedClock clock = FeedClock.system();
+
+    /** When the SDK received the message, as the dispatcher hands it to the live state: monotonic millis. */
+    private final long receivedMono = clock.monoMillis();
     /** Each write a newer message than the last, so each one writes. */
     private long timestamp = System.currentTimeMillis();
 
@@ -93,17 +97,17 @@ public class WarmPathBenchmark {
         threads = executor;
         var api = new ApiClient(configuration, ApiEvents.NONE);
         client = api;
-        var loads = new SideLoads(1, 0, TIMEOUT);
+        var loads = new SideLoads(1, 0, TIMEOUT, clock);
         sideLoads = loads;
         var sizes = CacheSizes.from(configuration);
-        var profiles = new ProfileCaches(api, TIMEOUT, sizes, executor);
-        var caches = new MatchCaches(api, profiles, loads, TIMEOUT, sizes, Locale.ENGLISH, executor);
+        var profiles = new ProfileCaches(api, TIMEOUT, sizes, executor, clock);
+        var caches = new MatchCaches(api, profiles, loads, TIMEOUT, sizes, Locale.ENGLISH, executor, clock);
         matches = caches;
         var entities = new Entities(
                 caches, profiles, (id, locales) -> null, ExceptionHandlingStrategy.THROW, TIMEOUT, executor, 16);
         factory = new MessageFactory(
                 entities,
-                new MarketDescriptions(api, TIMEOUT, executor),
+                new MarketDescriptions(api, TIMEOUT, executor, executor, clock),
                 ExceptionHandlingStrategy.THROW,
                 Locale.ENGLISH);
         producer = requireNonNull(new Producers(producers()).getProducer(2));
@@ -120,7 +124,7 @@ public class WarmPathBenchmark {
     @Benchmark
     public boolean cacheWrite() {
         return requireNonNull(matches)
-                .oddsChange(MATCH, 2, ++timestamp, Duration.ZERO, receivedAt, requireNonNull(status));
+                .oddsChange(MATCH, 2, ++timestamp, Duration.ZERO, receivedMono, requireNonNull(status));
     }
 
     /** One odds change built as the client gets it, its markets and outcomes included. */
