@@ -158,8 +158,8 @@ version appears in the repository. On every push to `next`, `scripts/release-che
 runs each of these cases against a scratch repository and a stub Central, and
 `scripts/release-workflow-test.sh` holds `release.yml` and the workflows it calls to its policy:
 the release check always run, the upload only after check and build and only in the approved
-environment, no secrets or environment anywhere else, no cache there, and the tag checked
-again first. It also compares `release.yml` with its pinned form in
+environment, no secrets or environment anywhere else, no cache there, the tag checked
+again first, and the bundle kept after a failed upload too. It also compares `release.yml` with its pinned form in
 `scripts/release-workflow.json`: a change to the release workflow updates that file too
 (`scripts/release-workflow-test.sh --update`), so the reviewer sees it. `scripts/release-bundle-test.sh` runs the signed release build with a throwaway
 key against a stand-in portal and checks the bundle.
@@ -174,18 +174,23 @@ next attempt is a new version - the next release candidate number, or the next p
   its own, since two tags on one commit are refused.
 - **During publish:** look the deployment up in the portal. Failed validation published
   nothing: release the next version as above. If it shows Published (the wait timed out),
-  the version is out and a re-run would be refused: make the GitHub Release by hand. In a
-  checkout of the tag (it has `release-notes/<version>.md`), with no `bundle/` directory left
-  from an earlier attempt, zip the jar, the POM and their `.asc` files from Central, in the
-  Maven layout (`gg/oddin/oddsfeed/odds-feed/<version>/...`), as `central-bundle.zip`. Then,
-  with `gh` logged in (or `GH_TOKEN` set) as someone who may create releases, and `unzip`
-  installed:
+  the version is out and a re-run would be refused: make the GitHub Release by hand, from the
+  bundle the run kept. The upload step keeps it as the run's `central-bundle` artifact also
+  when the publish failed: the plugin writes the bundle before it uploads it. In a checkout
+  of the tag (it has `release-notes/<version>.md`), with no `bundle/` directory left from an
+  earlier attempt, download it into the checkout's root - from the run's page under Actions,
+  (a zip around `central-bundle.zip`, to unzip once) or with
+  `gh run download <run id> -n central-bundle -D .` - so that `central-bundle.zip` lies there. Then, with `gh` logged in (or `GH_TOKEN`
+  set) as someone who may create releases, and `unzip` installed:
 
   ```
   VERSION=<version> FINAL=<true|false> GITHUB_REF_NAME=v<version> GH_REPO=oddin-gg/javasdk scripts/release-github.sh
   ```
 
-  `FINAL` is `true` for a final and `false` for a release candidate.
+  `FINAL` is `true` for a final and `false` for a release candidate. A run without the
+  artifact never reached the upload (the step warns that it found no file): nothing was
+  published from it. Artifacts are kept for the repository's retention period (90 days
+  unless changed), so do this soon.
 - **GitHub Release failed:** re-run the failed job; the bundle is kept as the run's
   `central-bundle` artifact. A draft the failed run left is never touched by the re-run,
   which works only on the release it creates; delete the draft afterwards, by its id, not
@@ -195,6 +200,21 @@ next attempt is a new version - the next release candidate number, or the next p
   gh api 'repos/oddin-gg/javasdk/releases?per_page=100' --jq '.[] | select(.draft and .tag_name == "<tag>") | .id'
   gh api -X DELETE repos/oddin-gg/javasdk/releases/<id>
   ```
+- **A published version is defective.** Central is immutable: a version cannot be deleted or
+  replaced, and nothing is retried under its number. The fix is the next version, released as
+  above with its notes saying what it fixes. Mark the defective one in its GitHub Release:
+  GitHub's immutable releases lock the files and the tag, not the text - the title and the
+  notes of a published release can still be edited, so say there which version fixes it - and
+  the same goes in the next version's `release-notes/<version>.md`. Tell the clients through
+  the usual channel. The release managers named as the reviewers of the `maven-central`
+  environment decide that a version is defective and that the next one goes out.
+- **A signing key is suspected leaked.** Revoke it at once, on both keyservers
+  (`keyserver.ubuntu.com` and `keys.openpgp.org`): import the offline revocation certificate
+  and upload the revoked key to each. Make a new key as in "Once, before the first release",
+  and keep its revocation certificate offline. Replace the two GPG secrets of the
+  `maven-central` environment, `MAVEN_GPG_KEY` and `MAVEN_GPG_PASSPHRASE`, publish the new
+  public key on both keyservers, where Central looks for it, and sign the next release with it:
+  it needs no change to the workflow. Versions already on Central stay as they are.
 - Never reuse a version Central has.
 
 ## Dry run
