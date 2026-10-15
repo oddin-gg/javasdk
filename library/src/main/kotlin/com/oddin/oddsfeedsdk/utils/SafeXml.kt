@@ -2,7 +2,9 @@ package com.oddin.oddsfeedsdk.utils
 
 import java.io.InputStream
 import javax.xml.XMLConstants
+import javax.xml.bind.UnmarshalException
 import javax.xml.stream.XMLInputFactory
+import javax.xml.stream.XMLStreamException
 import javax.xml.stream.XMLStreamReader
 
 /**
@@ -16,6 +18,10 @@ import javax.xml.stream.XMLStreamReader
  *
  * The factory is configured once; creating readers from it is thread-safe, and each
  * reader belongs to the one unmarshal call it is made for.
+ *
+ * Making a reader reads the prolog, so a bad XML declaration or an unknown encoding fails here,
+ * with a StAX exception; unmarshalling from a stream fails with a JAXB one, which is what the
+ * callers handle. The reader fails the same way, so malformed input is refused as before.
  */
 internal object SafeXml {
     private val factory: XMLInputFactory = XMLInputFactory.newFactory().apply {
@@ -30,5 +36,10 @@ internal object SafeXml {
         }
     }
 
-    fun reader(input: InputStream): XMLStreamReader = factory.createXMLStreamReader(input)
+    fun reader(input: InputStream): XMLStreamReader =
+        try {
+            factory.createXMLStreamReader(input)
+        } catch (e: XMLStreamException) {
+            throw UnmarshalException(e.message, e)
+        }
 }
