@@ -153,11 +153,13 @@
           "run": "./mvnw --batch-mode --no-transfer-progress -Prelease -Drevision=\"$VERSION\" -Dcentral.autoPublish=true -Dcentral.waitUntil=published -DskipTests -pl odds-feed -am deploy"
         },
         {
+          "if": "${{ !cancelled() }}",
           "name": "Keep the published bundle",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
-            "if-no-files-found": "error",
+            "if-no-files-found": "warn",
             "name": "central-bundle",
+            "overwrite": true,
             "path": "target/central-publishing/central-bundle.zip"
           }
         }

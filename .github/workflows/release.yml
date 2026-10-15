@@ -135,11 +135,18 @@ jobs:
           MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
 
       - name: Keep the published bundle
+        # Also after a publish that failed: the plugin writes the bundle before it uploads, so one
+        # whose wait for Central timed out still has it, and the release is made from it by hand
+        # (RELEASING.md). Nothing is released from a failed run: github-release needs publish to
+        # succeed. A step that failed before the build leaves no bundle, hence the warning.
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: central-bundle
           path: target/central-publishing/central-bundle.zip
-          if-no-files-found: error
+          if-no-files-found: warn
+          # a re-run of the job finds its first attempt's artifact there
+          overwrite: true
 
   github-release:
     name: GitHub Release
