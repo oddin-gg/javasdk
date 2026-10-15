@@ -40,8 +40,11 @@ public record Deadline(long endNanos, Duration budget, LongSupplier nanos) {
         return endNanos - nanos.getAsLong() <= 0;
     }
 
-    /** Whichever of the two comes first. */
+    /**
+     * Whichever of the two comes first, by what is left of each: the two may count on different
+     * clocks, whose readings must never be compared with each other.
+     */
     public Deadline earlier(Deadline other) {
-        return endNanos - other.endNanos <= 0 ? this : other;
+        return remaining().compareTo(other.remaining()) <= 0 ? this : other;
     }
 }

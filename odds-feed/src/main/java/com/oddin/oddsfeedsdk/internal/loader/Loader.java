@@ -66,12 +66,6 @@ public final class Loader<K, V> {
      * @param deadline the fetch's deadline, the HTTP client timeout
      * @param margin how much longer than the deadline a caller waits
      * @param fetches where the fetches run: virtual threads
-     */
-    public Loader(String name, Fetch<K, V> fetch, Duration deadline, Duration margin, Executor fetches) {
-        this(name, fetch, deadline, margin, fetches, FeedClock.system());
-    }
-
-    /**
      * @param clock the feed's clock: every deadline and every wait here is counted on its monotonic
      *     side, so a step of the wall clock cannot cut a fetch short or let it run on
      */
@@ -125,7 +119,12 @@ public final class Loader<K, V> {
                 throw failure;
             }
         }
-        long until = within == null ? flight.expiresAt() : earlier(flight.expiresAt(), within.endNanos());
+        // what is left of the caller's deadline, whatever clock that deadline counts on, taken on this one
+        long until = within == null
+                ? flight.expiresAt()
+                : earlier(
+                        flight.expiresAt(),
+                        clock.monoNanos() + within.remaining().toNanos());
         try {
             // the flight's own deadline, not a fresh one per caller
             return flight.result().get(Math.max(0, until - clock.monoNanos()), TimeUnit.NANOSECONDS);

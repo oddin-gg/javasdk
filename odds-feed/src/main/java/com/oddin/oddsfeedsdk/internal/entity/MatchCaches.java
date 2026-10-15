@@ -122,8 +122,8 @@ public final class MatchCaches {
         this.fixtures = new EntityCache<>("fixture", sizes.fixtures(), AGE, longestFetch, clock);
         // one record per match, read with it
         this.live = new LiveState<>(sizes.matches(), clock);
-        this.summaries = new Loader<>("match", this::fetchSummary, timeout, MARGIN, fetches);
-        this.fixtureLoads = new Loader<>("fixture", this::fetchFixture, timeout, MARGIN, fetches);
+        this.summaries = new Loader<>("match", this::fetchSummary, timeout, MARGIN, fetches, clock);
+        this.fixtureLoads = new Loader<>("fixture", this::fetchFixture, timeout, MARGIN, fetches, clock);
     }
 
     /**
