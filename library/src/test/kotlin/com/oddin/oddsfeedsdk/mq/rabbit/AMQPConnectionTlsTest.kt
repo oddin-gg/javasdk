@@ -18,9 +18,8 @@ import org.junit.Test
 import java.net.InetAddress
 import java.security.KeyStore
 import java.security.cert.CertificateException
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLException
@@ -78,32 +77,40 @@ class AMQPConnectionTlsTest {
 
         val port: Int get() = socket.localPort
 
-        private val attempted = CountDownLatch(1)
-        private val completed = AtomicBoolean()
+        // one entry per client that came: whether its handshake completed
+        private val attempts = LinkedBlockingQueue<Boolean>()
 
         init {
             thread(isDaemon = true, name = "tls-server") {
-                try {
-                    (socket.accept() as SSLSocket).use {
-                        it.soTimeout = 10_000
-                        it.startHandshake()
-                        completed.set(true)
-                        // the client's AMQP protocol header, then the connection is dropped
-                        it.getInputStream().read()
+                while (!socket.isClosed) {
+                    var completed = false
+                    try {
+                        (socket.accept() as SSLSocket).use {
+                            it.soTimeout = 10_000
+                            it.startHandshake()
+                            completed = true
+                            // the client's AMQP protocol header, then the connection is dropped
+                            it.getInputStream().read()
+                        }
+                    } catch (e: Exception) {
+                        // a client that refuses the certificate ends the handshake here
+                        if (socket.isClosed) {
+                            return@thread
+                        }
                     }
-                } catch (e: Exception) {
-                    // a client that refuses the certificate ends the handshake here
-                } finally {
-                    attempted.countDown()
+                    attempts.add(completed)
                 }
             }
         }
 
+        /** What happened to the next [count] clients, once the server is done with them. */
+        fun handshakes(count: Int): List<Boolean> =
+            (1..count).map {
+                attempts.poll(30, TimeUnit.SECONDS) ?: throw AssertionError("the server saw only ${it - 1} of $count clients")
+            }
+
         /** Whether the client finished the handshake; waits for the server to be done with it. */
-        fun handshakeCompleted(): Boolean {
-            assertTrue("the server never saw a client", attempted.await(30, TimeUnit.SECONDS))
-            return completed.get()
-        }
+        fun handshakeCompleted(): Boolean = handshakes(1).single()
 
         override fun close() = socket.close()
     }
@@ -132,7 +139,11 @@ class AMQPConnectionTlsTest {
     private fun certificateFailure(e: Throwable?): Throwable? =
         generateSequence(e) { it.cause }.firstOrNull { it is CertificateException }
 
-    private fun provider(port: Int, trust: SSLContext? = null): SingleAMQPConnectionProvider {
+    private fun provider(
+        port: Int,
+        trust: SSLContext? = null,
+        factory: ConnectionFactory = ConnectionFactory()
+    ): SingleAMQPConnectionProvider {
         val config = mockk<OddsFeedConfiguration> {
             every { accessToken } returns "token"
             every { selectedEnvironment } returns Environment("127.0.0.1", "api.test", port)
@@ -141,7 +152,7 @@ class AMQPConnectionTlsTest {
             every { bookmakerDetail } returns mockk<BookmakerDetail> { every { bookmakerId } returns 1 }
         }
         return SingleAMQPConnectionProvider(
-            ConnectionFactory(),
+            factory,
             config,
             whoAmI,
             mockk<GlobalEventsListener>(relaxed = true)
@@ -212,5 +223,51 @@ class AMQPConnectionTlsTest {
         // what fails is the AMQP protocol the test server does not speak
         assertTrue("the handshake did not complete: $failure", broker.handshakeCompleted())
         assertEquals("a certificate failure: $failure", null, certificateFailure(failure))
+    }
+
+    // The JVM's default context is what every real connection uses. A certificate the default trust
+    // store would vouch for cannot be had here, so the default is replaced for the length of the test
+    // by a context that trusts the other-host certificate: Gradle runs the test classes of this
+    // module one after the other in a single JVM (no parallel forks, no JUnit parallelism), so
+    // nothing else reads the default meanwhile.
+    @Test(timeout = 60_000)
+    fun theProviderUsingTheDefaultContextRefusesATrustedCertificateIssuedForAnotherHost() {
+        val broker = server("other-host")
+        val before = SSLContext.getDefault()
+        SSLContext.setDefault(trusting("other-host"))
+        try {
+            provider(broker.port).newChannel()
+            fail("the connection was made to a host the certificate was not issued for")
+        } catch (e: SSLException) {
+            assertNotNull("not a host name failure: $e", certificateFailure(e))
+        } finally {
+            SSLContext.setDefault(before)
+        }
+        assertFalse("the handshake completed", broker.handshakeCompleted())
+    }
+
+    @Test(timeout = 60_000)
+    fun theChecksStayInForceWhenTheSameProviderConnectsAgain() {
+        val broker = server("other-host")
+        var hostNameChecks = 0
+        val factory = object : ConnectionFactory() {
+            override fun enableHostnameVerification() {
+                hostNameChecks++
+                super.enableHostnameVerification()
+            }
+        }
+        val provider = provider(broker.port, trusting("other-host"), factory)
+
+        repeat(2) {
+            try {
+                provider.newChannel()
+                fail("the connection was made to a host the certificate was not issued for")
+            } catch (e: SSLException) {
+                assertNotNull("not a host name failure: $e", certificateFailure(e))
+            }
+        }
+
+        assertEquals("no handshake completes", listOf(false, false), broker.handshakes(2))
+        assertEquals("the host name check is set up once", 1, hostNameChecks)
     }
 }
