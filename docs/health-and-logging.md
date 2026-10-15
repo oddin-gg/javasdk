@@ -6,7 +6,7 @@
 
 The SDK watches itself: the consumer, every session, the alive reader, the recovery thread, the
 events thread, its own timer thread, the JVM's deadlocks that hold one of its threads, the
-catalogs and the broker connection. Every internal wait has a deadline, so a wedge turns into a
+catalogs, the broker connection and the API's acceptance of the access token. Every internal wait has a deadline, so a wedge turns into a
 timeout and a counter instead of a silent hang.
 
 Each part is in one of three `HealthState`s:
@@ -15,7 +15,7 @@ Each part is in one of three `HealthState`s:
 |---|---|
 | `HEALTHY` | As it should be. |
 | `DEGRADED` | Working, with a quality the design gives up on purpose: a catalog served stale, a session lagging with the safety net's resets spent, the broker connection down for longer than its limit. |
-| `STALLED` | The watchdog found something not moving that the feed cannot unblock: a callback that has not returned, a queue that has not moved while not empty, a deadlock among the SDK's threads. The remedy is `close()` and a new feed. The watchdog never kills threads. |
+| `STALLED` | Something not moving that the feed cannot unblock: a callback that has not returned, a queue that has not moved while not empty, a deadlock among the SDK's threads (all found by the watchdog, which never kills threads), or an access token the API refuses. The remedy is `close()` and a new feed. |
 
 ### `getHealth()`
 
@@ -23,7 +23,7 @@ Each part is in one of three `HealthState`s:
 
 - `state()`, the worst of the parts', and `components()`, a state for each `HealthComponent` the
   feed has now: `CONSUMER`, `SESSION`, `ALIVES`, `RECOVERY`, `EVENTS`, `TIMERS`, `THREADS`,
-  `CATALOGS`, `CONNECTION`.
+  `CATALOGS`, `CONNECTION`, `API`.
 - Typed groups of counters: `transport()` (connected, reconnects), `alives()`, `sessions()` (one
   record per session: its state, whether it lags, queue depth, overflows, epoch discards, skipped
   acks, messages handled, unparsable, oversized, pipeline and callback failures, unknown
@@ -39,12 +39,22 @@ Each part is in one of three `HealthState`s:
   metrics exporter.
 
 It reads counters and flags on the caller's thread, never waits for a thread of the feed, and never
-starts the feed. Before the start it has no parts; once started, the events, the catalogs, the timers
-and the SDK's threads; once open, the consumer and the sessions, and the alives and the recovery
+starts the feed. Before the start it has no parts; once started, the events, the catalogs, the timers,
+the SDK's threads and the API; once open, the consumer and the sessions, and the alives and the recovery
 unless it is a replay feed. A closed feed still reads what it counted.
 
 Every degradation the design allows is a log line, a counter and, for anything that discards data,
 an event. Nothing is silent.
+
+**A token the API refuses** (HTTP 401 or 403, which no retry changes) is permanent: the call fails
+at once and `onFatalError` is told once. It is also a health state, so a client that polls
+`getHealth()` or registered its listener late sees it: `API` is `STALLED` from the first refusal,
+told through `onHealthEvent` with the status, the call and the time in its reason (`the API
+refused the access token: GET ... answered 403 at ...`), and logged at `ERROR`. It is `HEALTHY` again
+when a REST call is answered with a success; the token is read when the feed is built, so in
+practice it stays `STALLED` until a new feed. No other failure of the API changes it: a timeout, a
+5xx or a 429 is not a refusal, and shows in the parts that depend on the API, such as the
+catalogs, and in the recovery counters.
 
 A recovery thread that has died (an `Error` or an exception that escaped its loop, which is a
 bug of the SDK) is a stall too, and the feed can no longer recover: the SDK logs `The recovery

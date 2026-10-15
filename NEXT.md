@@ -425,6 +425,10 @@ because the health event itself would queue behind the wedge.
   `Retry-After` are honoured within the same deadline. 401 and 403 are permanent: the
   call fails at once, nothing retries, and a fatal error event goes to the events
   dispatcher in addition to the caller's exception or null.
+  The refusal is also a health state: the `API` part is `STALLED` from the first 401 or
+  403, with its status, the call and the time in the reason, and `HEALTHY` again when a
+  call is answered with a success (the token is read when the feed is built, so in
+  practice it stays so until a new feed). A timeout, a 5xx or a 429 does not change it.
 - The retry policy is the Go SDK's: at most three attempts, backoff from half a second
   doubling to five, with jitter. A 5xx or a failed connection is retried for reads and
   for recovery requests, which the API deduplicates on their request id, and not for
@@ -1012,7 +1016,7 @@ data, callback failures). `counters()` has every value under a stable dotted nam
 (`session.1.queue_depth`, `catalog.void_reasons.stale_for_millis`) for a metrics
 exporter. It reads counters and flags on the caller's thread, never waits for a thread of
 the feed and never starts it: before the start it has no part, once started the events,
-the catalogs, the timers and the SDK's own threads, once open the consumer and the sessions,
+the catalogs, the timers, the SDK's own threads and the API, once open the consumer and the sessions,
 and the alives and the recovery unless it is a replay feed; once closed it still reads
 what was counted.
 
@@ -1026,7 +1030,11 @@ reason naming the channel (a session's or the alive one) and the last failure, w
 channel the broker refuses to open again on the live connection has been refused three
 times in a row and the streak has lasted that same limit; the next channel to open ends the
 streak, so does a lost connection (its time down is counted instead) and the close. A
-session is `DEGRADED` while the recovery actor reports it lagging, told at once. The watchdog's limits sit above the SDK's own waits, so a
+session is `DEGRADED` while the recovery actor reports it lagging, told at once. The API is
+`STALLED`, told at once, from the first answer of 401 or 403 until a call is answered with a
+success: the REST client tells the health of each attempt, and a refusal is the one thing
+that changes the part (a timeout, a 5xx or a 429 shows in the catalogs and the recovery
+counters instead). The watchdog's limits sit above the SDK's own waits, so a
 slow API is no stall: a callback running (`setCallbackStallLimit`), or a queue not moving
 (`setQueueStallLimit`), for longer than the longest the SDK itself waits for the API in one
 getter - a read loads twice at most, each load waiting the HTTP timeout and the loaders'
@@ -1926,3 +1934,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   SDK's clock too, the two differ only when the client's clock is off, and the request's start is
   already capped at the producer's now. No system test pins it, so there is no KD entry. No
   public API changes.
+- 2026-10-15, a refused token is a health state: the owner chose to add `HealthComponent.API`
+  (a public addition, on the differences list) instead of documenting that `getHealth()` does not
+  show the refusal and that the client must listen for `onFatalError`. The part is `STALLED` from
+  the first 401 or 403 until a call is answered with a success; of the three states `STALLED` is the one
+  that says the feed cannot mend it and the remedy is a new feed, as the broker's permanent
+  refusal is told by `onFatalError`. The REST client tells the health of every attempt, and only
+  a refusal and a success change the part: a timeout, a 5xx or a 429 shows in the catalogs and
+  the recovery counters, which the API outage scenario already watches.
