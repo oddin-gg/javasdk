@@ -23,5 +23,12 @@ public enum HealthComponent {
      * up, and while a session's channel or the alive channel is refused again and again on it for
      * as long, until one opens.
      */
-    CONNECTION
+    CONNECTION,
+    /**
+     * The API's acceptance of the access token: stalled from the first answer of 401 or 403 until a
+     * call is answered with a success. The token is read when the feed is built, so in practice it
+     * stays so until a new feed; other failures of the API (a timeout, a 5xx, a 429) do not change
+     * it, since they are not a refusal.
+     */
+    API
 }

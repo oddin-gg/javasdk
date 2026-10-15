@@ -13,6 +13,7 @@ import com.oddin.oddsfeedsdk.exceptions.InitException;
 import com.oddin.oddsfeedsdk.internal.SdkVersion;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
+import com.oddin.oddsfeedsdk.internal.feed.ApiTee;
 import com.oddin.oddsfeedsdk.internal.feed.FeedCore;
 import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
 import com.oddin.oddsfeedsdk.internal.feed.OpenFeed;
@@ -478,7 +479,8 @@ public final class OddsFeed {
                 eventsStarted = true;
             }
             try {
-                built = FeedCore.start(configuration, events, this::startingWith, clock);
+                built = FeedCore.start(
+                        configuration, events, new ApiTee(List.of(events, health)), this::startingWith, clock);
             } catch (InitException e) {
                 throw e;
             } catch (RuntimeException e) {
