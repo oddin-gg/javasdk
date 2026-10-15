@@ -16,11 +16,11 @@ import java.util.function.LongSupplier;
 public final class FeedClock {
 
     private final InstantSource wall;
-    private final LongSupplier monoMillis;
+    private final LongSupplier monoNanos;
 
-    private FeedClock(InstantSource wall, LongSupplier monoMillis) {
+    private FeedClock(InstantSource wall, LongSupplier monoNanos) {
         this.wall = wall;
-        this.monoMillis = monoMillis;
+        this.monoNanos = monoNanos;
     }
 
     /** The system's wall clock and {@link System#nanoTime}. */
@@ -37,7 +37,7 @@ public final class FeedClock {
      */
     public static FeedClock of(InstantSource wall, LongSupplier monoNanos) {
         long origin = monoNanos.getAsLong();
-        return new FeedClock(wall, () -> Math.floorDiv(monoNanos.getAsLong() - origin, 1_000_000L) + 1);
+        return new FeedClock(wall, () -> monoNanos.getAsLong() - origin + 1_000_000L);
     }
 
     /**
@@ -45,7 +45,7 @@ public final class FeedClock {
      * two sides move together and read the same number.
      */
     public static FeedClock following(InstantSource clock) {
-        return new FeedClock(clock, clock::millis);
+        return new FeedClock(clock, () -> clock.millis() * 1_000_000L);
     }
 
     /** The wall clock, for what still reads an {@link InstantSource}. */
@@ -60,11 +60,20 @@ public final class FeedClock {
 
     /** Millis on the monotonic clock, at least 1; only the difference of two of them means anything. */
     public long monoMillis() {
-        return monoMillis.getAsLong();
+        return Math.floorDiv(monoNanos.getAsLong(), 1_000_000L);
+    }
+
+    /**
+     * The monotonic reading in nanos, at least 1 millisecond: what a cache's ticker and a deadline
+     * count by, so they run on this clock and no other. Only the difference of two of them means
+     * anything.
+     */
+    public long monoNanos() {
+        return monoNanos.getAsLong();
     }
 
     /** Both readings, one right after the other. */
     public Stamp stamp() {
-        return new Stamp(wall.millis(), monoMillis.getAsLong());
+        return new Stamp(wall.millis(), monoMillis());
     }
 }
