@@ -59,6 +59,9 @@ import org.slf4j.LoggerFactory;
  *       so is one of a producer the client disabled or that the session's interest is not for, as in
  *       0.0.x. Alives and snapshot completes go to the recovery actor and no further. A fixture change
  *       another session, or this one, has delivered already is dropped (see {@link FixtureChanges}).
+ *   <li><b>Mark.</b> What the recovery's checkpoints and the live state's watermarks are taken from:
+ *       the message's timestamp, but no later than its producer's now at receipt (see {@link
+ *       ClockOffsets#mark}); a replay's are taken as they are. The client's message keeps its own.
  *   <li><b>Cache write.</b> An odds change's match status is written to the match's live state, unless
  *       an older message than one already written (KD-13) or older than the match status age by the
  *       producer's own clock (KD-14); a fixture change invalidates the match and its fixture, or the
@@ -396,11 +399,18 @@ public final class SessionDispatcher implements AutoCloseable {
             return;
         }
         SessionFacts told = facts;
+        long mark = replay
+                ? message.getTimestamp()
+                : pipeline.offsets()
+                        .mark(
+                                producerId,
+                                message.getTimestamp(),
+                                new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono()));
         switch (message) {
             case OFAlive alive -> {
                 admitControlFact();
                 if (told != null) {
-                    told.alive(producerId, alive.getTimestamp(), taken, alive.getSubscribed() == 1);
+                    told.alive(producerId, alive.getTimestamp(), mark, taken, alive.getSubscribed() == 1);
                 }
                 return;
             }
@@ -415,7 +425,7 @@ public final class SessionDispatcher implements AutoCloseable {
         }
         boolean dropped = false;
         try {
-            deliver(message, route, body, producer, timestamp(message.getTimestamp(), delivery), taken, delivery);
+            deliver(message, route, body, producer, timestamp(message.getTimestamp(), delivery), taken, mark, delivery);
         } catch (ClosedBeforeListener e) {
             dropped = true;
             throw e;
@@ -423,7 +433,7 @@ public final class SessionDispatcher implements AutoCloseable {
             if (told != null && !dropped && !dropsOnClose()) {
                 Long requestId = requestId(message);
                 // a live message carries no request id
-                told.processed(producerId, message.getTimestamp(), taken, requestId == null ? 0 : requestId);
+                told.processed(producerId, message.getTimestamp(), mark, taken, requestId == null ? 0 : requestId);
             }
         }
     }
@@ -435,6 +445,7 @@ public final class SessionDispatcher implements AutoCloseable {
             Producer producer,
             MessageTimestamp timestamp,
             Stamp taken,
+            long mark,
             RawDelivery delivery) {
         if (message instanceof OFFixtureChange change) {
             URN id;
@@ -451,7 +462,7 @@ public final class SessionDispatcher implements AutoCloseable {
             }
         }
         try {
-            write(message, producer.getId(), taken.wall(), delivery.receivedMono());
+            write(message, producer.getId(), mark, taken.wall(), delivery.receivedMono());
         } catch (Throwable e) {
             sdkFailed("cache write", e);
             return;
@@ -470,7 +481,7 @@ public final class SessionDispatcher implements AutoCloseable {
     }
 
     /** What the message says of the caches, before the callback reads them. */
-    private void write(BasicMessage message, long producerId, long takenAt, long receivedAt) {
+    private void write(BasicMessage message, long producerId, long mark, long takenAt, long receivedAt) {
         switch (message) {
             case OFOddsChange odds -> {
                 OFSportEventStatus status = odds.getSportEventStatus();
@@ -481,14 +492,7 @@ public final class SessionDispatcher implements AutoCloseable {
                         pipeline.matches().replayed(id, producerId, odds.getTimestamp(), receivedAt, status);
                     } else {
                         long age = pipeline.offsets().age(producerId, odds.getTimestamp(), takenAt);
-                        pipeline.matches()
-                                .oddsChange(
-                                        id,
-                                        producerId,
-                                        odds.getTimestamp(),
-                                        Duration.ofMillis(age),
-                                        receivedAt,
-                                        status);
+                        pipeline.matches().oddsChange(id, producerId, mark, Duration.ofMillis(age), receivedAt, status);
                     }
                 }
             }

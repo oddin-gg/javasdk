@@ -232,6 +232,33 @@ class SessionDispatcherTest {
         assertThat(facts.taken).containsExactly(new Stamp(5_000, 2_001), new Stamp(9_000, 13_001));
     }
 
+    /** The marks are the SDK's: the client's message keeps the stamp the producer gave it. */
+    @Test
+    void theRecoveryActorTakesAMessageStampedAheadOfItsProducerAtTheProducersNowAtReceipt() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        handle(dispatcher, Fixtures.read(BET_STOP));
+        long ahead = System.currentTimeMillis() + Duration.ofMinutes(10).toMillis();
+        handle(dispatcher, FeedMessages.stampedAt(Fixtures.read(BET_STOP), ahead));
+        long received = lastReceived.toEpochMilli();
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead));
+
+        assertThat(facts.facts)
+                .containsExactly(
+                        "processed 2 1777832981632 request=0",
+                        "processed 2 " + ahead + " request=0",
+                        "alive 2 " + ahead + " subscribed=true");
+        assertThat(facts.marks.get(0)).as("not ahead: its own stamp").isEqualTo(1777832981632L);
+        assertThat(facts.marks.get(1))
+                .as("ahead, and no alive has shown an offset yet: the SDK's own clock at receipt")
+                .isEqualTo(received);
+        assertThat(facts.marks.get(2)).isEqualTo(lastReceived.toEpochMilli());
+        assertThat(((BetStop<?>) listener.messages.get(1).message())
+                        .getTimestamp()
+                        .getCreated())
+                .as("the client's message keeps its stamp")
+                .isEqualTo(ahead);
+    }
+
     @Test
     void aReplaySessionAndAClientsAliveOnlySessionPostNoFacts() {
         handle(dispatcher(MessageInterest.ALL, true), Fixtures.read(ODDS_CHANGE));
@@ -420,6 +447,19 @@ class SessionDispatcherTest {
         assertThat(listener.messages).as("both delivered").hasSize(2);
     }
 
+    /** A producer's clock error must not hold what follows back: the watermark is the clamped stamp. */
+    @Test
+    void aMessageStampedAheadOfItsProducerDoesNotHoldTheStatusOfTheOnesThatFollowBack() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        listener.onOdds = message -> listener.read.add(status(message));
+        long tenMinutes = Duration.ofMinutes(10).toMillis();
+        handle(dispatcher, withStatus("5", System.currentTimeMillis() + tenMinutes));
+        // stamped right, by the producer's clock, at the moment the SDK received the one before
+        handle(dispatcher, withStatus("1", lastReceived.toEpochMilli()));
+        assertThat(listener.read).containsExactly(EventStatus.Cancelled, EventStatus.Live);
+        assertThat(listener.messages).as("both delivered").hasSize(2);
+    }
+
     /** KD-14: the age is the producer's own, by the offset its alives show. */
     @Test
     void aMessageOlderThanTheStatusAgeByItsProducersClockWritesNoStatus() {
@@ -430,7 +470,7 @@ class SessionDispatcherTest {
         assertThat(listener.read).as("from the summary, which says closed").containsExactly(EventStatus.Finished);
 
         // a producer whose clock is half an hour behind the SDK's sent it just now
-        offsets.alive(2, halfAnHourAgo, System.currentTimeMillis());
+        offsets.alive(2, halfAnHourAgo, Stamp.of(System.currentTimeMillis()));
         handle(dispatcher, withStatus("5", halfAnHourAgo + 1));
         assertThat(listener.read).last().isEqualTo(EventStatus.Cancelled);
     }
@@ -981,19 +1021,23 @@ class SessionDispatcherTest {
     private static final class Facts implements SessionFacts {
         final List<String> facts = new CopyOnWriteArrayList<>();
         final List<Stamp> taken = new CopyOnWriteArrayList<>();
+        /** The stamp each fact's checkpoint is taken from, in the order of the facts. */
+        final List<Long> marks = new CopyOnWriteArrayList<>();
         /** Runs as a fact is posted, before it is recorded. */
         volatile Runnable beforePost = () -> {};
 
         @Override
-        public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
+        public void processed(long producerId, long generatedAt, long markAt, Stamp taken, long requestId) {
             beforePost.run();
+            marks.add(markAt);
             facts.add("processed " + producerId + " " + generatedAt + " request=" + requestId);
             this.taken.add(taken);
         }
 
         @Override
-        public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+        public void alive(long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed) {
             beforePost.run();
+            marks.add(markAt);
             facts.add("alive " + producerId + " " + generatedAt + " subscribed=" + subscribed);
             this.taken.add(taken);
         }

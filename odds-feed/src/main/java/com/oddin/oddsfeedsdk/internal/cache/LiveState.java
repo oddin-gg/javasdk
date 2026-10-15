@@ -21,7 +21,8 @@ import org.jspecify.annotations.Nullable;
  * never waits for an entity cache, or its clear.
  *
  * <p>The watermark is the timestamp of the last live message that wrote, per entity and producer,
- * with when the SDK received it. A message older than the watermark of its producer does not write;
+ * with when the SDK received it; a timestamp ahead of its producer's now at receipt is taken as that
+ * now, so a producer's clock error does not hold the messages that follow back. A message older than the watermark of its producer does not write;
  * it is still delivered. A replayed message writes in the order it comes. The feed's and the API's
  * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
  * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
@@ -82,7 +83,8 @@ public final class LiveState<K> {
      * Writes a live message's values for {@code entity}, and records its watermark, unless it is
      * older than the last one from its producer or its corrected age is over {@link #STATUS_AGE}.
      *
-     * @param timestamp the message's timestamp, the feed's clock
+     * @param timestamp the message's timestamp, the producer's clock, or the producer's now at receipt
+     *     when it is stamped ahead of that
      * @param receivedAt when the SDK received it, in millis on the feed's monotonic clock
      * @return whether it wrote
      */

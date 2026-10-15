@@ -174,6 +174,8 @@ public final class MatchCaches {
      * older than the last one from its producer, or too old to be live; written before the message
      * reaches the client, so its callback reads what the message carried.
      *
+     * @param timestamp the message's mark: its timestamp, or the producer's now at receipt when it is
+     *     stamped ahead of that, so a bad stamp does not hold later messages back
      * @return whether it was written
      */
     public boolean oddsChange(

@@ -263,6 +263,23 @@ class RecoveryActorTest {
     }
 
     @Test
+    void theActorTakesTheSessionsCheckpointFromTheMarkAMessageStampedAheadIsGiven() throws InterruptedException {
+        RecoveryActor actor = actor(settings());
+        SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        Producer held = requireNonNull(producers.getProducer(PRE));
+        actor.start();
+        actor.up();
+        bothUp(actor, session);
+
+        long mark = System.currentTimeMillis() + 100;
+        // the producer's now is past the mark, so the cap would not hide a stamp taken as it is
+        awaitPast(mark + 50);
+        long tenMinutesAhead = mark + Duration.ofMinutes(10).toMillis();
+        session.processed(PRE, tenMinutesAhead, mark, Stamp.of(mark), 0);
+        awaitTimestampForRecovery(held, at -> at != null && at.toEpochMilli() == mark, "the mark");
+    }
+
+    @Test
     void aTickThatFindsTheProducerSilentTakesThePointBackToItsLastSubscribedAlive() throws InterruptedException {
         // the actor's clock moves only when the test moves it, so nothing goes silent before then
         var clock = new MovableClock(Instant.parse("2026-10-07T12:00:00Z"));

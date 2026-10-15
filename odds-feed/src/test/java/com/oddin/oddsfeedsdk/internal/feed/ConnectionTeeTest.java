@@ -70,12 +70,12 @@ class ConnectionTeeTest {
 
         late.bind(new SessionFacts() {
             @Override
-            public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
+            public void processed(long producerId, long generatedAt, long markAt, Stamp taken, long requestId) {
                 told.add("processed");
             }
 
             @Override
-            public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+            public void alive(long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed) {
                 told.add("alive");
             }
 

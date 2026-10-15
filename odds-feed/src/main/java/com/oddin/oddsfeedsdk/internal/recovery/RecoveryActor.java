@@ -338,13 +338,13 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         int id = info.id();
         return new SessionFacts() {
             @Override
-            public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
-                post(samples, new Fact.Processed(id, producerId, generatedAt, taken, requestId));
+            public void processed(long producerId, long generatedAt, long markAt, Stamp taken, long requestId) {
+                post(samples, new Fact.Processed(id, producerId, generatedAt, markAt, taken, requestId));
             }
 
             @Override
-            public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
-                post(samples, new Fact.SessionAlive(id, producerId, generatedAt, taken, subscribed));
+            public void alive(long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed) {
+                post(samples, new Fact.SessionAlive(id, producerId, generatedAt, markAt, taken, subscribed));
             }
 
             @Override
@@ -408,7 +408,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * producer of the list; one of a producer the list does not have is counted and dropped.
      */
     @Override
-    public void alive(long producerId, long generatedAt, Stamp received, boolean subscribed) {
+    public void alive(long producerId, long generatedAt, long markAt, Stamp received, boolean subscribed) {
         // one essential post, counted from its look at the close until its slot and fact are in:
         // the closing actor waits for it, or takes the points back without it
         posting.incrementAndGet();
@@ -427,7 +427,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 }
                 return;
             }
-            var alive = new AliveSlot.Seen(generatedAt, received, subscribed);
+            var alive = new AliveSlot.Seen(generatedAt, markAt, received, subscribed);
             var fresh = new boolean[1];
             alives.compute(producerId, (id, slot) -> {
                 AliveSlot joined = slot;
@@ -819,14 +819,19 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                     AliveSlot slot = alives.remove(producer);
                     if (slot != null) {
                         for (AliveSlot.Seen alive : slot.inOrder()) {
-                            machine.alive(producer, alive.generatedAt(), alive.received(), alive.subscribed());
+                            machine.alive(
+                                    producer,
+                                    alive.generatedAt(),
+                                    alive.markAt(),
+                                    alive.received(),
+                                    alive.subscribed());
                         }
                     }
                 }
-                case Fact.Processed(var session, var producer, var generated, var taken, var requestId) ->
-                    machine.processed(session, producer, generated, taken, requestId);
-                case Fact.SessionAlive(var session, var producer, var generated, var taken, var subscribed) ->
-                    machine.sessionAlive(session, producer, generated, taken, subscribed);
+                case Fact.Processed(var session, var producer, var generated, var mark, var taken, var requestId) ->
+                    machine.processed(session, producer, generated, mark, taken, requestId);
+                case Fact.SessionAlive(var session, var producer, var generated, var mark, var taken, var subscribed) ->
+                    machine.sessionAlive(session, producer, generated, mark, taken, subscribed);
                 case Fact.SnapshotComplete(var session, var producer, var requestId) -> {
                     completesQueued.remove(fact);
                     machine.snapshotComplete(session, producer, requestId);
@@ -1026,7 +1031,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * unsubscribed one, which opens the gap; and the latest. Guarded by its map's compute.
      */
     private static final class AliveSlot {
-        record Seen(long generatedAt, Stamp received, boolean subscribed) {}
+        record Seen(long generatedAt, long markAt, Stamp received, boolean subscribed) {}
 
         private Seen latest;
         private @Nullable Seen lastSubscribedBeforeUnsubscribed;
@@ -1155,9 +1160,11 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         /** A producer's alive slot has something in it. */
         record Alives(long producerId) implements Fact {}
 
-        record Processed(int session, long producerId, long generatedAt, Stamp taken, long requestId) implements Fact {}
+        record Processed(int session, long producerId, long generatedAt, long markAt, Stamp taken, long requestId)
+                implements Fact {}
 
-        record SessionAlive(int session, long producerId, long generatedAt, Stamp taken, boolean subscribed)
+        record SessionAlive(
+                int session, long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed)
                 implements Fact {}
 
         record SnapshotComplete(int session, long producerId, long requestId) implements Fact {}
