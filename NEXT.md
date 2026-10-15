@@ -659,8 +659,12 @@ and REST workers post facts to it; it decides and posts work out.
   not persist one. The marks the SDK takes from a message - a session's checkpoint, a
   producer's safe point, the live state's watermark - take its stamp, but no later than the
   producer's now at receipt: the SDK's wall clock when the delivery arrived, less the
-  producer's offset as known before that message, so an alive does not vouch for its own stamp,
-  and none while no alive has shown one. Every mark is clamped, with no tolerance setting: a
+  producer's most cautious offset of the last minute - the one that puts the producer's now
+  earliest, and always one from before the newest alive - so an alive stamped ahead does not
+  vouch for its own stamp, for its copy on a session's queue, or for a message received before
+  it and handled after; none while no alive has shown one. A producer clock that steps back is
+  taken at once, one that steps forward, or is really ahead, a minute later; every error
+  lowers a mark. Every mark is clamped, with no tolerance setting: a
   lower mark is the safe side of a checkpoint, and harmless to a watermark, which keeps the
   order of the true stamps. One stamp more than a second ahead is logged at `WARN`, at most
   once a minute per producer, with the stamp, the producer's now and the difference. The
@@ -1971,8 +1975,14 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   lay between, and held the live state's watermark ahead, so the correct messages that followed
   wrote no status or score until the producer's clock caught up. The owner chose to clamp, with
   no tolerance setting: a mark is the stamp or the producer's now at receipt - the SDK's wall
-  clock then, less the producer's offset known before the message, corrected for a step of the
-  wall clock since it was measured, as the recovery machine corrects it - whichever is less. It is the safe side of a
+  clock then, less the producer's most cautious offset of the last minute, corrected for a step
+  of the wall clock since it was measured, as the recovery machine corrects it - whichever is
+  less. The offset of the latest alive was the first choice, and was wrong: the alive dispatcher
+  has kept an alive's own offset when the session's copy of it is handled, and a later alive has
+  moved it when a message queued behind a callback is. Each producer keeps the offsets of its
+  alives over the minute, in an array replaced whole (a reader never waits for the alive
+  dispatcher), with the newest one older than the minute, and "no offset" before the first; the
+  mark takes the largest. It is the safe side of a
   checkpoint and keeps the watermarks' order of the true stamps; the offset noise only lowers a mark a little. A
   mark taken so can still be ahead of the message's true generation by the delivery's latency,
   so a correct message generated within that latency of the bad one, and stamped before it was

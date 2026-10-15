@@ -259,6 +259,19 @@ class SessionDispatcherTest {
                 .isEqualTo(ahead);
     }
 
+    /** Every session binds the alive key too: its copy comes after the alive dispatcher kept the offset. */
+    @Test
+    void theSessionsCopyOfAnAliveStampedAheadIsMarkedByTheOffsetBeforeIt() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        long now = System.currentTimeMillis();
+        long ahead = now + Duration.ofMinutes(10).toMillis();
+        // as the alive dispatcher kept them: an alive of a clock 2.5 s behind, then this one's own offset
+        offsets.alive(2, now - 2_500, Stamp.of(now));
+        offsets.alive(2, ahead, Stamp.of(now));
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead));
+        assertThat(facts.marks).containsExactly(lastReceived.toEpochMilli() - 2_500);
+    }
+
     @Test
     void aReplaySessionAndAClientsAliveOnlySessionPostNoFacts() {
         handle(dispatcher(MessageInterest.ALL, true), Fixtures.read(ODDS_CHANGE));

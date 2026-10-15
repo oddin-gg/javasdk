@@ -39,14 +39,67 @@ class ClockOffsetsTest {
                 .isEqualTo(110_000);
     }
 
+    /** The alive dispatcher keeps an alive's offset before the session's copy of it is handled. */
     @Test
-    void anAliveDoesNotVouchForItsOwnStamp() {
-        // the mark is asked before the alive's offset is kept, as the alive dispatcher does
-        assertThat(offsets.mark(1, 10_000 + TEN_MINUTES, Stamp.of(10_000))).isEqualTo(10_000);
-        offsets.alive(1, 10_000 + TEN_MINUTES, Stamp.of(10_000));
-        assertThat(offsets.mark(1, 11_000, Stamp.of(11_000)))
-                .as("the next one, stamped right by the producer's own clock, is behind the bad offset")
-                .isEqualTo(11_000);
+    void theSessionsCopyOfAnAliveStampedAheadIsClampedWhateverOffsetItsOwnShowed() {
+        offsets.alive(1, 100_000, Stamp.of(102_500));
+        long ahead = 110_000 + TEN_MINUTES;
+        // the alive dispatcher kept this alive's own offset: the producer's clock 10 minutes ahead
+        offsets.alive(1, ahead, Stamp.of(110_000));
+        assertThat(offsets.mark(1, ahead, Stamp.of(110_000)))
+                .as("by the offset of the alive before, 2.5 s behind")
+                .isEqualTo(107_500);
+
+        offsets.alive(2, ahead, Stamp.of(110_000));
+        assertThat(offsets.mark(2, ahead, Stamp.of(110_000)))
+                .as("the first alive of a producer: no offset yet, the SDK's own clock")
+                .isEqualTo(110_000);
+        offsets.alive(2, ahead + 10_000, Stamp.of(120_000));
+        assertThat(offsets.mark(2, ahead + 10_000, Stamp.of(120_000)))
+                .as("and the second, while the first is the only measure: still the SDK's own clock")
+                .isEqualTo(120_000);
+    }
+
+    @Test
+    void aMessageReceivedBeforeAnAliveStampedAheadIsClampedWhenItIsHandledAfterIt() {
+        offsets.alive(1, 100_000, Stamp.of(102_500));
+        // a message received at 120 000, stamped ahead, waits behind a callback; an alive follows
+        offsets.alive(1, 121_000 + TEN_MINUTES, Stamp.of(121_000));
+        assertThat(offsets.mark(1, 120_000 + TEN_MINUTES, Stamp.of(120_000)))
+                .as("the producer's now at its receipt, by the offset of the alive before the later one")
+                .isEqualTo(117_500);
+    }
+
+    @Test
+    void aProducerClockThatStepsBackIsTakenAtOnce() {
+        offsets.alive(1, 1_000_000, Stamp.of(1_002_500));
+        // the producer's clock goes back 10 minutes: its next alive shows an offset 10 minutes more
+        offsets.alive(1, 1_012_500 - 602_500, Stamp.of(1_012_500));
+        long stampedByTheOldClock = 1_013_000 - 2_500;
+        assertThat(offsets.mark(1, stampedByTheOldClock, Stamp.of(1_013_000)))
+                .as("clamped to the producer's now by the new offset")
+                .isEqualTo(1_013_000 - 602_500);
+    }
+
+    @Test
+    void aProducerClockThatStepsForwardIsTakenAMinuteLater() {
+        offsets.alive(1, 100_000, Stamp.of(102_500));
+        // the producer's clock goes 10 minutes forward: its alives, every ten seconds, show an offset
+        // 10 minutes less, and a message stamped by it is ahead of the SDK's own now
+        long received = 100_000;
+        for (int i = 1; i <= 7; i++) {
+            received = 100_000 + 10_000L * i;
+            offsets.alive(1, received + TEN_MINUTES, Stamp.of(received));
+        }
+        assertThat(offsets.mark(1, received + TEN_MINUTES, Stamp.of(received)))
+                .as("the offset before the change still clamps within the window")
+                .isEqualTo(received - 2_500);
+
+        received = 180_000;
+        offsets.alive(1, received + TEN_MINUTES, Stamp.of(received));
+        assertThat(offsets.mark(1, received + TEN_MINUTES, Stamp.of(received)))
+                .as("a minute after the first alive of the new clock, it is the producer's now")
+                .isEqualTo(received + TEN_MINUTES);
     }
 
     @Test
