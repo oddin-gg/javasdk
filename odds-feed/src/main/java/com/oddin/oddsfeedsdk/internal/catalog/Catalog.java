@@ -78,16 +78,13 @@ final class Catalog<K, V> {
 
     /**
      * How old a value must be before an item missing from it refreshes it early: a market new
-     * upstream shows up within about this long, and a burst of unknown items costs one fetch a
-     * minute at most.
+     * upstream shows up within about this long, however often it was asked for before, and items
+     * that are never there cost one fetch of their key a minute at most.
      */
     static final Duration MISS_INTERVAL = Duration.ofMinutes(1);
 
     /** A reading that was never taken: the feed's monotonic clock reads 1 or more. */
     private static final long NEVER = 0;
-
-    /** How many missed items are remembered, so that each refreshes its value once. */
-    static final long MISSES = 10_000;
 
     /** How much longer than its deadline a reader waits for a fetch. */
     static final Duration MARGIN = Duration.ofSeconds(1);
@@ -102,12 +99,7 @@ final class Catalog<K, V> {
     private final Cache<K, Held<V>> held;
     /** The last failure of each key whose last fetch failed. */
     private final Cache<K, Failure> failures;
-    /** When each item was first found missing, in {@link #order}, to refresh its value once for it. */
-    private final Cache<Miss<K>, Long> misses;
-    /**
-     * Orders the starts of fetches and the first misses of items, which the clock cannot: a fetch
-     * and a miss can fall on one instant.
-     */
+    /** Orders the starts of fetches, which the clock cannot: two can fall on one instant. */
     private final AtomicLong order = new AtomicLong();
     /** The keys a background refresh was started for and has not ended. */
     private final Set<K> refreshing = ConcurrentHashMap.newKeySet();
@@ -130,7 +122,7 @@ final class Catalog<K, V> {
 
     /** A test's hook: runs in a read with nothing to serve, before it asks the loader for a fetch. */
     volatile Runnable insideColdRead = () -> {};
-    /** A test's hook: runs in a read that did not find its item, before it notes the miss. */
+    /** A test's hook: runs in a read that did not find its item, before it looks at the value held. */
     volatile Runnable insideMiss = () -> {};
     /** A test's hook: runs in a read that found its value stale, before it marks it so. */
     volatile Runnable insideStaleRead = () -> {};
@@ -193,12 +185,6 @@ final class Catalog<K, V> {
                     }
                 })
                 .build();
-        this.misses = Caffeine.newBuilder()
-                .maximumSize(MISSES)
-                .expireAfterWrite(refreshAge)
-                .ticker(ticker)
-                .executor(Runnable::run)
-                .build();
     }
 
     String name() {
@@ -244,11 +230,13 @@ final class Catalog<K, V> {
     /**
      * An item of the key's value, such as one market of a locale's list. When the value lacks it,
      * the value is fetched again and the read waits for it, as a read with nothing to serve does -
-     * once per item, and only when the value was fetched before the item was first missed and at
-     * least {@link #MISS_INTERVAL} ago - so that what is new upstream is found by the read that first
-     * asks for it, as in 0.0.x. While the key's last fetch failed, the read does not wait: it starts a
-     * refresh in the background, unless the key backs off, and the item is found by a later read.
-     * Null when it is not there even then, or that fetch fails.
+     * whenever the value was fetched at least {@link #MISS_INTERVAL} ago, for any item and however
+     * often it was missed before - so that what is new upstream is found by the read that asks for
+     * it, as in 0.0.x, and no item stays unknown for longer than that. Reads of items that are never
+     * there cost one fetch of the key per interval, and reads that miss together share it. While the
+     * key's last fetch failed, the read does not wait: it starts a refresh in the background, unless
+     * the key backs off, and the item is found by a later read. Null when it is not there even then,
+     * or that fetch fails.
      *
      * @throws ApiException when there is no value to look in and the fetch fails
      */
@@ -259,7 +247,6 @@ final class Catalog<K, V> {
         }
         insideMiss.run();
         long now = clock.monoMillis();
-        long firstMissed = misses.asMap().computeIfAbsent(new Miss<>(key, item), _ -> order.incrementAndGet());
         Held<V> current = held.getIfPresent(key);
         if (current == null) {
             return null;
@@ -269,7 +256,7 @@ final class Catalog<K, V> {
         if (found != null) {
             return found;
         }
-        if (current.startedAs() > firstMissed || now - current.fetchedAt() < MISS_INTERVAL.toMillis()) {
+        if (now - current.fetchedAt() < MISS_INTERVAL.toMillis()) {
             return null;
         }
         if (failures.getIfPresent(key) != null) {
@@ -546,7 +533,4 @@ final class Catalog<K, V> {
             return key.toString();
         }
     }
-
-    /** An item missing from a key's value. */
-    private record Miss<K>(K key, Object item) {}
 }
