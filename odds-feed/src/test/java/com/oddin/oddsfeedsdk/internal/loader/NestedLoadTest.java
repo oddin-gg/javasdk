@@ -7,6 +7,7 @@ import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.rest.ApiCall;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
@@ -64,7 +65,8 @@ class NestedLoadTest {
                                 .getName(),
                         timeout,
                         Duration.ofSeconds(1),
-                        threads);
+                        threads,
+                        FeedClock.system());
                 var matches = new Loader<URN, List<String>>(
                         "match",
                         (id, deadline, _) -> {
@@ -78,7 +80,8 @@ class NestedLoadTest {
                         },
                         timeout,
                         Duration.ofSeconds(1),
-                        threads);
+                        threads,
+                        FeedClock.system());
 
                 List<Future<List<String>>> loads = new ArrayList<>();
                 for (int m = 0; m < 4; m++) {

@@ -56,7 +56,8 @@ class LoaderTest {
                 },
                 Duration.ofSeconds(5),
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         var joins = countJoins(loader);
 
         List<Future<String>> callers = new ArrayList<>();
@@ -88,7 +89,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         var joins = countJoins(loader);
 
         long started = System.nanoTime();
@@ -120,7 +122,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
         assertThat(loader.load("m1"))
                 .as("a fresh fetch, not the one still stuck")
@@ -143,7 +146,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         var waiters = new java.util.ArrayList<Future<String>>();
         for (int i = 0; i < 20; i++) {
             waiters.add(virtualThreads.submit(() -> loader.load("m1")));
@@ -174,7 +178,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         var joins = countJoins(loader);
         var failure = new AtomicReference<ApiException>();
         var stillInterrupted = new java.util.concurrent.atomic.AtomicBoolean();
@@ -214,7 +219,8 @@ class LoaderTest {
                 },
                 Duration.ofMillis(2_500),
                 Duration.ofMillis(500),
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         var joins = countJoins(loader);
         var failedAt = new java.util.concurrent.ConcurrentHashMap<String, Long>();
         Future<?> first = virtualThreads.submit(() -> failsAt(loader, "first", failedAt));
@@ -280,7 +286,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
         Thread.sleep(100);
         release.countDown();
@@ -300,9 +307,15 @@ class LoaderTest {
                 },
                 Duration.ofSeconds(10),
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         var matches = new Loader<String, String>(
-                "match", (key, deadline, _) -> competitors.load("c1", deadline), DEADLINE, MARGIN, virtualThreads);
+                "match",
+                (key, deadline, _) -> competitors.load("c1", deadline),
+                DEADLINE,
+                MARGIN,
+                virtualThreads,
+                FeedClock.system());
         long started = System.nanoTime();
         assertThatThrownBy(() -> matches.load("m1"))
                 .isInstanceOf(ApiException.class)
@@ -326,7 +339,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         assertThatThrownBy(() -> loader.load("m1"))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("503");
@@ -342,7 +356,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         assertThatThrownBy(() -> loader.load("m1"))
                 .isInstanceOf(ExceptionInInitializerError.class)
                 .hasMessage("the binding did not load");
@@ -350,9 +365,15 @@ class LoaderTest {
 
     @Test
     void aFetchThatCannotStartLeavesNothingBehind() {
-        var loader = new Loader<String, String>("match", (key, _, _) -> "value", DEADLINE, MARGIN, task -> {
-            throw new java.util.concurrent.RejectedExecutionException("closed");
-        });
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> "value",
+                DEADLINE,
+                MARGIN,
+                task -> {
+                    throw new java.util.concurrent.RejectedExecutionException("closed");
+                },
+                FeedClock.system());
         assertThatThrownBy(() -> loader.load("m1"))
                 .isInstanceOf(ApiException.class)
                 .hasMessage("match m1: no fetch could start");
@@ -363,10 +384,16 @@ class LoaderTest {
     void aCallerThatJoinedAFetchThatCannotStartGetsTheSameFailure() throws Exception {
         var joined = new CountDownLatch(1);
         var loader = new AtomicReference<Loader<String, String>>();
-        loader.set(new Loader<>("match", (key, _, _) -> "value", DEADLINE, MARGIN, task -> {
-            await(joined);
-            throw new java.util.concurrent.RejectedExecutionException("closed");
-        }));
+        loader.set(new Loader<>(
+                "match",
+                (key, _, _) -> "value",
+                DEADLINE,
+                MARGIN,
+                task -> {
+                    await(joined);
+                    throw new java.util.concurrent.RejectedExecutionException("closed");
+                },
+                FeedClock.system()));
         var joins = countJoins(loader.get());
         Future<String> first = virtualThreads.submit(() -> loader.get().load("m1"));
         // the first is held inside its execute, after it joined: then the second joins its flight
@@ -402,7 +429,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         var joins = countJoins(loader);
         assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
         Future<String> waiting = virtualThreads.submit(() -> loader.load("m1"));
@@ -447,7 +475,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                FeedClock.system());
         assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ApiException.class);
         assertThat(loader.load("m1")).isEqualTo("newer");
 
@@ -461,7 +490,8 @@ class LoaderTest {
     @Test
     void aFetchThatFinishesAtOnceIsNotLeftBehind() {
         // the fetch can finish before the caller looks at it; it must still leave the map
-        var loader = new Loader<Integer, Integer>("match", (key, _, _) -> key * 2, DEADLINE, MARGIN, virtualThreads);
+        var loader = new Loader<Integer, Integer>(
+                "match", (key, _, _) -> key * 2, DEADLINE, MARGIN, virtualThreads, FeedClock.system());
         for (int i = 0; i < 1_000; i++) {
             assertThat(loader.load(i % 7)).isEqualTo((i % 7) * 2);
         }
@@ -491,7 +521,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads));
+                virtualThreads,
+                FeedClock.system()));
         competitors.set(new Loader<>(
                 "competitor",
                 (key, _, _) -> {
@@ -504,7 +535,8 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads));
+                virtualThreads,
+                FeedClock.system()));
 
         long started = System.nanoTime();
         Future<String> match = virtualThreads.submit(() -> matches.get().load("m1"));
@@ -595,6 +627,28 @@ class LoaderTest {
             fetch.release().countDown();
         }
         settled(caller);
+    }
+
+    @Test
+    void aCallersDeadlineOnAnotherClockIsKeptByWhatIsLeftOfIt() throws Exception {
+        var split = new SplitClock();
+        var fetch = held(split);
+        // a deadline another clock counts, with a reading hours away from this loader's
+        var elsewhere = new SplitClock();
+        elsewhere.advanceMono(Duration.ofHours(5));
+        var within = Deadline.in(Duration.ofMillis(100), elsewhere.clock()::monoNanos);
+        Future<String> first = virtualThreads.submit(() -> fetch.loader().load("m1"));
+        try {
+            assertThat(fetch.started().await(5, TimeUnit.SECONDS)).isTrue();
+            Future<String> bounded = virtualThreads.submit(() -> fetch.loader().load("m1", within));
+            assertThatThrownBy(() -> bounded.get(3, TimeUnit.SECONDS))
+                    .as("a hundred milliseconds left, not the flight's five seconds")
+                    .hasCauseInstanceOf(ApiException.class)
+                    .hasMessageContaining("its caller's deadline");
+        } finally {
+            fetch.release().countDown();
+        }
+        settled(first);
     }
 
     @Test
