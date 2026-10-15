@@ -772,8 +772,14 @@ and REST workers post facts to it; it decides and posts work out.
   clock is taken not to have moved with the SDK's, so the next alive measures the same offset
   the correction already made. A fact carries both readings, taken where it is received,
   because the actor handles it later. One `FeedClock` per feed gives both readings to the transport, the
-  dispatchers and the actor. The live-state ages that the entity caches compare between two
-  local wall readings are not the machine's and stay on the wall clock.
+  dispatchers and the actor. The rule covers the caches as well: the age of a cached entity
+  and of a catalog's value, how long the catalog has served one stale, a backoff, how long an
+  invalidation is remembered, the match status age that decides whether the feed or REST owns a
+  match's live status, a loader's deadline and the time its callers wait, and the hour a
+  fixture change is remembered, are all measured on the feed's one clock, monotonic side, which
+  is handed to the caches where the feed builds them. A feed write is stamped with the
+  monotonic reading of when it was received. What a cache compares with a producer's own
+  timestamp stays wall time, and so do the instants in an error message.
 - The facts posted to the actor are of two kinds. Those whose loss would leave the
   state wrong for good - sessions opening and closing, the connection going and coming,
   the alives from the SDK's alive channel (an unsubscribed one is the only word of a
@@ -1888,8 +1894,7 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   machine's durations to the monotonic one, the third moves how long an event recovery's status
   is kept, and adds a test that steps the wall clock under an open feed. What is published,
   and what is compared with a producer's own timestamps, stays wall time, as the Clocks
-  paragraph of the recovery section says. KD-43 lists the difference from 0.0.x. Left as they
-  are: the live-state and match-cache ages, which compare two local wall readings. No public
+  paragraph of the recovery section says. KD-43 lists the difference from 0.0.x. No public
   API changes.
 - 2026-10-15, the offset after a step: the residual that entry left - a message's age read
   against an offset measured before a wall step, so that a session's alive handled before the
@@ -1899,3 +1904,14 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   (above a second). Chosen over skipping the age check until the next alive: that would leave the
   cap and the recovery window, which also read the offset, wrong by the step, and a message
   really late after the step undetected for as long. No public API changes.
+- 2026-10-15, clocks of the caches (follows the entry of 2026-10-14): that entry left the
+  live-state and match-cache ages on the wall clock, since they compare two local readings. They
+  are durations between two local events like the machine's, so a step of the wall clock changed
+  them the same way: forward by more than the match status age, the feed's live status was taken
+  over by REST and a summary loaded again; a step back kept a stale value fresh. They now run
+  on the feed's clock, monotonic side, together with the entity caches' ages, the catalogs'
+  refresh age, staleness and backoffs, the loaders' deadlines and the fixture changes' hour. A
+  loader cannot be built with no clock; the other caches keep a constructor with none, which
+  reads a system one, for a test, and the feed passes its own. A test over a clock whose two
+  sides are moved apart pins each group, and a dependency test fails the build for a cache
+  package that reads a clock of its own. No public API changes.
