@@ -18,6 +18,9 @@ public enum OFChangeType {
     /** A value this SDK does not know. It has no number of its own: {@link #value()} fails for it. */
     UNKNOWN(Integer.MIN_VALUE);
 
+    /** The constants, once: {@code values()} copies them at every call, and a message reads one for each market. */
+    private static final OFChangeType[] VALUES = values();
+
     private final int value;
 
     OFChangeType(int value) {
@@ -38,7 +41,7 @@ public enum OFChangeType {
      * @throws IllegalArgumentException for a number that has no constant, as in 0.0.x
      */
     public static OFChangeType fromValue(int value) {
-        for (OFChangeType candidate : values()) {
+        for (OFChangeType candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == value) {
                 return candidate;
             }
@@ -51,7 +54,7 @@ public enum OFChangeType {
         if (raw == null) {
             return null;
         }
-        for (OFChangeType candidate : values()) {
+        for (OFChangeType candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == raw) {
                 return candidate;
             }

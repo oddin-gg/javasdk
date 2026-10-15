@@ -13,6 +13,9 @@ public enum OFResult {
     /** A value this SDK does not know. It has no number of its own: {@link #value()} fails for it. */
     UNKNOWN(Integer.MIN_VALUE);
 
+    /** The constants, once: {@code values()} copies them at every call, and a message reads one for each market. */
+    private static final OFResult[] VALUES = values();
+
     private final int value;
 
     OFResult(int value) {
@@ -33,7 +36,7 @@ public enum OFResult {
      * @throws IllegalArgumentException for a number that has no constant, as in 0.0.x
      */
     public static OFResult fromValue(int value) {
-        for (OFResult candidate : values()) {
+        for (OFResult candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == value) {
                 return candidate;
             }
@@ -46,7 +49,7 @@ public enum OFResult {
         if (raw == null) {
             return null;
         }
-        for (OFResult candidate : values()) {
+        for (OFResult candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == raw) {
                 return candidate;
             }
