@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.loader;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
 import java.util.Collections;
@@ -55,6 +56,7 @@ public final class Loader<K, V> {
     private final Duration deadline;
     private final Duration margin;
     private final Executor fetches;
+    private final FeedClock clock;
     private final ConcurrentHashMap<K, Flight<V>> inFlight = new ConcurrentHashMap<>();
     /** A test's hook: told the key once a caller has joined or started its flight. */
     volatile Consumer<K> joined = _ -> {};
@@ -66,6 +68,16 @@ public final class Loader<K, V> {
      * @param fetches where the fetches run: virtual threads
      */
     public Loader(String name, Fetch<K, V> fetch, Duration deadline, Duration margin, Executor fetches) {
+        this(name, fetch, deadline, margin, fetches, FeedClock.system());
+    }
+
+    /**
+     * @param clock the feed's clock: every deadline and every wait here is counted on its monotonic
+     *     side, so a step of the wall clock cannot cut a fetch short or let it run on
+     */
+    public Loader(
+            String name, Fetch<K, V> fetch, Duration deadline, Duration margin, Executor fetches, FeedClock clock) {
+        this.clock = clock;
         this.name = name;
         this.fetch = fetch;
         this.deadline = deadline;
@@ -89,13 +101,13 @@ public final class Loader<K, V> {
      * @throws ApiException when the fetch fails, or does not finish in time
      */
     public V load(K key, @Nullable Deadline within) {
-        var mine = new Flight<V>(Deadline.in(deadline), margin);
+        var mine = new Flight<V>(Deadline.in(deadline, clock::monoNanos), margin);
         // a flight past its callers' time is abandoned and replaced, in the same step as callers join
         Flight<V> flight = inFlight.compute(key, (k, running) -> {
             if (running == null) {
                 return mine;
             }
-            if (running.expired()) {
+            if (running.expired(clock)) {
                 running.abandoned().set(true);
                 return mine;
             }
@@ -116,7 +128,7 @@ public final class Loader<K, V> {
         long until = within == null ? flight.expiresAt() : earlier(flight.expiresAt(), within.endNanos());
         try {
             // the flight's own deadline, not a fresh one per caller
-            return flight.result().get(Math.max(0, until - System.nanoTime()), TimeUnit.NANOSECONDS);
+            return flight.result().get(Math.max(0, until - clock.monoNanos()), TimeUnit.NANOSECONDS);
         } catch (TimeoutException e) {
             String limit = until == flight.expiresAt()
                     ? deadline.plus(margin).toMillis() + " ms of its fetch starting"
@@ -148,7 +160,7 @@ public final class Loader<K, V> {
         try {
             // abandoned once past its callers' time, replaced or not: no fetch outlives that, which an
             // entity cache remembering invalidations for that long relies on
-            value = fetch.fetch(key, flight.deadline(), () -> flight.abandoned().get() || flight.expired());
+            value = fetch.fetch(key, flight.deadline(), () -> flight.abandoned().get() || flight.expired(clock));
         } catch (RuntimeException | Error e) {
             inFlight.remove(key, flight);
             flight.result().completeExceptionally(e);
@@ -176,15 +188,15 @@ public final class Loader<K, V> {
 
     /**
      * One fetch: its result, whether it was abandoned, its deadline, and until when its callers wait
-     * for it, on the {@link System#nanoTime()} clock.
+     * for it, on the feed's monotonic clock.
      */
     private record Flight<V>(CompletableFuture<V> result, AtomicBoolean abandoned, Deadline deadline, long expiresAt) {
         Flight(Deadline deadline, Duration margin) {
             this(new CompletableFuture<>(), new AtomicBoolean(), deadline, deadline.endNanos() + margin.toNanos());
         }
 
-        boolean expired() {
-            return System.nanoTime() - expiresAt > 0;
+        boolean expired(FeedClock clock) {
+            return clock.monoNanos() - expiresAt > 0;
         }
     }
 }

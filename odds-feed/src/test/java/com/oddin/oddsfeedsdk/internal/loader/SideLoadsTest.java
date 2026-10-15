@@ -2,6 +2,8 @@ package com.oddin.oddsfeedsdk.internal.loader;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
+import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +25,23 @@ class SideLoadsTest {
                     .as("not counted from the offer, half a second earlier")
                     .isGreaterThan(BUDGET.minusMillis(300))
                     .isLessThanOrEqualTo(BUDGET);
+        }
+    }
+
+    @Test
+    void aLoadsDeadlineCountsOnTheFeedsMonotonicClockWhateverTheWallClockSays() throws Exception {
+        var split = new SplitClock();
+        var given = new java.util.concurrent.CompletableFuture<Deadline>();
+        try (var sideLoads = new SideLoads(10, 1, BUDGET, split.clock())) {
+            split.stepWall(Duration.ofMinutes(30));
+            sideLoads.offer(given::complete);
+            Deadline deadline = given.get(5, TimeUnit.SECONDS);
+            assertThat(deadline.remaining()).isEqualTo(BUDGET);
+            assertThat(deadline.passed()).isFalse();
+
+            split.advanceMono(BUDGET);
+            split.stepWall(Duration.ofHours(-1));
+            assertThat(deadline.passed()).isTrue();
         }
     }
 
