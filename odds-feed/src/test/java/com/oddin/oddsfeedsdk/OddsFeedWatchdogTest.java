@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
 import com.oddin.oddsfeedsdk.internal.feed.OpenFeeds;
 import com.oddin.oddsfeedsdk.internal.feed.Watchdog;
 import com.oddin.oddsfeedsdk.internal.recovery.Actors;
+import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
 import com.oddin.oddsfeedsdk.mq.entities.BetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.BetSettlement;
@@ -40,6 +41,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -47,6 +49,7 @@ import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * The feed's watchdog over a real broker: a wedged callback is found stalled, logged once and told,
@@ -279,6 +282,66 @@ class OddsFeedWatchdogTest {
                 api.awaitQuiet();
             } finally {
                 release.countDown();
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aRecoveryActorWhoseThreadEndedIsFoundStalledAndStaysSoUntilTheFeedCloses() throws Exception {
+        try (var api = FakeRestServer.start();
+                var log = LogCapture.of(RecoveryActor.class)) {
+            var heard = new Heard();
+            var feed = feedAgainst(api, heard);
+            var died = new CountDownLatch(1);
+            try {
+                feed.getSessionBuilder()
+                        .setListener(new Wedged(new CountDownLatch(1), new CountDownLatch(0)))
+                        .setMessageInterest(MessageInterest.ALL)
+                        .build();
+                feed.open();
+                var open = requireNonNull(feed.running());
+                var actor = requireNonNull(OpenFeeds.actor(open));
+                assertThat(feed.getHealth().components())
+                        .as("a running actor")
+                        .containsEntry(HealthComponent.RECOVERY, HealthState.HEALTHY);
+
+                // in the loop, outside any fact: unlike a fact's failure, this ends the thread. Its next turn
+                // is a second away at the latest
+                Actors.beforeSamplePoll(actor, () -> {
+                    died.countDown();
+                    throw new AssertionError("a broken turn");
+                });
+                assertThat(died.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+
+                var stalled = heard.next(HealthComponent.RECOVERY);
+                assertThat(stalled.previous()).isEqualTo(HealthState.HEALTHY);
+                assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
+                assertThat(stalled.reason()).startsWith("the recovery actor has been in one turn for ");
+                var health = feed.getHealth();
+                assertThat(health.state()).isEqualTo(HealthState.STALLED);
+                assertThat(health.components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
+                assertThat(log.lines()).containsExactly("ERROR The recovery actor stopped");
+                assertThat(log.stacks().getFirst()).contains("a broken turn");
+                assertThat(open.recoverEvent(1, URN.parse("od:match:198314"), false))
+                        .as("a request to the actor that is gone")
+                        .isNull();
+
+                // a few more looks, each begun after the stall was told: it does not move again, so it is told once
+                var looks = new AtomicInteger();
+                var looked = new CountDownLatch(5);
+                feed.watchdog().beforeTick(() -> {
+                    if (looks.incrementAndGet() > 1) {
+                        looked.countDown();
+                    }
+                });
+                assertThat(looked.await(WAIT.toSeconds(), TimeUnit.SECONDS)).isTrue();
+                assertThat(logged(HealthComponent.RECOVERY, 1))
+                        .as("logged once")
+                        .containsExactly(stalled);
+                assertThat(feed.getHealth().components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
+            } finally {
                 feed.close();
             }
         }
