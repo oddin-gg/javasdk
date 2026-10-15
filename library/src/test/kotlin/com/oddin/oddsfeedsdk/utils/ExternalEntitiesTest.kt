@@ -2,13 +2,22 @@ package com.oddin.oddsfeedsdk.utils
 
 import com.oddin.oddsfeedsdk.DispatchManager
 import com.oddin.oddsfeedsdk.RawFeedMessage
+import com.oddin.oddsfeedsdk.api.ApiClientImpl
 import com.oddin.oddsfeedsdk.api.Deserializer
+import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent
+import com.oddin.oddsfeedsdk.config.Environment
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
+import com.oddin.oddsfeedsdk.exceptions.ApiException
 import com.oddin.oddsfeedsdk.mq.ChannelConsumerImpl
 import com.oddin.oddsfeedsdk.mq.ExchangeProviderImpl
+import com.oddin.oddsfeedsdk.mq.FeedMessageFactory
 import com.oddin.oddsfeedsdk.mq.MessageInterest
 import com.oddin.oddsfeedsdk.mq.rabbit.AMQPConnectionProvider
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFAlive
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAError
+import com.oddin.oddsfeedsdk.schema.rest.v1.RAResponseCode
+import com.github.kittinunf.fuel.core.FuelManager
+import com.sun.net.httpserver.HttpServer
 import com.rabbitmq.client.AMQP
 import com.rabbitmq.client.Channel
 import com.rabbitmq.client.Consumer
@@ -16,6 +25,8 @@ import com.rabbitmq.client.Envelope
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -27,6 +38,7 @@ import org.junit.rules.TemporaryFolder
 import java.io.ByteArrayInputStream
 import java.net.InetAddress
 import java.net.ServerSocket
+import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicInteger
 import javax.xml.bind.JAXBException
 import kotlin.concurrent.thread
@@ -54,6 +66,7 @@ class ExternalEntitiesTest {
 
     private val consumerSlot = slot<Consumer>()
     private val published = mutableListOf<Any>()
+    private val feedMessageFactory = mockk<FeedMessageFactory>(relaxed = true)
 
     // what asks for a DTD at "http://127.0.0.1:<port>/m.dtd" lands here
     private lateinit var dtdServer: ServerSocket
@@ -120,7 +133,7 @@ class ExternalEntitiesTest {
         val dispatchManager = mockk<DispatchManager> {
             every { publish(any()) } answers { published.add(firstArg()); Unit }
         }
-        ChannelConsumerImpl(channelProvider, mockk(relaxed = true))
+        ChannelConsumerImpl(channelProvider, feedMessageFactory)
             .open(listOf("#"), MessageInterest.ALL, dispatchManager, ExchangeProviderImpl())
 
         consumerSlot.captured.handleDelivery(
@@ -152,6 +165,8 @@ class ExternalEntitiesTest {
         deliver("""<!DOCTYPE alive SYSTEM "$dtdUrl"><alive product="1" timestamp="1" subscribed="1"/>""")
 
         assertEquals("the DTD was fetched", 0, dtdRequests.get())
+        // the DOCTYPE is skipped, the message is not refused for it
+        assertTrue(parsedMessages().single().message is OFAlive)
     }
 
     @Test
@@ -178,9 +193,11 @@ class ExternalEntitiesTest {
 
     @Test
     fun restResponseDoesNotFetchItsDtd() {
-        restError("""<!DOCTYPE response SYSTEM "$dtdUrl"><response response_code="NOT_FOUND"/>""")
+        val error = restError("""<!DOCTYPE response SYSTEM "$dtdUrl"><response response_code="NOT_FOUND"/>""")
 
         assertEquals("the DTD was fetched", 0, dtdRequests.get())
+        // the DOCTYPE is skipped, the response is not refused for it
+        assertEquals(RAResponseCode.NOT_FOUND, error?.responseCode)
     }
 
     @Test
@@ -188,5 +205,102 @@ class ExternalEntitiesTest {
         val error = restError("""<response response_code="NOT_FOUND"><message>no such match</message></response>""")
 
         assertEquals("no such match", error?.message?.message)
+    }
+
+    // A bad XML declaration or an unknown encoding fails when the reader is made. It has to fail as
+    // the stream did before, as a JAXB exception: the feed consumer publishes such a message as
+    // unparsable (it is auto-acknowledged, so an exception out of handleDelivery loses it), and
+    // a REST body fails like any other that cannot be decoded.
+    private val malformedPrologs = listOf(
+        """<?xml version="1.0" encoding="BOGUS"?><alive product="1" timestamp="1" subscribed="1"/>""",
+        """<?xml bogus?><alive product="1" timestamp="1" subscribed="1"/>"""
+    )
+
+    @Test
+    fun feedMessageWithAMalformedPrologIsPublishedAsUnparsable() {
+        malformedPrologs.forEach {
+            published.clear()
+
+            deliver(it)
+
+            assertTrue("parsed: $it", parsedMessages().isEmpty())
+        }
+        verify(exactly = malformedPrologs.size) { feedMessageFactory.buildUnparsableMessage<SportEvent>(any()) }
+    }
+
+    @Test
+    fun restResponseWithAMalformedPrologFailsAsAJaxbException() {
+        malformedPrologs.forEach {
+            try {
+                restError(it)
+                fail("parsed: $it")
+            } catch (e: JAXBException) {
+                // as it failed before
+            }
+        }
+    }
+
+    // The error body of a failed API request is read apart from the response, by ApiClientImpl
+    private fun failedApiRequest(errorBody: String): ApiException {
+        val server = HttpServer.create(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 0)
+        server.createContext("/") {
+            val bytes = errorBody.toByteArray()
+            it.responseHeaders.add("Content-Type", "application/xml")
+            it.sendResponseHeaders(404, bytes.size.toLong())
+            it.responseBody.use { out -> out.write(bytes) }
+        }
+        server.start()
+        val basePath = FuelManager.instance.basePath
+        try {
+            val config = mockk<OddsFeedConfiguration> {
+                every { accessToken } returns "token"
+                every { selectedEnvironment } returns Environment("mq.test", "127.0.0.1", 5672)
+            }
+            val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
+            FuelManager.instance.basePath = "http://127.0.0.1:${server.address.port}/v1"
+            try {
+                runBlocking { client.fetchWhoAmI() }
+                throw AssertionError("the request did not fail")
+            } catch (e: ApiException) {
+                return e
+            } finally {
+                client.close()
+            }
+        } finally {
+            FuelManager.instance.basePath = basePath
+            server.stop(0)
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun apiErrorBodyDoesNotReadAFileThroughAnEntity() {
+        val file = entityFile("secret content")
+
+        val failure = failedApiRequest(
+            """<!DOCTYPE response [<!ENTITY x SYSTEM "$file">]>
+               <response response_code="NOT_FOUND"><message>&x;</message></response>"""
+        )
+
+        assertTrue("the entity was resolved: ${failure.message}", failure.message?.contains("secret content") != true)
+        // the body is refused, so the failure is the plain one
+        assertEquals("Failed to get data", failure.message)
+    }
+
+    @Test(timeout = 60_000)
+    fun apiErrorBodyDoesNotFetchItsDtd() {
+        val failure = failedApiRequest(
+            """<!DOCTYPE response SYSTEM "$dtdUrl"><response response_code="NOT_FOUND"><message>no such match</message></response>"""
+        )
+
+        assertEquals("the DTD was fetched", 0, dtdRequests.get())
+        // the DOCTYPE is skipped, the error is still read
+        assertTrue(failure.message, failure.message?.startsWith("no such match") == true)
+    }
+
+    @Test(timeout = 60_000)
+    fun apiErrorBodyStillReadsWhenValid() {
+        val failure = failedApiRequest("""<response response_code="NOT_FOUND"><message>no such match</message></response>""")
+
+        assertTrue(failure.message, failure.message?.startsWith("no such match") == true)
     }
 }
