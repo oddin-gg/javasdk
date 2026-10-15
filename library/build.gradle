@@ -57,6 +57,10 @@ dependencies {
 
     // https://mvnrepository.com/artifact/io.mockk/mockk
     testImplementation 'io.mockk:mockk:1.12.5'
+
+    // a logging backend for the tests, so a test can read what the SDK logs (the library itself
+    // only depends on slf4j-api, through kotlin-logging)
+    testImplementation 'ch.qos.logback:logback-classic:1.2.11'
 }
 
 compileKotlin {
