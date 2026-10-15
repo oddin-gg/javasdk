@@ -16,7 +16,7 @@ import org.jspecify.annotations.Nullable;
  * What each match status id means, per locale: each locale's list fetched whole, refreshed after
  * {@link #REFRESH_AGE} and served while a refresh runs and for as long as refreshes fail; see
  * {@link Catalog}. A refresh replaces the locale's list; an id missing from it fetches the list
- * again once.
+ * again when it is a minute old.
  *
  * <p>Safe for concurrent use.
  */
