@@ -277,7 +277,7 @@ SYSTEMTESTS_LOAD=restart ./mvnw -pl system-tests -am verify -Dsdk.next -Dtest=No
 ```
 
 (the same without `-Dsdk.next` for 0.0.58; `SYSTEMTESTS_LOAD_RATE`, `_DURATION`, `_WARMUP`, `_MIX`, `_MATCHES`, `_READS`,
-`_HEAP` and `_LABEL` change the run, see the class). The reports go to `system-tests/target/load/`.
+`_HEAP`, `_LABEL`, `_JFR` (a Flight Recorder file of the SDK's JVM, read with `jfr print`) and `_JVM_ARGS` change the run, see the class). The reports go to `system-tests/target/load/`.
 
 A restart: the feed opens, the producers say they are alive, 200 cold matches' odds changes arrive before the
 producers' snapshot completes, every callback reads its match's name. Three runs each, 2026-10-14, the Linux box:
@@ -296,30 +296,61 @@ match with the match.
 A steady rate: 1000 odds changes a second for 10 minutes after a minute of warm-up, in a mix of sizes (70 % of 20
 markets, 28 % of 150, 2 % of 500: 24 KB on average, 24 MB a second), 70 % from the live producer; both SDKs
 handled every message (599,989 to 599,999 of the 600,000 in the window, the rest at its edges), with nothing waiting at
-the broker. Two runs each (the machine's load average was 3.6 to 4.6 at
-their start, other work on it):
+the broker. Two runs each (the machine's load average was 3.6 to 4.6 at their start, other work on it):
 
 | | 0.0.58 | 1.0 |
 |---|---:|---:|
 | age, from the producer's stamp to the callback, p50 / p99 | 1 to 3 ms / 51 ms (10.3 s in the first run: see below) | 1 to 2 ms / 61 to 65 ms |
-| wait in the SDK, from the broker client to the callback: p50 / p99 / longest | 0 / 3 to 4 / 30 to 67 ms | 1 / 19 / 74 to 78 ms |
-| allocated per message | 281 KB | 317 to 318 KB (13 % more) |
+| wait in the SDK, from the broker client's hand-over to the callback: p50 / p99 / longest | 0 / 3 to 4 / 30 to 67 ms | 1 / 19 / 74 to 78 ms |
+| allocated per message | 281 KB | 297 KB (6 % more; 317 to 318 KB, 13 % more, before the changes under "Allocation against 0.0.58") |
 | process CPU per message | 590 to 640 µs | 671 to 680 µs (5 to 15 % more) |
 | GC pauses: p99 / longest | 3.2 to 11.7 / 4.2 to 15.1 ms | 3.3 to 3.7 / 3.5 to 5.8 ms |
 | heap after a GC, over the run | 16 to 54 MB | 22 to 59 MB |
 | threads | 40 | 27 to 37 |
 
+(the allocation row is from runs of 2026-10-15, four of 0.0.58 and three of 1.0 after the changes, 280 to 281 KB and 296.8
+to 297.1 KB; the other rows are the two runs above, from before them.)
+
 Both keep up with room (0.6 to 0.7 of a core), the pauses are a few milliseconds and 0.1 % of the time, and the heap
 after a GC rises the same way in both - the young collections do not take the old generation - so neither run shows
-a leak or a pause that matters. 1.0 does more work for a message and the table shows it: more allocation and CPU, and a
-wait inside the SDK of 19 ms at p99 and up to 78 ms at the longest, against 3 to 4 ms and up to 67 ms. The two SDKs stamp
-a message at their own points, so the wait is a comparison of a kind; the age is the same clock for both and
-the tails of the two lie a few milliseconds apart.
+a leak or a pause that matters. The CPU of a message moved between 590 and 770 µs from one run to the next in both,
+with what else the machine was doing, so the 5 to 15 % is not a firm figure.
 
-A message's age includes what the publisher and the broker do, and on a shared machine that moves: the first
-run of 0.0.58 had spells of ages up to 10 seconds, with the SDK's own wait at most 67 ms, nothing waiting at the broker
-when sampled, and the publisher late by up to 3.6 s - the delay was most likely before the message reached the broker's queue, and
-an earlier, shorter run of 1.0 under the same load had them as well. Read the wait in the SDK and the throughput first, the age second.
+The wait in the SDK is not the same span in the two. Both stamp a message when the broker client hands it over, and
+again after the decode: 0.0.58 decodes on the client's consumer thread right there, so its wait is the decode alone
+and any queue of its own sits in the client's buffers, before the stamp (it acknowledges on delivery, so the broker
+sees none); 1.0 hands the delivery to its session thread, with up to the prefetch of 200 waiting, so its wait is the
+decode and that queue. The age, from the producer's stamp to the callback, is the same span for both: in the stretches
+of a run where the machine was not disturbed its p99 was 52 to 53 ms for 0.0.58 (three stretches of 25 to 30 s) and
+typically 50 to 60 ms for 1.0 (up to 114 ms in some), where the wait's p99 differs by 10 to 20 ms. So most of the gap in
+the wait is where the stamp sits, not time 1.0 takes, and some of it is real: a few milliseconds of p99 at the most. The
+harness reports the age split at the hand-over (`arrival`, before it, and `receipt to the callback`, after it) for both.
+
+A message's age includes what the publisher, the broker and the machine do, and on a shared machine that moves. With
+other builds keeping its load average above 5, ages of seconds came in spells in both lines (0.0.58 in every run, up to 14 s;
+1.0 in some, up to 6 to 16 s, but with the backlog showing as a wait of up to 0.3 s in the SDK, since it holds at most
+the prefetch and leaves the rest at the broker); 0.0.58's backlog sits before its stamp, in the client's buffers and the
+connection, where the wait cannot see it, so its wait stayed at 4 to 5 ms (at most 156 ms) through them. Read the throughput and the
+age of an undisturbed stretch first.
+
+### Allocation against 0.0.58
+
+1.0 first allocated 13 % more per message than 0.0.58 at this rate (317 to 318 KB against 281 KB). Flight recordings
+of both, 4 minutes each at the same rate (`SYSTEMTESTS_LOAD_JFR=true`, read with `jfr print`), put the difference in one place: the decode.
+Per message, 0.0.58 spends about 187 KB of its 281 on decoding and 63 KB on building the markets the callback reads,
+and 30 KB on the broker client's frames; 1.0 spent 225 KB, 62 KB and 30 KB. Both decode with JAXB, 0.0.58 over the JDK's
+XML parser and 1.0 over Woodstox, which is faster (see the decoder numbers above) and allocates a sixth to a fifth more
+per message - the strings it keeps for each element's attribute values and the objects and tables it builds for each
+document. That is the cost of the parser 1.0 chose, and the whole of the gap: 37 KB more in the decode, the rest equal.
+The changes below cut the building of the markets to 40 KB, about a third less than 0.0.58's.
+
+The changes - a market's specifiers held in an array rather than a linked hash map, a market's names making their map when a
+name is first read, the feed's enums keeping their constants rather than copying them for every lookup - cut the entity
+build's allocation by about 40 % (20 markets 16.6 to 10.4 KB, 150 markets 112.9 to 68.0 KB, 500 markets 383.7 to 229.6 KB) and a
+message's by 21 KB, to 297 KB: 6 % above 0.0.58, the decode's 37 KB. What is left is the decoder, and is not cheap to
+take: about 11 % of the allocation is JAXB's thread-local bookkeeping for each element, the same in both lines, and more
+than a fifth the attribute values' strings, for which the alternative is the hand-written reader the decoder numbers
+compare with, which costs a parser to keep in step with the schema.
 
 ## A slow listener slows only its own session
 
