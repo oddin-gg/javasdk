@@ -2,9 +2,11 @@ package com.oddin.oddsfeedsdk.internal.dispatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
+import java.time.InstantSource;
 import java.util.concurrent.atomic.AtomicLong;
 import org.junit.jupiter.api.Test;
 
@@ -12,7 +14,7 @@ import org.junit.jupiter.api.Test;
 class FixtureChangesTest {
 
     private final AtomicLong nanos = new AtomicLong();
-    private final Ticker ticker = nanos::get;
+    private final FeedClock ticker = FeedClock.of(InstantSource.system(), nanos::get);
 
     @Test
     void aChangeIsNewOncePerProducerEventAndTimestamp() {
@@ -27,6 +29,24 @@ class FixtureChangesTest {
                 .isTrue();
         assertThat(changes.first(2, URN.parse("od:match:1"), 11))
                 .as("another timestamp")
+                .isTrue();
+    }
+
+    @Test
+    void aChangeIsRememberedForAnHourOfTheMonotonicClockWhateverTheWallClockSays() {
+        var split = new SplitClock();
+        var changes = new FixtureChanges(100, split.clock());
+        assertThat(changes.first(2, URN.parse("od:match:1"), 10)).isTrue();
+
+        split.stepWall(Duration.ofHours(2));
+        assertThat(changes.first(2, URN.parse("od:match:1"), 10))
+                .as("a step forward of the wall clock forgets nothing")
+                .isFalse();
+
+        split.advanceMono(FixtureChanges.AGE.plusMinutes(1));
+        split.stepWall(Duration.ofHours(-2));
+        assertThat(changes.first(2, URN.parse("od:match:1"), 10))
+                .as("an hour has passed")
                 .isTrue();
     }
 

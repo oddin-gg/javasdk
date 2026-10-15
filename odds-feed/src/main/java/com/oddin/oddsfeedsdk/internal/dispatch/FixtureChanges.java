@@ -3,7 +3,7 @@ package com.oddin.oddsfeedsdk.internal.dispatch;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
-import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicLong;
@@ -30,15 +30,20 @@ public final class FixtureChanges {
     private final AtomicLong evicted = new AtomicLong();
 
     public FixtureChanges() {
-        this(SIZE, Ticker.systemTicker());
+        this(FeedClock.system());
     }
 
-    /** With the size and the clock a test sets. */
-    FixtureChanges(long size, Ticker ticker) {
+    /** With the feed's clock: the hour a change is remembered for is counted on its monotonic side. */
+    public FixtureChanges(FeedClock clock) {
+        this(SIZE, clock);
+    }
+
+    /** With the size a test sets. */
+    FixtureChanges(long size, FeedClock clock) {
         this.delivered = Caffeine.newBuilder()
                 .maximumSize(size)
                 .expireAfterWrite(AGE)
-                .ticker(ticker)
+                .ticker(clock::monoNanos)
                 // eviction on the writing thread: nothing to hand over, nothing left pending
                 .executor(Runnable::run)
                 .<String, Boolean>evictionListener((key, value, cause) -> {
