@@ -8,6 +8,7 @@ import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.entity.CacheSizes;
 import com.oddin.oddsfeedsdk.internal.entity.Entities;
 import com.oddin.oddsfeedsdk.internal.entity.MatchCaches;
@@ -49,9 +50,10 @@ public final class MessageWorld implements AutoCloseable {
     public final MessageFactory messages;
     public final Producers producers;
     public final FeedDecoder decoder = FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES);
-    private final SideLoads sideLoads = new SideLoads(1, 0, TIMEOUT);
+    private final SideLoads sideLoads;
 
-    private MessageWorld(ExceptionHandlingStrategy strategy) {
+    private MessageWorld(ExceptionHandlingStrategy strategy, FeedClock clock) {
+        sideLoads = new SideLoads(1, 0, TIMEOUT, clock);
         api = FakeRestServer.start();
         var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectEnvironment("mq.invalid", api.apiHost())
@@ -59,11 +61,11 @@ public final class MessageWorld implements AutoCloseable {
                 .setHttpClientTimeout(TIMEOUT)
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        profiles = new ProfileCaches(client, TIMEOUT, CacheSizes.from(configuration), threads);
+        profiles = new ProfileCaches(client, TIMEOUT, CacheSizes.from(configuration), threads, clock);
         matches = new MatchCaches(
-                client, profiles, sideLoads, TIMEOUT, CacheSizes.from(configuration), Locale.ENGLISH, threads);
+                client, profiles, sideLoads, TIMEOUT, CacheSizes.from(configuration), Locale.ENGLISH, threads, clock);
         entities = new Entities(matches, profiles, (id, locales) -> null, strategy, TIMEOUT, threads, 16);
-        catalog = new MarketDescriptions(client, TIMEOUT, threads);
+        catalog = new MarketDescriptions(client, TIMEOUT, threads, threads, clock);
         messages = new MessageFactory(entities, catalog, strategy, Locale.ENGLISH);
         producers = new Producers(client.fetchProducers());
     }
@@ -73,7 +75,12 @@ public final class MessageWorld implements AutoCloseable {
     }
 
     public static MessageWorld start(ExceptionHandlingStrategy strategy) {
-        return new MessageWorld(strategy);
+        return start(strategy, FeedClock.system());
+    }
+
+    /** On the clock a test shares with what else it builds, so the caches and it read one. */
+    public static MessageWorld start(ExceptionHandlingStrategy strategy, FeedClock clock) {
+        return new MessageWorld(strategy, clock);
     }
 
     /** The message decoded, as the SDK's decoder reads it. */

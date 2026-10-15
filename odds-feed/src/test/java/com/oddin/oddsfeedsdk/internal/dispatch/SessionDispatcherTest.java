@@ -13,11 +13,14 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.MatchStatus;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.Tournament;
+import com.oddin.oddsfeedsdk.config.ExceptionHandlingStrategy;
 import com.oddin.oddsfeedsdk.internal.amqp.Queues;
 import com.oddin.oddsfeedsdk.internal.amqp.RawDelivery;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionQueue;
 import com.oddin.oddsfeedsdk.internal.amqp.SessionTransport;
+import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.message.MessageWorld;
@@ -351,6 +354,59 @@ class SessionDispatcherTest {
         assertThat(listener.read)
                 .as("every status its own, a number the SDK does not know and a missing attribute Unknown")
                 .containsExactly(EventStatus.Cancelled, EventStatus.Unknown, EventStatus.Unknown);
+    }
+
+    /**
+     * The live state counts how long ago the feed wrote by the monotonic reading the delivery was
+     * received at, not by its wall one: one clock for the dispatcher and the caches, the monotonic
+     * reading hours from the wall's, so a write stamped with the wrong one never goes quiet.
+     */
+    @Test
+    void aLiveWriteIsStampedWithTheMonotonicReceiptReadingAndGoesQuietByIt() {
+        var split = new SplitClock();
+        split.advanceMono(Duration.ofHours(5));
+        try (var shared = MessageWorld.start(ExceptionHandlingStrategy.THROW, split.clock())) {
+            var pipeline = new Pipeline(
+                    shared.decoder,
+                    shared.messages,
+                    shared.matches,
+                    shared.profiles,
+                    shared.producers,
+                    fixtureChanges,
+                    offsets,
+                    events,
+                    split.clock());
+            var dispatcher = new SessionDispatcher(
+                    1, session, MessageInterest.ALL, listener, ext, transport, facts, false, feedClosed::get, pipeline);
+            listener.onOdds = message -> listener.read.add(status(message));
+            String live = FeedMessages.stampedAt(
+                    Fixtures.read(WITH_STATUS).replace("status=\"4\"", "status=\"1\""),
+                    split.clock().wallMillis());
+            var received = Instant.ofEpochMilli(split.clock().wallMillis());
+            dispatcher.handle(new RawDelivery(
+                    live.getBytes(StandardCharsets.UTF_8),
+                    live.length(),
+                    FakeFeed.routingKey(live),
+                    ++tag,
+                    0,
+                    received,
+                    split.clock().monoMillis(),
+                    received.minusMillis(500)));
+            assertThat(listener.read).as("the feed's status").containsExactly(EventStatus.Live);
+            int summaries = shared.api.requests("GET", SUMMARY).size();
+
+            split.advanceMono(LiveState.STATUS_AGE.minusMinutes(1));
+            assertThat(shared.matches.live(MATCH)).isNotNull();
+            assertThat(shared.api.requests("GET", SUMMARY))
+                    .as("the feed wrote a minute short of the status age ago: still its")
+                    .hasSize(summaries);
+
+            split.advanceMono(Duration.ofMinutes(2));
+            assertThat(shared.matches.live(MATCH)).isNotNull();
+            assertThat(shared.api.requests("GET", SUMMARY))
+                    .as("quiet for the status age: REST loads the summary and takes the status over")
+                    .hasSize(summaries + 1);
+        }
     }
 
     @Test
