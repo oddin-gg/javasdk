@@ -34,6 +34,7 @@ import com.oddin.oddsfeedsdk.schema.feed.v1.OFRollbackBetCancel;
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFRollbackBetSettlement;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -254,21 +255,63 @@ public final class MessageFactory {
         if (specifiers == null || specifiers.isEmpty()) {
             return Map.of();
         }
+        int segments = 1;
+        for (int bar = specifiers.indexOf('|'); bar >= 0; bar = specifiers.indexOf('|', bar + 1)) {
+            segments++;
+        }
+        if (segments > Specifiers.MOST) {
+            return manySpecifiers(specifiers, badPairs);
+        }
+        var pairs = new String[2 * segments];
+        int kept = 0;
+        for (int start = 0, end; start <= specifiers.length(); start = end + 1) {
+            end = specifiers.indexOf('|', start);
+            if (end < 0) {
+                end = specifiers.length();
+            }
+            int equals = specifiers.indexOf('=', start);
+            int second = equals < 0 ? -1 : specifiers.indexOf('=', equals + 1);
+            if (equals < 0 || equals >= end || (second >= 0 && second < end)) {
+                badPair(specifiers.substring(start, end), badPairs);
+                continue;
+            }
+            String name = specifiers.substring(start, equals);
+            String value = specifiers.substring(equals + 1, end);
+            int at = 0;
+            while (at < kept && !pairs[at].equals(name)) {
+                at += 2;
+            }
+            // a name sent twice keeps its first place and its last value
+            pairs[at + 1] = value;
+            if (at == kept) {
+                pairs[at] = name;
+                kept += 2;
+            }
+        }
+        return kept == 0 ? Map.of() : new Specifiers(kept == pairs.length ? pairs : Arrays.copyOf(pairs, kept));
+    }
+
+    /** The same for a hostile count of pairs, which an array searched pair by pair would make slow. */
+    private static Map<String, String> manySpecifiers(String specifiers, Throttle badPairs) {
         var pairs = new LinkedHashMap<String, String>();
         for (String pair : specifiers.split("\\|", -1)) {
             int equals = pair.indexOf('=');
             if (equals < 0 || pair.indexOf('=', equals + 1) >= 0) {
-                // a feed that sends the same bad pair with every market would flood the log
-                long count = badPairs.count();
-                if (Throttle.due(count)) {
-                    LOG.warn("Bad specifier {}, {} so far", pair, count);
-                } else {
-                    LOG.debug("Bad specifier {}", pair);
-                }
+                badPair(pair, badPairs);
                 continue;
             }
             pairs.put(pair.substring(0, equals), pair.substring(equals + 1));
         }
         return Collections.unmodifiableMap(pairs);
+    }
+
+    private static void badPair(String pair, Throttle badPairs) {
+        // a feed that sends the same bad pair with every market would flood the log
+        long count = badPairs.count();
+        if (Throttle.due(count)) {
+            LOG.warn("Bad specifier {}, {} so far", pair, count);
+        } else {
+            LOG.debug("Bad specifier {}", pair);
+        }
     }
 }
