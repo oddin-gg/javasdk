@@ -10,6 +10,7 @@ import com.oddin.oddsfeedsdk.mq.entities.MessageTimestamp
 import com.oddin.oddsfeedsdk.mq.entities.UnparsedMessage
 import com.oddin.oddsfeedsdk.mq.rabbit.AMQPConnectionProvider
 import com.oddin.oddsfeedsdk.schema.utils.URN
+import com.oddin.oddsfeedsdk.utils.SafeXml
 import com.rabbitmq.client.AMQP
 import com.rabbitmq.client.Channel
 import com.rabbitmq.client.DefaultConsumer
@@ -153,7 +154,7 @@ class ChannelConsumerImpl @Inject constructor(
 
         val unparsedMessage: UnparsedMessage
         try {
-            unparsedMessage = unmarshaller.unmarshal(ByteArrayInputStream(body)) as UnparsedMessage
+            unparsedMessage = unmarshaller.unmarshal(SafeXml.reader(ByteArrayInputStream(body))) as UnparsedMessage
         } catch (e: JAXBException) {
             publishUnparsableMessage(FeedMessage(null, body, routingKeyInfo, timestamp), dispatchManager)
             return
