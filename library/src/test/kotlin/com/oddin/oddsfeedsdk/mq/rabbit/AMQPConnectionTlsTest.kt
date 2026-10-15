@@ -132,7 +132,7 @@ class AMQPConnectionTlsTest {
     private fun certificateFailure(e: Throwable?): Throwable? =
         generateSequence(e) { it.cause }.firstOrNull { it is CertificateException }
 
-    private fun provider(port: Int): SingleAMQPConnectionProvider {
+    private fun provider(port: Int, trust: SSLContext? = null): SingleAMQPConnectionProvider {
         val config = mockk<OddsFeedConfiguration> {
             every { accessToken } returns "token"
             every { selectedEnvironment } returns Environment("127.0.0.1", "api.test", port)
@@ -145,7 +145,7 @@ class AMQPConnectionTlsTest {
             config,
             whoAmI,
             mockk<GlobalEventsListener>(relaxed = true)
-        )
+        ).also { it.sslContext = trust }
     }
 
     @Test(timeout = 60_000)
@@ -183,5 +183,34 @@ class AMQPConnectionTlsTest {
         assertTrue("the connection was not refused: $failure", failure is SSLException)
         assertNotNull("not a host name failure: $failure", certificateFailure(failure))
         assertFalse("the handshake completed", broker.handshakeCompleted())
+    }
+
+    @Test(timeout = 60_000)
+    fun theProviderRefusesATrustedCertificateIssuedForAnotherHost() {
+        val broker = server("other-host")
+
+        try {
+            provider(broker.port, trusting("other-host")).newChannel()
+            fail("the connection was made to a host the certificate was not issued for")
+        } catch (e: SSLException) {
+            assertNotNull("not a host name failure: $e", certificateFailure(e))
+        }
+        assertFalse("the handshake completed", broker.handshakeCompleted())
+    }
+
+    @Test(timeout = 60_000)
+    fun theProviderGetsPastTheHandshakeWithACertificateIssuedForTheHost() {
+        val broker = server("localhost")
+
+        val failure = try {
+            provider(broker.port, trusting("localhost")).newChannel()
+            null
+        } catch (e: Exception) {
+            e
+        }
+
+        // what fails is the AMQP protocol the test server does not speak
+        assertTrue("the handshake did not complete: $failure", broker.handshakeCompleted())
+        assertEquals("a certificate failure: $failure", null, certificateFailure(failure))
     }
 }
