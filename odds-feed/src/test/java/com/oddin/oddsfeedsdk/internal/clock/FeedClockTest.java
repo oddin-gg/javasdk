@@ -111,6 +111,16 @@ class FeedClockTest {
     }
 
     @Test
+    void theMonotonicReadingInNanosIsTheMillisAndIgnoresTheWallClock() {
+        var clock = FeedClock.of(wallSource, nanos::get);
+        nanos.addAndGet(5 * MILLI);
+        wall.set(START.plus(Duration.ofHours(3)));
+        assertThat(clock.monoNanos()).isEqualTo(6 * MILLI);
+        assertThat(FeedClock.following(() -> Instant.ofEpochMilli(2_000)).monoNanos())
+                .isEqualTo(2_000 * MILLI);
+    }
+
+    @Test
     void theSystemClockReadsBothSidesAndTheMonotonicOneNeverGoesBack() {
         var clock = FeedClock.system();
         var first = clock.stamp();
