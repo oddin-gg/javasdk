@@ -656,9 +656,18 @@ and REST workers post facts to it; it decides and posts work out.
   last alive - so one message or alive stamped in the producer's future, from a
   component's fast clock or a bad value, moves neither past what the producer has
   sent: a request is not refused for a start ahead of the producer, and a client does
-  not persist one. The marks themselves still take the stamp; a tolerance that keeps
-  such a stamp from moving a checkpoint or a live-state watermark comes later. A
-  recovery's start is clamped
+  not persist one. The marks the SDK takes from a message - a session's checkpoint, a
+  producer's safe point, the live state's watermark - take its stamp, but no later than the
+  producer's now at receipt: the SDK's wall clock when the delivery arrived, less the
+  producer's offset as known before that message, so an alive does not vouch for its own stamp,
+  and none while no alive has shown one. Every mark is clamped, with no tolerance setting: a
+  lower mark is the safe side of a checkpoint, and harmless to a watermark, which keeps the
+  order of the true stamps. One stamp more than a second ahead is logged at `WARN`, at most
+  once a minute per producer, with the stamp, the producer's now and the difference. The
+  stamps a client sees, on the message and in the producer's last processed timestamp, stay as
+  the producer made them; one place, `ClockOffsets.mark`, computes the mark for the alive
+  dispatcher and the session dispatchers, which hand it to the recovery actor and the live
+  state. A replay session takes its stamps as they are. A recovery's start is clamped
   to the producer's stateful recovery window, as today - counted back by the producer's
   clock, as the gaps' starts are, with the offset measured on its alives - and a cold
   start with no seed requests a full snapshot, or the configured initial snapshot
@@ -1831,7 +1840,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   machine's own durations stayed on the wall clock then, until the 2026-10-14 entry on clocks.
   The published resume point and a
   recovery's start are capped at the producer's now, so a timestamp from the producer's
-  future moves neither past it; the tolerance on the checkpoints and watermarks follows.
+  future moves neither past it; the checkpoints and watermarks follow in the 2026-10-15 entry
+  on stamps ahead.
 - 2026-10-08, documentation for the release candidate: KNOWN-DIFFERENCES.md is written against
   0.0.58, the stale entries are corrected, and KD-34 to KD-41 name the differences no entry had,
   the small ones grouped in KD-41. A producer clock that steps back keeps the code as merged; KD-28
@@ -1954,3 +1964,20 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   reason"), and no second `HealthEvent`: an event is a change of state, the events dispatcher
   drops one whose state is the client's, and a client that alarms on `STALLED` would alarm twice.
   Only an ended thread does this; no other part's change of reason is told. No public API changes.
+- 2026-10-15, a stamp ahead of its producer moves no mark past the producer's now (the item the
+  entries on the cap left open): a message stamped in the producer's future, from a component's
+  fast clock or a bad value, kept a session's checkpoint and the producer's safe point ahead of
+  what was processed, so a gap opened meanwhile started at the request and never asked for what
+  lay between, and held the live state's watermark ahead, so the correct messages that followed
+  wrote no status or score until the producer's clock caught up. The owner chose to clamp, with
+  no tolerance setting: a mark is the stamp or the producer's now at receipt - the SDK's wall
+  clock then, less the producer's offset known before the message, corrected for a step of the
+  wall clock since it was measured, as the recovery machine corrects it - whichever is less. It is the safe side of a
+  checkpoint and keeps the watermarks' order of the true stamps; the offset noise only lowers a mark a little. A
+  mark taken so can still be ahead of the message's true generation by the delivery's latency,
+  so a correct message generated within that latency of the bad one, and stamped before it was
+  received, is still older than the watermark. One place computes it, `ClockOffsets.mark`, for
+  both dispatchers, and it is handed to the recovery actor and the live state beside the
+  stamp, which the machine still publishes and compares as it was. The 0.0.x line kept no
+  checkpoint or watermark, so it has no behaviour to differ from: KD-13 says what a stamp ahead
+  counts as. No public API changes.

@@ -210,7 +210,10 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **1.0:** "A message from the same producer with an older timestamp does not write feed-owned
   fields. It is still built and delivered" (section 4, Caches and loaders, Ownership and
   ordering). A replay session's messages write in the order they come, as on 0.0.x: a match
-  played again repeats the timestamps of its last run. As on 0.0.x, a winner or a score the new
+  played again repeats the timestamps of its last run. The timestamp compared is no later than
+  the producer's now when the message was received, so one stamped in the producer's future
+  does not hold the later, correctly stamped messages back (NEXT.md section 4, Recovery and
+  producers). As on 0.0.x, a winner or a score the new
   run leaves out keeps the last run's value until a message replaces it; so do period scores and
   whether a scoreboard is available, which 0.0.x emptied and set false (KD-39).
 - **Why:** Out-of-order delivery turns a score back.
