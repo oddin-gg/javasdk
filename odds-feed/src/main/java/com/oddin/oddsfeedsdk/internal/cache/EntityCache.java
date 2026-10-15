@@ -4,8 +4,8 @@ import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import java.time.Duration;
-import java.time.InstantSource;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
@@ -35,7 +35,6 @@ public final class EntityCache<K> {
 
     private final String name;
     private final Duration age;
-    private final InstantSource clock;
     private final Ticker ticker;
     private final Cache<K, Entry> entries;
     /** The order fetches start in, to tell an older response of one entity from a newer one. */
@@ -73,16 +72,17 @@ public final class EntityCache<K> {
      *     which an invalidation of a key with no entry is remembered for
      */
     public EntityCache(String name, long maximumSize, Duration age, Duration longestFetch) {
-        this(name, maximumSize, age, longestFetch, InstantSource.system(), Ticker.systemTicker());
+        this(name, maximumSize, age, longestFetch, FeedClock.system());
     }
 
-    /** With the clocks a test drives: one for fetch times, one for Caffeine's ages. */
-    public EntityCache(
-            String name, long maximumSize, Duration age, Duration longestFetch, InstantSource clock, Ticker ticker) {
+    /**
+     * With the feed's clock: its monotonic side counts every age here, the fetch times the entries
+     * keep and Caffeine's, so a step of the wall clock moves none of them.
+     */
+    public EntityCache(String name, long maximumSize, Duration age, Duration longestFetch, FeedClock clock) {
         this.name = name;
         this.age = age;
-        this.clock = clock;
-        this.ticker = ticker;
+        this.ticker = clock::monoNanos;
         this.entries = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
                 .expireAfter(new AgedFromLastChange<K, Entry>(age, Entry::changedAt))
@@ -128,7 +128,7 @@ public final class EntityCache<K> {
     /** Whether {@code endpoint} was fetched for the entry in {@code locale} within the cache's age. */
     public boolean isFresh(K key, Endpoint endpoint, Locale locale) {
         Entry entry = entries.getIfPresent(key);
-        return entry != null && entry.isFresh(endpoint, locale, clock.instant(), age);
+        return entry != null && entry.isFresh(endpoint, locale, ticker.read(), age);
     }
 
     /** What a fetch remembers when it starts, to tell whether its result still applies. */
@@ -198,7 +198,7 @@ public final class EntityCache<K> {
                 written[0] = true;
                 insideWrite.run();
                 Entry base = current == null ? Entry.empty(generations.incrementAndGet()) : current;
-                return base.authoritative(write, clock.instant(), ticker.read(), started.fetch());
+                return base.authoritative(write, ticker.read(), started.fetch());
             });
         } finally {
             clearing.readLock().unlock();

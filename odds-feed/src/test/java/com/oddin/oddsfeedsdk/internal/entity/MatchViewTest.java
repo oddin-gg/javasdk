@@ -342,7 +342,8 @@ class MatchViewTest {
             var live = new OFSportEventStatus();
             live.setStatus(OFEventStatus.LIVE);
             live.setHomeScore(4.0);
-            world.matches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, world.time.instant(), live);
+            world.matches.oddsChange(
+                    MATCH, 1, 1_000, Duration.ZERO, world.time.clock().monoMillis(), live);
             assertThat(status.getStatus()).as("read anew: the feed's").isEqualTo(EventStatus.Live);
             assertThat(status.getHomeScore()).isEqualTo(4.0);
             assertThat(status.getAwayScore()).as("left out: kept").isEqualTo(2.0);
@@ -362,7 +363,8 @@ class MatchViewTest {
             var closing = new OFSportEventStatus();
             closing.setStatus(OFEventStatus.FINALIZED);
             closing.setWinnerId(AWAY.toString());
-            world.matches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, world.time.instant(), closing);
+            world.matches.oddsChange(
+                    MATCH, 1, 1_000, Duration.ZERO, world.time.clock().monoMillis(), closing);
             // a settlement carries no status: its callback reads what the odds change wrote
             var settled =
                     requireNonNull(world.entities.match(MATCH, List.of(EN)).getStatus());

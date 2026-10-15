@@ -2,14 +2,13 @@ package com.oddin.oddsfeedsdk.internal.catalog;
 
 import static java.util.Objects.requireNonNull;
 
-import com.github.benmanes.caffeine.cache.Ticker;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import com.oddin.oddsfeedsdk.internal.rest.HttpStatusException;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAMarketDescription;
 import java.time.Duration;
-import java.time.InstantSource;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -54,17 +53,12 @@ public final class MarketDescriptions {
      * @param fetches where the fetches run: virtual threads
      */
     public MarketDescriptions(ApiClient client, Duration timeout, Executor fetches) {
-        this(client, timeout, fetches, fetches, InstantSource.system(), Ticker.systemTicker());
+        this(client, timeout, fetches, fetches, FeedClock.system());
     }
 
-    /** With the clocks a test drives, and where it runs the background refreshes. */
-    MarketDescriptions(
-            ApiClient client,
-            Duration timeout,
-            Executor fetches,
-            Executor refreshes,
-            InstantSource clock,
-            Ticker ticker) {
+    /** With the feed's clock, and where it runs the background refreshes. */
+    public MarketDescriptions(
+            ApiClient client, Duration timeout, Executor fetches, Executor refreshes, FeedClock clock) {
         this.client = client;
         this.lists = new Catalog<>(
                 "market descriptions",
@@ -75,7 +69,6 @@ public final class MarketDescriptions {
                 fetches,
                 refreshes,
                 clock,
-                ticker,
                 client::isClosed);
         this.variants = new Catalog<>(
                 "market variants",
@@ -86,7 +79,6 @@ public final class MarketDescriptions {
                 fetches,
                 refreshes,
                 clock,
-                ticker,
                 client::isClosed);
     }
 

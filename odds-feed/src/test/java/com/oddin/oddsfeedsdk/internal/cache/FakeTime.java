@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.cache;
 
 import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
@@ -9,6 +10,13 @@ import java.time.InstantSource;
 final class FakeTime implements InstantSource, Ticker {
 
     private volatile Instant now = Instant.parse("2026-09-30T12:00:00Z");
+
+    private final FeedClock clock = FeedClock.following(this);
+
+    /** The feed's clock over this one: both sides move together, as the caches read them. */
+    FeedClock clock() {
+        return clock;
+    }
 
     @Override
     public Instant instant() {

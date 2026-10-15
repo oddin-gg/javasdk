@@ -5,12 +5,15 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache.Stamp;
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** The write rule, generations and bounds, on a competitor-like entity. */
 class EntityCacheTest {
@@ -40,7 +43,7 @@ class EntityCacheTest {
 
     private final FakeTime time = new FakeTime();
     private final EntityCache<String> cache =
-            new EntityCache<>("competitor", 100, Duration.ofHours(24), LONGEST_FETCH, time, time);
+            new EntityCache<>("competitor", 100, Duration.ofHours(24), LONGEST_FETCH, time.clock());
 
     @Test
     void anAuthoritativeResponseReplacesItsFieldsAndMarksTheLocaleLoaded() {
@@ -50,8 +53,8 @@ class EntityCacheTest {
         assertThat(entry.get(COUNTRY, EN)).isEqualTo("CZ");
         assertThat(entry.get(ABBREVIATION, null)).isEqualTo("T1");
         assertThat(entry.get(PLAYERS, null)).containsExactly("p1", "p2");
-        assertThat(entry.loadedAt(PROFILE, EN)).isEqualTo(time.instant());
-        assertThat(entry.loadedAt(PROFILE, DE)).isNull();
+        assertThat(entry.isLoaded(PROFILE, EN)).isTrue();
+        assertThat(entry.isLoaded(PROFILE, DE)).isFalse();
         assertThat(cache.isFresh("c1", PROFILE, EN)).isTrue();
         assertThat(cache.isFresh("c1", PROFILE, DE)).isFalse();
 
@@ -229,9 +232,9 @@ class EntityCacheTest {
         fill("c1", Write.from(SCHEDULE, EN).put(NAME, "From A Schedule").put(ICON, "icon.png"));
         Entry filled = entry("c1");
         assertThat(filled.get(NAME, EN)).isEqualTo("From A Schedule");
-        assertThat(filled.loadedAt(PROFILE, EN))
+        assertThat(filled.isLoaded(PROFILE, EN))
                 .as("a fill marks nothing loaded")
-                .isNull();
+                .isFalse();
         assertThat(cache.isFresh("c1", PROFILE, EN)).isFalse();
 
         profile("c1", EN, "Team One", "CZ", "T1", List.of());
@@ -246,7 +249,7 @@ class EntityCacheTest {
         // a fill in another locale adds that locale's name
         fill("c1", Write.from(SCHEDULE, DE).put(NAME, "Mannschaft"));
         assertThat(entry("c1").get(NAME, DE)).isEqualTo("Mannschaft");
-        assertThat(entry("c1").loadedAt(PROFILE, DE)).isNull();
+        assertThat(entry("c1").isLoaded(PROFILE, DE)).isFalse();
 
         // its own authoritative endpoint replaces what a fill put, and a fill no longer can
         cache.writeAuthoritative("c1", Write.from(ICONS, EN).put(ICON, "new.png"), cache.stamp("c1"));
@@ -263,7 +266,7 @@ class EntityCacheTest {
         Entry tombstone = entry("c1");
         assertThat(tombstone.generation()).isNotEqualTo(started.generation());
         assertThat(tombstone.get(NAME, EN)).isNull();
-        assertThat(tombstone.loadedAt(PROFILE, EN)).isNull();
+        assertThat(tombstone.isLoaded(PROFILE, EN)).isFalse();
 
         assertThat(cache.writeAuthoritative("c1", profileWrite(EN, "Old Name"), started))
                 .isFalse();
@@ -331,7 +334,7 @@ class EntityCacheTest {
 
     @Test
     void anInvalidationTheSizeBoundForgotStillStopsAFetchThatStartedOnNoEntry() {
-        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), LONGEST_FETCH, time, time);
+        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), LONGEST_FETCH, time.clock());
         Stamp onNothing = small.stamp("c1");
         small.invalidate("c1");
         for (int i = 0; i < 10_000 && small.remembersInvalidation("c1"); i++) {
@@ -350,7 +353,7 @@ class EntityCacheTest {
 
     @Test
     void unrelatedInvalidationsTwiceAsManyAsTheEntriesDoNotStopAnotherKeysFetch() {
-        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), LONGEST_FETCH, time, time);
+        var small = new EntityCache<String>("competitor", 10, Duration.ofHours(24), LONGEST_FETCH, time.clock());
         Stamp onNothing = small.stamp("c1");
         for (int i = 0; i < 20; i++) {
             small.invalidate("other " + i);
@@ -421,7 +424,7 @@ class EntityCacheTest {
 
     @Test
     void eachLocaleIsFreshForTheAgeOfItsOwnFetch() {
-        var matches = new EntityCache<String>("match", 100, Duration.ofHours(12), LONGEST_FETCH, time, time);
+        var matches = new EntityCache<String>("match", 100, Duration.ofHours(12), LONGEST_FETCH, time.clock());
         matches.writeAuthoritative("m1", profileWrite(EN, "Match"), matches.stamp("m1"));
         time.advance(Duration.ofHours(11));
         matches.writeAuthoritative("m1", profileWrite(DE, "Spiel"), matches.stamp("m1"));
@@ -443,7 +446,7 @@ class EntityCacheTest {
         time.advance(Duration.ofHours(24).plusSeconds(1));
         assertThat(cache.get("c1")).isNull();
 
-        var bounded = new EntityCache<String>("competitor", 3, Duration.ofHours(24), LONGEST_FETCH, time, time);
+        var bounded = new EntityCache<String>("competitor", 3, Duration.ofHours(24), LONGEST_FETCH, time.clock());
         for (int i = 0; i < 10; i++) {
             bounded.fill("c" + i, Write.from(SCHEDULE, EN).put(NAME, "Team " + i), bounded.stamp("c" + i));
         }
@@ -630,6 +633,49 @@ class EntityCacheTest {
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new Endpoint("odd", Set.of(NAME), Set.of(ICON)))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aStepOfTheWallClockMakesNoEntryStaleOrGone(long minutes) {
+        var split = new SplitClock();
+        var aging = new EntityCache<String>("competitor", 100, Duration.ofMinutes(20), LONGEST_FETCH, split.clock());
+        aging.writeAuthoritative("c1", Write.from(PROFILE, EN).put(NAME, "Team One"), aging.stamp("c1"));
+
+        split.stepWall(Duration.ofMinutes(minutes));
+        assertThat(aging.isFresh("c1", PROFILE, EN)).isTrue();
+        assertThat(requireNonNull(aging.get("c1")).get(NAME, EN)).isEqualTo("Team One");
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, 0, -30})
+    void anEntryAgesByTheMonotonicClockWhateverTheWallClockSays(long minutes) {
+        var split = new SplitClock();
+        var aging = new EntityCache<String>("competitor", 100, Duration.ofMinutes(20), LONGEST_FETCH, split.clock());
+        aging.writeAuthoritative("c1", Write.from(PROFILE, EN).put(NAME, "Team One"), aging.stamp("c1"));
+
+        split.advanceMono(Duration.ofMinutes(21));
+        split.stepWall(Duration.ofMinutes(minutes));
+        assertThat(aging.isFresh("c1", PROFILE, EN)).isFalse();
+        assertThat(aging.get("c1")).as("dropped after its age").isNull();
+    }
+
+    @Test
+    void anInvalidationIsRememberedForTheLongestFetchOnTheMonotonicClock() {
+        var split = new SplitClock();
+        var aging = new EntityCache<String>("competitor", 100, Duration.ofHours(24), LONGEST_FETCH, split.clock());
+        aging.invalidate("c1");
+
+        split.stepWall(Duration.ofMinutes(30));
+        assertThat(aging.remembersInvalidation("c1"))
+                .as("no fetch has run for 30 minutes of the wall clock, and none for a second of the real one")
+                .isTrue();
+
+        split.advanceMono(LONGEST_FETCH.plusSeconds(1));
+        split.stepWall(Duration.ofMinutes(-30));
+        assertThat(aging.remembersInvalidation("c1"))
+                .as("longer than any fetch runs")
+                .isFalse();
     }
 
     private void profile(

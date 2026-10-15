@@ -217,7 +217,7 @@ public final class Entities {
      * @throws ItemNotFoundException when it did not
      */
     static Entry found(Entry entry, Endpoint endpoint, Locale locale, Object entity) {
-        if (entry.loadedAt(endpoint, locale) == null) {
+        if (!entry.isLoaded(endpoint, locale)) {
             throw new ItemNotFoundException(entity + " not found in " + locale, null);
         }
         return entry;

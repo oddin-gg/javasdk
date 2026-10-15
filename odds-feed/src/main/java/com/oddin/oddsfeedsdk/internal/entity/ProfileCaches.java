@@ -7,11 +7,11 @@ import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.SPORT_TOURNAME
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_INFO;
 import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.TOURNAMENT_LISTED;
 
-import com.github.benmanes.caffeine.cache.Ticker;
 import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache.Stamp;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.loader.Loader;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
@@ -23,8 +23,6 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RATeam;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RATournament;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
@@ -66,7 +64,7 @@ public final class ProfileCaches {
     static final Duration TOURNAMENT_AGE = Duration.ofHours(12);
 
     private final ApiClient client;
-    private final InstantSource clock;
+    private final FeedClock clock;
     private final EntityCache<URN> competitors;
     private final EntityCache<URN> players;
     private final EntityCache<URN> tournaments;
@@ -85,25 +83,18 @@ public final class ProfileCaches {
      * @param fetches where the loads run: virtual threads
      */
     public ProfileCaches(ApiClient client, Duration timeout, CacheSizes sizes, Executor fetches) {
-        this(client, timeout, sizes, fetches, InstantSource.system(), Ticker.systemTicker());
+        this(client, timeout, sizes, fetches, FeedClock.system());
     }
 
-    /** With the clocks a test drives. */
-    ProfileCaches(
-            ApiClient client,
-            Duration timeout,
-            CacheSizes sizes,
-            Executor fetches,
-            InstantSource clock,
-            Ticker ticker) {
+    /** With the feed's clock: every age and every duration here is read on its monotonic side. */
+    public ProfileCaches(ApiClient client, Duration timeout, CacheSizes sizes, Executor fetches, FeedClock clock) {
         this.client = client;
         this.clock = clock;
         Duration longestFetch = timeout.plus(MatchCaches.MARGIN);
-        this.competitors =
-                new EntityCache<>("competitor", sizes.competitors(), PROFILE_AGE, longestFetch, clock, ticker);
-        this.players = new EntityCache<>("player", sizes.players(), PROFILE_AGE, longestFetch, clock, ticker);
-        this.tournaments = new EntityCache<>("tournament", SIZE, TOURNAMENT_AGE, longestFetch, clock, ticker);
-        this.sports = new EntityCache<>("sport", SIZE, PROFILE_AGE, longestFetch, clock, ticker);
+        this.competitors = new EntityCache<>("competitor", sizes.competitors(), PROFILE_AGE, longestFetch, clock);
+        this.players = new EntityCache<>("player", sizes.players(), PROFILE_AGE, longestFetch, clock);
+        this.tournaments = new EntityCache<>("tournament", SIZE, TOURNAMENT_AGE, longestFetch, clock);
+        this.sports = new EntityCache<>("sport", SIZE, PROFILE_AGE, longestFetch, clock);
         Duration margin = MatchCaches.MARGIN;
         this.competitorLoads = new Loader<>("competitor", this::fetchCompetitor, timeout, margin, fetches);
         this.playerLoads = new Loader<>("player", this::fetchPlayer, timeout, margin, fetches);
@@ -294,7 +285,7 @@ public final class ProfileCaches {
      */
     private Entry read(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Runnable load) {
         Entry entry = entryOf(cache, id);
-        for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.instant(), cache.age()); tries++) {
+        for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.monoNanos(), cache.age()); tries++) {
             load.run();
             entry = entryOf(cache, id);
         }
@@ -302,7 +293,7 @@ public final class ProfileCaches {
     }
 
     private boolean warm(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Loader<Key, Boolean> loads) {
-        return entryOf(cache, id).isFresh(endpoint, locale, clock.instant(), cache.age())
+        return entryOf(cache, id).isFresh(endpoint, locale, clock.monoNanos(), cache.age())
                 || loads.keys().contains(new Key(id, locale));
     }
 
@@ -310,13 +301,13 @@ public final class ProfileCaches {
     private boolean sportFresh(URN id, Entry entry, Locale locale) {
         SportList list = freshList(locale);
         return list != null
-                && (!list.ids().contains(id) || entry.isFresh(SPORT_LIST, locale, clock.instant(), sports.age()));
+                && (!list.ids().contains(id) || entry.isFresh(SPORT_LIST, locale, clock.monoNanos(), sports.age()));
     }
 
     /** The locale's sport list, unless it is missing or out of date. */
     private @Nullable SportList freshList(Locale locale) {
         SportList list = sportLists.get(locale);
-        return list != null && !list.loadedAt().plus(PROFILE_AGE).isBefore(clock.instant()) ? list : null;
+        return list != null && clock.monoMillis() - list.loadedAt() <= PROFILE_AGE.toMillis() ? list : null;
     }
 
     private Boolean fetchCompetitor(Key key, Deadline deadline, BooleanSupplier abandoned) {
@@ -392,7 +383,7 @@ public final class ProfileCaches {
 
     private Boolean fetchSportList(Locale locale, Deadline deadline, BooleanSupplier abandoned) {
         Stamp started = sports.stampForMany(abandoned);
-        Instant at = clock.instant();
+        long at = clock.monoMillis();
         var ids = new ArrayList<URN>();
         boolean allWritten = true;
         for (RASportExtended sport : client.fetchSports(locale, deadline).getSport()) {
@@ -437,6 +428,6 @@ public final class ProfileCaches {
     /** An entity in a locale: what its profile is loaded for. */
     private record Key(URN id, Locale locale) {}
 
-    /** A locale's sport list: the sports it named, and when it was loaded. */
-    private record SportList(List<URN> ids, Instant loadedAt) {}
+    /** A locale's sport list: the sports it named, and when it was loaded, on the feed's monotonic clock. */
+    private record SportList(List<URN> ids, long loadedAt) {}
 }

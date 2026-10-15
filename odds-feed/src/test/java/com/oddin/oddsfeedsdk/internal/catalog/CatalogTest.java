@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,6 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * Refresh after write, stale serving with no age limit, the backoff of failed fetches, early
@@ -34,7 +37,7 @@ import org.junit.jupiter.params.provider.EnumSource;
 class CatalogTest {
 
     private static final Duration REFRESH_AGE = Duration.ofHours(1);
-    private static final Duration TICK = Duration.ofNanos(1);
+    private static final Duration TICK = Duration.ofMillis(1);
 
     private final FakeTime time = new FakeTime();
     private final List<Runnable> queuedRefreshes = new ArrayList<>();
@@ -776,12 +779,92 @@ class CatalogTest {
                 .isEqualTo(10 - catalog.peekAll().size());
     }
 
+    @ParameterizedTest
+    @ValueSource(longs = {120, -120})
+    void aStepOfTheWallClockMakesNoValueStale(long minutes) {
+        var split = new SplitClock();
+        catalog = catalog(10, Runnable::run, queuedRefreshes::add, split.clock());
+        catalog.get("k");
+
+        split.stepWall(Duration.ofMinutes(minutes));
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        assertThat(queuedRefreshes).as("not stale by the monotonic clock").isEmpty();
+        assertThat(catalog.health().servedStale()).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {180, 0, -180})
+    void aValueIsStaleAndServedStaleForAsLongAsTheMonotonicClockSaysWhateverTheWallClockSays(long minutes) {
+        var split = new SplitClock();
+        catalog = catalog(10, Runnable::run, queuedRefreshes::add, split.clock());
+        catalog.get("k");
+        split.advanceMono(REFRESH_AGE.plus(TICK));
+        split.stepWall(Duration.ofMinutes(minutes));
+
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        assertThat(queuedRefreshes).as("stale: a refresh starts").hasSize(1);
+        split.advanceMono(Duration.ofSeconds(5));
+        split.stepWall(Duration.ofMinutes(-minutes));
+        assertThat(catalog.health().servedStale()).isEqualTo(1);
+        assertThat(catalog.health().staleFor())
+                .as("how long the health counts it stale, which a step of the wall clock does not change")
+                .isEqualTo(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void aBackoffAndItsEndAreCountedOnTheMonotonicClock() {
+        var split = new SplitClock();
+        catalog = catalog(10, Runnable::run, queuedRefreshes::add, split.clock());
+        answer = () -> {
+            throw new ApiException("down");
+        };
+        assertThatThrownBy(() -> catalog.get("k")).isInstanceOf(ApiException.class);
+
+        split.stepWall(Duration.ofHours(1));
+        assertThatThrownBy(() -> catalog.get("k"))
+                .as("a step forward of the wall clock does not end the backoff")
+                .hasMessageContaining("not fetched again before");
+        assertThat(fetches).hasValue(1);
+
+        split.advanceMono(Catalog.FIRST_BACKOFF.plus(TICK));
+        split.stepWall(Duration.ofHours(-1));
+        assertThatThrownBy(() -> catalog.get("k"))
+                .as("a step back does not hold the next fetch back")
+                .hasMessage("down");
+        assertThat(fetches).hasValue(2);
+    }
+
+    @Test
+    void anItemMissingFromAValueRefreshesItOnlyOnceTheMissIntervalHasPassedByTheMonotonicClock() {
+        var split = new SplitClock();
+        catalog = catalog(10, Runnable::run, queuedRefreshes::add, split.clock());
+        assertThat(find("b")).as("not in the first value").isNull();
+        assertThat(fetches).hasValue(1);
+
+        answer = () -> "v2,b";
+        split.stepWall(Catalog.MISS_INTERVAL.plusMinutes(30));
+        assertThat(find("b")).as("the value is as young as it was").isNull();
+        assertThat(fetches).hasValue(1);
+
+        split.advanceMono(Catalog.MISS_INTERVAL.plus(TICK));
+        split.stepWall(Duration.ofHours(-2));
+        assertThat(find("b"))
+                .as("a minute old by the monotonic clock: new upstream")
+                .isEqualTo("b");
+        assertThat(fetches).hasValue(2);
+    }
+
     private @Nullable String find(String item) {
         return catalog.find(
                 "k", item, (value, wanted) -> List.of(value.split(",")).contains(wanted) ? wanted : null);
     }
 
     private Catalog<String, String> catalog(long size, Executor fetchesRunOn, Executor refreshesRunOn) {
+        return catalog(size, fetchesRunOn, refreshesRunOn, time.clock());
+    }
+
+    private Catalog<String, String> catalog(
+            long size, Executor fetchesRunOn, Executor refreshesRunOn, FeedClock clock) {
         return new Catalog<>(
                 "test catalog",
                 size,
@@ -793,8 +876,7 @@ class CatalogTest {
                 Duration.ofSeconds(10),
                 fetchesRunOn,
                 refreshesRunOn,
-                time,
-                time,
+                clock,
                 () -> apiClosed);
     }
 

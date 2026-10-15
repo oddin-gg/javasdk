@@ -14,6 +14,7 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import com.oddin.oddsfeedsdk.internal.loader.SideLoads;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
@@ -63,7 +64,7 @@ class MatchCachesTest {
                 .setHttpClientTimeout(Duration.ofSeconds(10))
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        profiles = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time, time);
+        profiles = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time.clock());
         sideLoads = new SideLoads(100, 2, Duration.ofSeconds(10));
         caches = new MatchCaches(
                 client,
@@ -73,8 +74,7 @@ class MatchCachesTest {
                 CacheSizes.DEFAULTS,
                 Locale.ENGLISH,
                 threads,
-                time,
-                time);
+                time.clock());
     }
 
     /** Caches of the sizes the four options set; competitors and players are the profiles' to hold. */
@@ -95,8 +95,7 @@ class MatchCachesTest {
                 CacheSizes.from(configuration),
                 Locale.ENGLISH,
                 threads,
-                time,
-                time);
+                time.clock());
     }
 
     @AfterEach
@@ -192,7 +191,8 @@ class MatchCachesTest {
 
         var kickOff = new OFSportEventStatus();
         kickOff.setStatus(OFEventStatus.LIVE);
-        assertThat(caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), kickOff))
+        assertThat(caches.oddsChange(
+                        MATCH, 1, 1_000, Duration.ZERO, time.clock().monoMillis(), kickOff))
                 .isTrue();
         time.advance(Duration.ofMinutes(19));
         assertThat(statusOf(caches.live(MATCH))).as("the feed's, still fresh").isEqualTo(EventStatus.Live);
@@ -206,11 +206,89 @@ class MatchCachesTest {
     }
 
     @Test
+    void aStepOfTheWallClockLeavesTheFeedInChargeOfALiveStatus() {
+        var split = new SplitClock();
+        var onSplit = onClock(split);
+        api.respond(
+                SUMMARY_EN,
+                Reply.of(200, SUMMARY.replace("status=\"closed\" scoreboard", "status=\"not_started\" scoreboard")),
+                Reply.of(200, SUMMARY));
+        assertThat(statusOf(onSplit.live(MATCH))).isEqualTo(EventStatus.NotStarted);
+        var kickOff = new OFSportEventStatus();
+        kickOff.setStatus(OFEventStatus.LIVE);
+        assertThat(onSplit.oddsChange(
+                        MATCH, 1, 1_000, Duration.ZERO, split.clock().monoMillis(), kickOff))
+                .isTrue();
+
+        split.advanceMono(Duration.ofMinutes(1));
+        split.stepWall(Duration.ofMinutes(30));
+        assertThat(statusOf(onSplit.live(MATCH)))
+                .as("the feed wrote a minute ago by the monotonic clock, half an hour by the wall clock")
+                .isEqualTo(EventStatus.Live);
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(1);
+    }
+
+    @Test
+    void aFeedQuietByTheMonotonicClockHandsTheLiveStatusBackToTheSummaryWhateverTheWallClockSays() {
+        var split = new SplitClock();
+        var onSplit = onClock(split);
+        api.respond(
+                SUMMARY_EN,
+                Reply.of(200, SUMMARY.replace("status=\"closed\" scoreboard", "status=\"not_started\" scoreboard")),
+                Reply.of(200, SUMMARY));
+        onSplit.live(MATCH);
+        var kickOff = new OFSportEventStatus();
+        kickOff.setStatus(OFEventStatus.LIVE);
+        onSplit.oddsChange(MATCH, 1, 1_000, Duration.ZERO, split.clock().monoMillis(), kickOff);
+
+        split.advanceMono(Duration.ofMinutes(21));
+        split.stepWall(Duration.ofMinutes(-30));
+        assertThat(statusOf(onSplit.live(MATCH)))
+                .as("quiet for 21 minutes by the monotonic clock: the summary is loaded again, and taken")
+                .isEqualTo(EventStatus.Finished);
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(2);
+    }
+
+    @Test
+    void aMatchSummaryIsFreshForItsAgeOnTheMonotonicClockWhateverTheWallClockSays() {
+        var split = new SplitClock();
+        var onSplit = onClock(split);
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        onSplit.match(MATCH, Locale.ENGLISH);
+
+        split.stepWall(MatchCaches.AGE.plusHours(1));
+        onSplit.match(MATCH, Locale.ENGLISH);
+        assertThat(api.requests("GET", SUMMARY_EN))
+                .as("not old by the monotonic clock")
+                .hasSize(1);
+
+        split.advanceMono(MatchCaches.AGE.plusMinutes(1));
+        split.stepWall(MatchCaches.AGE.plusHours(1).negated());
+        onSplit.match(MATCH, Locale.ENGLISH);
+        assertThat(api.requests("GET", SUMMARY_EN))
+                .as("twelve hours have passed")
+                .hasSize(2);
+    }
+
+    /** Match caches over the same API, on a clock whose two sides the test moves apart. */
+    private MatchCaches onClock(SplitClock split) {
+        return new MatchCaches(
+                client,
+                profiles,
+                sideLoads,
+                Duration.ofSeconds(10),
+                CacheSizes.DEFAULTS,
+                Locale.ENGLISH,
+                threads,
+                split.clock());
+    }
+
+    @Test
     void aSummaryLoadedWhileTheFeedIsLiveLeavesTheLiveStatusAlone() {
         api.respond(SUMMARY_EN, 200, SUMMARY);
         var live = new OFSportEventStatus();
         live.setStatus(OFEventStatus.LIVE);
-        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), live);
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.clock().monoMillis(), live);
         caches.match(MATCH, Locale.ENGLISH);
         assertThat(api.requests("GET", SUMMARY_EN)).hasSize(1);
         assertThat(statusOf(caches.live(MATCH))).isEqualTo(EventStatus.Live);
@@ -233,13 +311,13 @@ class MatchCachesTest {
         var closed = new OFSportEventStatus();
         closed.setStatus(OFEventStatus.FINALIZED);
         closed.setWinnerId("od:competitor:47214");
-        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), closed);
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.clock().monoMillis(), closed);
         assertThat(requireNonNull(caches.live(MATCH)).get(WINNER_ID))
                 .as("the feed's, at once")
                 .isEqualTo(URN.parse("od:competitor:47214"));
         var later = new OFSportEventStatus();
         later.setStatus(OFEventStatus.FINALIZED);
-        caches.oddsChange(MATCH, 1, 2_000, Duration.ZERO, time.instant(), later);
+        caches.oddsChange(MATCH, 1, 2_000, Duration.ZERO, time.clock().monoMillis(), later);
         caches.match(MATCH, Locale.GERMAN);
         assertThat(requireNonNull(caches.live(MATCH)).get(WINNER_ID))
                 .as("kept by a message without one, and by a summary without one while the feed is live")
@@ -258,7 +336,7 @@ class MatchCachesTest {
         api.respond(SUMMARY_EN, Reply.of(200, SUMMARY).after(Duration.ofMillis(500)), Reply.of(500, "<error/>"));
         var live = new OFSportEventStatus();
         live.setStatus(OFEventStatus.LIVE);
-        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), live);
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.clock().monoMillis(), live);
         Future<Entry> reading = threads.submit(() -> caches.match(MATCH, Locale.ENGLISH));
         api.awaitRequest("GET", SUMMARY_EN);
         caches.fixtureChange(MATCH);
@@ -280,7 +358,7 @@ class MatchCachesTest {
         api.respond(SUMMARY_EN, 200, WITHOUT_WINNER);
         var live = new OFSportEventStatus();
         live.setStatus(OFEventStatus.LIVE);
-        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), live);
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.clock().monoMillis(), live);
         Future<Entry> older = threads.submit(() -> caches.match(MATCH, Locale.GERMAN));
         api.awaitRequest("GET", SUMMARY_DE);
         caches.match(MATCH, Locale.ENGLISH);
@@ -571,7 +649,7 @@ class MatchCachesTest {
         caches.match(MATCH, Locale.ENGLISH);
         var live = new OFSportEventStatus();
         live.setStatus(OFEventStatus.LIVE);
-        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.instant(), live);
+        caches.oddsChange(MATCH, 1, 1_000, Duration.ZERO, time.clock().monoMillis(), live);
         caches.clear();
         caches.match(MATCH, Locale.ENGLISH);
         assertThat(api.requests("GET", SUMMARY_EN)).hasSize(2);

@@ -5,7 +5,6 @@ import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.FIXTURE_OF_MATCH
 import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.SCHEDULE;
 import static com.oddin.oddsfeedsdk.internal.entity.MatchFields.SUMMARY;
 
-import com.github.benmanes.caffeine.cache.Ticker;
 import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache.Stamp;
@@ -13,6 +12,7 @@ import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
 import com.oddin.oddsfeedsdk.internal.cache.LiveWrite;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.entity.ProfileCaches.Stamps;
 import com.oddin.oddsfeedsdk.internal.loader.Loader;
 import com.oddin.oddsfeedsdk.internal.loader.SideLoads;
@@ -23,8 +23,6 @@ import com.oddin.oddsfeedsdk.schema.rest.v1.RAFixture;
 import com.oddin.oddsfeedsdk.schema.rest.v1.RASportEvent;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
-import java.time.Instant;
-import java.time.InstantSource;
 import java.util.Collection;
 import java.util.List;
 import java.util.Locale;
@@ -75,7 +73,7 @@ public final class MatchCaches {
     private final ProfileCaches profiles;
     private final SideLoads sideLoads;
     private final Locale defaultLocale;
-    private final InstantSource clock;
+    private final FeedClock clock;
     private final EntityCache<URN> matches;
     private final EntityCache<URN> fixtures;
     private final LiveState<URN> live;
@@ -101,20 +99,11 @@ public final class MatchCaches {
             CacheSizes sizes,
             Locale defaultLocale,
             Executor fetches) {
-        this(
-                client,
-                profiles,
-                sideLoads,
-                timeout,
-                sizes,
-                defaultLocale,
-                fetches,
-                InstantSource.system(),
-                Ticker.systemTicker());
+        this(client, profiles, sideLoads, timeout, sizes, defaultLocale, fetches, FeedClock.system());
     }
 
-    /** With the clocks a test drives. */
-    MatchCaches(
+    /** With the feed's clock: every age and every duration here is read on its monotonic side. */
+    public MatchCaches(
             ApiClient client,
             ProfileCaches profiles,
             SideLoads sideLoads,
@@ -122,18 +111,17 @@ public final class MatchCaches {
             CacheSizes sizes,
             Locale defaultLocale,
             Executor fetches,
-            InstantSource clock,
-            Ticker ticker) {
+            FeedClock clock) {
         this.client = client;
         this.profiles = profiles;
         this.sideLoads = sideLoads;
         this.defaultLocale = defaultLocale;
         this.clock = clock;
         Duration longestFetch = timeout.plus(MARGIN);
-        this.matches = new EntityCache<>("match", sizes.matches(), AGE, longestFetch, clock, ticker);
-        this.fixtures = new EntityCache<>("fixture", sizes.fixtures(), AGE, longestFetch, clock, ticker);
+        this.matches = new EntityCache<>("match", sizes.matches(), AGE, longestFetch, clock);
+        this.fixtures = new EntityCache<>("fixture", sizes.fixtures(), AGE, longestFetch, clock);
         // one record per match, read with it
-        this.live = new LiveState<>(sizes.matches(), ticker);
+        this.live = new LiveState<>(sizes.matches(), clock);
         this.summaries = new Loader<>("match", this::fetchSummary, timeout, MARGIN, fetches);
         this.fixtureLoads = new Loader<>("fixture", this::fetchFixture, timeout, MARGIN, fetches);
     }
@@ -170,11 +158,11 @@ public final class MatchCaches {
      */
     public @Nullable LiveValues live(URN id) {
         LiveValues values = live.get(id);
-        if (values != null && values.isFresh(clock.instant())) {
+        if (values != null && values.isFresh(clock.monoMillis())) {
             return values;
         }
         var key = new MatchKey(id, defaultLocale);
-        for (int tries = 0; tries < 2 && (values == null || !values.isFresh(clock.instant())); tries++) {
+        for (int tries = 0; tries < 2 && (values == null || !values.isFresh(clock.monoMillis())); tries++) {
             summaries.load(key);
             values = live.get(id);
         }
@@ -189,12 +177,7 @@ public final class MatchCaches {
      * @return whether it was written
      */
     public boolean oddsChange(
-            URN id,
-            long producer,
-            long timestamp,
-            Duration correctedAge,
-            Instant receivedAt,
-            OFSportEventStatus status) {
+            URN id, long producer, long timestamp, Duration correctedAge, long receivedAt, OFSportEventStatus status) {
         return live.feedWriteIfNewer(id, producer, timestamp, correctedAge, receivedAt, MatchWrites.live(status));
     }
 
@@ -202,7 +185,7 @@ public final class MatchCaches {
      * A replayed message's status for the match, written whatever its timestamp and its age, in the
      * order the replay sends them: a run played again repeats the timestamps of the one before.
      */
-    public void replayed(URN id, long producer, long timestamp, Instant receivedAt, OFSportEventStatus status) {
+    public void replayed(URN id, long producer, long timestamp, long receivedAt, OFSportEventStatus status) {
         live.feedWriteReplayed(id, producer, timestamp, receivedAt, MatchWrites.live(status));
     }
 
@@ -370,8 +353,8 @@ public final class MatchCaches {
         // the live state too gives way to a fixture change, or to a summary of another locale fetched
         // since; a summary without a status still says REST was asked, so it is not asked again
         BooleanSupplier outdated = () -> abandoned.getAsBoolean() || !matches.isNewest(key.id(), SUMMARY, started);
-        boolean taken = live.restWriteIfQuiet(
-                key.id(), clock.instant(), status == null ? LiveWrite.of() : MatchWrites.live(status), outdated);
+        boolean taken =
+                live.restWriteIfQuiet(key.id(), status == null ? LiveWrite.of() : MatchWrites.live(status), outdated);
         // while the feed owns the match, a winner the summary has and the feed has not sent still fills
         if (!taken && status != null) {
             live.restFill(key.id(), MatchWrites.winner(status), outdated);
@@ -426,7 +409,7 @@ public final class MatchCaches {
      */
     private Entry read(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Runnable load) {
         Entry entry = entryOf(cache, id);
-        for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.instant(), cache.age()); tries++) {
+        for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.monoNanos(), cache.age()); tries++) {
             load.run();
             entry = entryOf(cache, id);
         }

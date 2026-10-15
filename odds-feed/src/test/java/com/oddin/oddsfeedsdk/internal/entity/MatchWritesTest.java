@@ -15,6 +15,7 @@ import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
 import com.oddin.oddsfeedsdk.internal.cache.LiveWrite;
 import com.oddin.oddsfeedsdk.internal.cache.Write;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.entity.MatchFields.CompetitorRef;
 import com.oddin.oddsfeedsdk.internal.xml.DecodeException;
 import com.oddin.oddsfeedsdk.internal.xml.FeedDecoder;
@@ -41,7 +42,8 @@ class MatchWritesTest {
     private final RestDecoder rest = RestDecoder.lenient(RestDecoder.DEFAULT_MAX_BYTES);
     private final EntityCache<URN> matches =
             new EntityCache<>("match", 100, Duration.ofHours(12), Duration.ofMinutes(1));
-    private final LiveState<URN> live = new LiveState<>(100);
+    private final FeedClock clock = FeedClock.system();
+    private final LiveState<URN> live = new LiveState<>(100, clock);
 
     @Test
     void aSummaryWritesTheMatchAndItsLiveStatusWithItsWinner() throws DecodeException {
@@ -61,7 +63,7 @@ class MatchWritesTest {
                         new CompetitorRef(URN.parse("od:competitor:47215"), "away"));
         assertThat(match.get(LIVE_ODDS, null)).as("as sent: not at all").isNull();
 
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(summary.getSportEventStatus()), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(summary.getSportEventStatus()), () -> false);
         LiveValues values = requireNonNull(live.get(MATCH));
         assertThat(values.get(STATUS)).isEqualTo(EventStatus.Finished);
         assertThat(values.get(MATCH_STATUS_ID)).isEqualTo(1);
@@ -81,10 +83,10 @@ class MatchWritesTest {
     void aRetractedWinnerGoesWithTheNextSummary() throws DecodeException {
         var status = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class)
                 .getSportEventStatus();
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(status), () -> false);
         status.setWinnerId(null);
         status.setHomeScore(null);
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(status), () -> false);
         LiveValues values = requireNonNull(live.get(MATCH));
         assertThat(values.get(WINNER_ID)).as("always sent when there is one").isNull();
         assertThat(values.get(HOME_SCORE)).as("optional: left out, kept").isEqualTo(3.0);
@@ -94,9 +96,9 @@ class MatchWritesTest {
     void aWinnerThatIsNotAUrnKeepsTheWinnerHeld() throws DecodeException {
         var status = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class)
                 .getSportEventStatus();
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(status), () -> false);
         status.setWinnerId("not a urn");
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(status), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(status), () -> false);
         assertThat(requireNonNull(live.get(MATCH)).get(WINNER_ID))
                 .as("an id that is not a URN is left out, not a retraction")
                 .isEqualTo(URN.parse("od:competitor:47214"));
@@ -108,14 +110,14 @@ class MatchWritesTest {
                 .decode(Fixtures.read("feed/odds_change/odds_change_closed_with_winner.xml")
                         .getBytes(UTF_8));
         live.feedWriteIfNewer(
-                MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(closing.getSportEventStatus()));
+                MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(closing.getSportEventStatus()));
         assertThat(requireNonNull(live.get(MATCH)).get(WINNER_ID)).isEqualTo(URN.parse("od:competitor:47214"));
 
         var without = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
         without.setStatus(com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus.FINALIZED);
-        live.feedWriteIfNewer(MATCH, 1, 2, Duration.ZERO, Instant.now(), MatchWrites.live(without));
+        live.feedWriteIfNewer(MATCH, 1, 2, Duration.ZERO, clock.monoMillis(), MatchWrites.live(without));
         without.setWinnerId("not a urn");
-        live.feedWriteIfNewer(MATCH, 1, 3, Duration.ZERO, Instant.now(), MatchWrites.live(without));
+        live.feedWriteIfNewer(MATCH, 1, 3, Duration.ZERO, clock.monoMillis(), MatchWrites.live(without));
         assertThat(requireNonNull(live.get(MATCH)).get(WINNER_ID))
                 .as("the feed never retracts: left out, or not a URN, it is kept")
                 .isEqualTo(URN.parse("od:competitor:47214"));
@@ -127,7 +129,7 @@ class MatchWritesTest {
                 .getSportEventStatus();
         var kickOff = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
         kickOff.setStatus(com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus.LIVE);
-        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(kickOff));
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(kickOff));
         assertThat(live.restFill(MATCH, MatchWrites.winner(status), () -> false))
                 .isTrue();
         LiveValues values = requireNonNull(live.get(MATCH));
@@ -148,7 +150,7 @@ class MatchWritesTest {
         var summary = decode("rest/match_summary/match_summary.xml", RAMatchSummaryEndpoint.class);
         java.util.Collections.reverse(
                 summary.getSportEventStatus().getPeriodScores().getPeriodScore());
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(summary.getSportEventStatus()), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(summary.getSportEventStatus()), () -> false);
         assertThat(requireNonNull(requireNonNull(live.get(MATCH)).get(PERIOD_SCORES)))
                 .extracting(PeriodScore::getPeriodNumber)
                 .containsExactly(1, 2, 3, 4, 5);
@@ -162,8 +164,8 @@ class MatchWritesTest {
             periods.getPeriodScore().add(period);
         }
         message.setPeriodScores(periods);
-        var fromFeed = new LiveState<URN>(100);
-        fromFeed.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(message));
+        var fromFeed = new LiveState<URN>(100, clock);
+        fromFeed.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(message));
         assertThat(requireNonNull(requireNonNull(fromFeed.get(MATCH)).get(PERIOD_SCORES)))
                 .extracting(PeriodScore::getPeriodNumber)
                 .containsExactly(1, 2, 3);
@@ -172,15 +174,15 @@ class MatchWritesTest {
     @Test
     void aCricketSummaryAndLiveMessageCarryTheSameScoreboard() throws DecodeException {
         var summary = decode("rest/match_summary/match_summary_cricket_scoreboard.xml", RAMatchSummaryEndpoint.class);
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(summary.getSportEventStatus()), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(summary.getSportEventStatus()), () -> false);
         var fromRest = requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD));
 
         var message = (OFOddsChange) FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES)
                 .decode(Fixtures.read("feed/odds_change/odds_change_cricket_scoreboard.xml")
                         .getBytes(UTF_8));
-        var other = new LiveState<URN>(100);
+        var other = new LiveState<URN>(100, clock);
         other.feedWriteIfNewer(
-                MATCH, 3, 1, Duration.ZERO, Instant.now(), MatchWrites.live(message.getSportEventStatus()));
+                MATCH, 3, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(message.getSportEventStatus()));
         LiveValues fromFeed = requireNonNull(other.get(MATCH));
         var scoreboard = requireNonNull(fromFeed.get(SCOREBOARD));
 
@@ -216,9 +218,8 @@ class MatchWritesTest {
     void aLiveMessageWithoutScoresKeepsThose() {
         var message = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
         message.setStatus(com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus.LIVE);
-        live.restWriteIfQuiet(
-                MATCH, Instant.now(), LiveWrite.of().put(HOME_SCORE, 1.0).put(AWAY_SCORE, 0.0), () -> false);
-        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(message));
+        live.restWriteIfQuiet(MATCH, LiveWrite.of().put(HOME_SCORE, 1.0).put(AWAY_SCORE, 0.0), () -> false);
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(message));
         LiveValues values = requireNonNull(live.get(MATCH));
         assertThat(values.get(STATUS)).isEqualTo(EventStatus.Live);
         assertThat(values.get(HOME_SCORE))
@@ -230,14 +231,14 @@ class MatchWritesTest {
     @Test
     void periodScoresAndAScoreboardLeftOutAreKeptFromEitherSide() throws DecodeException {
         var cricket = decode("rest/match_summary/match_summary_cricket_scoreboard.xml", RAMatchSummaryEndpoint.class);
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(cricket.getSportEventStatus()), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(cricket.getSportEventStatus()), () -> false);
         var before = requireNonNull(live.get(MATCH));
 
         var bare = new com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus();
         bare.setStatus("live");
-        live.restWriteIfQuiet(MATCH, Instant.now(), MatchWrites.live(bare), () -> false);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(bare), () -> false);
         var feedBare = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
-        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, Instant.now(), MatchWrites.live(feedBare));
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(feedBare));
 
         var after = requireNonNull(live.get(MATCH));
         assertThat(after.get(PERIOD_SCORES))

@@ -6,6 +6,7 @@ import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
 import com.oddin.oddsfeedsdk.internal.catalog.MatchStatusDescriptions;
 import com.oddin.oddsfeedsdk.internal.catalog.VoidReasons;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.descriptions.DescriptionManager;
 import com.oddin.oddsfeedsdk.internal.descriptions.StatusDescriptions;
 import com.oddin.oddsfeedsdk.internal.dispatch.ClockOffsets;
@@ -99,6 +100,19 @@ public record FeedCore(
      */
     public static FeedCore start(
             OddsFeedConfiguration configuration, EventsDispatcher events, Consumer<ApiClient> starting) {
+        return start(configuration, events, starting, FeedClock.system());
+    }
+
+    /**
+     * As above, with the feed's clock: the one the caches, the catalogs, the loaders and the live
+     * state count every age and deadline on, by its monotonic side, as the transport, the
+     * dispatchers and the recovery actor do.
+     */
+    public static FeedCore start(
+            OddsFeedConfiguration configuration,
+            EventsDispatcher events,
+            Consumer<ApiClient> starting,
+            FeedClock clock) {
         var api = new ApiClient(configuration, events);
         @Nullable ExecutorService fetches = null;
         @Nullable SideLoads sideLoads = null;
@@ -114,8 +128,9 @@ public record FeedCore(
             sideLoads = new SideLoads(
                     SIDE_LOAD_CAPACITY,
                     sideLoadWorkers(configuration.getRestConcurrencyLimit()),
-                    configuration.getHttpClientTimeout());
-            return assemble(configuration, api, events, bookmaker, producers, fetches, sideLoads);
+                    configuration.getHttpClientTimeout(),
+                    clock);
+            return assemble(configuration, api, events, bookmaker, producers, fetches, sideLoads, clock);
         } catch (RuntimeException e) {
             api.close();
             if (sideLoads != null) {
@@ -135,16 +150,17 @@ public record FeedCore(
             Bookmaker bookmaker,
             Producers producers,
             ExecutorService fetches,
-            SideLoads sideLoads) {
+            SideLoads sideLoads,
+            FeedClock clock) {
         var timeout = configuration.getHttpClientTimeout();
         var locale = configuration.getDefaultLocale();
         var strategy = configuration.getExceptionHandlingStrategy();
         var sizes = CacheSizes.from(configuration);
-        var profiles = new ProfileCaches(api, timeout, sizes, fetches);
-        var matches = new MatchCaches(api, profiles, sideLoads, timeout, sizes, locale, fetches);
-        var markets = new MarketDescriptions(api, timeout, fetches);
-        var voidReasons = new VoidReasons(api, timeout, fetches);
-        var statuses = new MatchStatusDescriptions(api, timeout, fetches);
+        var profiles = new ProfileCaches(api, timeout, sizes, fetches, clock);
+        var matches = new MatchCaches(api, profiles, sideLoads, timeout, sizes, locale, fetches, clock);
+        var markets = new MarketDescriptions(api, timeout, fetches, fetches, clock);
+        var voidReasons = new VoidReasons(api, timeout, fetches, fetches, clock);
+        var statuses = new MatchStatusDescriptions(api, timeout, fetches, fetches, clock);
         var entities = new Entities(
                 matches,
                 profiles,
@@ -172,7 +188,7 @@ public record FeedCore(
                 new MessageFactory(entities, markets, strategy, locale),
                 // 0.0.x made every id of the replay list a match in the default locale
                 new Replay(api, id -> entities.match(id, inDefaultLocale), strategy),
-                new FixtureChanges(),
+                new FixtureChanges(clock),
                 new ClockOffsets(producers));
     }
 

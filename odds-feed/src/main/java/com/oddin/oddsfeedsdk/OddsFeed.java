@@ -478,7 +478,7 @@ public final class OddsFeed {
                 eventsStarted = true;
             }
             try {
-                built = FeedCore.start(configuration, events, this::startingWith);
+                built = FeedCore.start(configuration, events, this::startingWith, clock);
             } catch (InitException e) {
                 throw e;
             } catch (RuntimeException e) {
