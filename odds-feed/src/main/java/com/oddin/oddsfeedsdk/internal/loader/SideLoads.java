@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.loader;
 
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
 import java.util.ArrayDeque;
@@ -55,11 +56,21 @@ public final class SideLoads implements AutoCloseable {
      */
     private volatile boolean closed;
 
+    private final FeedClock clock;
+
     /**
      * @param capacity how many loads each of the two queues holds
      * @param deadline each load's deadline, the HTTP client timeout
      */
     public SideLoads(int capacity, int workers, Duration deadline) {
+        this(capacity, workers, deadline, FeedClock.system());
+    }
+
+    /**
+     * @param clock the feed's clock, which each load's deadline is counted on
+     */
+    public SideLoads(int capacity, int workers, Duration deadline, FeedClock clock) {
+        this.clock = clock;
         this.capacity = capacity;
         this.idleLimit = Math.max(1, workers / 2);
         this.deadline = deadline;
@@ -137,7 +148,7 @@ public final class SideLoads implements AutoCloseable {
                 return;
             }
             try {
-                taken.load().run(Deadline.in(deadline));
+                taken.load().run(Deadline.in(deadline, clock::monoNanos));
             } catch (Throwable e) {
                 // whatever one load throws, the worker stays for the next
                 failed.incrementAndGet();

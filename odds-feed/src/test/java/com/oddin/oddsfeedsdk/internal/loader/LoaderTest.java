@@ -9,6 +9,9 @@ import com.oddin.oddsfeedsdk.internal.cache.Endpoint;
 import com.oddin.oddsfeedsdk.internal.cache.EntityCache;
 import com.oddin.oddsfeedsdk.internal.cache.Field;
 import com.oddin.oddsfeedsdk.internal.cache.Write;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
+import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -21,8 +24,11 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Single-flight, the deadlines of waiters, and loads that wait for each other. */
 class LoaderTest {
@@ -229,6 +235,7 @@ class LoaderTest {
     void theFetchIsGivenItsFlightsOneDeadlineForEveryCallItMakes() throws Exception {
         var given = new java.util.concurrent.CopyOnWriteArrayList<com.oddin.oddsfeedsdk.internal.rest.Deadline>();
         var release = new CountDownLatch(1);
+        var clock = FeedClock.system();
         var loader = new Loader<String, String>(
                 "match",
                 (key, deadline, _) -> {
@@ -238,12 +245,13 @@ class LoaderTest {
                 },
                 DEADLINE,
                 MARGIN,
-                virtualThreads);
+                virtualThreads,
+                clock);
         var joins = countJoins(loader);
-        long before = System.nanoTime();
+        long before = clock.monoNanos();
         Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
         waitUntil(() -> joins.get() == 1);
-        long after = System.nanoTime();
+        long after = clock.monoNanos();
         Future<String> second = virtualThreads.submit(() -> loader.load("m1"));
         waitUntil(() -> joins.get() == 2);
         release.countDown();
@@ -512,6 +520,126 @@ class LoaderTest {
         waitUntil(() -> matches.get().inFlight() == 0 && competitors.get().inFlight() == 0);
         assertThat(matches.get().load("m1")).isEqualTo("match");
         assertThat(competitors.get().load("c1")).isEqualTo("competitor");
+    }
+
+    /** A fetch that waits to be released, and says what it was given. */
+    private record Held(
+            Loader<String, String> loader,
+            AtomicInteger fetches,
+            AtomicReference<Deadline> deadline,
+            AtomicReference<BooleanSupplier> abandoned,
+            CountDownLatch started,
+            CountDownLatch release) {}
+
+    private Held held(SplitClock split) {
+        var fetches = new AtomicInteger();
+        var deadline = new AtomicReference<Deadline>();
+        var abandoned = new AtomicReference<BooleanSupplier>();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var loader = new Loader<String, String>(
+                "match",
+                (key, given, gone) -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        deadline.set(given);
+                        abandoned.set(gone);
+                        started.countDown();
+                    }
+                    await(release);
+                    return "value of " + key;
+                },
+                Duration.ofSeconds(5),
+                MARGIN,
+                virtualThreads,
+                split.clock());
+        return new Held(loader, fetches, deadline, abandoned, started, release);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aFetchsDeadlineAndItsAbandonmentAreNotMovedByAStepOfTheWallClock(long minutes) throws Exception {
+        var split = new SplitClock();
+        var fetch = held(split);
+        Future<String> caller = virtualThreads.submit(() -> fetch.loader().load("m1"));
+        try {
+            assertThat(fetch.started().await(5, TimeUnit.SECONDS)).isTrue();
+            split.stepWall(Duration.ofMinutes(minutes));
+            assertThat(fetch.deadline().get().remaining()).isEqualTo(Duration.ofSeconds(5));
+            assertThat(fetch.deadline().get().passed()).isFalse();
+            assertThat(fetch.abandoned().get().getAsBoolean()).isFalse();
+        } finally {
+            fetch.release().countDown();
+        }
+        assertThat(caller.get(5, TimeUnit.SECONDS)).isEqualTo("value of m1");
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, 0, -30})
+    void aFetchsDeadlinePassesAndItIsAbandonedWithTheMonotonicClockWhateverTheWallClockSays(long minutes)
+            throws Exception {
+        var split = new SplitClock();
+        var fetch = held(split);
+        Future<String> caller = virtualThreads.submit(() -> fetch.loader().load("m1"));
+        try {
+            assertThat(fetch.started().await(5, TimeUnit.SECONDS)).isTrue();
+            split.advanceMono(Duration.ofSeconds(5));
+            split.stepWall(Duration.ofMinutes(minutes));
+            assertThat(fetch.deadline().get().passed()).isTrue();
+            assertThat(fetch.deadline().get().remaining()).isEqualTo(Duration.ZERO);
+            assertThat(fetch.abandoned().get().getAsBoolean())
+                    .as("callers wait a margin more")
+                    .isFalse();
+            split.advanceMono(MARGIN.plusMillis(1));
+            assertThat(fetch.abandoned().get().getAsBoolean()).isTrue();
+        } finally {
+            fetch.release().countDown();
+        }
+        settled(caller);
+    }
+
+    @Test
+    void aCallerJoinsTheRunningFetchUntilItsTimeIsOutOnTheMonotonicClock() throws Exception {
+        var split = new SplitClock();
+        var fetch = held(split);
+        var joins = countJoins(fetch.loader());
+        Future<String> first = virtualThreads.submit(() -> fetch.loader().load("m1"));
+        try {
+            assertThat(fetch.started().await(5, TimeUnit.SECONDS)).isTrue();
+            split.stepWall(Duration.ofMinutes(30));
+            Future<String> second = virtualThreads.submit(() -> fetch.loader().load("m1"));
+            waitUntil(() -> joins.get() == 2);
+            assertThat(fetch.abandoned().get().getAsBoolean())
+                    .as("a step of the wall clock does not end the flight: the caller joined it")
+                    .isFalse();
+            assertThat(fetch.fetches()).hasValue(1);
+
+            split.advanceMono(Duration.ofSeconds(5).plus(MARGIN).plusMillis(1));
+            split.stepWall(Duration.ofMinutes(-30));
+            Future<String> third = virtualThreads.submit(() -> fetch.loader().load("m1"));
+            waitUntil(() -> fetch.fetches().get() == 2);
+            assertThat(fetch.abandoned().get().getAsBoolean())
+                    .as("past its callers' time, it is abandoned and replaced")
+                    .isTrue();
+            fetch.release().countDown();
+            settled(first);
+            settled(second);
+            assertThat(third.get(5, TimeUnit.SECONDS)).isEqualTo("value of m1");
+        } finally {
+            fetch.release().countDown();
+        }
+    }
+
+    /**
+     * Waits for a caller to be done: it got the value, or ran out of time. A caller that has not yet
+     * worked out how long it waits when the clock is moved past its time fails at once, which a test
+     * moving the clock cannot tell from one that failed a moment later.
+     */
+    private static void settled(Future<String> caller) throws Exception {
+        try {
+            assertThat(caller.get(5, TimeUnit.SECONDS)).isEqualTo("value of m1");
+        } catch (java.util.concurrent.ExecutionException timedOut) {
+            assertThat(timedOut.getCause()).isInstanceOf(ApiException.class);
+        }
     }
 
     /** Counts the callers that join or start a flight. */
