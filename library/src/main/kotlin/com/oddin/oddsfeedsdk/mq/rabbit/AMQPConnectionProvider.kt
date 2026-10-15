@@ -41,6 +41,10 @@ class SingleAMQPConnectionProvider @Inject constructor(
     private val syncLock = Any()
     private var tlsConfigured = false
 
+    // The trust the connection is checked against: the JVM's default unless a test sets its own.
+    // Internal on purpose, and nothing here can switch the check off.
+    internal var sslContext: SSLContext? = null
+
     companion object {
         private const val VIRTUAL_HOST_PREFIX = "/oddinfeed"
     }
@@ -66,7 +70,7 @@ class SingleAMQPConnectionProvider @Inject constructor(
         rabbitConnectionFactory.port = config.selectedEnvironment.messagingPort
         // once: each call adds another host name check to the factory's socket configurator
         if (!tlsConfigured) {
-            rabbitConnectionFactory.useCheckedTls()
+            rabbitConnectionFactory.useCheckedTls(sslContext ?: SSLContext.getDefault())
             tlsConfigured = true
         }
 
