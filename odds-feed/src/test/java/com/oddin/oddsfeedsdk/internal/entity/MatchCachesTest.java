@@ -11,6 +11,7 @@ import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.EventStatus;
+import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
@@ -529,8 +530,10 @@ class MatchCachesTest {
                         "/v1/sports/en/competitors/od:competitor:47214/profile",
                         "/v1/sports/en/competitors/od:competitor:47215/profile");
 
-        // the same summary from a fetch that started after the clear does write and fill
+        // the same summary from a fetch that started after the clear does write and fill, once the
+        // failed repeat's backoff is over
         api.respond(SUMMARY_EN, 200, SUMMARY);
+        time.advance(Duration.ofSeconds(1));
         assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
                 .isEqualTo("Team Alpha vs Team Beta");
         assertThat(requireNonNull(profiles.cachedCompetitor(URN.parse("od:competitor:47214")))
@@ -715,6 +718,39 @@ class MatchCachesTest {
                 .isEqualTo("Team Alpha");
         api.awaitQuiet();
         assertThat(api.requests()).extracting(r -> r.path()).containsExactly(FIXTURE_EN);
+    }
+
+    @Test
+    void aFailedSummaryOrFixtureLoadBacksOffAndAFixtureChangeEndsIt() {
+        api.respond(SUMMARY_EN, 404, "");
+        api.respond(FIXTURE_EN, 404, "");
+        assertThatThrownBy(() -> caches.match(MATCH, Locale.ENGLISH)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> caches.fixture(MATCH)).isInstanceOf(ApiException.class);
+        for (int read = 0; read < 3; read++) {
+            assertThatThrownBy(() -> caches.match(MATCH, Locale.ENGLISH)).hasMessageContaining("backing off");
+            assertThatThrownBy(() -> caches.fixture(MATCH)).hasMessageContaining("backing off");
+            assertThatThrownBy(() -> caches.live(MATCH)).hasMessageContaining("backing off");
+        }
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(1);
+        assertThat(api.requests("GET", FIXTURE_EN)).hasSize(1);
+
+        time.advance(Duration.ofSeconds(1));
+        assertThatThrownBy(() -> caches.match(MATCH, Locale.ENGLISH)).isInstanceOf(ApiException.class);
+        assertThat(api.requests("GET", SUMMARY_EN))
+                .as("after the backoff, one more")
+                .hasSize(2);
+
+        caches.fixtureChange(MATCH);
+        assertThatThrownBy(() -> caches.match(MATCH, Locale.ENGLISH)).hasMessageNotContaining("backing off");
+        assertThatThrownBy(() -> caches.fixture(MATCH)).hasMessageNotContaining("backing off");
+        assertThat(api.requests("GET", SUMMARY_EN))
+                .as("the change asked for a fresh load")
+                .hasSize(3);
+        assertThat(api.requests("GET", FIXTURE_EN)).hasSize(2);
+
+        caches.clear();
+        assertThatThrownBy(() -> caches.fixture(MATCH)).hasMessageNotContaining("backing off");
+        assertThat(api.requests("GET", FIXTURE_EN)).hasSize(3);
     }
 
     @Test

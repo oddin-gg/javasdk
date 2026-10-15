@@ -27,6 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
@@ -327,7 +328,8 @@ class LoaderTest {
     }
 
     @Test
-    void aFailedFetchFailsEveryWaiterAndTheNextMissStartsAfresh() {
+    void aFailedFetchFailsEveryWaiterAndTheNextMissAfterItsBackoffStartsAfresh() {
+        var split = new SplitClock();
         var fetches = new AtomicInteger();
         var loader = new Loader<String, String>(
                 "match",
@@ -340,10 +342,11 @@ class LoaderTest {
                 DEADLINE,
                 MARGIN,
                 virtualThreads,
-                FeedClock.system());
+                split.clock());
         assertThatThrownBy(() -> loader.load("m1"))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("503");
+        split.advanceMono(Loader.FIRST_BACKOFF);
         assertThat(loader.load("m1")).isEqualTo("value");
     }
 
@@ -552,6 +555,428 @@ class LoaderTest {
         waitUntil(() -> matches.get().inFlight() == 0 && competitors.get().inFlight() == 0);
         assertThat(matches.get().load("m1")).isEqualTo("match");
         assertThat(competitors.get().load("c1")).isEqualTo("competitor");
+    }
+
+    /** A fetch that fails for the keys in {@code failing} and counts its requests. */
+    private record Flaky(Loader<String, String> loader, AtomicInteger fetches, Set<String> failing) {
+        void failsFor(String... keys) {
+            failing.clear();
+            failing.addAll(List.of(keys));
+        }
+    }
+
+    private Flaky flaky(SplitClock split) {
+        var fetches = new AtomicInteger();
+        Set<String> failing = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    fetches.incrementAndGet();
+                    if (failing.contains(key)) {
+                        throw new ApiException("Failed to get data: 503");
+                    }
+                    return "value of " + key;
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads,
+                split.clock());
+        return new Flaky(loader, fetches, failing);
+    }
+
+    private static void failsBackingOff(Loader<String, String> loader, String key) {
+        assertThatThrownBy(() -> loader.load(key))
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("backing off")
+                .hasRootCauseMessage("Failed to get data: 503");
+    }
+
+    @Test
+    void aKeyWhoseFetchFailedBacksOffAndItsReadsMakeNoRequest() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1");
+        assertThatThrownBy(() -> flaky.loader().load("m1"))
+                .isInstanceOf(ApiException.class)
+                .hasMessage("Failed to get data: 503");
+        for (int read = 0; read < 4; read++) {
+            failsBackingOff(flaky.loader(), "m1");
+        }
+        assertThat(flaky.fetches()).as("the four reads asked for nothing").hasValue(1);
+
+        split.advanceMono(Loader.FIRST_BACKOFF.minusMillis(1));
+        failsBackingOff(flaky.loader(), "m1");
+        assertThat(flaky.fetches()).hasValue(1);
+        split.advanceMono(Duration.ofMillis(1));
+        assertThatThrownBy(() -> flaky.loader().load("m1")).hasMessage("Failed to get data: 503");
+        assertThat(flaky.fetches()).as("after the backoff, one more").hasValue(2);
+    }
+
+    @Test
+    void theBackoffMessageSaysWhenTheNextFetchMayStartByTheWallClockAndCountsOnTheMonotonicOne() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1");
+        assertThatThrownBy(() -> flaky.loader().load("m1")).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> flaky.loader().load("m1"))
+                .hasMessageContaining("backing off, not fetched again before 2026-10-15T12:00:01Z, 1 fetches");
+        // the wall clock stepping a day on does not end it, nor does stepping it back extend it
+        split.stepWall(Duration.ofDays(1));
+        failsBackingOff(flaky.loader(), "m1");
+        split.stepWall(Duration.ofDays(-2));
+        split.advanceMono(Loader.FIRST_BACKOFF);
+        assertThatThrownBy(() -> flaky.loader().load("m1")).hasMessage("Failed to get data: 503");
+        assertThat(flaky.fetches()).hasValue(2);
+    }
+
+    @Test
+    void theBackoffDoublesWithEachFailureInARowUpToItsCap() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1");
+        long fetches = 0;
+        for (int failure = 1; failure <= 9; failure++) {
+            Duration backoff = Duration.ofSeconds(1L << (failure - 1)).compareTo(Loader.LONGEST_BACKOFF) < 0
+                    ? Duration.ofSeconds(1L << (failure - 1))
+                    : Loader.LONGEST_BACKOFF;
+            assertThatThrownBy(() -> flaky.loader().load("m1")).hasMessage("Failed to get data: 503");
+            fetches++;
+            split.advanceMono(backoff.minusMillis(1));
+            failsBackingOff(flaky.loader(), "m1");
+            assertThat(flaky.fetches())
+                    .as("failure %d backs off %s", failure, backoff)
+                    .hasValue((int) fetches);
+            split.advanceMono(Duration.ofMillis(1));
+        }
+    }
+
+    @Test
+    void aSuccessEndsTheBackoffAndTheNextFailureStartsOverAtTheFirst() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1");
+        for (int failure = 0; failure < 3; failure++) {
+            assertThatThrownBy(() -> flaky.loader().load("m1")).isInstanceOf(ApiException.class);
+            split.advanceMono(Duration.ofSeconds(1L << failure));
+        }
+        flaky.failsFor();
+        assertThat(flaky.loader().load("m1")).isEqualTo("value of m1");
+        assertThat(flaky.loader().failing()).as("nothing remembered").isZero();
+
+        flaky.failsFor("m1");
+        assertThatThrownBy(() -> flaky.loader().load("m1")).hasMessage("Failed to get data: 503");
+        split.advanceMono(Loader.FIRST_BACKOFF);
+        assertThatThrownBy(() -> flaky.loader().load("m1"))
+                .as("the first backoff again, not the fourth's 8 s")
+                .hasMessage("Failed to get data: 503");
+        assertThat(flaky.fetches())
+                .as("three failures, the success, two failures")
+                .hasValue(6);
+    }
+
+    @Test
+    void aKeyThatBacksOffLeavesTheOthersAlone() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1");
+        assertThatThrownBy(() -> flaky.loader().load("m1")).isInstanceOf(ApiException.class);
+        assertThat(flaky.loader().load("m2")).isEqualTo("value of m2");
+        failsBackingOff(flaky.loader(), "m1");
+        assertThat(flaky.loader().load("m2")).isEqualTo("value of m2");
+        assertThat(flaky.fetches()).as("m1 once, m2 twice").hasValue(3);
+    }
+
+    @Test
+    void forgettingAKeyEndsItsBackoffAndOnlyIts() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1", "m2");
+        for (String key : List.of("m1", "m2")) {
+            assertThatThrownBy(() -> flaky.loader().load(key)).isInstanceOf(ApiException.class);
+        }
+        flaky.loader().forget("m1"::equals);
+        flaky.failsFor();
+        assertThat(flaky.loader().load("m1")).isEqualTo("value of m1");
+        failsBackingOff(flaky.loader(), "m2");
+        assertThat(flaky.fetches()).hasValue(3);
+
+        flaky.loader().forgetAll();
+        assertThat(flaky.loader().load("m2")).isEqualTo("value of m2");
+        assertThat(flaky.fetches()).hasValue(4);
+    }
+
+    @Test
+    void aFailureOfAFetchForgottenWhileItRanBacksNothingOff() throws Exception {
+        var split = new SplitClock();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var fetches = new AtomicInteger();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        started.countDown();
+                        await(release);
+                        throw new ApiException("Failed to get data: 503");
+                    }
+                    return "value of " + key;
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads,
+                split.clock());
+        Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
+        try {
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            loader.forget("m1"::equals);
+        } finally {
+            release.countDown();
+        }
+        assertThatThrownBy(() -> first.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
+        assertThat(loader.load("m1"))
+                .as("the clear asked for a fresh load: the failure from before it is no reason to wait")
+                .isEqualTo("value of m1");
+    }
+
+    @Test
+    void aFetchThatFailsAfterAnotherReplacedItBacksNothingOff() throws Exception {
+        var split = new SplitClock();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var fetches = new AtomicInteger();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        started.countDown();
+                        await(release);
+                        throw new ApiException("Failed to get data: 503");
+                    }
+                    return "value of " + key;
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads,
+                split.clock());
+        Future<String> stuck = virtualThreads.submit(() -> loader.load("m1"));
+        try {
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            split.advanceMono(DEADLINE.plus(MARGIN).plusMillis(1));
+            assertThat(loader.load("m1")).as("replaces the stuck one").isEqualTo("value of m1");
+        } finally {
+            release.countDown();
+        }
+        assertThatThrownBy(() -> stuck.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
+        assertThat(loader.failing()).as("the newer fetch owns the key").isZero();
+        assertThat(loader.load("m1")).isEqualTo("value of m1");
+    }
+
+    @Test
+    void aSuccessOfAFetchThatWasReplacedLeavesTheNewerFailureStanding() throws Exception {
+        var split = new SplitClock();
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var fetches = new AtomicInteger();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    if (fetches.incrementAndGet() == 1) {
+                        started.countDown();
+                        await(release);
+                        return "late value";
+                    }
+                    throw new ApiException("Failed to get data: 503");
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads,
+                split.clock());
+        Future<String> stuck = virtualThreads.submit(() -> loader.load("m1"));
+        try {
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            split.advanceMono(DEADLINE.plus(MARGIN).plusMillis(1));
+            assertThatThrownBy(() -> loader.load("m1")).hasMessage("Failed to get data: 503");
+        } finally {
+            release.countDown();
+        }
+        settledLate(stuck);
+        failsBackingOff(loader, "m1");
+        assertThat(fetches).hasValue(2);
+    }
+
+    @Test
+    void aFailureNobodyAskedAgainAfterIsForgottenAndTheNextOneStartsOver() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1");
+        assertThatThrownBy(() -> flaky.loader().load("m1")).isInstanceOf(ApiException.class);
+        split.advanceMono(Loader.FIRST_BACKOFF);
+        assertThatThrownBy(() -> flaky.loader().load("m1")).isInstanceOf(ApiException.class);
+        assertThat(flaky.loader().failing()).isEqualTo(1);
+
+        split.advanceMono(Loader.LONGEST_BACKOFF.multipliedBy(2));
+        assertThat(flaky.loader().failing()).as("nobody tried again: gone").isZero();
+        assertThatThrownBy(() -> flaky.loader().load("m1")).isInstanceOf(ApiException.class);
+        split.advanceMono(Loader.FIRST_BACKOFF);
+        assertThatThrownBy(() -> flaky.loader().load("m1"))
+                .as("counted from one again: 1 s, not the 4 s a third failure would back off")
+                .hasMessage("Failed to get data: 503");
+    }
+
+    @Test
+    void theFailuresRememberedAreBounded() {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        var keys = new ArrayList<String>();
+        for (int key = 0; key < Loader.MAXIMUM_FAILURES + 500; key++) {
+            keys.add("m" + key);
+        }
+        flaky.failsFor(keys.toArray(String[]::new));
+        for (String key : keys) {
+            assertThatThrownBy(() -> flaky.loader().load(key)).isInstanceOf(ApiException.class);
+        }
+        assertThat(flaky.loader().failing()).isLessThanOrEqualTo(Loader.MAXIMUM_FAILURES);
+    }
+
+    @Test
+    void anErrorFromAFetchBacksNothingOff() {
+        var fetches = new AtomicInteger();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    fetches.incrementAndGet();
+                    throw new ExceptionInInitializerError("the binding did not load");
+                },
+                DEADLINE,
+                MARGIN,
+                virtualThreads,
+                new SplitClock().clock());
+        for (int read = 0; read < 2; read++) {
+            assertThatThrownBy(() -> loader.load("m1")).isInstanceOf(ExceptionInInitializerError.class);
+        }
+        assertThat(fetches).hasValue(2);
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void readersOfAFailingKeyAllFailAtOnceAndMakeNoRequest() throws Exception {
+        var split = new SplitClock();
+        var flaky = flaky(split);
+        flaky.failsFor("m1");
+        assertThatThrownBy(() -> flaky.loader().load("m1")).isInstanceOf(ApiException.class);
+
+        int readers = 20;
+        var start = new CountDownLatch(1);
+        List<Future<Boolean>> reads = new ArrayList<>();
+        for (int reader = 0; reader < readers; reader++) {
+            reads.add(virtualThreads.submit(() -> {
+                await(start);
+                try {
+                    flaky.loader().load("m1");
+                    return false;
+                } catch (ApiException failed) {
+                    return String.valueOf(failed.getMessage()).contains("backing off");
+                }
+            }));
+        }
+        start.countDown();
+        for (Future<Boolean> read : reads) {
+            assertThat(read.get(30, TimeUnit.SECONDS))
+                    .as("failed at once, backing off")
+                    .isTrue();
+        }
+        assertThat(flaky.fetches())
+                .as("the first failure's one request, and no more")
+                .hasValue(1);
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void concurrentFirstReadersOfAFailingKeyShareOneRequestAndTheLateOnesMakeNone() throws Exception {
+        var split = new SplitClock();
+        var release = new CountDownLatch(1);
+        var fetches = new AtomicInteger();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    fetches.incrementAndGet();
+                    await(release);
+                    throw new ApiException("Failed to get data: 503");
+                },
+                Duration.ofSeconds(5),
+                MARGIN,
+                virtualThreads,
+                split.clock());
+        var joins = countJoins(loader);
+        int readers = 20;
+        List<Future<String>> reads = new ArrayList<>();
+        try {
+            for (int reader = 0; reader < readers; reader++) {
+                reads.add(virtualThreads.submit(() -> loader.load("m1")));
+            }
+            waitUntil(() -> joins.get() == readers);
+        } finally {
+            release.countDown();
+        }
+        for (Future<String> read : reads) {
+            assertThatThrownBy(() -> read.get(30, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
+        }
+        for (int late = 0; late < readers; late++) {
+            failsBackingOff(loader, "m1");
+        }
+        assertThat(fetches).hasValue(1);
+    }
+
+    @Test
+    void aReaderThatCheckedBeforeTheFailureAndJoinsAfterItMakesNoRequestEither() throws Exception {
+        var split = new SplitClock();
+        var release = new CountDownLatch(1);
+        var started = new CountDownLatch(1);
+        var checked = new CountDownLatch(1);
+        var late = new CountDownLatch(1);
+        var fetches = new AtomicInteger();
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    fetches.incrementAndGet();
+                    started.countDown();
+                    await(release);
+                    throw new ApiException("Failed to get data: 503");
+                },
+                Duration.ofSeconds(5),
+                MARGIN,
+                virtualThreads,
+                split.clock());
+        Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
+        assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+        // the second finds the key not backing off, and waits before it joins or starts a flight
+        loader.checked = key -> {
+            checked.countDown();
+            await(late);
+        };
+        Future<String> second = virtualThreads.submit(() -> loader.load("m1"));
+        try {
+            assertThat(checked.await(5, TimeUnit.SECONDS)).isTrue();
+            release.countDown();
+            assertThatThrownBy(() -> first.get(5, TimeUnit.SECONDS)).cause().isInstanceOf(ApiException.class);
+            waitUntil(() -> loader.inFlight() == 0);
+        } finally {
+            late.countDown();
+        }
+        assertThatThrownBy(() -> second.get(5, TimeUnit.SECONDS))
+                .cause()
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("backing off");
+        assertThat(fetches).as("its own flight started no request").hasValue(1);
+    }
+
+    /** A caller that was left behind either got its value or failed: both are what a late finish may do. */
+    private static void settledLate(Future<String> caller) throws Exception {
+        try {
+            assertThat(caller.get(5, TimeUnit.SECONDS)).isEqualTo("late value");
+        } catch (java.util.concurrent.ExecutionException failed) {
+            assertThat(failed.getCause()).isInstanceOf(ApiException.class);
+        }
     }
 
     /** A fetch that waits to be released, and says what it was given. */

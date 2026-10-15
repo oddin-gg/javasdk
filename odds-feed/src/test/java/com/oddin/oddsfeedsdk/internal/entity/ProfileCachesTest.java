@@ -4,11 +4,13 @@ import static com.oddin.oddsfeedsdk.internal.entity.ProfileFields.*;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
+import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
@@ -551,6 +553,84 @@ class ProfileCachesTest {
         caches.sports(EN, null);
         time.onNextInstant(caches::clear);
         assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
+    }
+
+    @Test
+    void aFailedCompetitorLoadBacksOffAndTheReadsWithinItMakeNoRequest() {
+        api.respond(COMPETITOR_PROFILE_EN, 404, "");
+        assertThatThrownBy(() -> caches.competitor(COMPETITOR, EN, null)).isInstanceOf(ApiException.class);
+        for (int read = 0; read < 3; read++) {
+            assertThatThrownBy(() -> caches.competitor(COMPETITOR, EN, null))
+                    .isInstanceOf(ApiException.class)
+                    .hasMessageContaining("backing off");
+        }
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(1);
+
+        time.advance(Duration.ofSeconds(1));
+        assertThatThrownBy(() -> caches.competitor(COMPETITOR, EN, null)).isInstanceOf(ApiException.class);
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN))
+                .as("after the backoff, one more")
+                .hasSize(2);
+
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        time.advance(Duration.ofSeconds(2));
+        assertThat(caches.competitor(COMPETITOR, EN, null).get(COMPETITOR_NAME, EN))
+                .as("it backed off, it did not give up")
+                .isEqualTo("Team Alpha");
+    }
+
+    @Test
+    void clearingAFailedKeyEndsItsBackoffAndLeavesTheOthersBackingOff() {
+        api.respond(COMPETITOR_PROFILE_EN, 404, "");
+        api.respond(PLAYER_PROFILE_EN, 404, "");
+        api.respond(TOURNAMENT_INFO_EN, 404, "");
+        api.respond(LOL_TOURNAMENTS_EN, 404, "");
+        api.respond(SPORTS_EN, 404, "");
+        assertThatThrownBy(() -> caches.competitor(COMPETITOR, EN, null)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> caches.player(PLAYER, EN, null)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> caches.tournament(TOURNAMENT, EN, null)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> caches.sportTournaments(LOL, EN, null)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> caches.sports(EN, null)).isInstanceOf(ApiException.class);
+
+        caches.clearCompetitor(COMPETITOR);
+        caches.clearTournament(TOURNAMENT);
+        caches.clearPlayer(PLAYER);
+        caches.clearSport(LOL);
+        for (Runnable read : List.<Runnable>of(
+                () -> caches.competitor(COMPETITOR, EN, null),
+                () -> caches.player(PLAYER, EN, null),
+                () -> caches.tournament(TOURNAMENT, EN, null),
+                () -> caches.sportTournaments(LOL, EN, null),
+                () -> caches.sports(EN, null))) {
+            assertThatThrownBy(read::run).isInstanceOf(ApiException.class).hasMessageNotContaining("backing off");
+        }
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN))
+                .as("a clear asked for a fresh load")
+                .hasSize(2);
+        assertThat(api.requests("GET", PLAYER_PROFILE_EN)).hasSize(2);
+        assertThat(api.requests("GET", TOURNAMENT_INFO_EN)).hasSize(2);
+        assertThat(api.requests("GET", LOL_TOURNAMENTS_EN)).hasSize(2);
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+
+        // one key cleared, the other still backing off; then everything
+        caches.clearCompetitor(COMPETITOR);
+        assertThatThrownBy(() -> caches.player(PLAYER, EN, null)).hasMessageContaining("backing off");
+        assertThat(api.requests("GET", PLAYER_PROFILE_EN)).hasSize(2);
+        caches.clear();
+        assertThatThrownBy(() -> caches.player(PLAYER, EN, null)).hasMessageNotContaining("backing off");
+        assertThat(api.requests("GET", PLAYER_PROFILE_EN)).hasSize(3);
+    }
+
+    @Test
+    void aFailedLoadOfOneLocaleBacksOffOnlyThatLocale() {
+        api.respond(COMPETITOR_PROFILE_EN, 404, "");
+        api.respond(
+                "/v1/sports/de/competitors/od:competitor:47214/profile",
+                200,
+                Fixtures.read("rest/competitor/competitor_profile.xml"));
+        assertThatThrownBy(() -> caches.competitor(COMPETITOR, EN, null)).isInstanceOf(ApiException.class);
+        assertThat(caches.competitor(COMPETITOR, Locale.GERMAN, null).get(COMPETITOR_NAME, Locale.GERMAN))
+                .isNotNull();
     }
 
     @Test

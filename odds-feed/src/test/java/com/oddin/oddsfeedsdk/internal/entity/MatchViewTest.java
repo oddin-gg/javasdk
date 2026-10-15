@@ -290,6 +290,30 @@ class MatchViewTest {
     }
 
     @Test
+    void aGetterOfAMatchThatFailedToLoadFailsAtOnceUnderTheStrategyWithoutAskingTheApiAgain() {
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+            world.api.respond(SUMMARY_EN, 404, "");
+            Match match = world.entities.match(MATCH, List.of(EN));
+            assertThatThrownBy(() -> match.getName(EN)).isInstanceOf(ItemNotFoundException.class);
+            for (int read = 0; read < 3; read++) {
+                assertThatThrownBy(() -> match.getName(EN))
+                        .isInstanceOf(ItemNotFoundException.class)
+                        .hasMessageContaining("backing off")
+                        .hasCauseInstanceOf(ApiException.class);
+            }
+            assertThat(world.api.requests("GET", SUMMARY_EN)).hasSize(1);
+        }
+        try (var world = EntityWorld.start(ExceptionHandlingStrategy.CATCH)) {
+            world.api.respond(SUMMARY_EN, 404, "");
+            Match match = world.entities.match(MATCH, List.of(EN));
+            for (int read = 0; read < 4; read++) {
+                assertThat(match.getName(EN)).isNull();
+            }
+            assertThat(world.api.requests("GET", SUMMARY_EN)).hasSize(1);
+        }
+    }
+
+    @Test
     void aMatchTheApiDoesNotDescribeIsNotFound() {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(SUMMARY_EN, 200, "<match_summary generated_at=\"2026-08-26T12:00:00\"/>");
