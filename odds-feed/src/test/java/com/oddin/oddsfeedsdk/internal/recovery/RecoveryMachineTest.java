@@ -140,6 +140,65 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aRecoveryClampedToTheStatefulRecoveryWindowIsAWarningWithWhatIsDropped() {
+        long from = feed.now()
+                - Duration.ofDays(3).toMillis()
+                + Duration.ofMinutes(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.clock.advance(Duration.ofHours(1));
+        try (var log = LogCapture.of(RecoveryMachine.class)) {
+            feed.alive(PRE);
+            var asked = feed.lastSnapshot(PRE).after();
+            assertThat(log.lines())
+                    .singleElement()
+                    .isEqualTo("WARN Recovery " + feed.lastSnapshot(PRE).requestId()
+                            + " of producer 1: the gap began at "
+                            + Instant.ofEpochMilli(from) + ", before the producer's stateful recovery window of 4320"
+                            + " minutes; asking from " + asked
+                            + ", so PT59M of what the producer sent cannot be recovered");
+        }
+    }
+
+    @Test
+    void aRecoveryInsideTheStatefulRecoveryWindowIsNoWarning() {
+        long from = feed.now()
+                - Duration.ofDays(3).toMillis()
+                + Duration.ofMinutes(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        try (var log = LogCapture.of(RecoveryMachine.class)) {
+            feed.alive(PRE);
+            assertThat(feed.lastSnapshot(PRE).after()).isEqualTo(Instant.ofEpochMilli(from));
+            assertThat(log.lines()).isEmpty();
+        }
+    }
+
+    @Test
+    void theReissuesOfARecoveryClampedToTheWindowAreNoMoreWarnings() {
+        long from = feed.now()
+                - Duration.ofDays(3).toMillis()
+                + Duration.ofMinutes(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.clock.advance(Duration.ofHours(1));
+        try (var log = LogCapture.of(RecoveryMachine.class)) {
+            feed.alive(PRE);
+            int asked = feed.snapshots(PRE).size();
+            feed.refuse(feed.lastSnapshot(PRE));
+            feed.advance(Duration.ofSeconds(5));
+            assertThat(feed.snapshots(PRE)).as("asked for again").hasSizeGreaterThan(asked);
+            assertThat(log.lines())
+                    .filteredOn(line -> line.contains("stateful recovery window"))
+                    .as("one warning for the gap, not one per request")
+                    .hasSize(1);
+        }
+    }
+
+    @Test
     void theWindowIsCountedBackByTheProducersClockWhicheverWayItIsOff() {
         for (long offset : new long[] {
             Duration.ofMinutes(10).toMillis(), -Duration.ofMinutes(10).toMillis()

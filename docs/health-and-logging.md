@@ -97,7 +97,7 @@ down. Normal traffic is quiet: an hour of it logs state changes at INFO and noth
 | Level | What |
 |---|---|
 | INFO | A state change: the feed opened, a producer up or down, a recovery started, ended or given up, a session caught up, a part of the feed healthy again. The one exception is API call logging, one line per attempt, off unless you set `setApiCallLogging(true)`. |
-| WARN | Something you may need to act on, or should know is lost: a dropped message, a full queue, a failed preload, a degraded part. |
+| WARN | Something you may need to act on, or should know is lost: a dropped message, a full queue, a failed preload, a degraded part, a recovery that starts after where its gap began because the producer's stateful recovery window is shorter (the line says how much of the gap is dropped). |
 | ERROR | A part that stalled, or client code that threw. |
 | DEBUG | The detail behind a warning, the stack of a failure, what happens per request. Nothing here is needed to run the feed. |
 

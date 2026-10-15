@@ -1096,8 +1096,10 @@ Levels:
   or given up, a session caught up, a part of the feed back to healthy. The opt-in API
   call log is the one exception, one line per attempt, off unless the client asks.
 - WARN: something the client may need to act on, or should know is lost: a dropped
-  message, a queue full, a failed preload, a part of the feed degraded. A warning that can
-  repeat is throttled.
+  message, a queue full, a failed preload, a part of the feed degraded, a recovery
+  clamped to the producer's stateful window (it names the producer, the gap's start, the
+  start asked for and how much is dropped; once per gap, its re-issues at DEBUG). A
+  warning that can repeat is throttled.
 - ERROR: a part that stalled, or client code that threw. Also throttled when it can repeat.
 - DEBUG: the detail behind a warning, the stack of a failure, and what happens per
   request. Nothing here is needed to run the feed.

@@ -87,6 +87,9 @@ final class RecoveryMachine {
 
     private static final Logger LOG = LoggerFactory.getLogger(RecoveryMachine.class);
 
+    private static final String CLAMPED = "Recovery {} of producer {}: the gap began at {}, before the producer's"
+            + " stateful recovery window of {} minutes; asking from {}, so {} of what the producer sent cannot be recovered";
+
     /** A sample's age when the producer's clock offset is not known. */
     private static final long UNKNOWN_AGE = Long.MIN_VALUE;
 
@@ -970,7 +973,8 @@ final class RecoveryMachine {
 
     private void request(Track track, long mono) {
         long wall = wall();
-        long after = after(track);
+        long gapStart = oldestGap(track);
+        long after = after(track, gapStart);
         long requestId = ids.next(this::inFlight);
         var active = new Active(requestId, after, wall, mono, producerNow(track), gapSeq, awaited(track));
         active.causes.add(track.cause);
@@ -984,8 +988,46 @@ final class RecoveryMachine {
                 requestId,
                 track.id,
                 after == 0 ? "as a full snapshot" : "from " + Instant.ofEpochMilli(after));
+        if (after > gapStart) {
+            clamped(track, requestId, gapStart, after);
+        }
         outbox.request(new Outbox.Call.Snapshot(
                 track.id, track.producer.getName(), requestId, after == 0 ? null : Instant.ofEpochMilli(after)));
+    }
+
+    /**
+     * A recovery asked for from {@code after}, after the producer's stateful recovery window, not
+     * from {@code gapStart}, where its oldest gap began: what the producer sent between them is not
+     * recovered. A warning the first time for that gap; the re-issues of the same request, with the
+     * window moving on, are debug.
+     */
+    private void clamped(Track track, long requestId, long gapStart, long after) {
+        Object[] arguments = {
+            requestId,
+            track.id,
+            Instant.ofEpochMilli(gapStart),
+            track.producer.getStatefulRecoveryWindowInMinutes(),
+            Instant.ofEpochMilli(after),
+            Duration.ofMillis(after - gapStart)
+        };
+        if (track.clampWarnedFrom != gapStart) {
+            track.clampWarnedFrom = gapStart;
+            LOG.warn(CLAMPED, arguments);
+        } else {
+            LOG.debug(CLAMPED, arguments);
+        }
+    }
+
+    /** The start of the oldest gap of the producer, or of any of its lanes. */
+    private long oldestGap(Track track) {
+        long start = track.gap == null ? Long.MAX_VALUE : track.gap.from;
+        for (SessionState session : sessions.values()) {
+            Lane lane = session.lanes.get(track.id);
+            if (lane != null && lane.gap != null) {
+                start = Math.min(start, lane.gap.from);
+            }
+        }
+        return start;
     }
 
     /**
@@ -993,14 +1035,8 @@ final class RecoveryMachine {
      * window and capped at the producer's now; for none, 0.0.x's initial snapshot interval when
      * set, else 0 for a full snapshot.
      */
-    private long after(Track track) {
-        long after = track.gap == null ? Long.MAX_VALUE : track.gap.from;
-        for (SessionState session : sessions.values()) {
-            Lane lane = session.lanes.get(track.id);
-            if (lane != null && lane.gap != null) {
-                after = Math.min(after, lane.gap.from);
-            }
-        }
+    private long after(Track track, long oldestGap) {
+        long after = oldestGap;
         int window = track.producer.getStatefulRecoveryWindowInMinutes();
         if (after != 0 && window > 0) {
             // the window counts back from now by the producer's clock, as the gaps' starts are
@@ -1828,6 +1864,8 @@ final class RecoveryMachine {
         /** What every session misses because the producer stopped sending; null for nothing. */
         @Nullable
         Gap gap;
+        /** The start of the gap whose recovery was last clamped to the stateful window and warned of; 0 for none. */
+        long clampWarnedFrom;
         /** The resume point last published, or {@link #NO_POINT}. */
         long published = NO_POINT;
 
