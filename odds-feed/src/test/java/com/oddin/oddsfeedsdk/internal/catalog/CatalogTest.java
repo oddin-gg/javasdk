@@ -342,7 +342,7 @@ class CatalogTest {
     }
 
     @Test
-    void anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld() {
+    void anItemMissingFromAValueRefetchesItWheneverTheValueIsAMinuteOld() {
         answer = () -> "a,b";
         assertThat(find("c")).as("the value is too young to fetch again").isNull();
         assertThat(fetches).hasValue(1);
@@ -355,16 +355,42 @@ class CatalogTest {
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
         assertThat(find("d")).isNull();
         assertThat(fetches).as("refetched for d").hasValue(3);
+        assertThat(find("e")).as("the value is too young again").isNull();
+        assertThat(fetches).hasValue(3);
+
         time.advance(Catalog.MISS_INTERVAL.plus(TICK));
         assertThat(find("d")).isNull();
         assertThat(fetches)
-                .as("d is missing from a value fetched after it was first missed")
-                .hasValue(3);
+                .as("d is still missing a minute later: refetched again, as often as it is a minute old")
+                .hasValue(4);
 
-        assertThat(find("e")).isNull();
-        assertThat(fetches).hasValue(4);
-        assertThat(find("e")).isNull();
-        assertThat(fetches).hasValue(4);
+        answer = () -> "a,b,c,d";
+        time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        assertThat(find("d")).as("upstream has it now").isEqualTo("d");
+        assertThat(fetches).hasValue(5);
+        assertThat(find("d")).as("held, no fetch").isEqualTo("d");
+        assertThat(fetches).hasValue(5);
+    }
+
+    @Test
+    void itemsThatAreNeverThereCostOneFetchOfTheKeyAMinute() {
+        answer = () -> "a,b";
+        catalog.get("k");
+        int minutes = 5;
+        for (int minute = 1; minute <= minutes; minute++) {
+            time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+            for (int item = 0; item < 500; item++) {
+                assertThat(find("missing" + item)).isNull();
+            }
+            assertThat(fetches)
+                    .as("minute %d: one fetch for all the items", minute)
+                    .hasValue(1 + minute);
+            time.advance(Duration.ofSeconds(30));
+            for (int item = 0; item < 500; item++) {
+                assertThat(find("missing" + item)).isNull();
+            }
+            assertThat(fetches).as("minute %d: the value is young", minute).hasValue(1 + minute);
+        }
     }
 
     @Test
@@ -414,6 +440,50 @@ class CatalogTest {
                     .isEqualTo("c");
         }
         assertThat(fetches).hasValue(2);
+    }
+
+    @Test
+    void concurrentReadsOfItemsMissedBeforeShareOneFetchOfTheValue() throws Exception {
+        catalog = catalog(10, threads, queuedRefreshes::add);
+        answer = () -> "a,b";
+        catalog.get("k");
+        time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        assertThat(find("c")).as("missed, and missing from the refetch too").isNull();
+        assertThat(find("d")).isNull();
+        assertThat(fetches).hasValue(2);
+
+        var release = new CountDownLatch(1);
+        answer = () -> {
+            await(release);
+            return "a,b,c,d";
+        };
+        time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        List<Future<@Nullable String>> reads = new ArrayList<>();
+        var readers = new ConcurrentLinkedQueue<Thread>();
+        for (int i = 0; i < 20; i++) {
+            var item = i % 2 == 0 ? "c" : "d";
+            reads.add(threads.submit(() -> {
+                readers.add(Thread.currentThread());
+                return find(item);
+            }));
+        }
+        try {
+            // every reader waits for the one fetch before it is let go
+            long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (readers.size() < 20
+                    || !readers.stream().allMatch(reader -> reader.getState() == Thread.State.TIMED_WAITING)) {
+                assertThat(System.nanoTime() - until).as("readers waiting").isNegative();
+                Thread.onSpinWait();
+            }
+        } finally {
+            release.countDown();
+        }
+        for (int i = 0; i < reads.size(); i++) {
+            assertThat(reads.get(i).get(5, TimeUnit.SECONDS))
+                    .as("found by the read that missed it")
+                    .isEqualTo(i % 2 == 0 ? "c" : "d");
+        }
+        assertThat(fetches).as("one fetch for all of them").hasValue(3);
     }
 
     @Test
