@@ -415,7 +415,8 @@ because the health event itself would queue behind the wedge.
   configuration option documents. A getter can wait longer: it loads a second time when
   the first write was refused as stale, and a fan-out waits up to twice the timeout and
   three seconds, a long list more. Nothing remembers a failed load, so during an outage
-  every cold getter waits that long again; a backoff per key comes later.
+  every cold getter waits that long again. That stays, by decision (2026-10-15, section 8,
+  Outage).
 - A permit is held for one HTTP call only, never across a fan-out. A match load
   releases its permit before its competitor loads acquire theirs, so nested loads
   cannot hold every permit in parents while children wait.
@@ -1514,11 +1515,10 @@ group by group.
     Also `getReplayList`, built through ticket 20's factory.
 
     41. Transport and recovery hardening: the findings left open on the approved PRs
-        of tickets 21 and 24. Also the starts counted back from the initial snapshot
-        interval, which are on the SDK's clock: they are shifted once into the
-        producer's clock at its first alive. 0.0.x counts them on the SDK's clock too;
-        the two differ only when the client's clock is off, and that gets a KD entry if
-        a system test pins it.
+        of tickets 21 and 24. The starts counted back from the initial snapshot
+        interval stay on the SDK's clock, by decision (2026-10-15): 0.0.x counts them
+        there too, the two clocks differ only when the client's clock is off, and the
+        request's start is capped at the producer's now.
 26. `OddsFeed` façade, sessions, builder, one-shot lifecycle with all-or-nothing
     `open()`, watchdog over every thread group, `getHealth()` with the full counter
     list. Also the recovery actor's wiring and its listener methods, `RecoveryManager`,
@@ -1761,7 +1761,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
 - 2026-10-06, after a code review of `next`: follow-ups recorded with tickets 26 (the
   actor starts before the transport, the KD-12 and KD-27 scenarios check the second
   recovery), 31 (the AMQP client's buffer in the memory budget, fixture changes of a
-  repeated replay run) and 41 (the initial snapshot interval on the producer's clock).
+  repeated replay run) and 41 (the initial snapshot interval on the producer's clock: dropped,
+  entry of 2026-10-15).
 - 2026-10-06, sessions after `open()`: `build()` throws instead of returning a session
   that never receives anything (section 3, difference 7; KD-29).
 - 2026-10-07, ticket 26: the recovery actor runs in the feed, and every system test passes
@@ -1919,3 +1920,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   reads a system one, for a test, and the feed passes its own. A test over a clock whose two
   sides are moved apart pins each group, and a dependency test fails the build for a cache
   package that reads a clock of its own. No public API changes.
+- 2026-10-15, the cold start's interval: the starts counted back from the initial snapshot
+  interval stay on the SDK's clock; the shift into the producer's clock at its first alive, which
+  the entry of 2026-10-06 recorded for ticket 41, will not be done. 0.0.x counts them on the
+  SDK's clock too, the two differ only when the client's clock is off, and the request's start is
+  already capped at the producer's now. No system test pins it, so there is no KD entry. No
+  public API changes.
