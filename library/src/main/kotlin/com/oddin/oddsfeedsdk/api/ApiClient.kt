@@ -14,6 +14,7 @@ import com.oddin.oddsfeedsdk.exceptions.ApiException
 import com.oddin.oddsfeedsdk.schema.rest.v1.*
 import com.oddin.oddsfeedsdk.schema.utils.URN
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedExtListener
+import com.oddin.oddsfeedsdk.utils.SafeXml
 import io.reactivex.Observable
 import io.reactivex.disposables.Disposable
 import io.reactivex.subjects.PublishSubject
@@ -407,7 +408,7 @@ class ApiClientImpl @Inject constructor(
     private fun unmarshalPossibleError(error: FuelError): RAError? {
         synchronized(Deserializer.UNMARSHALLER) {
             return try {
-                Deserializer.UNMARSHALLER.unmarshal(ByteArrayInputStream(error.errorData)) as? RAError
+                Deserializer.UNMARSHALLER.unmarshal(SafeXml.reader(ByteArrayInputStream(error.errorData))) as? RAError
             } catch (e: Exception) {
                 null
             }
@@ -430,7 +431,7 @@ class Deserializer<out T : Any> : ResponseDeserializable<T> {
     override fun deserialize(inputStream: InputStream): T? {
         synchronized(UNMARSHALLER) {
             @Suppress("UNCHECKED_CAST")
-            return UNMARSHALLER.unmarshal(inputStream) as T?
+            return UNMARSHALLER.unmarshal(SafeXml.reader(inputStream)) as T?
         }
     }
 }
