@@ -823,3 +823,22 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   `OddsFeedClockStepTest`).
 - **Found:** by reading the 0.0.58 source (`RecoveryManager`, `ChannelConsumer`); the 0.0.x side
   was not run with a stepped clock.
+
+## KD-44 A negative initial snapshot recovery interval is refused
+
+- **0.0.x:** `setInitialSnapshotRecoveryInterval` takes any `Duration`. A negative one makes the first
+  recovery of a producer with no resume point start at the clock plus the interval, a moment in the
+  future (`RecoveryManager.makeSnapshotRecovery`), and the request is sent with it; the stateful
+  recovery window only moves a start that is too early. Zero starts at now, with no history.
+- **1.0:** The setter throws `IllegalArgumentException` for a negative interval, as the builder's
+  other setters do for a value the feed cannot work with, and keeps the value it had. Zero is still
+  accepted and starts at the producer's now, as in 0.0.x. The Go SDK refuses a negative interval
+  too, and reads zero as not set, which asks for a full snapshot; 1.0 keeps 0.0.x's zero rather
+  than that, as a client of 0.0.x that set zero asked for no history.
+- **Why:** A client that computes the interval, say from a stored time that lies ahead of the clock,
+  gets an exception when it builds the configuration instead of a cold start that silently asks for
+  no history; the capped start would have hidden the mistake. The caller of 0.0.x that passed a
+  negative value now has to fix it.
+- **Pinned by:** none in the system tests; the unit tests pin it (`OddsFeedConfigurationBuilderTest`'s
+  `aNegativeInitialSnapshotRecoveryIntervalIsRefusedAndChangesNothing`).
+- **Found:** by reading the source of both lines, for the review of 1.0 against 0.0.58.
