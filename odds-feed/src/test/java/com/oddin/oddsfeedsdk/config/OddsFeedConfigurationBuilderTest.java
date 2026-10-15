@@ -512,6 +512,36 @@ class OddsFeedConfigurationBuilderTest {
     }
 
     @Test
+    void aNegativeInitialSnapshotRecoveryIntervalIsRefusedAndChangesNothing() {
+        var builder = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setInitialSnapshotRecoveryInterval(Duration.ofHours(2));
+        assertThatThrownBy(() -> builder.setInitialSnapshotRecoveryInterval(Duration.ofSeconds(-1)))
+                .isExactlyInstanceOf(IllegalArgumentException.class)
+                .hasMessage("initial snapshot recovery interval must not be negative, was PT-1S");
+        assertThat(builder.build().getInitialSnapshotRecoveryInterval()).isEqualTo(Duration.ofHours(2));
+    }
+
+    @Test
+    void anInitialSnapshotRecoveryIntervalOfZeroOrMoreBuilds() {
+        assertThat(builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setInitialSnapshotRecoveryInterval(Duration.ZERO)
+                        .build()
+                        .getInitialSnapshotRecoveryInterval())
+                .isEqualTo(Duration.ZERO);
+        assertThat(builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setInitialSnapshotRecoveryInterval(Duration.ofMinutes(30))
+                        .build()
+                        .getInitialSnapshotRecoveryInterval())
+                .isEqualTo(Duration.ofMinutes(30));
+    }
+
+    @Test
     void aLocaleWithoutALanguageIsRefusedAndChangesNothing() {
         var builder = builder().selectProduction().setAccessToken("token").setPreloadLocales(List.of(Locale.FRENCH));
         assertThatThrownBy(() -> builder.setDefaultLocale(Locale.ROOT))
