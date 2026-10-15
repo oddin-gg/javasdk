@@ -46,6 +46,15 @@ unless it is a replay feed. A closed feed still reads what it counted.
 Every degradation the design allows is a log line, a counter and, for anything that discards data,
 an event. Nothing is silent.
 
+A recovery thread that has died (an `Error` or an exception that escaped its loop, which is a
+bug of the SDK) is a stall too, and the feed can no longer recover: the SDK logs `The recovery
+actor stopped` at `ERROR` with the cause, closes the actor, and refuses every later event recovery
+(`recoverEvent` returns `null`). Its part has stopped taking turns, so once the callback limit has
+passed (65 s with the default timeout) `RECOVERY` is `STALLED` and `state()` with it, told once
+through `onHealthEvent` with the reason `the recovery actor has been in one turn for ...`, and it
+stays so: nothing moves it again. The reason says "one turn" because the watchdog sees a turn that
+never ends, not why. Close the feed and open a new one; the `ERROR` line is the cause to report.
+
 ### Health events
 
 Override `GlobalEventsListener.onHealthEvent(HealthEvent)` to be told of each change: the

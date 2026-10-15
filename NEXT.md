@@ -1063,6 +1063,16 @@ logged out of it. A look that throws is logged and the next one runs. The connec
 part, `CONNECTION`, is the feed's once it is open, as the consumer's; `onConnectionDown` and
 the connection's state callback still tell each loss as it happens.
 
+What a dead thread does: an `Error` or an exception that escapes the recovery actor's loop (a
+bug; a fact's failure is caught and the actor goes on) is logged at `ERROR` as "The recovery
+actor stopped", closes the actor, and turns every later event recovery away. The watchdog's
+sample of the actor has `turnedAt` left at its last turn and nothing queued moving, so after
+the callback limit the `RECOVERY` part reads `STALLED` - by that reading, not by one of the
+thread's death - with the reason "the recovery actor has been in one turn for ...", told once
+and never healthy again; `getHealth().state()` is `STALLED` with it. No fatal error event is
+raised, and the watchdog does not end or restart the actor: the remedy is `close()` and a new
+feed. Pinned by `OddsFeedWatchdogTest`.
+
 Remediation is limited and stated: the watchdog does not kill threads. A wedged
 dispatcher is reported; the client's remedy is `close()` and a new `OddsFeed`, and
 `close()` uses the shutdown timeout so a wedged callback cannot block shutdown. A stall
