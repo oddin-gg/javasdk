@@ -243,7 +243,11 @@ public final class LoadSubject {
                             : "; the " + expect + " expected odds changes were handled at "
                                     + (burstDoneAt - t0) / 1_000_000 + " ms"));
             double seconds = (measureTo - measureFrom) / 1e9;
-            out.append(String.format(Locale.ROOT, "measured over %.1f s%n", seconds));
+            out.append(String.format(
+                    Locale.ROOT,
+                    "measured over %.1f s, from %s%n",
+                    seconds,
+                    java.time.Instant.now().minusNanos(System.nanoTime() - measureFrom)));
             out.append(recorder.report(measureTo - measureFrom));
             if (telemetry != null && telemetry.ticks().size() > 1) {
                 var pauses = List.<GcLog.Pause>of();
@@ -311,6 +315,8 @@ public final class LoadSubject {
         private final Series at = new Series();
         private final Series age = new Series();
         private final Series wait = new Series();
+        private final Series toCallback = new Series();
+        private final Series arrival = new Series();
         private final Series callback = new Series();
         private final Map<String, AtomicInteger> byType = new ConcurrentHashMap<>();
         private String sample = "";
@@ -324,6 +330,8 @@ public final class LoadSubject {
             at.clear();
             age.clear();
             wait.clear();
+            toCallback.clear();
+            arrival.clear();
             callback.clear();
             byType.clear();
         }
@@ -332,7 +340,7 @@ public final class LoadSubject {
             return at.toArray().length;
         }
 
-        private synchronized void record(String type, Message message, long entered, long left) {
+        private synchronized void record(String type, Message message, long entered, long left, long enteredMillis) {
             if (!run.measuring) {
                 return;
             }
@@ -349,6 +357,13 @@ public final class LoadSubject {
                     stamps.getReceived() > 0 && stamps.getPublished() >= stamps.getReceived()
                             ? stamps.getPublished() - stamps.getReceived()
                             : -1);
+            // the same two points in both lines: the receipt, and the callback's first line
+            toCallback.add(stamps.getReceived() > 0 ? Math.max(0, enteredMillis - stamps.getReceived()) : -1);
+            // the age is this - before the SDK has the message - and the receipt to the callback
+            arrival.add(
+                    stamps.getCreated() > 0 && stamps.getReceived() > 0
+                            ? Math.max(0, stamps.getReceived() - stamps.getCreated())
+                            : -1);
             callback.add(left - entered);
             byType.computeIfAbsent(type, _ -> new AtomicInteger()).incrementAndGet();
         }
@@ -356,6 +371,7 @@ public final class LoadSubject {
         @Override
         public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {
             long entered = System.nanoTime();
+            long enteredMillis = System.currentTimeMillis();
             long seen = message.getEvent().getId().hashCode();
             if (run.reads == Reads.NAME || run.reads == Reads.NAMES) {
                 seen += message.getEvent().getName(EN).length();
@@ -376,7 +392,7 @@ public final class LoadSubject {
             synchronized (this) {
                 sink += seen;
             }
-            record("odds_change", message, entered, left);
+            record("odds_change", message, entered, left, enteredMillis);
             if (run.expect > 0 && run.oddsChanges.incrementAndGet() == run.expect) {
                 run.burstDoneAt = left;
                 say("@BURST_DONE");
@@ -385,7 +401,7 @@ public final class LoadSubject {
 
         private void other(String type, Message message) {
             long entered = System.nanoTime();
-            record(type, message, entered, entered);
+            record(type, message, entered, entered, System.currentTimeMillis());
         }
 
         @Override
@@ -430,6 +446,8 @@ public final class LoadSubject {
             var ages = age.toArray();
             var waits = wait.toArray();
             var calls = callback.toArray();
+            var toCalls = toCallback.toArray();
+            var arrivals = arrival.toArray();
             out.append("messages handled ")
                     .append(when.length)
                     .append(" ")
@@ -440,6 +458,8 @@ public final class LoadSubject {
             out.append("checksum of what the callbacks read: ").append(sink).append("\n");
             out.append(summary("age: from the producer's stamp to the callback", ages, 1_000_000));
             out.append(summary("wait in the SDK: received to published", waits, 1_000_000));
+            out.append(summary("arrival: from the producer's stamp to the receipt", arrivals, 1_000_000));
+            out.append(summary("receipt to the callback: received to the callback's first line", toCalls, 1_000_000));
             out.append(summary("callback", calls, 1));
             int windows = 10;
             long window = Math.max(1, measured / windows);
