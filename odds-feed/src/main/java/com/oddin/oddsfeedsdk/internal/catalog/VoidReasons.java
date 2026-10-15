@@ -21,7 +21,7 @@ import org.jspecify.annotations.Nullable;
 /**
  * The void reasons: one list, in no locale, fetched whole, refreshed after {@link #REFRESH_AGE}
  * and served while a refresh runs and for as long as refreshes fail; see {@link Catalog}. A
- * refresh replaces the list; an id missing from it fetches the list again once.
+ * refresh replaces the list; an id missing from it fetches the list again when it is a minute old.
  *
  * <p>Safe for concurrent use.
  */

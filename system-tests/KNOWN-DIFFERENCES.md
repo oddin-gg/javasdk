@@ -758,8 +758,10 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
       clear does. A tournament new upstream shows up up to a day late, and with the list held an
       API outage no longer throws.
   11. Each list is refreshed an hour after its fetch. A market missing from it fetches the list
-      again once, when the list held is at least a minute old, so a market new upstream can read
-      no name for up to a minute. `clearMarketDescription` for a market without dynamic outcomes
+      again, whenever the list held is at least a minute old and however often the market was
+      asked for before, so a market new upstream can read no name for up to a minute plus the
+      fetch, and markets that are never there cost one fetch of the list a minute at most.
+      `clearMarketDescription` for a market without dynamic outcomes
       drops every locale's list.
   12. A field a response leaves out is kept, and a schedule fills only what is not held, so the
       name of a listed match loads its summary: one call per match and locale.
