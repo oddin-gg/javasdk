@@ -193,6 +193,34 @@ class RecoveryClockTest {
         assertThat(feed.timestampForRecovery(PRE)).isEqualTo(Instant.ofEpochMilli(producerNow));
     }
 
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aRecoveryAskedForAfterAStepOfTheWallClockStartsAWindowBackFromTheProducersNow(long step) {
+        long window = Duration.ofDays(3).toMillis();
+        // the client's start is inside the producer's stateful window by two seconds, and outside it
+        // by the time the second request goes out five seconds on
+        long from = feed.now() - window + 2_000;
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.alive(PRE);
+        Outbox.Call.Snapshot first = feed.lastSnapshot(PRE);
+        assertThat(first.after()).isEqualTo(Instant.ofEpochMilli(from));
+        feed.refuse(first);
+        int asked = feed.snapshots(PRE).size();
+
+        // the step, and the backoff of the second request on both clocks, with no alive to measure the
+        // offset anew: the producer's clock has not stepped, so its now is the SDK's less the step
+        feed.stepWall(Duration.ofSeconds(step));
+        feed.advance(Duration.ofSeconds(5));
+
+        assertThat(feed.snapshots(PRE)).as("asked for again").hasSize(asked + 1);
+        long producerNow = feed.now() - Duration.ofSeconds(step).toMillis();
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("the start of the window")
+                .isEqualTo(Instant.ofEpochMilli(producerNow - window));
+    }
+
     // ---- the deadlines of a recovery
 
     @ParameterizedTest
