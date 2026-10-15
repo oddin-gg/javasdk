@@ -16,6 +16,9 @@ public enum OFMarketStatus {
     /** A value this SDK does not know. It has no number of its own: {@link #value()} fails for it. */
     UNKNOWN(Integer.MIN_VALUE);
 
+    /** The constants, once: {@code values()} copies them at every call, and a message reads one for each market. */
+    private static final OFMarketStatus[] VALUES = values();
+
     private final int value;
 
     OFMarketStatus(int value) {
@@ -36,7 +39,7 @@ public enum OFMarketStatus {
      * @throws IllegalArgumentException for a number that has no constant, as in 0.0.x
      */
     public static OFMarketStatus fromValue(int value) {
-        for (OFMarketStatus candidate : values()) {
+        for (OFMarketStatus candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == value) {
                 return candidate;
             }
@@ -49,7 +52,7 @@ public enum OFMarketStatus {
         if (raw == null) {
             return null;
         }
-        for (OFMarketStatus candidate : values()) {
+        for (OFMarketStatus candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == raw) {
                 return candidate;
             }

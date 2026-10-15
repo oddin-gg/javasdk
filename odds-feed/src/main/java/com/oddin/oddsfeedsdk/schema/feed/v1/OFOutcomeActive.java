@@ -12,6 +12,9 @@ public enum OFOutcomeActive {
     /** A value this SDK does not know. It has no number of its own: {@link #value()} fails for it. */
     UNKNOWN(Integer.MIN_VALUE);
 
+    /** The constants, once: {@code values()} copies them at every call, and a message reads one for each market. */
+    private static final OFOutcomeActive[] VALUES = values();
+
     private final int value;
 
     OFOutcomeActive(int value) {
@@ -32,7 +35,7 @@ public enum OFOutcomeActive {
      * @throws IllegalArgumentException for a number that has no constant, as in 0.0.x
      */
     public static OFOutcomeActive fromValue(int value) {
-        for (OFOutcomeActive candidate : values()) {
+        for (OFOutcomeActive candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == value) {
                 return candidate;
             }
@@ -45,7 +48,7 @@ public enum OFOutcomeActive {
         if (raw == null) {
             return null;
         }
-        for (OFOutcomeActive candidate : values()) {
+        for (OFOutcomeActive candidate : VALUES) {
             if (candidate != UNKNOWN && candidate.value == raw) {
                 return candidate;
             }
