@@ -54,8 +54,9 @@ import org.junit.jupiter.api.parallel.ExecutionMode;
  * the restart, 200), {@code _LATENCY} (REST latency in ms, 50), {@code _RATE} (messages a second, 1000), {@code
  * _DURATION} and {@code _WARMUP} (seconds, 600 and 60), {@code _MIX} (odds change sizes, {@code
  * 20:70,150:28,500:2}: markets and weight), {@code _READS} ({@code nothing}, {@code prices}, {@code name}, {@code
- * names}), {@code _HEAP} (the SDK's JVM, MB, 1024), {@code _LABEL}. The reports go to the console and to
- * {@code target/load/}.
+ * names}), {@code _HEAP} (the SDK's JVM, MB, 1024), {@code _LABEL}, {@code _JFR} ({@code true}: the SDK's JVM
+ * writes a Flight Recorder file, {@code target/load/*.jfr}, with the allocation and CPU samples) and {@code
+ * _JVM_ARGS} (more flags for the SDK's JVM, separated by spaces). The reports go to the console and to {@code target/load/}.
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class LoadHarnessIT {
@@ -425,6 +426,7 @@ class LoadHarnessIT {
                     </configuration>
                     """);
             var heap = number("heap", 1024) + "m";
+            var jfr = dir.resolve(name + "-subject-" + stamp + ".jfr");
             var command = new ArrayList<>(List.of(
                     Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                     "-Xms" + heap,
@@ -442,9 +444,34 @@ class LoadHarnessIT {
                     "apiHost=" + api.apiHost(),
                     "out=" + out,
                     "gcLog=" + gcLog));
+            // after the JVM flags, before the main class's arguments
+            int mainClass = command.indexOf(LoadSubject.class.getName());
+            command.addAll(mainClass, flightRecorder(jfr));
+            command.addAll(
+                    mainClass,
+                    List.of(setting("jvm.args", "").trim().split("\\s+")).stream()
+                            .filter(flag -> !flag.isEmpty())
+                            .toList());
             options.forEach((key, value) -> command.add(key + "=" + value));
             var process = new ProcessBuilder(command).redirectErrorStream(true).start();
             return new Subject(process, out, dir.resolve(name + "-subject-" + stamp + ".log"));
+        }
+
+        /**
+         * The flags that record the allocation and the CPU of the SDK's JVM when {@code SYSTEMTESTS_LOAD_JFR} is
+         * on: the allocation samples at 1,000 a second (the default is 150) and the CPU samples every 10 ms, with
+         * stacks deep enough to see which SDK step a frame belongs to.
+         */
+        private static List<String> flightRecorder(Path file) {
+            if (!Boolean.parseBoolean(setting("jfr", "false"))) {
+                return List.of();
+            }
+            return List.of(
+                    "-XX:StartFlightRecording=filename=" + file.toAbsolutePath()
+                            + ",dumponexit=true,settings=profile,jdk.ObjectAllocationSample#throttle=1000/s"
+                            + ",jdk.ExecutionSample#period=10ms,jdk.JavaMonitorEnter#enabled=false"
+                            + ",jdk.ThreadPark#enabled=false",
+                    "-XX:FlightRecorderOptions=stackdepth=128");
         }
 
         /** A trust store holding only the fakes' certificate: all the SDK's JVM needs to trust. */
@@ -495,7 +522,15 @@ class LoadHarnessIT {
 
         @Override
         public void close() {
-            process.destroyForcibly();
+            try {
+                // the JVM writes its flight recording as it exits, after it has said it is done
+                if (!process.waitFor(60, TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                }
+            } catch (InterruptedException e) {
+                process.destroyForcibly();
+                Thread.currentThread().interrupt();
+            }
         }
     }
 }
