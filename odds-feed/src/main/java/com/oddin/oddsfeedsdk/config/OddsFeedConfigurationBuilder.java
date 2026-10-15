@@ -114,8 +114,20 @@ public final class OddsFeedConfigurationBuilder {
         return this;
     }
 
+    /**
+     * How far back a start with no resume point asks for. Unset, it asks for a full snapshot; zero
+     * asks from the producer's now, with no history, as in 0.0.x. The start is clamped to the
+     * producer's stateful recovery window.
+     *
+     * @throws IllegalArgumentException when it is negative: it would put the start in the future, and
+     *     a start is capped at the producer's now, so the feed would silently ask for no history
+     */
     public OddsFeedConfigurationBuilder setInitialSnapshotRecoveryInterval(Duration interval) {
-        this.initialSnapshotRecoveryInterval = requireNonNull(interval, "interval");
+        if (requireNonNull(interval, "interval").isNegative()) {
+            throw new IllegalArgumentException(
+                    "initial snapshot recovery interval must not be negative, was " + interval);
+        }
+        this.initialSnapshotRecoveryInterval = interval;
         return this;
     }
 
