@@ -66,6 +66,13 @@ class RecoveryActorTest {
     private final BlockingQueue<ProducerStatusChange> statuses = new LinkedBlockingQueue<>();
     private final BlockingQueue<String> events = new LinkedBlockingQueue<>();
     private final Transport transport = new Transport();
+    /**
+     * The clock the actors here run on, wall and monotonic one reading, as the stamps these tests make
+     * by hand ({@code Stamp.of}) have them: a fact's two readings come from one clock, and the offset of
+     * a producer's clock is corrected by how far their difference moves.
+     */
+    private static final FeedClock CLOCK = FeedClock.following(InstantSource.system());
+
     private @Nullable RecoveryActor actor;
 
     @AfterEach
@@ -524,7 +531,7 @@ class RecoveryActorTest {
                 api,
                 events(),
                 workers,
-                FeedClock.system(),
+                CLOCK,
                 System::nanoTime,
                 new Random(1),
                 RecoveryActor.CONTROL_CAPACITY,
@@ -1172,7 +1179,12 @@ class RecoveryActorTest {
     void aResetTheClosingActorDecidesOnIsNotMade() throws InterruptedException {
         var handed = new Handed(workers);
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), handed);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                handed,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1359,7 +1371,12 @@ class RecoveryActorTest {
             throws InterruptedException {
         var held = new Held();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                held,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1467,7 +1484,7 @@ class RecoveryActorTest {
     void whatACallerChainsToItsReplyNeverRunsOnTheActor()
             throws InterruptedException, ExecutionException, TimeoutException {
         var held = new Held();
-        var actor = new RecoveryActor(producers, settings(), api, events(), held);
+        var actor = new RecoveryActor(producers, settings(), api, events(), held, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1506,7 +1523,7 @@ class RecoveryActorTest {
         // a tick an hour away: only the transition itself asks for the recovery
         var hourly = settings(
                 Harness.settings().firstReissueBackoff(), Harness.settings().staleWindow(), Duration.ofHours(1));
-        RecoveryActor actor = new RecoveryActor(producers, hourly, api, throwing, workers);
+        RecoveryActor actor = new RecoveryActor(producers, hourly, api, throwing, workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1536,8 +1553,8 @@ class RecoveryActorTest {
             }
             return System.nanoTime();
         };
-        var actor = new RecoveryActor(
-                producers, settings(), api, events(), workers, FeedClock.system(), nanos, new Random(1), 10, 10);
+        var actor =
+                new RecoveryActor(producers, settings(), api, events(), workers, CLOCK, nanos, new Random(1), 10, 10);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1580,7 +1597,12 @@ class RecoveryActorTest {
     private void resetThatFailsAfterMoving(Throwable failure) throws InterruptedException {
         var held = new Held();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                held,
+                CLOCK);
         this.actor = actor;
         transport.failAfterMoving = failure;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
@@ -1621,7 +1643,12 @@ class RecoveryActorTest {
     private void resetThatFails(Throwable failure) throws InterruptedException {
         var held = new Held();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                held,
+                CLOCK);
         this.actor = actor;
         transport.failWith = failure;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
@@ -1662,7 +1689,12 @@ class RecoveryActorTest {
     void aResetWaitingForItsChannelEndsWhenTheActorCloses() throws InterruptedException {
         var held = new Held();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                held,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1702,7 +1734,12 @@ class RecoveryActorTest {
     void aDeferredEventRecoveryDoesNotMakeTheCloseWait() throws Exception {
         var held = new Held();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                held,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1774,7 +1811,12 @@ class RecoveryActorTest {
     void aResetTheWorkersTurnAwayIsReportedAndTheRecoveriesAskedForAgain() throws InterruptedException {
         var gate = new Gate();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), gate);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                gate,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1806,7 +1848,7 @@ class RecoveryActorTest {
     @Test
     void aSamplePostedAfterAnEssentialFactIsNotHandledBeforeIt() throws InterruptedException {
         var gate = new Gate();
-        var actor = new RecoveryActor(producers, settings(), api, events(), gate);
+        var actor = new RecoveryActor(producers, settings(), api, events(), gate, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1843,7 +1885,7 @@ class RecoveryActorTest {
     @Test
     void aSampleTakenAfterAnEssentialFactWasPostedIsHandledAfterIt() throws InterruptedException {
         var gate = new Gate();
-        var actor = new RecoveryActor(producers, settings(), api, events(), gate);
+        var actor = new RecoveryActor(producers, settings(), api, events(), gate, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1885,7 +1927,8 @@ class RecoveryActorTest {
     void aRequestTheWorkersTurnAwayCountsAsFailedAndIsAskedForAgain() throws InterruptedException {
         var gate = new Gate();
         gate.rejectNext = true;
-        var actor = new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), gate);
+        var actor = new RecoveryActor(
+                producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), gate, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1902,8 +1945,8 @@ class RecoveryActorTest {
     @Test
     void aRequestThatFailsWithAnErrorCountsAsFailedAndIsAskedForAgain() throws InterruptedException {
         api.errorNext.set(true);
-        var actor =
-                new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers);
+        var actor = new RecoveryActor(
+                producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1918,7 +1961,7 @@ class RecoveryActorTest {
 
     @Test
     void aStreamOfEventRecoveryRequestsHoldsUpNoTurn() throws InterruptedException {
-        var actor = new RecoveryActor(producers, settings(), api, events(), workers);
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -1945,7 +1988,7 @@ class RecoveryActorTest {
 
     @Test
     void aFactThatFailsIsCountedAndTheActorGoesOn() throws InterruptedException {
-        var actor = new RecoveryActor(producers, settings(), api, events(), workers);
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2019,8 +2062,8 @@ class RecoveryActorTest {
             }
             Thread.ofVirtual().start(task);
         };
-        var actor =
-                new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers);
+        var actor = new RecoveryActor(
+                producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2038,7 +2081,12 @@ class RecoveryActorTest {
     void aResetTheWorkersFailOnWithAnErrorIsReportedAsNotMade() throws InterruptedException {
         var gate = new Gate();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), gate);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                gate,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2062,7 +2110,12 @@ class RecoveryActorTest {
     void aResetIsReportedDoneOnlyOnceTheSessionHasAChannelAgain() throws InterruptedException {
         var gate = new Gate();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), gate);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                gate,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2102,7 +2155,7 @@ class RecoveryActorTest {
                 }
             }
         };
-        var actor = new RecoveryActor(producers, settings(), api, slow, workers);
+        var actor = new RecoveryActor(producers, settings(), api, slow, workers, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2158,8 +2211,8 @@ class RecoveryActorTest {
             }
             Thread.ofVirtual().start(task);
         };
-        var actor =
-                new RecoveryActor(producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers);
+        var actor = new RecoveryActor(
+                producers, settings(Duration.ofMillis(50), Duration.ZERO), api, events(), workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2188,7 +2241,7 @@ class RecoveryActorTest {
                 }
             }
         };
-        var actor = new RecoveryActor(producers, settings(), api, slow, workers);
+        var actor = new RecoveryActor(producers, settings(), api, slow, workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2208,7 +2261,12 @@ class RecoveryActorTest {
     void aResetWaitingForItsChannelEndsWhenTheSessionCloses() throws InterruptedException {
         var held = new Held();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, events(), held);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                events(),
+                held,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2246,7 +2304,7 @@ class RecoveryActorTest {
 
     @Test
     void aStreamOfSamplesHoldsUpNoTurn() throws InterruptedException {
-        var actor = new RecoveryActor(producers, settings(), api, events(), workers);
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2397,7 +2455,7 @@ class RecoveryActorTest {
                 throw new IllegalStateException("a listener bug");
             }
         };
-        RecoveryActor actor = new RecoveryActor(producers, Harness.settings(), api, throwing, workers);
+        RecoveryActor actor = new RecoveryActor(producers, Harness.settings(), api, throwing, workers, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2421,7 +2479,7 @@ class RecoveryActorTest {
                 seen.countDown();
             }
         };
-        RecoveryActor actor = new RecoveryActor(producers, Harness.settings(), api, listener, workers);
+        RecoveryActor actor = new RecoveryActor(producers, Harness.settings(), api, listener, workers, CLOCK);
         this.actor = actor;
         actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
         actor.start();
@@ -2439,7 +2497,7 @@ class RecoveryActorTest {
             throws InterruptedException {
         // KD-2: an alive saying a producer still down is unsubscribed changes the cause only
         var told = new Told();
-        var actor = new RecoveryActor(producers, settings(), api, told, workers);
+        var actor = new RecoveryActor(producers, settings(), api, told, workers, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.PREMATCH_ONLY, true), transport);
         actor.start();
@@ -2485,7 +2543,7 @@ class RecoveryActorTest {
                 design.eventRecoveries(),
                 design.tick());
         var told = new Told();
-        var actor = new RecoveryActor(producers, noResets, api, told, workers);
+        var actor = new RecoveryActor(producers, noResets, api, told, workers, CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.PREMATCH_ONLY, true), transport);
         actor.start();
@@ -2509,7 +2567,12 @@ class RecoveryActorTest {
     void aSafetyNetRequestTheApiRefusedIsToldAndResetsNothing() throws InterruptedException {
         var told = new Told();
         var actor = new RecoveryActor(
-                producers, settings(Harness.settings().firstReissueBackoff(), Duration.ZERO), api, told, workers);
+                producers,
+                settings(Harness.settings().firstReissueBackoff(), Duration.ZERO),
+                api,
+                told,
+                workers,
+                CLOCK);
         this.actor = actor;
         SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.PREMATCH_ONLY, true), transport);
         actor.start();
@@ -2614,7 +2677,7 @@ class RecoveryActorTest {
     }
 
     private RecoveryActor actor(RecoverySettings settings) {
-        var actor = new RecoveryActor(producers, settings, api, events(), workers);
+        var actor = new RecoveryActor(producers, settings, api, events(), workers, CLOCK);
         this.actor = actor;
         return actor;
     }

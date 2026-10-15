@@ -762,10 +762,16 @@ and REST workers post facts to it; it decides and posts work out.
   producers up and asks for no recovery. Every time the SDK publishes stays wall time:
   `getLastMessageTimestamp`, the resume point and a recovery's start, the issue time of a
   recovery, the instants of status changes and of event recovery statuses. Only the producer's
-  timestamps are compared with the SDK's wall clock - the clock offset, a message's age and the
-  cap at the producer's now - so a real step shows in an age until the next alive measures the
-  offset again. A fact carries both readings, taken where it is received, because the actor
-  handles it later. One `FeedClock` per feed gives both readings to the transport, the
+  timestamps are compared with the SDK's wall clock - the clock offset, a message's age, the
+  cap at the producer's now and the start of a stateful recovery window. A step of the wall
+  clock since an offset was measured does not show in them: the offset is measured on an alive
+  together with the difference of the fact's two readings, wall less monotonic, which no step
+  moves, and wherever the offset is read - a sample's age, the cap, the window, the producer's
+  now a recovery is stamped with - it is moved by how far that difference has since moved, when
+  it has moved by more than a second (less is jitter and slew, and is left). The producer's
+  clock is taken not to have moved with the SDK's, so the next alive measures the same offset
+  the correction already made. A fact carries both readings, taken where it is received,
+  because the actor handles it later. One `FeedClock` per feed gives both readings to the transport, the
   dispatchers and the actor. The live-state ages that the entity caches compare between two
   local wall readings are not the machine's and stay on the wall clock.
 - The facts posted to the actor are of two kinds. Those whose loss would leave the
@@ -1883,3 +1889,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   paragraph of the recovery section says. KD-43 lists the difference from 0.0.x. Left as they
   are: the live-state and match-cache ages, which compare two local wall readings. No public
   API changes.
+- 2026-10-15, the offset after a step: the residual that entry left - a message's age read
+  against an offset measured before a wall step, so that a session's alive handled before the
+  alive channel's copy took the producer down for a processing delay until the next sample - is
+  closed. The offset is kept with the difference of the wall and monotonic readings of the alive
+  that measured it, and moved, where it is read, by how far a fact's difference has moved since
+  (above a second). Chosen over skipping the age check until the next alive: that would leave the
+  cap and the recovery window, which also read the offset, wrong by the step, and a message
+  really late after the step undetected for as long. No public API changes.

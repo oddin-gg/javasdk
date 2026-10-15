@@ -78,6 +78,8 @@ import org.slf4j.LoggerFactory;
  * timestamp, the resume point, a recovery's start, the instants of status changes - and what it
  * compares with a producer's own timestamps - the clock offset, a message's age, the cap at the
  * producer's now - is wall time. The monotonic side is at least 1, as 0 stands for "never" here.
+ * A step of the wall clock after an offset was measured would read as age, so the offset is moved
+ * by the step where it is read: see {@link #offsetAt}.
  *
  * <p>Not safe for concurrent use: the recovery actor's thread is the only one that calls it.
  */
@@ -87,6 +89,14 @@ final class RecoveryMachine {
 
     /** A sample's age when the producer's clock offset is not known. */
     private static final long UNKNOWN_AGE = Long.MIN_VALUE;
+
+    /**
+     * How far the difference between the feed clock's wall and monotonic readings has to move from
+     * where an offset was measured for the wall clock to count as stepped: far above the jitter of
+     * reading two clocks and the slew of a synchronised one, a tenth of the least maximum
+     * inactivity there is, so a step that is not seen shows as an age of a second at most.
+     */
+    private static final long WALL_STEP = 1_000;
 
     /** No resume point: no session receives the producer, or none was published yet. */
     private static final long NO_POINT = -1;
@@ -518,6 +528,7 @@ final class RecoveryMachine {
         track.lastAliveAt = received.mono();
         track.lastAliveGen = generatedAt;
         track.offset = received.wall() - generatedAt;
+        track.skew = received.wall() - received.mono();
         producers.setLastMessageTimestamp(producerId, Math.max(1, received.wall()));
         if (track.inactive) {
             // an alive after a gap re-arms the cap at once
@@ -826,7 +837,7 @@ final class RecoveryMachine {
         long requestId = ids.next(this::inFlight);
         long wall = wall();
         var recovery =
-                new EventRecovery(requestId, producerId, eventId, wall, mono(), wall - track.offset, awaited(track));
+                new EventRecovery(requestId, producerId, eventId, wall, mono(), producerNow(track), awaited(track));
         eventRecoveries.put(requestId, recovery);
         statuses.pending(requestId, producerId, eventId, Instant.ofEpochMilli(recovery.issuedWall));
         replies.put(requestId, reply);
@@ -959,9 +970,9 @@ final class RecoveryMachine {
 
     private void request(Track track, long mono) {
         long wall = wall();
-        long after = after(track, wall);
+        long after = after(track);
         long requestId = ids.next(this::inFlight);
-        var active = new Active(requestId, after, wall, mono, wall - track.offset, gapSeq, awaited(track));
+        var active = new Active(requestId, after, wall, mono, producerNow(track), gapSeq, awaited(track));
         active.causes.add(track.cause);
         track.active = active;
         counters.requested.incrementAndGet();
@@ -982,7 +993,7 @@ final class RecoveryMachine {
      * window and capped at the producer's now; for none, 0.0.x's initial snapshot interval when
      * set, else 0 for a full snapshot.
      */
-    private long after(Track track, long wall) {
+    private long after(Track track) {
         long after = track.gap == null ? Long.MAX_VALUE : track.gap.from;
         for (SessionState session : sessions.values()) {
             Lane lane = session.lanes.get(track.id);
@@ -994,9 +1005,9 @@ final class RecoveryMachine {
         if (after != 0 && window > 0) {
             // the window counts back from now by the producer's clock, as the gaps' starts are
             after = Math.max(
-                    after, wall - track.offset - Duration.ofMinutes(window).toMillis());
+                    after, producerNow(track) - Duration.ofMinutes(window).toMillis());
         }
-        return capped(track, after, wall);
+        return capped(track, after);
     }
 
     /**
@@ -1005,8 +1016,33 @@ final class RecoveryMachine {
      * or a bad value, moves neither a recovery nor a resume point past what the producer has sent.
      * A point of 0, a full snapshot, or none stays as it is.
      */
-    private static long capped(Track track, long point, long wall) {
-        return point > 0 ? Math.min(point, wall - track.offset) : point;
+    private long capped(Track track, long point) {
+        return point > 0 ? Math.min(point, producerNow(track)) : point;
+    }
+
+    /**
+     * The producer's clock now: the SDK's wall clock less the offset, as of this moment.
+     */
+    private long producerNow(Track track) {
+        var now = clock.stamp();
+        return now.wall() - offsetAt(track, now);
+    }
+
+    /**
+     * The offset of the producer's clock, as of a reading. It was measured on an alive against the
+     * SDK's wall clock, and a step of that clock since moves the difference between its two
+     * readings, wall less monotonic, which no step can move: so a reading whose difference has moved
+     * by more than {@link #WALL_STEP} from the alive's says the wall clock stepped, and the offset
+     * is moved by the step, the producer's clock not having moved with it. Less than that is the
+     * jitter of reading two clocks, and a slew, and leaves it. Before the first alive there is no
+     * measure to correct.
+     */
+    private static long offsetAt(Track track, Stamp at) {
+        if (track.lastAliveAt == 0) {
+            return track.offset;
+        }
+        long step = at.wall() - at.mono() - track.skew;
+        return Math.abs(step) > WALL_STEP ? track.offset + step : track.offset;
     }
 
     private void accepted(Track track, Active active, long mono) {
@@ -1269,7 +1305,6 @@ final class RecoveryMachine {
         if (!started) {
             return;
         }
-        long wall = wall();
         for (Track track : tracks.values()) {
             long point = resumePoint(track);
             Gap gap = track.gap;
@@ -1279,7 +1314,7 @@ final class RecoveryMachine {
                 // never published stays so, since NO_POINT is below any point
                 point = Math.min(track.published, gap.from);
             }
-            point = capped(track, point, wall);
+            point = capped(track, point);
             if (point != NO_POINT
                     && point != track.published
                     && (!closing || track.published == NO_POINT || point < track.published)) {
@@ -1334,7 +1369,7 @@ final class RecoveryMachine {
             lane.above = false;
             return;
         }
-        long age = taken.wall() - generatedAt - track.offset;
+        long age = taken.wall() - generatedAt - offsetAt(track, taken);
         lane.age = age;
         if (track.active != null
                 || hasGaps(track)
@@ -1782,6 +1817,8 @@ final class RecoveryMachine {
         long safePoint;
         /** The SDK's wall clock minus the producer's, measured on the last alive. */
         long offset;
+        /** The SDK's wall clock minus its monotonic one, at the reading the offset was measured on. */
+        long skew;
         /** How often the producer sends an alive, in millis, a moving average. */
         long aliveInterval;
         /** Whether the producer went too long without an alive, and no alive has come since. */
