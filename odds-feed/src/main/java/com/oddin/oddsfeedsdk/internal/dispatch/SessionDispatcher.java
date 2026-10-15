@@ -451,7 +451,7 @@ public final class SessionDispatcher implements AutoCloseable {
             }
         }
         try {
-            write(message, producer.getId(), taken.wall(), delivery.receivedAt());
+            write(message, producer.getId(), taken.wall(), delivery.receivedMono());
         } catch (Throwable e) {
             sdkFailed("cache write", e);
             return;
@@ -470,7 +470,7 @@ public final class SessionDispatcher implements AutoCloseable {
     }
 
     /** What the message says of the caches, before the callback reads them. */
-    private void write(BasicMessage message, long producerId, long takenAt, Instant receivedAt) {
+    private void write(BasicMessage message, long producerId, long takenAt, long receivedAt) {
         switch (message) {
             case OFOddsChange odds -> {
                 OFSportEventStatus status = odds.getSportEventStatus();

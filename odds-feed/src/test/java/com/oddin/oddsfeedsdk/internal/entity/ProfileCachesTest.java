@@ -10,6 +10,7 @@ import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
 import com.oddin.oddsfeedsdk.internal.xml.RestDecoder;
@@ -58,7 +59,7 @@ class ProfileCachesTest {
                 .setHttpClientTimeout(Duration.ofSeconds(10))
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        caches = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time, time);
+        caches = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time.clock());
     }
 
     @AfterEach
@@ -81,10 +82,11 @@ class ProfileCachesTest {
                 .setMaxCompetitorCacheSize(33)
                 .setMaxPlayerCacheSize(44)
                 .build();
-        var sized =
-                new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.from(configuration), threads, time, time);
+        var sized = new ProfileCaches(
+                client, Duration.ofSeconds(10), CacheSizes.from(configuration), threads, time.clock());
         assertThat(sized.bounds()).containsExactly(33L, 44L, 10_000L, 10_000L);
-        var none = new ProfileCaches(client, Duration.ofSeconds(10), new CacheSizes(0, 0, 0, -1), threads, time, time);
+        var none =
+                new ProfileCaches(client, Duration.ofSeconds(10), new CacheSizes(0, 0, 0, -1), threads, time.clock());
         assertThat(none.bounds()).as("one each at least").containsExactly(1L, 1L, 10_000L, 10_000L);
     }
 
@@ -477,13 +479,11 @@ class ProfileCachesTest {
 
     @Test
     void aSportWhoseEntryWentWhileItsListIsFreshIsLoadedAgain() {
-        // the wall clock stands while the entries age: a step back of the wall clock, or a sport the
-        // size bound dropped, leaves a list that is fresh over a sport that is gone
-        var ages = new FakeTime();
-        var caches = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, time, ages);
+        // a sport the size bound dropped, or one cleared, leaves a list that is fresh over a sport
+        // that is gone
         api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
         caches.sports(EN, null);
-        ages.advance(ProfileCaches.PROFILE_AGE.plusMinutes(1));
+        caches.clearSport(CS2);
         assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN))
                 .as("the list names it, so it is loaded again")
                 .isEqualTo("Counter-Strike 2");
@@ -492,6 +492,28 @@ class ProfileCachesTest {
                 .as("one the list does not name loads nothing")
                 .isNull();
         assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+    }
+
+    @Test
+    void aSportListAndTheEntriesAreFreshByTheMonotonicClockWhateverTheWallClockSays() {
+        var split = new SplitClock();
+        var caches = new ProfileCaches(client, Duration.ofSeconds(10), CacheSizes.DEFAULTS, threads, split.clock());
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        caches.sports(EN, null);
+
+        split.stepWall(Duration.ofDays(2));
+        caches.sports(EN, null);
+        assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
+        assertThat(api.requests("GET", SPORTS_EN))
+                .as("a step forward of the wall clock leaves the list and the sport fresh")
+                .hasSize(1);
+
+        split.advanceMono(ProfileCaches.PROFILE_AGE.plusMinutes(1));
+        split.stepWall(Duration.ofDays(-2));
+        caches.sports(EN, null);
+        assertThat(api.requests("GET", SPORTS_EN))
+                .as("a day of the monotonic clock has passed")
+                .hasSize(2);
     }
 
     @Test

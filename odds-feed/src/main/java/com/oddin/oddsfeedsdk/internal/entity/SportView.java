@@ -118,7 +118,7 @@ final class SportView implements Sport {
      */
     private Entry listed(Locale locale) {
         Entry sport = entities.profiles.sport(id, locale, null);
-        if (sport.loadedAt(SPORT_LIST, locale) == null && (listedOnly || sport.get(SPORT_NAME, locale) == null)) {
+        if (!sport.isLoaded(SPORT_LIST, locale) && (listedOnly || sport.get(SPORT_NAME, locale) == null)) {
             throw new ItemNotFoundException(this + " not found in " + locale, null);
         }
         return sport;

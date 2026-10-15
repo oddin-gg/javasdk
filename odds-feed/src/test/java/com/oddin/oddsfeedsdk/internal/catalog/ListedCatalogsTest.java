@@ -48,8 +48,8 @@ class ListedCatalogsTest {
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
         Duration timeout = Duration.ofSeconds(10);
-        voidReasons = new VoidReasons(client, timeout, threads, queuedRefreshes::add, time, time);
-        statuses = new MatchStatusDescriptions(client, timeout, threads, queuedRefreshes::add, time, time);
+        voidReasons = new VoidReasons(client, timeout, threads, queuedRefreshes::add, time.clock());
+        statuses = new MatchStatusDescriptions(client, timeout, threads, queuedRefreshes::add, time.clock());
     }
 
     @AfterEach

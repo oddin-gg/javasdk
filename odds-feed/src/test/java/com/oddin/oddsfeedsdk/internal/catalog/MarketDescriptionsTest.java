@@ -54,7 +54,7 @@ class MarketDescriptionsTest {
                 .setHttpClientTimeout(Duration.ofSeconds(10))
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        markets = new MarketDescriptions(client, Duration.ofSeconds(10), threads, queuedRefreshes::add, time, time);
+        markets = new MarketDescriptions(client, Duration.ofSeconds(10), threads, queuedRefreshes::add, time.clock());
     }
 
     @AfterEach

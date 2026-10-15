@@ -1,8 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.cache;
 
-import com.github.benmanes.caffeine.cache.Ticker;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -26,7 +25,11 @@ import org.jspecify.annotations.Nullable;
  * it is still delivered. A replayed message writes in the order it comes. The feed's and the API's
  * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
  * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
- * writes nothing either, being a delayed backlog message REST has since taken over from.
+ * writes nothing either, being a delayed backlog message REST has since taken over from. That
+ * clock is the feed's monotonic one, read in millis: how long ago the SDK received a message, or
+ * wrote a response, is a duration between two local events, so a step of the wall clock changes
+ * none of them. The message's own timestamp is the producer's and is only compared with the
+ * producer's.
  *
  * <p>One lock guards it all; what it guards is a map lookup and a few small copies. A record lives 24
  * hours after its last write. Those the feed owns - wrote within the status age - are kept apart
@@ -46,7 +49,10 @@ public final class LiveState<K> {
 
     static final Duration AGE = Duration.ofHours(24);
 
-    private final Ticker ticker;
+    /** A reading that was never taken: the feed's monotonic clock reads 1 or more. */
+    private static final long NEVER = 0;
+
+    private final FeedClock clock;
     private final long maximumSize;
     private final ReentrantLock lock = new ReentrantLock();
     /** Those the feed owns, in the order it wrote them, oldest first; under the lock. */
@@ -60,15 +66,15 @@ public final class LiveState<K> {
     private final AtomicLong dropped = new AtomicLong();
 
     public LiveState(long maximumSize) {
-        this(maximumSize, Ticker.systemTicker());
+        this(maximumSize, FeedClock.system());
     }
 
-    /** With the clock a test drives. */
-    public LiveState(long maximumSize, Ticker ticker) {
+    /** With the feed's clock, of which the monotonic side counts every age here. */
+    public LiveState(long maximumSize, FeedClock clock) {
         if (maximumSize < 1) {
             throw new IllegalArgumentException("a live state holds one record at least");
         }
-        this.ticker = ticker;
+        this.clock = clock;
         this.maximumSize = maximumSize;
     }
 
@@ -77,11 +83,11 @@ public final class LiveState<K> {
      * older than the last one from its producer or its corrected age is over {@link #STATUS_AGE}.
      *
      * @param timestamp the message's timestamp, the feed's clock
-     * @param receivedAt when the SDK received it, the SDK's clock
+     * @param receivedAt when the SDK received it, in millis on the feed's monotonic clock
      * @return whether it wrote
      */
     public boolean feedWriteIfNewer(
-            K entity, long producer, long timestamp, Duration correctedAge, Instant receivedAt, LiveWrite write) {
+            K entity, long producer, long timestamp, Duration correctedAge, long receivedAt, LiveWrite write) {
         if (correctedAge.compareTo(STATUS_AGE) > 0) {
             return false;
         }
@@ -95,18 +101,18 @@ public final class LiveState<K> {
      * keeps the newest timestamp that wrote.
      *
      * @param timestamp the message's timestamp, the feed's clock
-     * @param receivedAt when the SDK received it, the SDK's clock
+     * @param receivedAt when the SDK received it, in millis on the feed's monotonic clock
      */
-    public void feedWriteReplayed(K entity, long producer, long timestamp, Instant receivedAt, LiveWrite write) {
+    public void feedWriteReplayed(K entity, long producer, long timestamp, long receivedAt, LiveWrite write) {
         feedWrite(entity, producer, timestamp, receivedAt, write, false);
     }
 
     /** A feed write, refused when {@code inOrder} and older than its producer's watermark. */
     private boolean feedWrite(
-            K entity, long producer, long timestamp, Instant receivedAt, LiveWrite write, boolean inOrder) {
+            K entity, long producer, long timestamp, long receivedAt, LiveWrite write, boolean inOrder) {
         lock.lock();
         try {
-            long now = ticker.read();
+            long now = clock.monoMillis();
             Live current = current(entity, now);
             Mark last = current == null ? null : current.marks().get(producer);
             if (inOrder && last != null && last.timestamp() > timestamp) {
@@ -122,7 +128,7 @@ public final class LiveState<K> {
                             write.applyTo(valuesOf(current)),
                             now,
                             now,
-                            current == null ? null : current.restAt()),
+                            current == null ? NEVER : current.restAt()),
                     true,
                     now);
             return true;
@@ -133,7 +139,7 @@ public final class LiveState<K> {
 
     /**
      * Writes a REST response's values for {@code entity} if no producer has written within {@link
-     * #STATUS_AGE} of {@code now}, by the SDK's clock. A live message admitted meanwhile either comes
+     * #STATUS_AGE} of now, by the SDK's clock. A live message admitted meanwhile either comes
      * first, and this does not write, or comes after and overwrites it: a REST answer from before the
      * feed resumed cannot replace what the feed wrote. Nor can a fetch its loader abandoned replace
      * what a newer one wrote: {@code abandoned} is asked in the same step as the write.
@@ -141,15 +147,14 @@ public final class LiveState<K> {
      * @param abandoned whether the fetch the values came from was abandoned
      * @return whether it wrote
      */
-    public boolean restWriteIfQuiet(K entity, Instant now, LiveWrite write, BooleanSupplier abandoned) {
-        Instant quietSince = now.minus(STATUS_AGE);
+    public boolean restWriteIfQuiet(K entity, LiveWrite write, BooleanSupplier abandoned) {
         lock.lock();
         try {
-            long ticks = ticker.read();
-            Live current = current(entity, ticks);
+            long now = clock.monoMillis();
+            long quietSince = now - STATUS_AGE.toMillis();
+            Live current = current(entity, now);
             boolean quiet = current == null
-                    || current.marks().values().stream()
-                            .allMatch(mark -> mark.receivedAt().isBefore(quietSince));
+                    || current.marks().values().stream().allMatch(mark -> mark.receivedAt() < quietSince);
             if (!quiet || abandoned.getAsBoolean()) {
                 return false;
             }
@@ -158,11 +163,11 @@ public final class LiveState<K> {
                     new Live(
                             current == null ? Map.of() : current.marks(),
                             write.applyTo(valuesOf(current)),
-                            ticks,
+                            now,
                             current == null ? 0 : current.feedAt(),
                             now),
                     false,
-                    ticks);
+                    now);
             return true;
         } finally {
             lock.unlock();
@@ -170,8 +175,8 @@ public final class LiveState<K> {
     }
 
     /** The same, for a write no loader can abandon; for a test. */
-    boolean restWriteIfQuiet(K entity, Instant now, LiveWrite write) {
-        return restWriteIfQuiet(entity, now, write, () -> false);
+    boolean restWriteIfQuiet(K entity, LiveWrite write) {
+        return restWriteIfQuiet(entity, write, () -> false);
     }
 
     /**
@@ -187,7 +192,7 @@ public final class LiveState<K> {
     public boolean restFill(K entity, LiveWrite write, BooleanSupplier abandoned) {
         lock.lock();
         try {
-            Live current = current(entity, ticker.read());
+            Live current = current(entity, clock.monoMillis());
             if (current == null || abandoned.getAsBoolean()) {
                 return false;
             }
@@ -211,17 +216,15 @@ public final class LiveState<K> {
         Live live;
         lock.lock();
         try {
-            live = current(entity, ticker.read());
+            live = current(entity, clock.monoMillis());
         } finally {
             lock.unlock();
         }
         if (live == null) {
             return null;
         }
-        Instant lastFeed = live.marks().values().stream()
-                .map(Mark::receivedAt)
-                .max(Instant::compareTo)
-                .orElse(null);
+        long lastFeed =
+                live.marks().values().stream().mapToLong(Mark::receivedAt).max().orElse(NEVER);
         return new LiveValues(live.values(), lastFeed, live.restAt());
     }
 
@@ -318,11 +321,11 @@ public final class LiveState<K> {
 
     /** Whether the feed wrote the entity within the status age: whether it owns it. */
     private static boolean owns(Live live, long now) {
-        return !live.marks().isEmpty() && now - live.feedAt() <= STATUS_AGE.toNanos();
+        return !live.marks().isEmpty() && now - live.feedAt() <= STATUS_AGE.toMillis();
     }
 
     private static boolean aged(Live live, long now) {
-        return now - live.changedAt() > AGE.toNanos();
+        return now - live.changedAt() > AGE.toMillis();
     }
 
     private static Map<Field<?>, Object> valuesOf(@Nullable Live live) {
@@ -332,10 +335,10 @@ public final class LiveState<K> {
     /** An entity's live values at one moment, from one write and the fills since, and how recent they are. */
     public static final class LiveValues {
         private final Map<Field<?>, Object> values;
-        private final @Nullable Instant lastFeed;
-        private final @Nullable Instant lastRest;
+        private final long lastFeed;
+        private final long lastRest;
 
-        LiveValues(Map<Field<?>, Object> values, @Nullable Instant lastFeed, @Nullable Instant lastRest) {
+        LiveValues(Map<Field<?>, Object> values, long lastFeed, long lastRest) {
             this.values = values;
             this.lastFeed = lastFeed;
             this.lastRest = lastRest;
@@ -347,30 +350,29 @@ public final class LiveState<K> {
         }
 
         /**
-         * Whether the feed or REST wrote them within {@link #STATUS_AGE} of {@code now}, by the SDK's
-         * clock: if not, the match summary is loaded again - a match the feed is quiet on is as old
-         * as REST's last word on it.
+         * Whether the feed or REST wrote them within {@link #STATUS_AGE} of {@code now}, in millis on
+         * the feed's monotonic clock: if not, the match summary is loaded again - a match the feed is
+         * quiet on is as old as REST's last word on it.
          */
-        public boolean isFresh(Instant now) {
-            Instant since = now.minus(STATUS_AGE);
-            return (lastFeed != null && !lastFeed.isBefore(since)) || (lastRest != null && !lastRest.isBefore(since));
+        public boolean isFresh(long now) {
+            long since = now - STATUS_AGE.toMillis();
+            return (lastFeed != NEVER && lastFeed >= since) || (lastRest != NEVER && lastRest >= since);
         }
     }
 
-    /** A producer's last live message on an entity: its timestamp, and when the SDK received it. */
-    private record Mark(long timestamp, Instant receivedAt) {}
+    /**
+     * A producer's last live message on an entity: its timestamp, the producer's clock, and when the
+     * SDK received it, on the feed's monotonic clock.
+     */
+    private record Mark(long timestamp, long receivedAt) {}
 
     /**
      * An entity's watermarks and values.
      *
-     * @param changedAt when it was last written, on the ticker: what its age counts from
-     * @param feedAt when the feed last wrote it, on the ticker; meaningless while it has no marks
-     * @param restAt when REST last wrote it, by the SDK's clock; null for never
+     * @param changedAt when it was last written, on the feed's monotonic clock: what its age counts from
+     * @param feedAt when the feed last wrote it, the same; meaningless while it has no marks
+     * @param restAt when REST last wrote it, the same; {@link #NEVER} for never
      */
     private record Live(
-            Map<Long, Mark> marks,
-            Map<Field<?>, Object> values,
-            long changedAt,
-            long feedAt,
-            @Nullable Instant restAt) {}
+            Map<Long, Mark> marks, Map<Field<?>, Object> values, long changedAt, long feedAt, long restAt) {}
 }

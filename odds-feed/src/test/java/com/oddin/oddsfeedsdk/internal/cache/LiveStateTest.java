@@ -4,8 +4,8 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Executors;
@@ -13,6 +13,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /** Who writes the fields the feed owns: the feed while it is live, REST once it is quiet. */
 class LiveStateTest {
@@ -26,12 +28,12 @@ class LiveStateTest {
     private static final Field<String> CLOCK = Field.shared("clock");
 
     private final FakeTime time = new FakeTime();
-    private final LiveState<String> live = new LiveState<>(1_000, time);
+    private final LiveState<String> live = new LiveState<>(1_000, time.clock());
 
     @Test
     void aMatchWhoseSummaryLoadedBeforeKickOffGoesLiveWithTheFeed() {
         assertThat(live.get("m1")).as("nothing loaded yet").isNull();
-        assertThat(live.restWriteIfQuiet("m1", now(), status("not started")))
+        assertThat(live.restWriteIfQuiet("m1", status("not started")))
                 .as("the summary, before the feed has said anything")
                 .isTrue();
         assertThat(statusOf("m1")).isEqualTo("not started");
@@ -40,13 +42,13 @@ class LiveStateTest {
                 .as("kick-off, on the feed")
                 .isTrue();
         assertThat(statusOf("m1")).isEqualTo("live");
-        assertThat(live.restWriteIfQuiet("m1", now(), status("not started")))
+        assertThat(live.restWriteIfQuiet("m1", status("not started")))
                 .as("a summary from before kick-off, answered late")
                 .isFalse();
         assertThat(statusOf("m1")).isEqualTo("live");
 
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        assertThat(live.restWriteIfQuiet("m1", now(), status("ended")))
+        assertThat(live.restWriteIfQuiet("m1", status("ended")))
                 .as("the feed has gone quiet")
                 .isTrue();
         assertThat(statusOf("m1")).isEqualTo("ended");
@@ -54,7 +56,7 @@ class LiveStateTest {
 
     @Test
     void liveValuesAreFreshForTheStatusAgeAfterTheFeedOrRestLastWroteThem() {
-        live.restWriteIfQuiet("m1", now(), status("not started"));
+        live.restWriteIfQuiet("m1", status("not started"));
         assertThat(requireNonNull(live.get("m1")).isFresh(now())).isTrue();
         time.advance(LiveState.STATUS_AGE.plusSeconds(1));
         assertThat(requireNonNull(live.get("m1")).isFresh(now()))
@@ -145,14 +147,14 @@ class LiveStateTest {
         assertThat(feedWrite("m1", LIVE, 999, FRESH))
                 .as("nor did it move the watermark")
                 .isFalse();
-        assertThat(live.restWriteIfQuiet("m1", now(), status("ended"))).isTrue();
+        assertThat(live.restWriteIfQuiet("m1", status("ended"))).isTrue();
         assertThat(statusOf("m1")).isEqualTo("ended");
     }
 
     @Test
     void aSummaryFromAnAbandonedFetchDoesNotWrite() {
-        live.restWriteIfQuiet("m1", now(), status("ended"), () -> false);
-        assertThat(live.restWriteIfQuiet("m1", now(), status("not started"), () -> true))
+        live.restWriteIfQuiet("m1", status("ended"), () -> false);
+        assertThat(live.restWriteIfQuiet("m1", status("not started"), () -> true))
                 .as("its loader replaced it with the fetch that wrote ended")
                 .isFalse();
         assertThat(statusOf("m1")).isEqualTo("ended");
@@ -164,16 +166,15 @@ class LiveStateTest {
         var release = new java.util.concurrent.CountDownLatch(1);
         try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
             // the abandoned check runs inside the record's compute: holding it there holds the write
-            Future<Boolean> rest =
-                    threads.submit(() -> live.restWriteIfQuiet("m1", now(), status("not started"), () -> {
-                        writing.countDown();
-                        try {
-                            release.await(10, TimeUnit.SECONDS);
-                        } catch (InterruptedException e) {
-                            Thread.currentThread().interrupt();
-                        }
-                        return false;
-                    }));
+            Future<Boolean> rest = threads.submit(() -> live.restWriteIfQuiet("m1", status("not started"), () -> {
+                writing.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                return false;
+            }));
             assertThat(writing.await(5, TimeUnit.SECONDS)).isTrue();
             Future<Boolean> feed =
                     threads.submit(() -> live.feedWriteIfNewer("m1", LIVE, 1_000, FRESH, now(), status("live")));
@@ -189,7 +190,7 @@ class LiveStateTest {
             assertThat(feed.get(5, TimeUnit.SECONDS)).isTrue();
         }
         assertThat(statusOf("m1")).as("the feed's, written after").isEqualTo("live");
-        assertThat(live.restWriteIfQuiet("m1", now(), status("not started")))
+        assertThat(live.restWriteIfQuiet("m1", status("not started")))
                 .as("and the feed owns it now")
                 .isFalse();
     }
@@ -222,7 +223,7 @@ class LiveStateTest {
         assertThat(requireNonNull(live.get("m1")).isFresh(now()))
                 .as("the feed owns it again from the second run")
                 .isTrue();
-        assertThat(live.restWriteIfQuiet("m1", now(), status("not started")))
+        assertThat(live.restWriteIfQuiet("m1", status("not started")))
                 .as("so a summary does not take it over")
                 .isFalse();
         assertThat(live.feedWriteIfNewer("m1", LIVE, 1_500, FRESH, now(), status("ended")))
@@ -280,9 +281,9 @@ class LiveStateTest {
         assertThat(live.get("m1")).as("forgotten after 24 hours").isNull();
         assertThat(feedWrite("m1", LIVE, 4_000, FRESH)).isTrue();
 
-        var bounded = new LiveState<String>(10, time);
+        var bounded = new LiveState<String>(10, time.clock());
         for (int i = 0; i < 100; i++) {
-            bounded.restWriteIfQuiet("m" + i, now(), status("not started"));
+            bounded.restWriteIfQuiet("m" + i, status("not started"));
         }
         assertThat(bounded.size()).isEqualTo(10);
         assertThat(bounded.holds("m0")).as("the least recently written went").isFalse();
@@ -290,36 +291,36 @@ class LiveStateTest {
         assertThat(bounded.dropped()).as("the feed owned none of them").isZero();
 
         // by its last write, not its first
-        bounded.restWriteIfQuiet("m90", now(), status("not started"));
-        bounded.restWriteIfQuiet("m100", now(), status("not started"));
+        bounded.restWriteIfQuiet("m90", status("not started"));
+        bounded.restWriteIfQuiet("m100", status("not started"));
         assertThat(bounded.holds("m90")).as("written again, the newest").isTrue();
         assertThat(bounded.holds("m91")).as("the least recently written now").isFalse();
     }
 
     @Test
     void anEntityTheFeedOwnsStaysWhileOthersMakeRoom() {
-        var bounded = new LiveState<String>(10, time);
+        var bounded = new LiveState<String>(10, time.clock());
         bounded.feedWriteIfNewer("live", LIVE, 5_000, FRESH, now(), status("live"));
         for (int i = 0; i < 1_000; i++) {
-            bounded.restWriteIfQuiet("other " + i, now(), status("not started"));
+            bounded.restWriteIfQuiet("other " + i, status("not started"));
         }
         assertThat(bounded.size()).isEqualTo(10);
         assertThat(statusOf(bounded, "live")).as("the oldest, but the feed's").isEqualTo("live");
         assertThat(bounded.feedWriteIfNewer("live", LIVE, 4_000, FRESH, now(), status("older")))
                 .as("an older message from the producer still does not write")
                 .isFalse();
-        assertThat(bounded.restWriteIfQuiet("live", now(), status("not started")))
+        assertThat(bounded.restWriteIfQuiet("live", status("not started")))
                 .as("the feed wrote it a moment ago")
                 .isFalse();
 
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
         // it joins the others as the newest when the feed stops owning it, so the nine older go first
         for (int i = 0; i < 9; i++) {
-            bounded.restWriteIfQuiet("later " + i, now(), status("not started"));
+            bounded.restWriteIfQuiet("later " + i, status("not started"));
         }
         assertThat(bounded.holds("live")).isTrue();
         for (int i = 9; i < 20; i++) {
-            bounded.restWriteIfQuiet("later " + i, now(), status("not started"));
+            bounded.restWriteIfQuiet("later " + i, status("not started"));
         }
         assertThat(bounded.holds("live"))
                 .as("no longer the feed's, it made room")
@@ -329,7 +330,7 @@ class LiveStateTest {
 
     @Test
     void entitiesTheFeedOwnsGoPastTheBoundToTwiceItAndThenTheOldestAreDroppedAndCounted() {
-        var bounded = new LiveState<String>(16, time);
+        var bounded = new LiveState<String>(16, time.clock());
         for (int i = 0; i < 64; i++) {
             bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
         }
@@ -339,7 +340,7 @@ class LiveStateTest {
         assertThat(bounded.holds("live 63")).isTrue();
 
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        bounded.restWriteIfQuiet("later", now(), status("not started"));
+        bounded.restWriteIfQuiet("later", status("not started"));
         assertThat(bounded.size())
                 .as("what the feed no longer owns makes room down to the bound")
                 .isEqualTo(16);
@@ -349,12 +350,11 @@ class LiveStateTest {
 
     @Test
     void theRecordJustWrittenIsNeverTheOneThatMakesRoom() {
-        var bounded = new LiveState<String>(10, time);
+        var bounded = new LiveState<String>(10, time.clock());
         for (int i = 0; i < 10; i++) {
             bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
         }
-        assertThat(bounded.restWriteIfQuiet("new", now(), status("not started")))
-                .isTrue();
+        assertThat(bounded.restWriteIfQuiet("new", status("not started"))).isTrue();
         assertThat(bounded.holds("new"))
                 .as("over the bound only by those the feed owns")
                 .isTrue();
@@ -363,11 +363,11 @@ class LiveStateTest {
 
     @Test
     void othersMakeRoomBeforeAnyTheFeedOwnsHoweverManyItOwns() {
-        var bounded = new LiveState<String>(40, time);
+        var bounded = new LiveState<String>(40, time.clock());
         for (int i = 0; i < 40; i++) {
             bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
         }
-        bounded.restWriteIfQuiet("quiet", now(), status("not started"));
+        bounded.restWriteIfQuiet("quiet", status("not started"));
         for (int i = 40; i < 80; i++) {
             bounded.feedWriteIfNewer("live " + i, LIVE, 1, FRESH, now(), status("live"));
         }
@@ -382,7 +382,7 @@ class LiveStateTest {
     void aWriteThatThrowsChangesNothing() {
         live.feedWriteIfNewer("m1", LIVE, 5_000, FRESH, now(), status("live"));
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
-        assertThatThrownBy(() -> live.restWriteIfQuiet("m1", now(), status("ended"), () -> {
+        assertThatThrownBy(() -> live.restWriteIfQuiet("m1", status("ended"), () -> {
                     throw new IllegalStateException("the loader failed");
                 }))
                 .isInstanceOf(IllegalStateException.class);
@@ -390,7 +390,7 @@ class LiveStateTest {
         assertThat(feedWrite("m1", LIVE, 4_000, FRESH))
                 .as("its watermark is still there")
                 .isFalse();
-        assertThat(live.restWriteIfQuiet("m1", now(), status("ended")))
+        assertThat(live.restWriteIfQuiet("m1", status("ended")))
                 .as("and the lock was let go of")
                 .isTrue();
     }
@@ -421,7 +421,56 @@ class LiveStateTest {
     }
 
     private boolean restWrite(String key) {
-        return live.restWriteIfQuiet(key, now(), status("from REST"));
+        return live.restWriteIfQuiet(key, status("from REST"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aStepOfTheWallClockDoesNotLetRestTakeOverAFeedThatIsStillLive(long minutes) {
+        var split = new SplitClock();
+        var state = new LiveState<String>(1_000, split.clock());
+        state.feedWriteIfNewer("m1", LIVE, 1_000, FRESH, split.clock().monoMillis(), status("live"));
+
+        split.stepWall(Duration.ofMinutes(minutes));
+        assertThat(state.restWriteIfQuiet("m1", status("ended")))
+                .as("the feed wrote a moment ago by the monotonic clock")
+                .isFalse();
+        assertThat(statusOf(state, "m1")).isEqualTo("live");
+        assertThat(requireNonNull(state.get("m1")).isFresh(split.clock().monoMillis()))
+                .as("the feed's status is as fresh as it was")
+                .isTrue();
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, 0, -30})
+    void aFeedQuietByTheMonotonicClockIsTakenOverByRestWhateverTheWallClockSays(long minutes) {
+        var split = new SplitClock();
+        var state = new LiveState<String>(1_000, split.clock());
+        state.feedWriteIfNewer("m1", LIVE, 1_000, FRESH, split.clock().monoMillis(), status("live"));
+
+        split.advanceMono(LiveState.STATUS_AGE.plusMinutes(1));
+        split.stepWall(Duration.ofMinutes(minutes));
+        assertThat(requireNonNull(state.get("m1")).isFresh(split.clock().monoMillis()))
+                .as("the summary is to be loaded again")
+                .isFalse();
+        assertThat(state.restWriteIfQuiet("m1", status("ended")))
+                .as("quiet for the status age")
+                .isTrue();
+        assertThat(statusOf(state, "m1")).isEqualTo("ended");
+    }
+
+    @Test
+    void aRecordAgesByTheMonotonicClockWhateverTheWallClockSays() {
+        var split = new SplitClock();
+        var state = new LiveState<String>(1_000, split.clock());
+        state.restWriteIfQuiet("m1", status("ended"));
+
+        split.stepWall(LiveState.AGE.plusHours(1));
+        assertThat(state.holds("m1")).as("a wall clock step forward").isTrue();
+
+        split.advanceMono(LiveState.AGE.plusHours(1));
+        split.stepWall(LiveState.AGE.plusHours(1).negated());
+        assertThat(state.holds("m1")).as("the record's own day is over").isFalse();
     }
 
     private static LiveWrite status(String status) {
@@ -440,7 +489,8 @@ class LiveStateTest {
         return requireNonNull(requireNonNull(live.get(key)).get(TIMESTAMP));
     }
 
-    private Instant now() {
-        return time.instant();
+    /** The feed's monotonic clock, as a message is stamped with it when it is received. */
+    private long now() {
+        return time.clock().monoMillis();
     }
 }

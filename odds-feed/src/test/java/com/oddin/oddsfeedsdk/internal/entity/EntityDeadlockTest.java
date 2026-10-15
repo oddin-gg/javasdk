@@ -150,7 +150,12 @@ class EntityDeadlockTest {
                             var live = new OFSportEventStatus();
                             live.setStatus(OFEventStatus.LIVE);
                             world.matches.oddsChange(
-                                    MATCH, 1, timestamps.incrementAndGet(), Duration.ZERO, world.time.instant(), live);
+                                    MATCH,
+                                    1,
+                                    timestamps.incrementAndGet(),
+                                    Duration.ZERO,
+                                    world.time.clock().monoMillis(),
+                                    live);
                         }
                     },
                     () -> world.matches.fixtureChange(MATCH));

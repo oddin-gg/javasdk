@@ -52,7 +52,7 @@ final class EntityWorld implements AutoCloseable {
                 .setHttpClientTimeout(TIMEOUT)
                 .build();
         client = new ApiClient(configuration, ApiEvents.NONE);
-        profiles = new ProfileCaches(client, TIMEOUT, CacheSizes.from(configuration), threads, time, time);
+        profiles = new ProfileCaches(client, TIMEOUT, CacheSizes.from(configuration), threads, time.clock());
         // without workers, a side-load waits in the queue for good: the test sees only its own loads
         this.sideLoads = sideLoads;
         matches = new MatchCaches(
@@ -63,8 +63,7 @@ final class EntityWorld implements AutoCloseable {
                 CacheSizes.from(configuration),
                 Locale.ENGLISH,
                 threads,
-                time,
-                time);
+                time.clock());
         entities = new Entities(matches, profiles, EntityWorld::describe, strategy, TIMEOUT, threads, fanOut);
         sportsInfo = new SportsInfo(entities, client, Locale.ENGLISH);
     }

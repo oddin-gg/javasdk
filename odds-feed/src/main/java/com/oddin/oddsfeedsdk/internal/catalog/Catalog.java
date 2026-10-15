@@ -5,11 +5,11 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import com.github.benmanes.caffeine.cache.RemovalCause;
 import com.github.benmanes.caffeine.cache.Ticker;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
+import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.loader.Loader;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.InstantSource;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -18,7 +18,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
@@ -84,6 +83,9 @@ final class Catalog<K, V> {
      */
     static final Duration MISS_INTERVAL = Duration.ofMinutes(1);
 
+    /** A reading that was never taken: the feed's monotonic clock reads 1 or more. */
+    private static final long NEVER = 0;
+
     /** How many missed items are remembered, so that each refreshes its value once. */
     static final long MISSES = 10_000;
 
@@ -93,7 +95,7 @@ final class Catalog<K, V> {
     private final String name;
     private final Duration refreshAge;
     private final Fetch<K, V> fetch;
-    private final InstantSource clock;
+    private final FeedClock clock;
     private final BooleanSupplier closed;
     private final Executor refreshes;
     private final Loader<Flight<K>, V> loader;
@@ -151,8 +153,7 @@ final class Catalog<K, V> {
             Duration timeout,
             Executor fetches,
             Executor refreshes,
-            InstantSource clock,
-            Ticker ticker,
+            FeedClock clock,
             BooleanSupplier closed) {
         this.name = name;
         this.refreshAge = refreshAge;
@@ -160,7 +161,8 @@ final class Catalog<K, V> {
         this.clock = clock;
         this.refreshes = refreshes;
         this.closed = closed;
-        this.loader = new Loader<>(name, this::fetch, timeout, MARGIN, fetches);
+        this.loader = new Loader<>(name, this::fetch, timeout, MARGIN, fetches, clock);
+        Ticker ticker = clock::monoNanos;
         this.held = Caffeine.newBuilder()
                 .maximumSize(maximumSize)
                 // eviction on the writing thread: nothing to hand over, nothing left pending
@@ -227,12 +229,12 @@ final class Catalog<K, V> {
 
     /** A held value served: when it is older than the refresh age, marked stale and refreshed. */
     private V served(K key, Held<V> current) {
-        Instant now = clock.instant();
-        if (current.fetchedAt().plus(refreshAge).isBefore(now)) {
+        long now = clock.monoMillis();
+        if (now - current.fetchedAt() > refreshAge.toMillis()) {
             servedStale.incrementAndGet();
             insideStaleRead.run();
             // on the value served, so a value replaced, cleared or evicted since takes its mark along
-            current.staleSince().compareAndSet(null, now);
+            current.staleSince().compareAndSet(NEVER, now);
             current.lastStaleRead().set(now);
             refreshInBackground(key, now);
         }
@@ -256,7 +258,7 @@ final class Catalog<K, V> {
             return found;
         }
         insideMiss.run();
-        Instant now = clock.instant();
+        long now = clock.monoMillis();
         long firstMissed = misses.asMap().computeIfAbsent(new Miss<>(key, item), _ -> order.incrementAndGet());
         Held<V> current = held.getIfPresent(key);
         if (current == null) {
@@ -267,8 +269,7 @@ final class Catalog<K, V> {
         if (found != null) {
             return found;
         }
-        if (current.startedAs() > firstMissed
-                || current.fetchedAt().plus(MISS_INTERVAL).isAfter(now)) {
+        if (current.startedAs() > firstMissed || now - current.fetchedAt() < MISS_INTERVAL.toMillis()) {
             return null;
         }
         if (failures.getIfPresent(key) != null) {
@@ -364,23 +365,25 @@ final class Catalog<K, V> {
     }
 
     CatalogHealth health() {
-        Instant now = clock.instant();
-        Duration staleFor = Duration.ZERO;
+        long now = clock.monoMillis();
+        long staleFor = 0;
         // only the values held now, and still read: one replaced, cleared or evicted is stale no
         // longer, and one nobody read for the refresh age is not being served
         for (Held<V> value : held.asMap().values()) {
-            Instant since = value.staleSince().get();
-            Instant lastRead = value.lastStaleRead().get();
-            if (since != null
-                    && lastRead != null
-                    && !lastRead.plus(refreshAge).isBefore(now)
-                    && Duration.between(since, now).compareTo(staleFor) > 0) {
-                staleFor = Duration.between(since, now);
+            long since = value.staleSince().get();
+            long lastRead = value.lastStaleRead().get();
+            if (since != NEVER && lastRead != NEVER && now - lastRead <= refreshAge.toMillis()) {
+                staleFor = Math.max(staleFor, now - since);
             }
         }
         failures.cleanUp();
         return new CatalogHealth(
-                name, servedStale.get(), staleFor, failedFetches.get(), failures.estimatedSize(), evictedForRoom.get());
+                name,
+                servedStale.get(),
+                Duration.ofMillis(staleFor),
+                failedFetches.get(),
+                failures.estimatedSize(),
+                evictedForRoom.get());
     }
 
     /** A fetch the reader waits for; one that would start while the key backs off fails at once. */
@@ -389,7 +392,7 @@ final class Catalog<K, V> {
         return loader.load(new Flight<>(key, generationOf(key), false, false));
     }
 
-    private void refreshInBackground(K key, Instant now) {
+    private void refreshInBackground(K key, long now) {
         if (backingOff(key, now) != null || !refreshing.add(key)) {
             return;
         }
@@ -410,8 +413,8 @@ final class Catalog<K, V> {
 
     private ApiException backingOff(K key, Failure failure) {
         return new ApiException(
-                name + " " + key + ": not fetched again before " + failure.retryAt() + ", " + failure.attempts()
-                        + " fetches in a row failed, the last at " + failure.at(),
+                name + " " + key + ": not fetched again before " + failure.retryAtWall() + ", " + failure.attempts()
+                        + " fetches in a row failed, the last at " + failure.wallAt(),
                 null,
                 failure.cause());
     }
@@ -423,9 +426,9 @@ final class Catalog<K, V> {
     }
 
     /** The key's last failure while it still backs the key off, else null. */
-    private @Nullable Failure backingOff(K key, Instant now) {
+    private @Nullable Failure backingOff(K key, long now) {
         Failure failure = failures.getIfPresent(key);
-        return failure != null && failure.retryAt().isAfter(now) ? failure : null;
+        return failure != null && failure.retryAt() > now ? failure : null;
     }
 
     /**
@@ -437,14 +440,14 @@ final class Catalog<K, V> {
     private V fetch(Flight<K> flight, Deadline deadline, BooleanSupplier abandoned) {
         K key = flight.key();
         if (!flight.reload()) {
-            Failure failure = backingOff(key, clock.instant());
+            Failure failure = backingOff(key, clock.monoMillis());
             if (failure != null) {
                 throw backingOff(key, failure);
             }
         }
         long startedIn = flight.generation();
         long startedAs = order.incrementAndGet();
-        Instant startedAt = clock.instant();
+        long startedAt = clock.monoMillis();
         Held<V> previous = held.getIfPresent(key);
         V value;
         try {
@@ -461,7 +464,8 @@ final class Catalog<K, V> {
                 // a fetch from before a clear backs nothing off: the clear asked for a fetch; nor does a
                 // preload, which no reader waited for
                 if (!shutdown && !flight.preload() && !abandoned.getAsBoolean() && generationOf(key) <= startedIn) {
-                    Instant failedAt = clock.instant();
+                    long failedAt = clock.monoMillis();
+                    var failedAtWall = Instant.ofEpochMilli(clock.wallMillis());
                     // an older fetch that fails after a newer one succeeded, or failed, records nothing
                     failures.asMap().compute(key, (k, last) -> {
                         Held<V> newer = held.getIfPresent(k);
@@ -469,7 +473,8 @@ final class Catalog<K, V> {
                                 || (last != null && last.startedAs() > startedAs)) {
                             return last;
                         }
-                        return new Failure(failedAt, last == null ? 1 : last.attempts() + 1, e, startedAs);
+                        return new Failure(
+                                failedAt, failedAtWall, last == null ? 1 : last.attempts() + 1, e, startedAs);
                     });
                 }
             } finally {
@@ -489,8 +494,8 @@ final class Catalog<K, V> {
                                                 value,
                                                 startedAt,
                                                 startedAs,
-                                                new AtomicReference<>(),
-                                                new AtomicReference<>()));
+                                                new AtomicLong(NEVER),
+                                                new AtomicLong(NEVER)));
                 // a newer fetch's failure stands
                 failures.asMap().computeIfPresent(key, (k, last) -> last.startedAs() > startedAs ? last : null);
             }
@@ -502,24 +507,30 @@ final class Catalog<K, V> {
     }
 
     /**
-     * A value, when the fetch that got it started - on the clock, and in {@link #order} - and when it
-     * was first and last served stale, null until it is.
+     * A value, when the fetch that got it started - on the feed's monotonic clock, and in {@link
+     * #order} - and when it was first and last served stale, on the same clock, {@link #NEVER} until
+     * it is.
      */
-    private record Held<V>(
-            V value,
-            Instant fetchedAt,
-            long startedAs,
-            AtomicReference<@Nullable Instant> staleSince,
-            AtomicReference<@Nullable Instant> lastStaleRead) {}
+    private record Held<V>(V value, long fetchedAt, long startedAs, AtomicLong staleSince, AtomicLong lastStaleRead) {}
 
     /**
-     * A key's last failed fetch, how many failed in a row, when the next may start, and when the
-     * fetch started, in {@link #order}.
+     * A key's last failed fetch - when it failed on the feed's monotonic clock, which the backoff
+     * counts from, and by the wall clock, which only the message of a read it refuses tells -, how
+     * many failed in a row, when the next may start, and when the fetch started, in {@link #order}.
      */
-    private record Failure(Instant at, int attempts, RuntimeException cause, long startedAs) {
-        Instant retryAt() {
-            long nanos = FIRST_BACKOFF.toNanos() << Math.min(attempts - 1, 30);
-            return at.plus(nanos > LONGEST_BACKOFF.toNanos() ? LONGEST_BACKOFF : Duration.ofNanos(nanos));
+    private record Failure(long at, Instant wallAt, int attempts, RuntimeException cause, long startedAs) {
+        private long backoff() {
+            return Math.min(FIRST_BACKOFF.toMillis() << Math.min(attempts - 1, 30), LONGEST_BACKOFF.toMillis());
+        }
+
+        /** When the next fetch may start, on the monotonic clock. */
+        long retryAt() {
+            return at + backoff();
+        }
+
+        /** The same as the wall clock told it, for a message. */
+        Instant retryAtWall() {
+            return wallAt.plusMillis(backoff());
         }
     }
 

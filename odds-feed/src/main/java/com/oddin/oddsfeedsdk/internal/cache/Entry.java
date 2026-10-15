@@ -2,7 +2,6 @@ package com.oddin.oddsfeedsdk.internal.cache;
 
 import com.oddin.oddsfeedsdk.internal.cache.Field.Slot;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
@@ -23,7 +22,7 @@ public final class Entry {
     private final long generation;
     private final Map<Slot, Object> values;
     private final Set<Slot> authoritative;
-    private final Map<Loaded, Instant> loaded;
+    private final Map<Loaded, Long> loaded;
     private final long changedAt;
     /**
      * Per authoritative endpoint, the fetch - by the order fetches started in - that last wrote its
@@ -40,7 +39,7 @@ public final class Entry {
             long generation,
             Map<Slot, Object> values,
             Set<Slot> authoritative,
-            Map<Loaded, Instant> loaded,
+            Map<Loaded, Long> loaded,
             long changedAt,
             Map<Endpoint, Long> sharedFrom,
             Map<Slot, Long> slotFrom) {
@@ -85,19 +84,20 @@ public final class Entry {
         return (T) values.get(field.slot(locale));
     }
 
-    /** When {@code endpoint} was last fetched in {@code locale}, or null. */
-    public @Nullable Instant loadedAt(Endpoint endpoint, Locale locale) {
-        return loaded.get(new Loaded(endpoint, locale));
+    /** Whether {@code endpoint} was ever fetched in {@code locale} for this entry. */
+    public boolean isLoaded(Endpoint endpoint, Locale locale) {
+        return loaded.containsKey(new Loaded(endpoint, locale));
     }
 
     /**
-     * Whether {@code endpoint} was fetched in {@code locale} within {@code age} of {@code now}. Each
-     * authoritative endpoint of an entity has its own: a match's fixture fetched says nothing about
-     * its summary.
+     * Whether {@code endpoint} was fetched in {@code locale} within {@code age} of {@code ticks}, both
+     * on the cache's ticker: the feed's monotonic clock, so a step of the wall clock changes no
+     * entry's age. Each authoritative endpoint of an entity has its own: a match's fixture fetched
+     * says nothing about its summary.
      */
-    public boolean isFresh(Endpoint endpoint, Locale locale, Instant now, Duration age) {
-        Instant at = loaded.get(new Loaded(endpoint, locale));
-        return at != null && !at.plus(age).isBefore(now);
+    public boolean isFresh(Endpoint endpoint, Locale locale, long ticks, Duration age) {
+        Long at = loaded.get(new Loaded(endpoint, locale));
+        return at != null && ticks - at <= age.toNanos();
     }
 
     /** Whether an authoritative endpoint wrote or cleared this field in {@code locale}. */
@@ -121,7 +121,7 @@ public final class Entry {
      *
      * @param fetch the fetch's place in the order fetches of this cache started in
      */
-    Entry authoritative(Write write, Instant now, long ticks, long fetch) {
+    Entry authoritative(Write write, long ticks, long fetch) {
         Locale locale = write.locale();
         if (locale == null) {
             throw new IllegalArgumentException("an authoritative response from " + write.endpoint() + " has a locale");
@@ -160,7 +160,7 @@ public final class Entry {
             }
         }
         var nextLoaded = new HashMap<>(loaded);
-        nextLoaded.put(new Loaded(write.endpoint(), locale), now);
+        nextLoaded.put(new Loaded(write.endpoint(), locale), ticks);
         var nextShared = new HashMap<>(sharedFrom);
         nextShared.merge(write.endpoint(), fetch, Math::max);
         return new Entry(generation, nextValues, nextAuthoritative, nextLoaded, ticks, nextShared, nextSlotFrom);
