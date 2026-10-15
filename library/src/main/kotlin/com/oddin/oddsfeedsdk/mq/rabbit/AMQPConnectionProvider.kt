@@ -8,6 +8,7 @@ import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener
 import com.rabbitmq.client.*
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
+import javax.net.ssl.SSLContext
 
 
 interface AMQPConnectionProvider {
@@ -18,6 +19,18 @@ interface AMQPConnectionProvider {
 
 private val logger = KotlinLogging.logger {}
 
+/**
+ * TLS for the broker connection: the broker's certificate must chain to a CA the JVM trusts
+ * (its default trust store, or the one named by `javax.net.ssl.trustStore`), and be issued for the
+ * host connected to. `useSslProtocol()` without a context trusts any certificate and checks no
+ * host name, which lets anyone on the path to the broker take the access token, sent as the
+ * user name.
+ */
+internal fun ConnectionFactory.useCheckedTls(sslContext: SSLContext = SSLContext.getDefault()) {
+    useSslProtocol(sslContext)
+    enableHostnameVerification()
+}
+
 class SingleAMQPConnectionProvider @Inject constructor(
     private val rabbitConnectionFactory: ConnectionFactory,
     private val config: OddsFeedConfiguration,
@@ -26,6 +39,7 @@ class SingleAMQPConnectionProvider @Inject constructor(
 ) : AMQPConnectionProvider {
     private var connection: Connection? = null
     private val syncLock = Any()
+    private var tlsConfigured = false
 
     companion object {
         private const val VIRTUAL_HOST_PREFIX = "/oddinfeed"
@@ -50,7 +64,11 @@ class SingleAMQPConnectionProvider @Inject constructor(
 
         rabbitConnectionFactory.host = config.selectedEnvironment.messagingHost
         rabbitConnectionFactory.port = config.selectedEnvironment.messagingPort
-        rabbitConnectionFactory.useSslProtocol()
+        // once: each call adds another host name check to the factory's socket configurator
+        if (!tlsConfigured) {
+            rabbitConnectionFactory.useCheckedTls()
+            tlsConfigured = true
+        }
 
         // Validate bookmaker again
         if (whoAmIManager.bookmakerDetail == null) {
