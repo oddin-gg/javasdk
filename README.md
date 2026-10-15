@@ -40,6 +40,7 @@ data binding and other issues related to connection to API and Feed.
 * [Configuration](docs/configuration.md): every option with its default and bounds, preload locales
 * [Health and logging](docs/health-and-logging.md): `getHealth()`, health events, thresholds, log levels and logger names
 * [FAQ](docs/faq.md)
+* [Examples](examples/README.md): small runnable examples of 1.0 (start, resume after a restart, event recovery, replay)
 * [NEXT.md](NEXT.md): the design the above is checked against
 
 The examples below show the API of both lines; 1.0 is `gg.oddin.oddsfeed:odds-feed` on Maven Central.

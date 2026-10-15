@@ -54,6 +54,7 @@
     <module>odds-feed</module>
     <module>system-tests</module>
     <module>benchmarks</module>
+    <module>examples/odds-feed-1.0</module>
   </modules>
 
   <properties>
