@@ -1356,8 +1356,11 @@ Performance is a requirement, not a follow-up.
 - Cold path: parallel bounded fan-out for competitors and players, single-flight,
   under the data permit pool.
 - Outage: serve stale data while a refresh is failing, back off per locale. Never
-  collapse to one message per HTTP timeout. The catalogs do; the entity loads have no
-  backoff yet (section 4, REST).
+  collapse to one message per HTTP timeout. The catalogs do. The entity loads have no
+  backoff, by decision (2026-10-15): as in 0.0.x and the Go SDK, a failed load is asked
+  for again by the next read. Concurrent readers of a key already share one request,
+  and every call is bounded by its deadline. A per-key backoff was tried and dropped:
+  after an outage it kept entities refused for up to its cap once the API was back.
 - JAXB's unmarshal cost, measured early: on the JDK's own parser three times a
   hand-written StAX reader's, on Woodstox about a sixth slower than it. The decoder reads with
   Woodstox, and the generated classes stay without a reader to maintain.
