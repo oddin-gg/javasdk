@@ -8,6 +8,8 @@ import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener
 import com.rabbitmq.client.*
 import kotlinx.coroutines.runBlocking
 import mu.KotlinLogging
+import java.lang.reflect.InvocationTargetException
+import java.lang.reflect.Proxy
 import javax.net.ssl.SSLContext
 
 
@@ -39,6 +41,7 @@ class SingleAMQPConnectionProvider @Inject constructor(
 ) : AMQPConnectionProvider {
     private var connection: Connection? = null
     private val syncLock = Any()
+    private val redactor = TokenRedactor(config.accessToken)
     private var tlsConfigured = false
 
     // The trust the connection is checked against: the JVM's default unless a test sets its own.
@@ -51,13 +54,30 @@ class SingleAMQPConnectionProvider @Inject constructor(
 
     override fun newChannel(): Channel {
         synchronized(syncLock) {
-            if (connection == null) {
-                connection = makeConnection(rabbitConnectionFactory, config, whoAmIManager)
-            }
+            try {
+                if (connection == null) {
+                    connection = makeConnection(rabbitConnectionFactory, config, whoAmIManager)
+                }
 
-            return connection?.createChannel() ?: throw IllegalStateException("Failed to create new AMQP connection")
+                val channel = connection?.createChannel()
+                    ?: throw IllegalStateException("Failed to create new AMQP connection")
+                return withoutTokenInFailures(channel)
+            } catch (e: Exception) {
+                throw redactor.throwable(e)
+            }
         }
     }
+
+    // What a broker says when it refuses a channel operation names the user as well; the channel
+    // is handed out through this, so whoever fails on it sees the failure without the token
+    private fun withoutTokenInFailures(channel: Channel): Channel =
+        Proxy.newProxyInstance(Channel::class.java.classLoader, arrayOf(Channel::class.java)) { _, method, args ->
+            try {
+                method.invoke(channel, *(args ?: emptyArray()))
+            } catch (e: InvocationTargetException) {
+                throw redactor.throwable(e.targetException)
+            }
+        } as Channel
 
     private fun makeConnection(
         rabbitConnectionFactory: ConnectionFactory,
@@ -106,7 +126,7 @@ class SingleAMQPConnectionProvider @Inject constructor(
             if (it.isInitiatedByApplication) {
                 logger.info { "AMQP connection shut down by application" }
             } else {
-                logger.info { "AMQP connection shut down by: $it" }
+                logger.info { "AMQP connection shut down by: ${redactor.text(it.toString())}" }
             }
         }
 
@@ -119,7 +139,7 @@ class SingleAMQPConnectionProvider @Inject constructor(
         try {
             connection?.close()
         } catch (e: Exception) {
-            logger.debug { "AMQP connection failed to close $e" }
+            logger.debug { "AMQP connection failed to close ${redactor.text(e.toString())}" }
         } finally {
             connection = null
         }
