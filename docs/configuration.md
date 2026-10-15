@@ -21,7 +21,7 @@ bounds in its message. [Integration guide](integration-guide.md) - [Health and l
 |---|---|---|
 | `setSDKNodeId(int)` | none | Distinct per running instance ([checklist](integration-guide.md#onboarding-checklist)). |
 | `setExceptionHandlingStrategy(ExceptionHandlingStrategy)` | `THROW` | `CATCH` makes getters log and return null; see [the FAQ](faq.md#what-do-the-getters-do-when-the-api-fails). |
-| `setInitialSnapshotRecoveryInterval(Duration)` | none: a full snapshot | How far back a start with no resume point asks for. |
+| `setInitialSnapshotRecoveryInterval(Duration)` | none: a full snapshot | How far back a start with no resume point asks for. Zero asks from now, with no history; a negative value throws `IllegalArgumentException` (0.0.x accepted it). |
 | `setMaxMatchCacheSize(long)` | 10 000 | Entries; the least recently used goes first and is fetched again when read. A value under 1 counts as 1. |
 | `setMaxFixtureCacheSize(long)` | 10 000 | As above. |
 | `setMaxCompetitorCacheSize(long)` | 20 000 | As above. |
