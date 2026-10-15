@@ -23,6 +23,7 @@ import com.oddin.oddsfeedsdk.internal.producer.Bookmaker;
 import com.oddin.oddsfeedsdk.internal.producer.Producers;
 import com.oddin.oddsfeedsdk.internal.replay.Replay;
 import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
+import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
 import com.oddin.oddsfeedsdk.internal.rest.Startup;
 import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import java.time.Instant;
@@ -113,7 +114,20 @@ public record FeedCore(
             EventsDispatcher events,
             Consumer<ApiClient> starting,
             FeedClock clock) {
-        var api = new ApiClient(configuration, events);
+        return start(configuration, events, events, starting, clock);
+    }
+
+    /**
+     * As above, with where the REST client reports its calls: the feed's events, and whoever else
+     * is to know of them, such as the health.
+     */
+    public static FeedCore start(
+            OddsFeedConfiguration configuration,
+            EventsDispatcher events,
+            ApiEvents apiEvents,
+            Consumer<ApiClient> starting,
+            FeedClock clock) {
+        var api = new ApiClient(configuration, apiEvents);
         @Nullable ExecutorService fetches = null;
         @Nullable SideLoads sideLoads = null;
         try {

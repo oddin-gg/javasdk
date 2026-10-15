@@ -8,8 +8,8 @@ public enum HealthState {
     DEGRADED,
     /**
      * It does not move: a callback that has not returned, a queue that has not moved while not
-     * empty, or a deadlock. The feed cannot unblock it; the remedy is to close the feed and open a
-     * new one.
+     * empty, a deadlock, or a token the API refuses. The feed cannot unblock it; the remedy is to
+     * close the feed and open a new one.
      */
     STALLED
 }

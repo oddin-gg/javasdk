@@ -5,12 +5,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer;
+import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
+import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.amqp.AmqpTransport.ChannelRefusals;
 import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
 import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
+import com.oddin.oddsfeedsdk.internal.rest.ApiCall;
+import com.oddin.oddsfeedsdk.internal.rest.ApiClient;
 import com.oddin.oddsfeedsdk.internal.session.SessionRegistry;
 import com.oddin.oddsfeedsdk.internal.session.Sessions;
 import com.oddin.oddsfeedsdk.mq.MessageInterest;
@@ -29,6 +34,9 @@ import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
+import java.io.IOException;
+import java.net.URI;
+import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
@@ -574,7 +582,8 @@ class HealthMonitorTest {
                         HealthComponent.EVENTS,
                         HealthComponent.TIMERS,
                         HealthComponent.THREADS,
-                        HealthComponent.CATALOGS);
+                        HealthComponent.CATALOGS,
+                        HealthComponent.API);
 
         var replay = health.assess(
                 health.nextReading(),
@@ -597,7 +606,8 @@ class HealthMonitorTest {
                         HealthComponent.THREADS,
                         HealthComponent.CONSUMER,
                         HealthComponent.SESSION,
-                        HealthComponent.CONNECTION);
+                        HealthComponent.CONNECTION,
+                        HealthComponent.API);
 
         health.watched(HealthComponent.RECOVERY, 0, HealthState.STALLED, "its turn has not ended");
         var live = health.assess(
@@ -623,7 +633,8 @@ class HealthMonitorTest {
                         Map.entry(HealthComponent.TIMERS, HealthState.HEALTHY),
                         Map.entry(HealthComponent.THREADS, HealthState.HEALTHY),
                         Map.entry(HealthComponent.CATALOGS, HealthState.DEGRADED),
-                        Map.entry(HealthComponent.CONNECTION, HealthState.HEALTHY));
+                        Map.entry(HealthComponent.CONNECTION, HealthState.HEALTHY),
+                        Map.entry(HealthComponent.API, HealthState.HEALTHY));
         assertThat(live.state()).as("the worst").isEqualTo(HealthState.STALLED);
     }
 
@@ -703,7 +714,8 @@ class HealthMonitorTest {
                                 HealthComponent.EVENTS,
                                 HealthComponent.TIMERS,
                                 HealthComponent.THREADS,
-                                HealthComponent.CATALOGS);
+                                HealthComponent.CATALOGS,
+                                HealthComponent.API);
                 assertThat(notOpen.catalogs())
                         .extracting(FeedHealth.Catalog::name)
                         .containsExactly(
@@ -735,7 +747,8 @@ class HealthMonitorTest {
                                     HealthComponent.TIMERS,
                                     HealthComponent.THREADS,
                                     HealthComponent.CATALOGS,
-                                    HealthComponent.CONNECTION);
+                                    HealthComponent.CONNECTION,
+                                    HealthComponent.API);
                     assertThat(open.sessions())
                             .extracting(FeedHealth.Session::id)
                             .containsExactly(1, 2);
@@ -777,12 +790,154 @@ class HealthMonitorTest {
                                     HealthComponent.TIMERS,
                                     HealthComponent.THREADS,
                                     HealthComponent.CATALOGS,
-                                    HealthComponent.CONNECTION);
+                                    HealthComponent.CONNECTION,
+                                    HealthComponent.API);
                 } finally {
                     replay.close();
                 }
             } finally {
                 core.close();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ the API's acceptance of the token
+
+    @Test
+    void aRefusedTokenStallsTheApiPartWithItsStatusAndTimeAndIsToldOnce() throws InterruptedException {
+        events.start();
+        assertThat(read().components()).containsEntry(HealthComponent.API, HealthState.HEALTHY);
+
+        health.refused(call(401, null));
+        var refused = heard.next();
+        assertThat(refused.component()).isEqualTo(HealthComponent.API);
+        assertThat(refused.session()).isNull();
+        assertThat(refused.previous()).isEqualTo(HealthState.HEALTHY);
+        assertThat(refused.state()).isEqualTo(HealthState.STALLED);
+        assertThat(refused.reason())
+                .isEqualTo("the API refused the access token: GET " + WHOAMI_URI + " answered 401 at " + NOW);
+        assertThat(refused.at()).isEqualTo(NOW);
+        var reading = read();
+        assertThat(reading.components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+        assertThat(reading.state()).as("the overall state follows it").isEqualTo(HealthState.STALLED);
+        assertThat(reading.counters()).containsEntry("component.api.state", 2L);
+
+        health.refused(call(403, null));
+        read();
+        heard.nothingMore("a refusal while refused: one change, with the first one's reason");
+        assertThat(logged).containsExactly(refused);
+
+        // a 403 stalls it just the same
+        var other = new HealthMonitor(events, id -> null, InstantSource.fixed(NOW), HOUR, logged::add);
+        other.refused(call(403, null));
+        assertThat(heard.next().reason()).contains("answered 403");
+        assertThat(read(other).components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+    }
+
+    @Test
+    void aCallThatSucceedsMakesTheApiPartHealthyAgain() throws InterruptedException {
+        events.start();
+        health.called(call(200, null));
+        heard.nothingMore("a success of a part that was never refused");
+
+        health.refused(call(401, null));
+        var refused = heard.next();
+        health.called(call(204, null));
+        var accepted = heard.next();
+        assertThat(accepted.component()).isEqualTo(HealthComponent.API);
+        assertThat(accepted.previous()).isEqualTo(HealthState.STALLED);
+        assertThat(accepted.state()).isEqualTo(HealthState.HEALTHY);
+        assertThat(accepted.reason())
+                .isEqualTo("the API answered GET " + WHOAMI_URI + " with 204 at " + NOW
+                        + ", so it takes the access token again");
+        var reading = read();
+        assertThat(reading.components()).containsEntry(HealthComponent.API, HealthState.HEALTHY);
+        assertThat(reading.state()).isEqualTo(HealthState.HEALTHY);
+        health.called(call(200, null));
+        heard.nothingMore("a success while healthy");
+        assertThat(logged).containsExactly(refused, accepted);
+
+        health.refused(call(403, null));
+        assertThat(heard.next().state()).as("refused again").isEqualTo(HealthState.STALLED);
+    }
+
+    @Test
+    void whatIsNoRefusalLeavesTheApiPartAsItWas() throws InterruptedException {
+        events.start();
+        var failures = new ApiCall[] {
+            call(500, new IOException("answered 500")),
+            call(503, null),
+            call(429, null),
+            call(404, null),
+            call(0, new HttpTimeoutException("no complete answer before the deadline")),
+            call(0, new IOException("connection reset")),
+            // an answer that began as a success and broke off is no success of the token
+            call(200, new IOException("cut off")),
+        };
+        for (var failure : failures) {
+            health.called(failure);
+        }
+        assertThat(read().components()).containsEntry(HealthComponent.API, HealthState.HEALTHY);
+        heard.nothingMore("failures of a part never refused");
+
+        health.refused(call(401, null));
+        heard.next();
+        for (var failure : failures) {
+            health.called(failure);
+        }
+        // the attempt a refusal comes with is told to called() as well, and is no success
+        health.called(call(401, new IOException("answered 401")));
+        health.called(call(403, null));
+        assertThat(read().components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+        heard.nothingMore("nothing but a success heals it");
+    }
+
+    /** The REST transport's own words reach the part: a refusal, other failures, a success. */
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void theApiPartFollowsWhatTheRestTransportMeets() throws InterruptedException {
+        try (var api = FakeRestServer.start()) {
+            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                    .selectEnvironment("127.0.0.1", api.apiHost(), 1)
+                    .setAccessToken("token")
+                    .setHttpClientTimeout(Duration.ofMillis(800))
+                    .build();
+            events.start();
+            try (var client = new ApiClient(configuration, new ApiTee(List.of(events, health)))) {
+                api.respond(WHOAMI, 500, "");
+                assertThatThrownBy(client::fetchWhoAmI).isInstanceOf(ApiException.class);
+                api.respond(WHOAMI, Reply.of(200, "").after(Duration.ofSeconds(3)));
+                assertThatThrownBy(client::fetchWhoAmI).isInstanceOf(ApiException.class);
+                api.respond(WHOAMI, 429, "");
+                assertThatThrownBy(client::fetchWhoAmI).isInstanceOf(ApiException.class);
+                assertThat(read().components())
+                        .as("a 5xx, a timeout and a 429 are no refusal")
+                        .containsEntry(HealthComponent.API, HealthState.HEALTHY);
+                heard.nothingMore("failures other than a refusal");
+
+                api.respond(WHOAMI, 401, "");
+                assertThatThrownBy(client::fetchWhoAmI).isInstanceOf(ApiException.class);
+                var refused = heard.next();
+                assertThat(refused.component()).isEqualTo(HealthComponent.API);
+                assertThat(refused.state()).isEqualTo(HealthState.STALLED);
+                assertThat(refused.reason()).contains("answered 401").contains(WHOAMI);
+                assertThat(read().components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+
+                api.respond(WHOAMI, 403, "");
+                assertThatThrownBy(client::fetchWhoAmI).isInstanceOf(ApiException.class);
+                api.respond(WHOAMI, 500, "");
+                assertThatThrownBy(client::fetchWhoAmI).isInstanceOf(ApiException.class);
+                assertThat(read().components())
+                        .as("a failure other than a refusal does not heal it")
+                        .containsEntry(HealthComponent.API, HealthState.STALLED);
+                heard.nothingMore("a second refusal and a 5xx");
+
+                api.respond(WHOAMI, 200, Fixtures.read("rest/whoami/bookmaker_details.xml"));
+                client.fetchWhoAmI();
+                var accepted = heard.next();
+                assertThat(accepted.previous()).isEqualTo(HealthState.STALLED);
+                assertThat(accepted.state()).isEqualTo(HealthState.HEALTHY);
+                assertThat(read().components()).containsEntry(HealthComponent.API, HealthState.HEALTHY);
             }
         }
     }
@@ -832,6 +987,14 @@ class HealthMonitorTest {
             Thread.currentThread().interrupt();
             throw new AssertionError(e);
         }
+    }
+
+    private static final String WHOAMI = "/v1/users/whoami";
+
+    private static final URI WHOAMI_URI = URI.create("https://api.invalid" + WHOAMI);
+
+    private static ApiCall call(int status, @Nullable Exception failure) {
+        return new ApiCall("GET", WHOAMI_URI, status, Duration.ZERO, 1, failure);
     }
 
     // ------------------------------------------------------------------ readings

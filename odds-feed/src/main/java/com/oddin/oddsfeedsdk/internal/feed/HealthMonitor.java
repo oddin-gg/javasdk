@@ -10,6 +10,8 @@ import com.oddin.oddsfeedsdk.internal.events.EventsDispatcher;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryActor;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryCounters;
 import com.oddin.oddsfeedsdk.internal.recovery.RecoveryEvents;
+import com.oddin.oddsfeedsdk.internal.rest.ApiCall;
+import com.oddin.oddsfeedsdk.internal.rest.ApiEvents;
 import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
@@ -41,7 +43,8 @@ import org.slf4j.LoggerFactory;
  *
  * <p>A part's state comes from what it is now - a session lagging, as the recovery actor last told,
  * a catalog serving a value stale for its limit or more, or the broker connection down for longer
- * than its limit, as the transport told - and from what the SDK's own watch found of it, through
+ * than its limit, as the transport told, or the API refusing the access token, as the REST client
+ * told - and from what the SDK's own watch found of it, through
  * {@link #watched}; the worse of the two. A session's lagging is told as the actor tells it, and the
  * connection coming up as the transport tells it; a catalog's staleness and the connection's time
  * down are found when the health is read. Each reading takes a number before it reads, and what a
@@ -54,7 +57,7 @@ import org.slf4j.LoggerFactory;
  * of the feed, and holds a lock only to compare what it found with what was told, and to tell and
  * log a change: the events dispatcher only queues it, and no callback of the client's runs there.
  */
-public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
+public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, ApiEvents {
 
     private static final Logger LOG = LoggerFactory.getLogger(HealthMonitor.class);
 
@@ -74,6 +77,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     static final int CHANNEL_REFUSALS = 3;
 
     private static final Part CONNECTION = new Part(HealthComponent.CONNECTION, 0);
+    private static final Part API = new Part(HealthComponent.API, 0);
     /** What {@link #connectionDownSince} holds while the connection is up. */
     private static final long CONNECTION_UP = Long.MIN_VALUE;
 
@@ -239,6 +243,48 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
     }
 
     /**
+     * The REST client's word on an attempt, on the thread that made the call: the API's part is
+     * healthy again, told at once, when a refused token is answered with a success. Any other
+     * attempt changes nothing, and costs one read while the token is not refused.
+     */
+    @Override
+    public void called(ApiCall call) {
+        if (call.failure() == null && call.status() / 100 == 2 && apiRefused()) {
+            note(
+                            HealthComponent.API,
+                            0,
+                            HealthState.HEALTHY,
+                            "the API answered " + call.method() + " " + call.uri() + " with " + call.status() + " at "
+                                    + clock.instant() + ", so it takes the access token again")
+                    .tell();
+        }
+    }
+
+    /**
+     * The REST client's word that the API refused the access token (401 or 403), on the thread that
+     * made the call: the API's part is stalled from now, told at once. A refusal while it is stalled
+     * already changes nothing, so the reason keeps the first one's status and time.
+     */
+    @Override
+    public void refused(ApiCall call) {
+        if (!apiRefused()) {
+            note(
+                            HealthComponent.API,
+                            0,
+                            HealthState.STALLED,
+                            "the API refused the access token: " + call.method() + " " + call.uri() + " answered "
+                                    + call.status() + " at " + clock.instant())
+                    .tell();
+        }
+    }
+
+    /** Whether the API's part is stalled by a refusal not yet answered by a success. */
+    private boolean apiRefused() {
+        Found found = watched.get(API);
+        return found != null && found.state() != HealthState.HEALTHY;
+    }
+
+    /**
      * What the SDK's own watch found of a part: told at once when it changes the part's state. A
      * part it watches is one the feed has from then on.
      *
@@ -364,6 +410,8 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents {
             // the watchdog's own, which starts with the feed
             found.put(new Part(HealthComponent.TIMERS, 0), watchedOnly(HealthComponent.TIMERS));
             found.put(new Part(HealthComponent.THREADS, 0), watchedOnly(HealthComponent.THREADS));
+            // the REST client starts with the feed, and tells this part itself
+            found.put(API, watchedOnly(HealthComponent.API));
         }
         if (opened) {
             found.put(CONNECTION, connectionFound(refusing));

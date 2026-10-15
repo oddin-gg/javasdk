@@ -16,6 +16,7 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.ApiCallEvent;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
+import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -110,7 +111,8 @@ class OddsFeedTest {
                                 Map.entry(HealthComponent.EVENTS, HealthState.HEALTHY),
                                 Map.entry(HealthComponent.TIMERS, HealthState.HEALTHY),
                                 Map.entry(HealthComponent.THREADS, HealthState.HEALTHY),
-                                Map.entry(HealthComponent.CATALOGS, HealthState.HEALTHY));
+                                Map.entry(HealthComponent.CATALOGS, HealthState.HEALTHY),
+                                Map.entry(HealthComponent.API, HealthState.HEALTHY));
                 assertThat(started.catalogs()).hasSize(4);
                 assertThat(started.sessions()).as("none before the feed opens").isEmpty();
                 assertThat(started.transport().connected()).isFalse();
@@ -125,7 +127,8 @@ class OddsFeedTest {
                             HealthComponent.EVENTS,
                             HealthComponent.TIMERS,
                             HealthComponent.THREADS,
-                            HealthComponent.CATALOGS);
+                            HealthComponent.CATALOGS,
+                            HealthComponent.API);
         }
     }
 
@@ -192,6 +195,52 @@ class OddsFeedTest {
 
                 assertThat(feed.getBookMakerDetail().getBookmakerId()).isEqualTo(53);
                 assertThat(api.requests("GET", WHOAMI)).hasSize(2);
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    void aRefusedTokenIsTheApiPartsStallInGetHealthAndToldUntilACallSucceeds() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var changes = new LinkedBlockingQueue<HealthEvent>();
+            var feed = new OddsFeed(
+                    new GlobalEventsListener() {
+                        @Override
+                        public void onProducerStatusChange(ProducerStatus producerStatus) {}
+
+                        @Override
+                        public void onConnectionDown() {}
+
+                        @Override
+                        public void onEventRecoveryCompleted(URN eventId, long requestId) {}
+
+                        @Override
+                        public void onHealthEvent(HealthEvent event) {
+                            changes.add(event);
+                        }
+                    },
+                    configurationAgainst(api));
+            try {
+                api.respond(WHOAMI, 403, FORBIDDEN);
+                assertThatThrownBy(feed::getBookMakerDetail).isInstanceOf(InitException.class);
+                var refused = requireNonNull(changes.poll(WAIT.toSeconds(), TimeUnit.SECONDS));
+                assertThat(refused.component()).isEqualTo(HealthComponent.API);
+                assertThat(refused.state()).isEqualTo(HealthState.STALLED);
+                assertThat(refused.reason())
+                        .startsWith("the API refused the access token: GET ")
+                        .contains(" answered 403 at ");
+                var polled = feed.getHealth();
+                assertThat(polled.components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+                assertThat(polled.state()).isEqualTo(HealthState.STALLED);
+
+                api.respond(WHOAMI, 200, Fixtures.read("rest/whoami/bookmaker_details.xml"));
+                feed.getBookMakerDetail();
+                var accepted = requireNonNull(changes.poll(WAIT.toSeconds(), TimeUnit.SECONDS));
+                assertThat(accepted.component()).isEqualTo(HealthComponent.API);
+                assertThat(accepted.state()).isEqualTo(HealthState.HEALTHY);
+                assertThat(feed.getHealth().components()).containsEntry(HealthComponent.API, HealthState.HEALTHY);
             } finally {
                 feed.close();
             }
