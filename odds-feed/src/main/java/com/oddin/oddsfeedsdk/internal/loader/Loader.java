@@ -32,7 +32,7 @@ import org.jspecify.annotations.Nullable;
  * it went. One still running past its callers' time is abandoned, writes nothing from then on, and
  * is replaced by the next miss.
  *
- * <p>A key whose fetch failed backs off: a miss of it during the backoff fails at once, with the
+ * <p>In a loader made {@linkplain #withBackoff with a backoff}, a key whose fetch failed backs off: a miss of it during the backoff fails at once, with the
  * failure it had and no request, however many readers and side-loads ask. The backoff starts at
  * {@link #FIRST_BACKOFF}, doubles with each failure in a row up to {@link #LONGEST_BACKOFF}, ends
  * with a success, and is counted on the feed clock's monotonic side. It is {@linkplain #forget
@@ -78,6 +78,7 @@ public final class Loader<K, V> {
     private final Duration margin;
     private final Executor fetches;
     private final FeedClock clock;
+    private final boolean backsOff;
     private final ConcurrentHashMap<K, Flight<V>> inFlight = new ConcurrentHashMap<>();
     /** The last failure of each key whose last fetch failed. */
     private final Cache<K, Failure> failures;
@@ -96,6 +97,28 @@ public final class Loader<K, V> {
      */
     public Loader(
             String name, Fetch<K, V> fetch, Duration deadline, Duration margin, Executor fetches, FeedClock clock) {
+        this(name, fetch, deadline, margin, fetches, clock, false);
+    }
+
+    /**
+     * A loader whose keys back off after a failed fetch, as the class says. A plain one remembers no
+     * failure, for a client with a backoff of its own, such as a catalog, whose reload must fetch
+     * whatever the last fetch did; arguments as for the constructor.
+     */
+    public static <K, V> Loader<K, V> withBackoff(
+            String name, Fetch<K, V> fetch, Duration deadline, Duration margin, Executor fetches, FeedClock clock) {
+        return new Loader<>(name, fetch, deadline, margin, fetches, clock, true);
+    }
+
+    private Loader(
+            String name,
+            Fetch<K, V> fetch,
+            Duration deadline,
+            Duration margin,
+            Executor fetches,
+            FeedClock clock,
+            boolean backsOff) {
+        this.backsOff = backsOff;
         this.clock = clock;
         this.name = name;
         this.fetch = fetch;
@@ -257,6 +280,9 @@ public final class Loader<K, V> {
      * finds no flight finds the failure.
      */
     private void failed(K key, Flight<V> flight, RuntimeException cause) {
+        if (!backsOff) {
+            return;
+        }
         long at = clock.monoNanos();
         var wallAt = Instant.ofEpochMilli(clock.wallMillis());
         failures.asMap().compute(key, (k, last) -> {
@@ -271,6 +297,9 @@ public final class Loader<K, V> {
 
     /** The key's last failure while it still backs the key off, else null. */
     private @Nullable Failure backingOff(K key) {
+        if (!backsOff) {
+            return null;
+        }
         Failure failure = failures.getIfPresent(key);
         return failure != null && failure.retryAt() - clock.monoNanos() > 0 ? failure : null;
     }

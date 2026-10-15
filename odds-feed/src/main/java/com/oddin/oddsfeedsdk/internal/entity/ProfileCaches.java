@@ -96,12 +96,12 @@ public final class ProfileCaches {
         this.tournaments = new EntityCache<>("tournament", SIZE, TOURNAMENT_AGE, longestFetch, clock);
         this.sports = new EntityCache<>("sport", SIZE, PROFILE_AGE, longestFetch, clock);
         Duration margin = MatchCaches.MARGIN;
-        this.competitorLoads = new Loader<>("competitor", this::fetchCompetitor, timeout, margin, fetches, clock);
-        this.playerLoads = new Loader<>("player", this::fetchPlayer, timeout, margin, fetches, clock);
-        this.tournamentLoads = new Loader<>("tournament", this::fetchTournament, timeout, margin, fetches, clock);
+        this.competitorLoads = Loader.withBackoff("competitor", this::fetchCompetitor, timeout, margin, fetches, clock);
+        this.playerLoads = Loader.withBackoff("player", this::fetchPlayer, timeout, margin, fetches, clock);
+        this.tournamentLoads = Loader.withBackoff("tournament", this::fetchTournament, timeout, margin, fetches, clock);
         this.sportTournamentLoads =
-                new Loader<>("sport tournaments", this::fetchSportTournaments, timeout, margin, fetches, clock);
-        this.sportListLoads = new Loader<>("sports", this::fetchSportList, timeout, margin, fetches, clock);
+                Loader.withBackoff("sport tournaments", this::fetchSportTournaments, timeout, margin, fetches, clock);
+        this.sportListLoads = Loader.withBackoff("sports", this::fetchSportList, timeout, margin, fetches, clock);
     }
 
     /** The competitor as its profile in {@code locale} describes it, loaded when missing or out of date. */

@@ -418,8 +418,9 @@ because the health event itself would queue behind the wedge.
   cold getter waits that long once per key and backoff, not on every call: see the next
   item.
 - A failed entity load - a match summary or fixture, a competitor, a player, a tournament, a
-  sport's tournaments, the sport list - backs its key off, the loaders' own rule and the
-  catalogs' numbers: one second, doubling with each failure in a row to a minute. A read of
+  sport's tournaments, the sport list - backs its key off. The rule is the entity loaders' own
+  (a catalog's loader has none: its own backoff lets a reload through) with the catalogs'
+  numbers: one second, doubling with each failure in a row to a minute. A read of
   the key during the backoff fails at once, with an `ApiException` that says it is backing
   off and has the last failure as its cause, and no request and no permit; the exception
   strategy then does what it does for a failed load (`ItemNotFoundException` under

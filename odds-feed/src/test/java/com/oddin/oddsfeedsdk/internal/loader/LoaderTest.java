@@ -328,8 +328,7 @@ class LoaderTest {
     }
 
     @Test
-    void aFailedFetchFailsEveryWaiterAndTheNextMissAfterItsBackoffStartsAfresh() {
-        var split = new SplitClock();
+    void aFailedFetchFailsEveryWaiterAndTheNextMissStartsAfresh() {
         var fetches = new AtomicInteger();
         var loader = new Loader<String, String>(
                 "match",
@@ -342,12 +341,11 @@ class LoaderTest {
                 DEADLINE,
                 MARGIN,
                 virtualThreads,
-                split.clock());
+                FeedClock.system());
         assertThatThrownBy(() -> loader.load("m1"))
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("503");
-        split.advanceMono(Loader.FIRST_BACKOFF);
-        assertThat(loader.load("m1")).isEqualTo("value");
+        assertThat(loader.load("m1")).as("a plain loader remembers no failure").isEqualTo("value");
     }
 
     @Test
@@ -568,7 +566,7 @@ class LoaderTest {
     private Flaky flaky(SplitClock split) {
         var fetches = new AtomicInteger();
         Set<String> failing = java.util.concurrent.ConcurrentHashMap.newKeySet();
-        var loader = new Loader<String, String>(
+        var loader = Loader.<String, String>withBackoff(
                 "match",
                 (key, _, _) -> {
                     fetches.incrementAndGet();
@@ -711,7 +709,7 @@ class LoaderTest {
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var fetches = new AtomicInteger();
-        var loader = new Loader<String, String>(
+        var loader = Loader.<String, String>withBackoff(
                 "match",
                 (key, _, _) -> {
                     if (fetches.incrementAndGet() == 1) {
@@ -744,7 +742,7 @@ class LoaderTest {
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var fetches = new AtomicInteger();
-        var loader = new Loader<String, String>(
+        var loader = Loader.<String, String>withBackoff(
                 "match",
                 (key, _, _) -> {
                     if (fetches.incrementAndGet() == 1) {
@@ -777,7 +775,7 @@ class LoaderTest {
         var started = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var fetches = new AtomicInteger();
-        var loader = new Loader<String, String>(
+        var loader = Loader.<String, String>withBackoff(
                 "match",
                 (key, _, _) -> {
                     if (fetches.incrementAndGet() == 1) {
@@ -841,7 +839,7 @@ class LoaderTest {
     @Test
     void anErrorFromAFetchBacksNothingOff() {
         var fetches = new AtomicInteger();
-        var loader = new Loader<String, String>(
+        var loader = Loader.<String, String>withBackoff(
                 "match",
                 (key, _, _) -> {
                     fetches.incrementAndGet();
@@ -896,7 +894,7 @@ class LoaderTest {
         var split = new SplitClock();
         var release = new CountDownLatch(1);
         var fetches = new AtomicInteger();
-        var loader = new Loader<String, String>(
+        var loader = Loader.<String, String>withBackoff(
                 "match",
                 (key, _, _) -> {
                     fetches.incrementAndGet();
@@ -935,7 +933,7 @@ class LoaderTest {
         var checked = new CountDownLatch(1);
         var late = new CountDownLatch(1);
         var fetches = new AtomicInteger();
-        var loader = new Loader<String, String>(
+        var loader = Loader.<String, String>withBackoff(
                 "match",
                 (key, _, _) -> {
                     fetches.incrementAndGet();

@@ -342,6 +342,24 @@ class CatalogTest {
     }
 
     @Test
+    void aReloadThatFailsIsAskedAgainAtOnceAndEveryTimeForAsLongAsItFails() {
+        catalog.get("k");
+        answer = () -> {
+            throw new ApiException("down");
+        };
+        int before = fetches.get();
+        for (int reload = 1; reload <= 4; reload++) {
+            assertThatThrownBy(() -> catalog.reload("k")).hasMessage("down");
+            assertThat(fetches.get() - before)
+                    .as("reload %d reached the API, whatever the failures before it", reload)
+                    .isEqualTo(reload);
+        }
+        answer = () -> "v2";
+        assertThat(catalog.reload("k")).isEqualTo("v2");
+        assertThat(fetches.get() - before).isEqualTo(5);
+    }
+
+    @Test
     void anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld() {
         answer = () -> "a,b";
         assertThat(find("c")).as("the value is too young to fetch again").isNull();
