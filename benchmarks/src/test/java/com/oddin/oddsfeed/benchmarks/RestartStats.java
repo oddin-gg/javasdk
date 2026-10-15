@@ -1,7 +1,5 @@
 package com.oddin.oddsfeed.benchmarks;
 
-import java.util.Arrays;
-
 /** The arithmetic of {@link TestEnvironmentRestart}'s report, apart from the SDK so that CI can check it. */
 final class RestartStats {
 
@@ -14,13 +12,7 @@ final class RestartStats {
      * @param percent more than 0, up to 100
      */
     static long percentile(long[] values, double percent) {
-        if (values.length == 0) {
-            return 0;
-        }
-        var sorted = values.clone();
-        Arrays.sort(sorted);
-        int rank = (int) Math.ceil(percent / 100 * sorted.length);
-        return sorted[Math.max(rank, 1) - 1];
+        return Stats.percentile(values, percent);
     }
 
     /**
