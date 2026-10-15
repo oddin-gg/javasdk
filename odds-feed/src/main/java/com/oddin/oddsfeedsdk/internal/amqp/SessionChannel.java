@@ -223,6 +223,12 @@ final class SessionChannel implements SessionTransport {
                 open(now);
                 return true;
             } catch (IOException | RuntimeException e) {
+                if (!now.isOpen()) {
+                    // the connection went while the channel was being opened: no refusal of the channel's,
+                    // not counted and not logged; the reconnect opens the channel
+                    streakEnded();
+                    return true;
+                }
                 refused(now, e);
                 reopenFailed.accept(e);
                 return false;
