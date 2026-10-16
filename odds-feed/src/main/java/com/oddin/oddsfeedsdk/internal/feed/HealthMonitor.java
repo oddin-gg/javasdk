@@ -730,16 +730,22 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
         try {
             Instant at = clock.instant();
             found.forEach((part, now) -> {
-                if (reading < toldReading.getOrDefault(part, 0L)
-                        || (part.equals(CONNECTION) && connectionAtClose != null)) {
+                if (part.equals(CONNECTION) && connectionAtClose != null) {
+                    return;
+                }
+                HealthState was = told.getOrDefault(part, HealthState.HEALTHY);
+                if (reading < toldReading.getOrDefault(part, 0L)) {
+                    // a newer reading read the reason noted and logged nothing of it, the state being
+                    // the same; the reason is still due, as long as the part is in the state it is for
+                    if (reasonOnly && was == now.state()) {
+                        logReason(part, now, at);
+                    }
                     return;
                 }
                 toldReading.put(part, reading);
-                HealthState was = told.getOrDefault(part, HealthState.HEALTHY);
                 if (was == now.state()) {
                     if (reasonOnly) {
-                        var session = sessionOf(part);
-                        log.changed(new HealthEvent(part.component(), session, was, was, now.reason(), at));
+                        logReason(part, now, at);
                     }
                     return;
                 }
@@ -754,6 +760,10 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
         } finally {
             telling.unlock();
         }
+    }
+
+    private void logReason(Part part, Found now, Instant at) {
+        log.changed(new HealthEvent(part.component(), sessionOf(part), now.state(), now.state(), now.reason(), at));
     }
 
     private @Nullable OddsFeedSession sessionOf(Part part) {
