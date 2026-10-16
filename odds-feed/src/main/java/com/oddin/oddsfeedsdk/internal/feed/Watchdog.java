@@ -129,6 +129,8 @@ public final class Watchdog {
     private static final class Followed {
         /** The state the watchdog last noted of the part. */
         HealthState state = HealthState.HEALTHY;
+        /** Whether the watchdog has noted that the part's thread ended: the reason it noted is the true one. */
+        boolean endNoted;
         /** The part's taken count when the watchdog first saw it not moving with something queued. */
         long moved = -1;
         /** Whether it is so: not moving with something queued, from {@link #stillSince} on. */
@@ -357,11 +359,17 @@ public final class Watchdog {
                 var state = stall == null ? HealthState.HEALTHY : HealthState.STALLED;
                 if (state != part.state) {
                     part.state = state;
+                    part.endNoted = sample.ended() != null;
                     notes.add(health.note(
                             sample.component(),
                             sample.session(),
                             state,
                             stall == null ? sample.name() + " moves again" : stall));
+                } else if (sample.ended() != null && !part.endNoted) {
+                    // stalled already, for another reason, when the thread ended: the state says it, but
+                    // the reason noted is not the true one, and nothing moves the part again to change it
+                    part.endNoted = true;
+                    notes.add(health.noteStalledFor(sample.component(), sample.session(), sample.ended()));
                 }
             }
             if (deadlocked != null) {

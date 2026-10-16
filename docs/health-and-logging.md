@@ -39,9 +39,10 @@ Each part is in one of three `HealthState`s:
   metrics exporter.
 
 It reads counters and flags on the caller's thread, never waits for a thread of the feed, and never
-starts the feed. Before the start it has no parts; once started, the events, the catalogs, the timers,
-the SDK's threads and the API; once open, the consumer and the sessions, and the alives and the recovery
-unless it is a replay feed. A closed feed still reads what it counted.
+starts the feed. Before the start it has no parts, but for the API once the access token has been
+refused: a start that failed on it reads the API stalled. Once started, the events, the catalogs, the
+timers, the SDK's threads and the API; once open, the consumer and the sessions, and the alives and
+the recovery unless it is a replay feed. A closed feed still reads what it counted.
 
 Every degradation the design allows is a log line, a counter and, for anything that discards data,
 an event. Nothing is silent.
@@ -62,10 +63,13 @@ actor stopped` at `ERROR` with the cause and its stack, closes the actor, and re
 event recovery (`recoverEvent` returns `null`). The watchdog reads that the thread has ended, so
 `RECOVERY` is `STALLED` and `state()` with it from its next look, with no limit to wait for, told
 once through `onHealthEvent` with the reason `the recovery thread ended: ` and the class and
-message of the failure (the message cut at 200 characters; the stack is in the `ERROR` line). It
-stays so: nothing moves it again. No fatal error event is raised. A `close()` of the feed is not
-this: the actor ends as asked and its part is not reported as ended. Close the feed and open a new
-one; the `ERROR` line is the cause to report.
+message of the failure (the message cut at 200 characters; the stack is in the `ERROR` line). If
+the part was `STALLED` already when the thread died, say in a turn that had run too long, the
+client has heard that stall, and a `HealthEvent` is a change of state, so it is told no second one:
+the log has the true reason, once, as an `ERROR` line `The feed's RECOVERY is still STALLED, for
+another reason: the recovery thread ended: ...`. It stays so: nothing moves it again. No fatal
+error event is raised. A `close()` of the feed is not this: the actor ends as asked and its part is
+not reported as ended. Close the feed and open a new one; the `ERROR` line is the cause to report.
 
 ### Health events
 

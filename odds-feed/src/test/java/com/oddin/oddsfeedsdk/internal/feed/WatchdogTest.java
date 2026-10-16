@@ -167,6 +167,38 @@ class WatchdogTest {
     }
 
     @Test
+    void aPartStalledInAWedgedTurnWhoseThreadThenEndsHasTheTrueReasonLoggedOnceAndNoSecondEvent()
+            throws InterruptedException {
+        events.start();
+        var reason = "the recovery thread ended: java.lang.AssertionError: a broken turn";
+        long turnBegan = clock.nanos();
+        samples = List.of(recovery(turnBegan, 0, 7, null));
+        watchdog.tick();
+        clock.advance(Duration.ofSeconds(35));
+        watchdog.tick();
+        var wedged = heard.next();
+        assertThat(wedged.state()).isEqualTo(HealthState.STALLED);
+        assertThat(wedged.reason()).isEqualTo("the recovery actor has been in one turn for 35 s");
+
+        // the turn never ended: the thread died in it, so the part reads stalled just as before
+        samples = List.of(recovery(turnBegan, 0, 7, reason));
+        clock.advance(Duration.ofSeconds(5));
+        watchdog.tick();
+        for (int i = 0; i < 20; i++) {
+            clock.advance(Duration.ofSeconds(5));
+            watchdog.tick();
+        }
+
+        heard.nothingMore("a HealthEvent is a change of state, and the client heard this one");
+        assertThat(logged)
+                .as("the wedge, then the true reason once, as the same state")
+                .extracting(HealthEvent::previous, HealthEvent::state, HealthEvent::reason)
+                .containsExactly(
+                        tuple(HealthState.HEALTHY, HealthState.STALLED, wedged.reason()),
+                        tuple(HealthState.STALLED, HealthState.STALLED, reason));
+    }
+
+    @Test
     void withAnHttpTimeoutOf30sACallbackWaitingOnASlowApiIsNoStall() throws InterruptedException {
         var watched = made(new Watchdog(
                 health, () -> samples, () -> {}, () -> deadlocked, clock::nanos, FOR_THE_DEFAULT_HTTP_TIMEOUT));

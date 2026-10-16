@@ -354,6 +354,23 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
      *     HealthComponent#CONNECTION}, whose state is their own
      */
     public Noted note(HealthComponent component, int session, HealthState state, String reason) {
+        return note(component, session, state, reason, false);
+    }
+
+    /**
+     * The true reason of a part that is stalled already, kept now and logged when the result's
+     * {@link Noted#tell} runs: once, at {@code ERROR}, and not an event, since a {@link HealthEvent}
+     * is a change of state and the client heard this one. A part that is not stalled as told is told
+     * the usual way instead.
+     *
+     * @throws IllegalArgumentException for {@link HealthComponent#CATALOGS} or {@link
+     *     HealthComponent#CONNECTION}, whose state is their own
+     */
+    public Noted noteStalledFor(HealthComponent component, int session, String reason) {
+        return note(component, session, HealthState.STALLED, reason, true);
+    }
+
+    private Noted note(HealthComponent component, int session, HealthState state, String reason, boolean reasonOnly) {
         if (component == HealthComponent.CATALOGS || component == HealthComponent.CONNECTION) {
             throw new IllegalArgumentException("the " + component + " state is its own");
         }
@@ -369,7 +386,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
         }
         var derived = component == HealthComponent.SESSION ? laggingFound(session) : null;
         var now = worse(derived, found, true);
-        return () -> tell(reading, Map.of(part, now));
+        return () -> tell(reading, Map.of(part, now), reasonOnly);
     }
 
     /** What the watch found of a part, kept, to be told. */
@@ -702,6 +719,13 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
      * reading did not read is not held back by it.
      */
     private void tell(long reading, Map<Part, Found> found) {
+        tell(reading, found, false);
+    }
+
+    /**
+     * @param reasonOnly a part that is in the state told already has its reason logged, no more
+     */
+    private void tell(long reading, Map<Part, Found> found, boolean reasonOnly) {
         telling.lock();
         try {
             Instant at = clock.instant();
@@ -713,10 +737,14 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
                 toldReading.put(part, reading);
                 HealthState was = told.getOrDefault(part, HealthState.HEALTHY);
                 if (was == now.state()) {
+                    if (reasonOnly) {
+                        var session = sessionOf(part);
+                        log.changed(new HealthEvent(part.component(), session, was, was, now.reason(), at));
+                    }
                     return;
                 }
                 told.put(part, now.state());
-                var session = part.component() == HealthComponent.SESSION ? sessions.apply(part.session()) : null;
+                var session = sessionOf(part);
                 var change = new HealthEvent(part.component(), session, was, now.state(), now.reason(), at);
                 // under the lock, so the client hears and the log reads the changes in the order they
                 // were told, and the close cannot come between telling one and logging it
@@ -728,15 +756,27 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
         }
     }
 
+    private @Nullable OddsFeedSession sessionOf(Part part) {
+        return part.component() == HealthComponent.SESSION ? sessions.apply(part.session()) : null;
+    }
+
     /** Where each change of a part's state is logged. */
     @FunctionalInterface
     public interface Log {
         /**
          * The SDK's log: a stall as an error, a degradation as a warning, each loud enough to be seen
-         * without the health being read; a part getting better as information.
+         * without the health being read; a part getting better as information. A stall that is the
+         * same state for another reason is an error again.
          */
         Log SLF4J = change -> {
-            if (change.state().compareTo(change.previous()) <= 0) {
+            if (change.state() == change.previous()) {
+                // the same stall, for another reason: told to the log only
+                LOG.error(
+                        "The feed's {} is still {}, for another reason: {}",
+                        change.component(),
+                        change.state(),
+                        change.reason());
+            } else if (change.state().compareTo(change.previous()) < 0) {
                 LOG.info("The feed's {} is {} now: {}", change.component(), change.state(), change.reason());
             } else if (change.state() == HealthState.STALLED) {
                 LOG.error("The feed's {} went {}: {}", change.component(), change.state(), change.reason());

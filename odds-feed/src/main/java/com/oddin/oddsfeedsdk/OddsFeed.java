@@ -282,12 +282,14 @@ public final class OddsFeed {
      * The feed's health now: its state, the state of each part, and the counters of what the SDK
      * deliberately gives up, for a health check or a metrics exporter. Cheap, and safe from any
      * thread, a callback included: it reads counters and flags, never waits for the feed, and does
-     * not start it. Before the feed starts it has no part and counts nothing; once started it has the
-     * events, the catalogs, the timers, the SDK's threads and the API, and once open the connection,
-     * the consumer and the sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
-     * what the feed counted, and each part as the watch last found it, but the timers healthy: a
-     * watch stopped is not one wedged; and the connection as it was at the close, healthy unless it
-     * had been down for longer than its limit by then, with no change told or logged after.
+     * not start it. Before the feed starts it has no part and counts nothing, but for the API once
+     * the access token has been refused: a start that failed on it reads the API stalled. Once
+     * started it has the events, the catalogs, the timers, the SDK's threads and the API, and once
+     * open the connection, the consumer and the sessions, and the alives and the recovery unless it
+     * is a replay feed. Once closed it still reads what the feed counted, and each part as the watch
+     * last found it, but the timers healthy: a watch stopped is not one wedged; and the connection
+     * as it was at the close, healthy unless it had been down for longer than its limit by then,
+     * with no change told or logged after.
      *
      * <p>From its start to its close the feed watches its own threads, every 5 seconds unless the
      * configuration sets another interval: a part that has been in one callback, or whose queue has

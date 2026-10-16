@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.internal.feed;
 import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.tuple;
 
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
@@ -689,6 +690,38 @@ class HealthMonitorTest {
     }
 
     @Test
+    void theTrueReasonOfAStalledPartIsLoggedAsTheSameStateAndNoEvent() throws InterruptedException {
+        events.start();
+        health.note(HealthComponent.RECOVERY, 0, HealthState.STALLED, "in one turn for 66 s")
+                .tell();
+        var stalled = heard.next();
+
+        health.noteStalledFor(HealthComponent.RECOVERY, 0, "the recovery thread ended: java.lang.Error: x")
+                .tell();
+        heard.nothingMore("an event is a change of state, and the client heard this one");
+        assertThat(logged)
+                .extracting(HealthEvent::previous, HealthEvent::state, HealthEvent::reason)
+                .containsExactly(
+                        tuple(HealthState.HEALTHY, HealthState.STALLED, stalled.reason()),
+                        tuple(
+                                HealthState.STALLED,
+                                HealthState.STALLED,
+                                "the recovery thread ended: java.lang.Error: x"));
+        assertThat(read().components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
+    }
+
+    @Test
+    void theTrueReasonOfAPartNotStalledAsToldIsToldAsAnyChange() throws InterruptedException {
+        events.start();
+        health.noteStalledFor(HealthComponent.RECOVERY, 0, "the recovery thread ended: java.lang.Error: x")
+                .tell();
+        var told = heard.next();
+        assertThat(told.previous()).isEqualTo(HealthState.HEALTHY);
+        assertThat(told.state()).isEqualTo(HealthState.STALLED);
+        assertThat(logged).containsExactly(told);
+    }
+
+    @Test
     void nothingIsToldOnceTheEventsDispatcherStopped() throws InterruptedException {
         events.start();
         events.stop();
@@ -960,11 +993,14 @@ class HealthMonitorTest {
         success.ended();
         refusal.ended();
 
-        // as logged, in the order told: the client's slot may merge the two changes it was slow to hear
+        // The two tells race for the telling lock outside the noting one, so whether the heal was told
+        // at all is not fixed: told after the refusal it is dropped by its older reading. What is fixed
+        // is the last word, the newer answer's.
         assertThat(logged)
                 .extracting(HealthEvent::state)
-                .as("the refusal is not swallowed")
-                .containsExactly(HealthState.STALLED, HealthState.HEALTHY, HealthState.STALLED);
+                .as("the refusal is not swallowed: what was told last is the stall")
+                .last()
+                .isEqualTo(HealthState.STALLED);
         assertThat(read(health).components()).containsEntry(HealthComponent.API, HealthState.STALLED);
     }
 

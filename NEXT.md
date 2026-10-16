@@ -1949,3 +1949,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   ended: <class and message>", not after the stall limit with "in one turn", which was false. No
   fatal error event, as before. The watchdog's sample carries what the actor records as its
   thread ends by a failure; a close records nothing. No public API changes.
+- 2026-10-16, a thread that dies in a stall: a `RECOVERY` part already `STALLED` for a turn that ran
+  too long, whose thread then ends, has the true reason logged once ("is still STALLED, for another
+  reason"), and no second `HealthEvent`: an event is a change of state, the events dispatcher
+  drops one whose state is the client's, and a client that alarms on `STALLED` would alarm twice.
+  Only an ended thread does this; no other part's change of reason is told. No public API changes.
