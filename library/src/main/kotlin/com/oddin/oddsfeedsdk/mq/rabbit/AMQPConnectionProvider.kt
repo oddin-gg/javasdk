@@ -69,13 +69,20 @@ class SingleAMQPConnectionProvider @Inject constructor(
     }
 
     // What a broker says when it refuses a channel operation names the user as well; the channel
-    // is handed out through this, so whoever fails on it sees the failure without the token
+    // is handed out through this, so whoever fails on it sees the failure without the token. The
+    // channel's own description names the user too (amqp://<user>@host/vhost). equals and hashCode
+    // are the proxy's own, as they are for any object.
     private fun withoutTokenInFailures(channel: Channel): Channel =
-        Proxy.newProxyInstance(Channel::class.java.classLoader, arrayOf(Channel::class.java)) { _, method, args ->
-            try {
-                method.invoke(channel, *(args ?: emptyArray()))
-            } catch (e: InvocationTargetException) {
-                throw redactor.throwable(e.targetException)
+        Proxy.newProxyInstance(Channel::class.java.classLoader, arrayOf(Channel::class.java)) { proxy, method, args ->
+            when {
+                method.declaringClass == Any::class.java && method.name == "equals" -> proxy === args[0]
+                method.declaringClass == Any::class.java && method.name == "hashCode" -> System.identityHashCode(proxy)
+                method.declaringClass == Any::class.java && method.name == "toString" -> redactor.text(channel.toString())
+                else -> try {
+                    method.invoke(channel, *(args ?: emptyArray()))
+                } catch (e: InvocationTargetException) {
+                    throw redactor.throwable(e.targetException)
+                }
             }
         } as Channel
 
