@@ -136,9 +136,12 @@ public final class ClockOffsets {
      * clock then, less the producer's offset, as of the reading - and then that now. A component
      * with a fast clock, or a bad value, cannot move a checkpoint past what the producer has sent:
      * that would leave a gap's start too late to ask for what lies before it. The offset is the most
-     * cautious of the last minute's, the one that puts the producer's now earliest, and always one
-     * from before the newest alive: so an alive stamped ahead does not vouch for its own stamp, nor
-     * for that of a message received before it and handled after. A producer whose clock goes back
+     * cautious of the last minute's, the largest, which puts the producer's now earliest. An alive
+     * stamped ahead shows a small offset, so it does not lift it, and a message received before such
+     * an alive and handled after is clamped as it was; the alive does not vouch for its own stamp
+     * because its mark is taken before its offset is kept and its session copies take that mark (see
+     * {@link #markAlive}). An alive that is late, or stamped behind, shows the largest offset and
+     * pulls the now towards it: what follows is marked lower by its delay for the minute. A producer whose clock goes back
      * is taken at once, and its marks go down; one whose clock goes forward, or is really ahead, is
      * taken a minute later. A delivery that took more than a second longer than the longest alive
      * of the minute lowers the mark of what it carries to the producer's now: every error lowers a
@@ -172,7 +175,9 @@ public final class ClockOffsets {
 
     /**
      * The mark of a session's copy of an alive: the channel's, when the channel has taken one from
-     * this very alive, since by then the offset the alive showed may be kept and, the first alive of
+     * an alive of this stamp - the lowest, if it has taken more than one: the same alive delivered
+     * twice, a resend, whose later delivery may be marked higher - since by then the offset the
+     * alive showed may be kept and, the first alive of
      * a producer above all, would vouch for its own stamp. When the copy is handled first, the
      * channel has not kept the offset yet, so the offset is still the one before the alive - none,
      * the SDK's own clock, for the first alive - and the mark is taken as for any message. The
@@ -182,14 +187,18 @@ public final class ClockOffsets {
     long markAliveCopy(long producerId, long generatedAt, Stamp received) {
         long now = producerNow(producerId, received);
         var marks = marked.get(producerId);
+        boolean found = false;
+        long smallest = Long.MAX_VALUE;
         if (marks != null) {
-            for (int i = marks.length - 1; i >= 0; i--) {
-                if (marks[i].generatedAt() == generatedAt) {
-                    return marks[i].mark();
+            // the same stamp delivered twice, a resend, has two marks: the lower is the safe one
+            for (var entry : marks) {
+                if (entry.generatedAt() == generatedAt) {
+                    found = true;
+                    smallest = Math.min(smallest, entry.mark());
                 }
             }
         }
-        return clamp(producerId, generatedAt, now, received);
+        return found ? smallest : clamp(producerId, generatedAt, now, received);
     }
 
     /** The producer's now when the SDK received a message, by the most cautious offset kept. */
