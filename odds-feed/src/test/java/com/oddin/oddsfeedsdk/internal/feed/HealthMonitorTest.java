@@ -5,9 +5,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
+import ch.qos.logback.classic.Level;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FakeRestServer.Reply;
 import com.oddin.oddsfeed.fakes.Fixtures;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.OddsFeed;
 import com.oddin.oddsfeedsdk.OddsFeedSession;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
@@ -708,6 +710,65 @@ class HealthMonitorTest {
                                 HealthState.STALLED,
                                 "the recovery thread ended: java.lang.Error: x"));
         assertThat(read().components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
+    }
+
+    @Test
+    void aReadingBetweenTheNoteOfTheTrueReasonAndItsTellDoesNotTakeTheLogAway() throws InterruptedException {
+        events.start();
+        health.note(HealthComponent.RECOVERY, 0, HealthState.STALLED, "in one turn for 66 s")
+                .tell();
+        heard.next();
+
+        var ended = health.noteStalledFor(HealthComponent.RECOVERY, 0, "the recovery thread ended: java.lang.Error: x");
+        read();
+        assertThat(logged)
+                .as("the reading finds the same state, and logs nothing")
+                .hasSize(1);
+        ended.tell();
+
+        heard.nothingMore("not an event");
+        assertThat(logged)
+                .extracting(HealthEvent::previous, HealthEvent::state, HealthEvent::reason)
+                .contains(tuple(
+                        HealthState.STALLED, HealthState.STALLED, "the recovery thread ended: java.lang.Error: x"))
+                .hasSize(2);
+    }
+
+    @Test
+    void aReasonIsNotLoggedOnceANewerReadingHasTheStateChanged() throws InterruptedException {
+        events.start();
+        health.note(HealthComponent.RECOVERY, 0, HealthState.STALLED, "in one turn for 66 s")
+                .tell();
+        heard.next();
+
+        var ended = health.noteStalledFor(HealthComponent.RECOVERY, 0, "the recovery thread ended: java.lang.Error: x");
+        health.note(HealthComponent.RECOVERY, 0, HealthState.HEALTHY, "moves again")
+                .tell();
+        heard.next();
+        ended.tell();
+
+        assertThat(logged).as("the stall, and the part healthy again").hasSize(2);
+    }
+
+    @Test
+    void theSdksLogReadsASameStateChangeAsAnErrorAndABetterOneAsInformation() {
+        try (var log = LogCapture.of(HealthMonitor.class, Level.INFO)) {
+            HealthMonitor.Log.SLF4J.changed(new HealthEvent(
+                    HealthComponent.RECOVERY, null, HealthState.STALLED, HealthState.STALLED, "ended: x", NOW));
+            HealthMonitor.Log.SLF4J.changed(new HealthEvent(
+                    HealthComponent.RECOVERY, null, HealthState.STALLED, HealthState.HEALTHY, "moves again", NOW));
+            HealthMonitor.Log.SLF4J.changed(new HealthEvent(
+                    HealthComponent.RECOVERY, null, HealthState.HEALTHY, HealthState.STALLED, "stuck", NOW));
+            HealthMonitor.Log.SLF4J.changed(new HealthEvent(
+                    HealthComponent.RECOVERY, null, HealthState.HEALTHY, HealthState.DEGRADED, "slow", NOW));
+
+            assertThat(log.lines())
+                    .containsExactly(
+                            "ERROR The feed's RECOVERY is still STALLED, for another reason: ended: x",
+                            "INFO The feed's RECOVERY is HEALTHY now: moves again",
+                            "ERROR The feed's RECOVERY went STALLED: stuck",
+                            "WARN The feed's RECOVERY went DEGRADED: slow");
+        }
     }
 
     @Test
