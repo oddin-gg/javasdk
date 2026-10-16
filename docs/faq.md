@@ -57,7 +57,7 @@ with no connection in between; `onFatalError` then carries the reason.
 
 ### The broker's certificate is not trusted.
 
-1.0 checks the certificate and the host name against the JVM's trust (0.0.x trusted anything). For
+1.0 checks the certificate and the host name against the JVM's trust (0.0.x trusted anything up to 0.0.58). For
 your own truststore or a TLS-inspecting proxy, pass an `SSLContext` to `setMessagingSslContext`.
 
 ### I opened the feed and nothing arrives.

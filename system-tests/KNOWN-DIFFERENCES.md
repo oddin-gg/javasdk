@@ -26,7 +26,7 @@ code.
 
 Each entry says what 0.0.x does, what 1.0 does and where NEXT.md says so, why it matters, which
 test pins it, and whether it was found by a test against 0.0.56 or by reading the 0.0.56 source.
-The 0.0.x side is that of 0.0.58, the release the system tests run against; where an older 0.0.x
+The 0.0.x side is that of 0.0.59, the release the system tests run against; where an older 0.0.x
 release behaved otherwise, the entry says so.
 
 ## Scenarios only 1.0 has
@@ -301,18 +301,26 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **Found:** by test against 0.0.56; the effect on sessions by reading the source
   (`MessageInterest`).
 
-## KD-19 The feed's broker connection trusts any certificate
+## KD-19 The feed's broker connection trusted any certificate up to 0.0.58
 
-- **0.0.x:** The AMQP connection is made with `useSslProtocol()` and no trust of its own, which
-  in the client 0.0.x uses accepts any certificate and checks no host name.
-- **1.0:** The broker's certificate is checked against the JVM's default trust, and its host name
-  against the certificate (ticket 21). A client with a truststore of its own, or behind a proxy that
-  inspects TLS, gives its own context with `OddsFeedConfigurationBuilder.setMessagingSslContext`. A
+- **0.0.x:** Up to 0.0.58 the AMQP connection is made with `useSslProtocol()` and no trust of its
+  own, which in the client 0.0.x uses accepts any certificate and checks no host name. Since 0.0.59
+  the certificate is checked against the JVM's default trust (`SSLContext.getDefault()`, so the
+  default store or the one `javax.net.ssl.trustStore` names) and the host name against the
+  certificate. It has no setting for another context: a client behind a proxy that inspects TLS
+  adds the proxy's CA to the JVM's trust.
+- **1.0:** The same check, as 0.0.59 makes it (ticket 21). A client with a truststore of its own, or
+  behind a proxy that inspects TLS, may give its own context with
+  `OddsFeedConfigurationBuilder.setMessagingSslContext`, which 0.0.59 has no equivalent of. A
   broker that fails the check fails `open()` with an `InitException` saying it could not be
   trusted.
 - **Why:** Over a connection that trusts any certificate, anyone on the path can take the login,
-  whose user name is the access token.
-- **Pinned by:** none; the fake broker's certificate is trusted by the JVM default in every test.
+  whose user name is the access token. Only a client on 0.0.58 or older, which the system tests no
+  longer run against, is still open to it.
+- **Pinned by:** none; the fake broker's certificate is trusted by the JVM default in every test, so
+  both lines connect. `AmqpTransportTest` has the 1.0 checks of an untrusted certificate and of a
+  host name the certificate does not name; the system tests have no scenario with a broker either
+  line must refuse.
 - **Found:** by reading the source (`AMQPConnectionProvider`).
 
 ## KD-20 Home and away are taken by position, and only for a classic match

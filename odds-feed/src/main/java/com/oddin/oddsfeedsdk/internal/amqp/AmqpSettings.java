@@ -10,7 +10,7 @@ import org.jspecify.annotations.Nullable;
  *
  * @param virtualHost the one whoami names for the access token, as the Go SDK takes it
  * @param tls the trust to check the broker's certificate with, null for the JVM's default; the
- *     certificate and the host name are always checked, where 0.0.x trusted any certificate
+ *     certificate and the host name are always checked, where 0.0.x trusted any certificate up to 0.0.58
  * @param connectionName the name the broker shows the connection by
  * @param firstBackoff the pause before the first reconnect; it doubles up to {@code maxBackoff}
  * @param resourceBackoff the pause while the broker refuses for want of resources

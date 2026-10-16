@@ -356,7 +356,7 @@ public final class OddsFeedConfiguration {
     /**
      * The TLS context the feed's broker connection checks the broker's certificate with, or null for
      * the JVM's default. The certificate and the broker's host name are always checked; 0.0.x trusted
-     * any certificate. New in 1.0.
+     * any certificate up to 0.0.58. New in 1.0.
      */
     public @Nullable SSLContext getMessagingSslContext() {
         return messagingSslContext;

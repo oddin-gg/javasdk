@@ -938,10 +938,10 @@ and REST workers post facts to it; it decides and posts work out.
 - Connection events: connecting, up, down, recovering. No duplicate "down" on a normal
   close.
 - The connection is made as the Go SDK makes it: TLS with the broker's certificate and
-  host name checked (0.0.x trusted any certificate), the virtual host whoami names (0.0.x
-  built `/oddinfeed/<bookmaker id>`, the same today), a 10 second heartbeat, and the host
-  as configured, tried once - the client's own resolver tries every address of a host,
-  and a refused login on the first then reads as a network failure on the last.
+  host name checked (0.0.x trusted any certificate up to 0.0.58, and checks it since 0.0.59), the
+  virtual host whoami names (0.0.x built `/oddinfeed/<bookmaker id>`, the same today), a 10
+  second heartbeat, and the host as configured, tried once - the client's own resolver tries
+  every address of a host, and a refused login on the first then reads as a network failure on the last.
 - Reconnect with backoff on network failures. Exclusive queues are always re-declared;
   whatever the broker buffered for the old queue is gone, and recovery covers it.
 - A channel the broker closes or cancels while the connection stays up is opened again
@@ -1277,11 +1277,11 @@ Three layers. No ticket is done without its tests.
    fire, entity values, locale handling, invalidation on fixture change, producer down
    and recovery, reconnect, REST outage, REST down at startup, authentication failure,
    stale feed, a callback that throws, replay, exception strategy. They run against
-   0.0.58 first, so we know each test actually tests something. Then they run against
+   0.0.59 first, so we know each test actually tests something. Then they run against
    1.0.0. Same tests, one version property. CI runs the suite twice, once per version,
    and the 1.0.0 run asserts the loaded jar's version through the telemetry getter, so
    a misconfigured build can never pass by silently testing the downloaded old jar.
-   0.0.58 comes from its public GitHub release, checked against pinned digests, with no
+   0.0.59 comes from its public GitHub release, checked against pinned digests, with no
    token.
 2. **Unit and concurrency tests with every ticket.** Golden decode tests for every
    message and endpoint from the schema fixtures. Cache tests: expiry per locale,
@@ -1636,7 +1636,7 @@ Critical path: 3 to 6, then 10, then 16, then 17 to 22, then 24, then 26, then 4
 - **Timeline.** Two weeks went to the hotfix already. If the schedule slips, the
   release candidate goes out later, not with fewer tests.
 - **Silent behaviour differences.** Clients depend on things we do not know about.
-  The system tests against 0.0.58 are our best defence. Release candidates to clients
+  The system tests against 0.0.59 are our best defence. Release candidates to clients
   are the second.
 - **Generated names.** Keeping the old class names through bindings works where the
   schema type maps one to one. Where the aligned schema changed a shape, the class
@@ -2000,3 +2000,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   offset of a late alive refuses correct writes. A status or score stamped in the producer's
   future still holds back the updates that follow until the producer's clock passes it (KD-13).
   No public API changes.
+- 2026-10-16, the baseline moves to 0.0.59, a security release with no API change: the system tests
+  and the API check run against it. It checks the broker's certificate and host name against the
+  JVM's default trust (KD-19 now says up to 0.0.58 for the old behaviour), parses XML with DTDs and
+  external entities off, and keeps the access token out of its logs, exception messages and a
+  channel's description. No scenario expected 0.0.x to accept any certificate, so none changed: the
+  fake broker's certificate is trusted by the JVM default in every test. No public API changes.
