@@ -15,7 +15,7 @@ Each part is in one of three `HealthState`s:
 |---|---|
 | `HEALTHY` | As it should be. |
 | `DEGRADED` | Working, with a quality the design gives up on purpose: a catalog served stale, a session lagging with the safety net's resets spent, the broker connection down for longer than its limit. |
-| `STALLED` | Something not moving that the feed cannot unblock: a callback that has not returned, a queue that has not moved while not empty, a deadlock among the SDK's threads (all found by the watchdog, which never kills threads), or an access token the API refuses. The remedy is `close()` and a new feed. |
+| `STALLED` | Something not moving that the feed cannot unblock: a callback that has not returned, a queue that has not moved while not empty, a deadlock among the SDK's threads, a recovery thread that has ended (all found by the watchdog, which never kills threads), or an access token the API refuses. The remedy is `close()` and a new feed. |
 
 ### `getHealth()`
 
@@ -58,12 +58,14 @@ catalogs, and in the recovery counters.
 
 A recovery thread that has died (an `Error` or an exception that escaped its loop, which is a
 bug of the SDK) is a stall too, and the feed can no longer recover: the SDK logs `The recovery
-actor stopped` at `ERROR` with the cause, closes the actor, and refuses every later event recovery
-(`recoverEvent` returns `null`). Its part has stopped taking turns, so once the callback limit has
-passed (65 s with the default timeout) `RECOVERY` is `STALLED` and `state()` with it, told once
-through `onHealthEvent` with the reason `the recovery actor has been in one turn for ...`, and it
-stays so: nothing moves it again. The reason says "one turn" because the watchdog sees a turn that
-never ends, not why. Close the feed and open a new one; the `ERROR` line is the cause to report.
+actor stopped` at `ERROR` with the cause and its stack, closes the actor, and refuses every later
+event recovery (`recoverEvent` returns `null`). The watchdog reads that the thread has ended, so
+`RECOVERY` is `STALLED` and `state()` with it from its next look, with no limit to wait for, told
+once through `onHealthEvent` with the reason `the recovery thread ended: ` and the class and
+message of the failure (the message cut at 200 characters; the stack is in the `ERROR` line). It
+stays so: nothing moves it again. No fatal error event is raised. A `close()` of the feed is not
+this: the actor ends as asked and its part is not reported as ended. Close the feed and open a new
+one; the `ERROR` line is the cause to report.
 
 ### Health events
 
