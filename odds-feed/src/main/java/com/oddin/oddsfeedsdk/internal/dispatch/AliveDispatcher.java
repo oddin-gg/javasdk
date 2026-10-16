@@ -231,7 +231,7 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
         }
         var received = new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono());
         // before the offset it shows is kept: an alive does not vouch for its own stamp
-        long mark = offsets.mark(alive.getProduct(), alive.getTimestamp(), received);
+        long mark = offsets.markAlive(alive.getProduct(), alive.getTimestamp(), received);
         offsets.alive(alive.getProduct(), alive.getTimestamp(), received);
         actor.alive(alive.getProduct(), alive.getTimestamp(), mark, received, alive.getSubscribed() == 1);
     }

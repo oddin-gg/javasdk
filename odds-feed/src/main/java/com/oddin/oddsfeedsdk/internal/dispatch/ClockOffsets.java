@@ -54,8 +54,17 @@ public final class ClockOffsets {
      */
     private static final int KEPT = 64;
 
+    /**
+     * How many alives of a producer the mark of the alive channel is kept for, for the sessions'
+     * copies of them: a session is behind the channel by what its queue holds, a few alives at most.
+     */
+    private static final int MARKED = 16;
+
     /** An offset, with when the alive that showed it was received, on the monotonic clock. */
     private record Measured(ClockOffset offset, long mono) {}
+
+    /** The mark the alive channel took from the alive stamped {@code generatedAt}. */
+    private record Marked(long generatedAt, long mark) {}
 
     private final LongPredicate known;
     /**
@@ -64,6 +73,12 @@ public final class ClockOffsets {
      * offset is none: the SDK's own clock. Replaced whole, never changed.
      */
     private final Map<Long, Measured[]> kept = new ConcurrentHashMap<>();
+    /**
+     * Each producer's last few alives, with the mark the channel took from them, oldest first, so a
+     * session's copy of an alive takes that mark and not one from an offset the alive itself showed.
+     * Replaced whole, never changed.
+     */
+    private final Map<Long, Marked[]> marked = new ConcurrentHashMap<>();
     /** When a producer's stamp ahead was last logged, on the monotonic clock; one entry per producer of the list. */
     private final Map<Long, Long> loggedAt = new ConcurrentHashMap<>();
 
@@ -135,7 +150,55 @@ public final class ClockOffsets {
      * @param received when the SDK received it, both readings of its clock
      */
     long mark(long producerId, long generatedAt, Stamp received) {
-        long now = received.wall() - cautious(producerId, received);
+        return clamp(producerId, generatedAt, producerNow(producerId, received), received);
+    }
+
+    /**
+     * The mark of an alive of the SDK's alive channel, asked before the offset it shows is kept
+     * with {@link #alive}, and kept for the sessions' copies of the same alive: see {@link
+     * #markAliveCopy}.
+     */
+    long markAlive(long producerId, long generatedAt, Stamp received) {
+        long mark = mark(producerId, generatedAt, received);
+        if (known.test(producerId)) {
+            marked.compute(producerId, (id, before) -> {
+                var all = before == null ? new Marked[1] : Arrays.copyOf(before, before.length + 1);
+                all[all.length - 1] = new Marked(generatedAt, mark);
+                return all.length <= MARKED ? all : Arrays.copyOfRange(all, all.length - MARKED, all.length);
+            });
+        }
+        return mark;
+    }
+
+    /**
+     * The mark of a session's copy of an alive: the channel's, when the channel has taken one from
+     * this very alive, since by then the offset the alive showed may be kept and, the first alive of
+     * a producer above all, would vouch for its own stamp. When the copy is handled first, the
+     * channel has not kept the offset yet, so the offset is still the one before the alive - none,
+     * the SDK's own clock, for the first alive - and the mark is taken as for any message. The
+     * channel keeps the mark before it keeps the offset, and the offset is read here before the
+     * mark is looked for, so an offset that includes the alive is never seen without its mark.
+     */
+    long markAliveCopy(long producerId, long generatedAt, Stamp received) {
+        long now = producerNow(producerId, received);
+        var marks = marked.get(producerId);
+        if (marks != null) {
+            for (int i = marks.length - 1; i >= 0; i--) {
+                if (marks[i].generatedAt() == generatedAt) {
+                    return marks[i].mark();
+                }
+            }
+        }
+        return clamp(producerId, generatedAt, now, received);
+    }
+
+    /** The producer's now when the SDK received a message, by the most cautious offset kept. */
+    private long producerNow(long producerId, Stamp received) {
+        return received.wall() - cautious(producerId, received);
+    }
+
+    /** The stamp, or {@code now} when the stamp is more than a second ahead of it; logged, then. */
+    private long clamp(long producerId, long generatedAt, long now, Stamp received) {
         long ahead = generatedAt - now;
         if (ahead <= AHEAD) {
             return generatedAt;
