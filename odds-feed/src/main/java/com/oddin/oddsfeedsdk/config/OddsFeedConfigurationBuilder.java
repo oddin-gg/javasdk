@@ -229,7 +229,7 @@ public final class OddsFeedConfigurationBuilder {
     /**
      * The TLS context to check the feed broker's certificate with, instead of the JVM's default: for
      * a truststore of its own, or a proxy that inspects TLS. The certificate and the broker's host
-     * name are always checked; 0.0.x trusted any certificate. New in 1.0.
+     * name are always checked; 0.0.x trusted any certificate up to 0.0.58. New in 1.0.
      */
     public OddsFeedConfigurationBuilder setMessagingSslContext(SSLContext context) {
         this.messagingSslContext = requireNonNull(context, "context");

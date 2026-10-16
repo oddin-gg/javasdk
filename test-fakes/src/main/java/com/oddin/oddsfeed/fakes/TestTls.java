@@ -22,8 +22,9 @@ import javax.net.ssl.X509TrustManager;
  * under test to trust.
  *
  * <p>The old SDK hardcodes {@code https://} for the REST API and always connects to the feed over
- * TLS, so both fakes speak it. (For the feed the old SDK accepts any certificate; presenting this
- * one anyway keeps the fake right for an SDK that checks.) The SDK makes its REST calls through
+ * TLS, so both fakes speak it. (Up to 0.0.58 the old SDK accepts any certificate for the feed; since
+ * 0.0.59 it checks the certificate and the host name against the JVM default, so the fake presents
+ * this one, trusted there and naming localhost and 127.0.0.1.) The SDK makes its REST calls through
  * the JVM defaults, and its HTTP client caches the socket factory on first use for the whole JVM -
  * hence one certificate, created once, rather than one per server. The JDK's own trust stays in
  * place next to it, so nothing else in the JVM loses HTTPS.

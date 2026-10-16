@@ -40,7 +40,7 @@ minutes after the feed or the API last wrote it.
 | `setStartupTimeout(Duration)` | 3 x HTTP timeout, 90 s | Positive. How long the feed's start keeps trying the API before it throws `InitException`. |
 | `setAmqpPrefetch(int)` | 200 | 1 to 10 000; 0 is refused because the broker reads it as unlimited. Unacknowledged messages the broker hands each session. |
 | `setMaxMessageSize(int)` | 1 MiB (1 048 576 bytes) | At least 1. The largest body decoded. A larger one is not decoded; it reaches `onUnparsableMessage` and `onCallbackFailure`. |
-| `setMessagingSslContext(SSLContext)` | the JVM's default trust | The context the broker's certificate is checked with. The certificate and the host name are always checked; 0.0.x trusted any certificate. For your own truststore or a proxy that inspects TLS. |
+| `setMessagingSslContext(SSLContext)` | the JVM's default trust | The context the broker's certificate is checked with. The certificate and the host name are always checked; 0.0.x trusted any certificate up to 0.0.58. For your own truststore or a proxy that inspects TLS. |
 | `setMaxInactivitySeconds(int)` | 20 | More than 10, the seconds between a producer's alives. How long a producer may be silent, or a session may process its messages late, before it counts as down. |
 | `setMaxRecoveryExecutionMinutes(int)` | 360 | At least 360. Bounds a recovery that keeps coming and event recoveries. A recovery whose `snapshot_complete` is lost is given up after 5 minutes regardless. |
 | `setShutdownTimeout(Duration)` | 5 s | Positive, at most 1 hour. How long `close()` waits for all the feed's threads together. |
