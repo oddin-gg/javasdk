@@ -24,7 +24,7 @@
       same names as ours.
     -->
     <api.baseline.groupPath>com/oddin/oddsfeed</api.baseline.groupPath>
-    <api.baseline.version>0.0.58</api.baseline.version>
+    <api.baseline.version>0.0.59</api.baseline.version>
     <!--
       The JUnit tag surefire leaves out. The stress scenarios carry @Tag("stress") and stay out of the
       normal build and its coverage floor; the stress job runs them with
