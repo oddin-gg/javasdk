@@ -1566,11 +1566,59 @@ class RecoveryActorTest {
             Thread.sleep(10);
         }
         assertThat(actor.running()).as("the actor's thread").isFalse();
+        assertThat(actor.endedBy())
+                .as("what ended it, for the watchdog")
+                .isEqualTo("java.lang.AssertionError: a broken ticker");
         CompletableFuture<@Nullable Long> reply = actor.recoverEvent(PRE, MATCH, false);
         assertThat(reply.get(WAIT_SECONDS, TimeUnit.SECONDS))
                 .as("from an actor that is gone")
                 .isNull();
         assertThat(api.requests).as("nothing reached the API").isEmpty();
+    }
+
+    @Test
+    void aCloseIsNoFailureOfTheThreadWhetherItRanOrNot() {
+        var never = new RecoveryActor(producers, settings(), api, events(), workers, CLOCK);
+        never.close();
+        assertThat(never.endedBy()).as("closed before its start").isNull();
+
+        var actor = new RecoveryActor(producers, settings(), api, events(), workers, CLOCK);
+        this.actor = actor;
+        actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+        actor.start();
+        actor.up();
+        assertThat(actor.endedBy()).as("running").isNull();
+        actor.close();
+        assertThat(actor.running()).as("the actor's thread").isFalse();
+        assertThat(actor.endedBy()).as("closed after it ran").isNull();
+    }
+
+    @Test
+    void whatEndedTheThreadIsOneShortLine() throws InterruptedException {
+        var broken = new AtomicBoolean();
+        var ended = new CountDownLatch(1);
+        LongSupplier nanos = () -> {
+            if (broken.get()) {
+                ended.countDown();
+                throw new IllegalStateException("a broken\n   ticker " + "x".repeat(500));
+            }
+            return System.nanoTime();
+        };
+        var actor =
+                new RecoveryActor(producers, settings(), api, events(), workers, CLOCK, nanos, new Random(1), 10, 10);
+        this.actor = actor;
+        actor.start();
+        broken.set(true);
+        assertThat(ended.await(WAIT_SECONDS, TimeUnit.SECONDS)).isTrue();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+        while (actor.running() && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(actor.endedBy())
+                .startsWith("java.lang.IllegalStateException: a broken ticker xxx")
+                .hasSizeLessThan(260)
+                .endsWith("...")
+                .doesNotContain("\n");
     }
 
     @Test

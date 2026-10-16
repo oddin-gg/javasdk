@@ -95,6 +95,9 @@ public final class Watchdog {
      *     BusySince#IDLE} when it is idle
      * @param queued what waits for the part
      * @param moved how much the part has taken: a count that grows while the queue moves
+     * @param ended why the part's thread is gone, as the reason told; null while it runs. A part
+     *     whose thread ended takes no turn again, so it is stalled from the look that finds it so,
+     *     with no limit to wait for
      */
     public record Sample(
             HealthComponent component,
@@ -103,7 +106,21 @@ public final class Watchdog {
             String busy,
             long busySince,
             long queued,
-            long moved) {}
+            long moved,
+            @Nullable String ended) {
+
+        /** A part whose thread runs. */
+        public Sample(
+                HealthComponent component,
+                int session,
+                String name,
+                String busy,
+                long busySince,
+                long queued,
+                long moved) {
+            this(component, session, name, busy, busySince, queued, moved, null);
+        }
+    }
 
     /** A part the watchdog follows from one look to the next. */
     private record Key(HealthComponent component, int session) {}
@@ -385,6 +402,10 @@ public final class Watchdog {
 
     /** Why the part is stalled now, or null when it is not; follows its queue from look to look. */
     private @Nullable String stall(Sample sample, Followed part, long now) {
+        if (sample.ended() != null) {
+            // a thread that is gone is not in a turn, nor is its queue worth a limit: nothing moves it again
+            return sample.ended();
+        }
         @Nullable String stall = null;
         long busySince = sample.busySince();
         // by their difference: a reading of System.nanoTime may be negative
@@ -470,7 +491,9 @@ public final class Watchdog {
         }
         RecoveryActor actor = run.actor();
         if (actor != null) {
-            // it begins a turn every second however idle, so a turn begun long ago is one not ended
+            // it begins a turn every second however idle, so a turn begun long ago is one not ended; a
+            // thread that ended by a failure, not by the close, is stalled at once
+            var endedBy = actor.endedBy();
             parts.add(new Sample(
                     HealthComponent.RECOVERY,
                     0,
@@ -478,7 +501,8 @@ public final class Watchdog {
                     "one turn",
                     actor.turnedAt(),
                     actor.pending(),
-                    actor.turns()));
+                    actor.turns(),
+                    endedBy == null ? null : "the recovery thread ended: " + endedBy));
         }
         return parts;
     }

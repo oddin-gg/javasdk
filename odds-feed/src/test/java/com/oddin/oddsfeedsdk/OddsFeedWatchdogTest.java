@@ -318,7 +318,9 @@ class OddsFeedWatchdogTest {
                 var stalled = heard.next(HealthComponent.RECOVERY);
                 assertThat(stalled.previous()).isEqualTo(HealthState.HEALTHY);
                 assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
-                assertThat(stalled.reason()).startsWith("the recovery actor has been in one turn for ");
+                assertThat(stalled.reason())
+                        .as("the true reason, from the look that found the thread gone")
+                        .isEqualTo("the recovery thread ended: java.lang.AssertionError: a broken turn");
                 var health = feed.getHealth();
                 assertThat(health.state()).isEqualTo(HealthState.STALLED);
                 assertThat(health.components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
@@ -341,6 +343,41 @@ class OddsFeedWatchdogTest {
                         .as("logged once")
                         .containsExactly(stalled);
                 assertThat(feed.getHealth().components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aFeedThatIsClosedDoesNotReportItsRecoveryThreadAsEnded() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var heard = new Heard();
+            var feed = feedAgainst(api, heard);
+            try {
+                feed.getSessionBuilder()
+                        .setListener(new Wedged(new CountDownLatch(1), new CountDownLatch(0)))
+                        .setMessageInterest(MessageInterest.ALL)
+                        .build();
+                feed.open();
+                var open = requireNonNull(feed.running());
+                var actor = requireNonNull(OpenFeeds.actor(open));
+                assertThat(part(feed, HealthComponent.RECOVERY).ended())
+                        .as("a running actor")
+                        .isNull();
+
+                // the close waits for the actor's thread to end
+                feed.close();
+                assertThat(actor.endedBy()).as("a close is no failure").isNull();
+                assertThat(Watchdog.parts(feed.events(), open))
+                        .filteredOn(part -> part.component() == HealthComponent.RECOVERY)
+                        .singleElement()
+                        .extracting(Watchdog.Sample::ended)
+                        .isNull();
+                assertThat(loggedOf(HealthComponent.RECOVERY))
+                        .as("no health event of the recovery part")
+                        .isEmpty();
             } finally {
                 feed.close();
             }

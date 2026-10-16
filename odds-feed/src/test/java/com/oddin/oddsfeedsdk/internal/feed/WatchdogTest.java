@@ -141,6 +141,32 @@ class WatchdogTest {
     }
 
     @Test
+    void aPartWhoseThreadEndedIsStalledAtTheLookThatFindsItWithNoLimitToWaitForAndToldOnce()
+            throws InterruptedException {
+        events.start();
+        var reason = "the recovery thread ended: java.lang.AssertionError: a broken turn";
+        // the thread began its last turn a moment ago, and nothing waits: only the flag tells it is gone
+        samples = List.of(recovery(clock.nanos(), 0, 7, null));
+        watchdog.tick();
+        heard.nothingMore("a running actor");
+
+        samples = List.of(recovery(clock.nanos(), 0, 7, reason));
+        watchdog.tick();
+        var stalled = heard.next();
+        assertThat(stalled.component()).isEqualTo(HealthComponent.RECOVERY);
+        assertThat(stalled.previous()).isEqualTo(HealthState.HEALTHY);
+        assertThat(stalled.state()).isEqualTo(HealthState.STALLED);
+        assertThat(stalled.reason()).isEqualTo(reason);
+
+        for (int i = 0; i < 20; i++) {
+            clock.advance(Duration.ofSeconds(5));
+            watchdog.tick();
+        }
+        heard.nothingMore("still gone: told once");
+        assertThat(logged).as("logged once").containsExactly(stalled);
+    }
+
+    @Test
     void withAnHttpTimeoutOf30sACallbackWaitingOnASlowApiIsNoStall() throws InterruptedException {
         var watched = made(new Watchdog(
                 health, () -> samples, () -> {}, () -> deadlocked, clock::nanos, FOR_THE_DEFAULT_HTTP_TIMEOUT));
@@ -639,6 +665,11 @@ class WatchdogTest {
 
     private Watchdog.Sample session(long busySince, long queued, long moved) {
         return new Watchdog.Sample(HealthComponent.SESSION, 1, "session 1", "one message", busySince, queued, moved);
+    }
+
+    private Watchdog.Sample recovery(long busySince, long queued, long moved, @Nullable String ended) {
+        return new Watchdog.Sample(
+                HealthComponent.RECOVERY, 0, "the recovery actor", "one turn", busySince, queued, moved, ended);
     }
 
     /** The session's state as the health reads it now. */
