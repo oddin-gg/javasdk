@@ -777,7 +777,7 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   (`SessionDispatcherTest`'s `aBodyOverTheMaximumSizeIsUnparsableWithoutItsBytes`), 6
   (`RecoveryMachineTest`'s
   `aFeedWhoseOnlySessionIsAliveOnlyAsksForNoRecoveryAndTellsNoProducerUp`), 11 (`CatalogTest`'s
-  `anItemMissingFromAValueRefetchesItOnceWhenTheValueIsAMinuteOld`) and 14 (`ProfileViewsTest`'s
+  `anItemMissingFromAValueRefetchesItWheneverTheValueIsAMinuteOld`) and 14 (`ProfileViewsTest`'s
   `aCompetitorWithoutPlayersHasNoneAndIsNotLoadedAgainForThem`).
 - **Found:** by reading the source of both lines, for the review of 1.0 against 0.0.58.
 
