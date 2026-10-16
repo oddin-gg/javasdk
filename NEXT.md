@@ -1087,13 +1087,15 @@ the connection's state callback still tell each loss as it happens.
 
 What a dead thread does: an `Error` or an exception that escapes the recovery actor's loop (a
 bug; a fact's failure is caught and the actor goes on) is logged at `ERROR` as "The recovery
-actor stopped", closes the actor, and turns every later event recovery away. The watchdog's
-sample of the actor has `turnedAt` left at its last turn and nothing queued moving, so after
-the callback limit the `RECOVERY` part reads `STALLED` - by that reading, not by one of the
-thread's death - with the reason "the recovery actor has been in one turn for ...", told once
-and never healthy again; `getHealth().state()` is `STALLED` with it. No fatal error event is
-raised, and the watchdog does not end or restart the actor: the remedy is `close()` and a new
-feed. Pinned by `OddsFeedWatchdogTest`.
+actor stopped", then recorded on the actor (`endedBy`: the failure's class and message, the
+message cut at 200 characters), then the actor closes itself and turns every later event recovery
+away. The watchdog's sample of the actor carries the record, so the `RECOVERY` part reads
+`STALLED` at the look that finds it - no stall limit to wait for - with the reason "the recovery
+thread ended: <class>: <message>", told once and never healthy again; `getHealth().state()` is
+`STALLED` with it. A close of the feed is not a death: it records nothing, and the part is not
+reported as ended. No fatal error event is raised, and the watchdog does not end or restart the
+actor: the remedy is `close()` and a new feed. Pinned by `OddsFeedWatchdogTest`, `WatchdogTest`
+and `RecoveryActorTest`.
 
 Remediation is limited and stated: the watchdog does not kill threads. A wedged
 dispatcher is reported; the client's remedy is `close()` and a new `OddsFeed`, and
@@ -1942,3 +1944,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   refusal is told by `onFatalError`. The REST client tells the health of every attempt, and only
   a refusal and a success change the part: a timeout, a 5xx or a 429 shows in the catalogs and
   the recovery counters, which the API outage scenario already watches.
+- 2026-10-16, a dead recovery thread is reported at once: the owner decided that the `RECOVERY`
+  part reads `STALLED` as soon as the thread has ended, with the reason "the recovery thread
+  ended: <class and message>", not after the stall limit with "in one turn", which was false. No
+  fatal error event, as before. The watchdog's sample carries what the actor records as its
+  thread ends by a failure; a close records nothing. No public API changes.
