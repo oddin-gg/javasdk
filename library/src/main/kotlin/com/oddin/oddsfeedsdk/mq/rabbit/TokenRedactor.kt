@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.mq.rabbit
 
+import java.util.Collections
 import java.util.IdentityHashMap
 
 /**
@@ -8,9 +9,11 @@ import java.util.IdentityHashMap
  * of a broker failure goes through here first.
  *
  * Text has every occurrence of the token replaced by [MARKER]. A throwable keeps its identity
- * when neither it nor anything it carries mentions the token; one that does is copied with the
- * same class name (in its text), stack trace, redacted message, redacted cause chain and
- * suppressed exceptions, so the failure reads as before and still points at the same code.
+ * when neither it nor anything it carries (causes and suppressed exceptions, however deep)
+ * mentions the token; one that does is copied with the same class name (in its text), stack
+ * trace, redacted message, redacted causes and suppressed exceptions, so the failure reads as
+ * before and still points at the same code. What does not mention the token stays the original
+ * instance, and an exception reached by more than one path is one copy on all of them.
  */
 internal class TokenRedactor(private val token: String) {
 
@@ -21,27 +24,51 @@ internal class TokenRedactor(private val token: String) {
     fun text(text: String?): String? =
         if (text == null || token.isEmpty()) text else text.replace(token, MARKER)
 
-    fun throwable(throwable: Throwable): Throwable =
-        if (token.isEmpty()) throwable else redact(throwable, IdentityHashMap())
-
-    private fun redact(throwable: Throwable, seen: IdentityHashMap<Throwable, Throwable>): Throwable {
-        // a cycle in the cause chain is left as it is, rather than followed forever
-        if (seen.put(throwable, throwable) != null) {
-            return throwable
-        }
-        val cause = throwable.cause?.let { redact(it, seen) }
-        val suppressed = throwable.suppressed.map { redact(it, seen) }
-        val unchanged = !throwable.toString().contains(token) &&
-            cause === throwable.cause &&
-            suppressed.indices.all { suppressed[it] === throwable.suppressed[it] }
-        if (unchanged) {
+    fun throwable(throwable: Throwable): Throwable {
+        if (token.isEmpty()) {
             return throwable
         }
 
-        val copy = RedactedException(throwable.javaClass.name, text(throwable.message), cause)
-        copy.stackTrace = throwable.stackTrace
-        suppressed.forEach { copy.addSuppressed(it) }
-        return copy
+        // Everything reachable through causes and suppressed exceptions, each node once: the same
+        // exception can be a cause and a suppressed one, or part of a cycle
+        val children = IdentityHashMap<Throwable, List<Throwable>>()
+        val pending = ArrayDeque<Throwable>().apply { add(throwable) }
+        while (pending.isNotEmpty()) {
+            val node = pending.removeLast()
+            if (children.containsKey(node)) {
+                continue
+            }
+            val next = listOfNotNull(node.cause) + node.suppressed
+            children[node] = next
+            pending.addAll(next)
+        }
+
+        // a copy is made of every exception that names the token or reaches one that does
+        val copied = Collections.newSetFromMap(IdentityHashMap<Throwable, Boolean>())
+        children.keys.filterTo(copied) { it.toString().contains(token) }
+        do {
+            val before = copied.size
+            children.forEach { (node, next) ->
+                if (node !in copied && next.any { it in copied }) {
+                    copied.add(node)
+                }
+            }
+        } while (copied.size != before)
+        if (throwable !in copied) {
+            return throwable
+        }
+
+        // every path to an exception gets the one copy of it; the copies exist before they are
+        // joined, so a cycle between them is rebuilt rather than followed
+        val copies = IdentityHashMap<Throwable, Throwable>()
+        copied.forEach { copies[it] = RedactedException(it.javaClass.name, text(it.message)) }
+        copied.forEach { node ->
+            val copy = copies.getValue(node)
+            copy.stackTrace = node.stackTrace
+            node.cause?.let { copy.initCause(copies[it] ?: it) }
+            node.suppressed.forEach { copy.addSuppressed(copies[it] ?: it) }
+        }
+        return copies.getValue(throwable)
     }
 }
 
@@ -49,8 +76,7 @@ internal class TokenRedactor(private val token: String) {
  * A broker failure whose text named the access token, with the token taken out. It is what the
  * original was in class (named in [toString]), stack trace and cause chain.
  */
-internal class RedactedException(private val originalClass: String, message: String?, cause: Throwable?) :
-    RuntimeException(message, cause) {
+internal class RedactedException(private val originalClass: String, message: String?) : RuntimeException(message) {
 
     override fun toString(): String = if (message == null) originalClass else "$originalClass: $message"
 }
