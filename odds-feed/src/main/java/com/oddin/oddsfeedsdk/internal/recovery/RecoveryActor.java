@@ -97,6 +97,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
      * within {@link #CLOSE_WAIT}, so the machine still closes before close() stops waiting.
      */
     private static final Duration FINISH_WAIT = Duration.ofSeconds(2);
+    /** The longest message of a failure told in {@link #endedBy}. */
+    private static final int ENDED_MESSAGE_MAX = 200;
 
     private final RecoveryMachine machine;
     private final RecoveryCounters counters;
@@ -152,6 +154,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private volatile @Nullable Long closeBy;
     /** When the actor last began a turn, a {@link BusySince}; idle before the first; for the watchdog. */
     private volatile long turnedAt = BusySince.IDLE;
+    /** What ended the thread when it was no close: set once, before the actor closes itself; null otherwise. */
+    private volatile @Nullable String endedBy;
     /** A test's hook, run before each take from the samples, after the look at the essential facts. */
     volatile Runnable beforeSamplePoll = () -> {};
     /** A test's hook, run inside the handling of each fact, with the fact. */
@@ -523,6 +527,15 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     }
 
     /**
+     * What ended the actor's thread - the class and message of the {@link Error} or exception that
+     * escaped its loop - or null while it runs, and after a {@link #close} that ended it as asked:
+     * a close is no failure. Short, on one line; the stack is in the log.
+     */
+    public @Nullable String endedBy() {
+        return endedBy;
+    }
+
+    /**
      * Stops the actor. The essential facts already queued are handled first, so the resume points
      * are published as they stand; whoever waits for an event recovery hears it was not accepted;
      * facts posted from now on are dropped.
@@ -645,6 +658,8 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             }
         } catch (Throwable e) {
             LOG.error("The recovery actor stopped", e);
+            // after the log, so whoever learns of it finds the cause there; before the close below
+            endedBy = describe(e);
             throw e;
         } finally {
             // however the loop ended: nothing posts to a queue nobody takes from
@@ -659,6 +674,19 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             }
             closeMachine();
         }
+    }
+
+    /** A failure in one line: its class and message, the message cut at {@link #ENDED_MESSAGE_MAX}. */
+    private static String describe(Throwable failure) {
+        var message = failure.getMessage();
+        if (message == null || message.isBlank()) {
+            return failure.getClass().getName();
+        }
+        message = message.strip().replaceAll("\\s+", " ");
+        if (message.length() > ENDED_MESSAGE_MAX) {
+            message = message.substring(0, ENDED_MESSAGE_MAX) + "...";
+        }
+        return failure.getClass().getName() + ": " + message;
     }
 
     /**
