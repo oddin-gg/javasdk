@@ -32,8 +32,10 @@ class AliveDispatcherTest {
     private final ClockOffsets offsets = new ClockOffsets(id -> id == 1 || id == 2);
 
     private final BlockingQueue<Stamp> stamps = new LinkedBlockingQueue<>();
-    private final AliveFacts actor = (producer, generatedAt, received, subscribed) -> {
+    private final BlockingQueue<Long> marks = new LinkedBlockingQueue<>();
+    private final AliveFacts actor = (producer, generatedAt, markAt, received, subscribed) -> {
         stamps.add(received);
+        marks.add(markAt);
         posted.add(producer + " " + generatedAt + " " + received.wall() + " " + subscribed + " "
                 + Thread.currentThread().getName());
     };
@@ -60,6 +62,30 @@ class AliveDispatcherTest {
 
         dispatcher.accept(alive(FeedMessages.alive(1, false), 99));
         assertThat(next()).startsWith("1 1777832981632 99 false");
+    }
+
+    @Test
+    void anAliveStampedAheadOfItsProducersNowReachesTheActorWithAMarkAtItsNowByTheOffsetBeforeIt()
+            throws InterruptedException {
+        AliveDispatcher dispatcher = started();
+        long tenMinutes = 600_000;
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 10_000), 12_500));
+        assertThat(next()).startsWith("2 10000 12500 true");
+        assertThat(marks.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("not ahead: its stamp")
+                .isEqualTo(10_000L);
+
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 20_000 + tenMinutes), 22_500));
+        assertThat(next()).as("the stamp reaches the actor as it is").startsWith("2 620000 22500 true");
+        assertThat(marks.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("the producer's now, by the offset of the alive before: 2.5 s behind")
+                .isEqualTo(20_000L);
+
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 30_000), 32_500));
+        next();
+        assertThat(marks.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("a later one, right")
+                .isEqualTo(30_000L);
     }
 
     @Test
@@ -122,11 +148,11 @@ class AliveDispatcherTest {
         var throwing = new AliveDispatcher(
                 FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES),
                 offsets,
-                (producer, generatedAt, received, subscribed) -> {
+                (producer, generatedAt, markAt, received, subscribed) -> {
                     if (producer == 1) {
                         throw new IllegalStateException("the actor's bug");
                     }
-                    actor.alive(producer, generatedAt, received, subscribed);
+                    actor.alive(producer, generatedAt, markAt, received, subscribed);
                 });
         dispatcher = throwing;
         throwing.start();

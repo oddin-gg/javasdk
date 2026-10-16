@@ -232,6 +232,55 @@ class SessionDispatcherTest {
         assertThat(facts.taken).containsExactly(new Stamp(5_000, 2_001), new Stamp(9_000, 13_001));
     }
 
+    /** The marks are the SDK's: the client's message keeps the stamp the producer gave it. */
+    @Test
+    void theRecoveryActorTakesAMessageStampedAheadOfItsProducerAtTheProducersNowAtReceipt() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        handle(dispatcher, Fixtures.read(BET_STOP));
+        long ahead = System.currentTimeMillis() + Duration.ofMinutes(10).toMillis();
+        handle(dispatcher, FeedMessages.stampedAt(Fixtures.read(BET_STOP), ahead));
+        long received = lastReceived.toEpochMilli();
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead));
+
+        assertThat(facts.facts)
+                .containsExactly(
+                        "processed 2 1777832981632 request=0",
+                        "processed 2 " + ahead + " request=0",
+                        "alive 2 " + ahead + " subscribed=true");
+        assertThat(facts.marks.get(0)).as("not ahead: its own stamp").isEqualTo(1777832981632L);
+        assertThat(facts.marks.get(1))
+                .as("ahead, and no alive has shown an offset yet: the SDK's own clock at receipt")
+                .isEqualTo(received);
+        assertThat(facts.marks.get(2)).isEqualTo(lastReceived.toEpochMilli());
+        assertThat(((BetStop<?>) listener.messages.get(1).message())
+                        .getTimestamp()
+                        .getCreated())
+                .as("the client's message keeps its stamp")
+                .isEqualTo(ahead);
+    }
+
+    @Test
+    void theRecoveryActorTakesAStampAheadByNoMoreThanASecondAsItIs() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        long ahead = System.currentTimeMillis() + 500;
+        handle(dispatcher, FeedMessages.stampedAt(Fixtures.read(BET_STOP), ahead));
+        assertThat(lastReceived.toEpochMilli()).as("received before the stamp").isLessThan(ahead);
+        assertThat(facts.marks).containsExactly(ahead);
+    }
+
+    /** Every session binds the alive key too: its copy comes after the alive dispatcher kept the offset. */
+    @Test
+    void theSessionsCopyOfAnAliveStampedAheadIsMarkedByTheOffsetBeforeIt() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        long now = System.currentTimeMillis();
+        long ahead = now + Duration.ofMinutes(10).toMillis();
+        // as the alive dispatcher kept them: an alive of a clock 2.5 s behind, then this one's own offset
+        offsets.alive(2, now - 2_500, Stamp.of(now));
+        offsets.alive(2, ahead, Stamp.of(now));
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead));
+        assertThat(facts.marks).containsExactly(lastReceived.toEpochMilli() - 2_500);
+    }
+
     @Test
     void aReplaySessionAndAClientsAliveOnlySessionPostNoFacts() {
         handle(dispatcher(MessageInterest.ALL, true), Fixtures.read(ODDS_CHANGE));
@@ -430,7 +479,7 @@ class SessionDispatcherTest {
         assertThat(listener.read).as("from the summary, which says closed").containsExactly(EventStatus.Finished);
 
         // a producer whose clock is half an hour behind the SDK's sent it just now
-        offsets.alive(2, halfAnHourAgo, System.currentTimeMillis());
+        offsets.alive(2, halfAnHourAgo, Stamp.of(System.currentTimeMillis()));
         handle(dispatcher, withStatus("5", halfAnHourAgo + 1));
         assertThat(listener.read).last().isEqualTo(EventStatus.Cancelled);
     }
@@ -981,19 +1030,23 @@ class SessionDispatcherTest {
     private static final class Facts implements SessionFacts {
         final List<String> facts = new CopyOnWriteArrayList<>();
         final List<Stamp> taken = new CopyOnWriteArrayList<>();
+        /** The stamp each fact's checkpoint is taken from, in the order of the facts. */
+        final List<Long> marks = new CopyOnWriteArrayList<>();
         /** Runs as a fact is posted, before it is recorded. */
         volatile Runnable beforePost = () -> {};
 
         @Override
-        public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
+        public void processed(long producerId, long generatedAt, long markAt, Stamp taken, long requestId) {
             beforePost.run();
+            marks.add(markAt);
             facts.add("processed " + producerId + " " + generatedAt + " request=" + requestId);
             this.taken.add(taken);
         }
 
         @Override
-        public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+        public void alive(long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed) {
             beforePost.run();
+            marks.add(markAt);
             facts.add("alive " + producerId + " " + generatedAt + " subscribed=" + subscribed);
             this.taken.add(taken);
         }

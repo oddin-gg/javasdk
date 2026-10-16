@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.recovery;
 
 import com.oddin.oddsfeedsdk.api.entities.Producer;
+import com.oddin.oddsfeedsdk.internal.clock.ClockOffset;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import com.oddin.oddsfeedsdk.internal.log.Throttle;
@@ -92,14 +93,6 @@ final class RecoveryMachine {
 
     /** A sample's age when the producer's clock offset is not known. */
     private static final long UNKNOWN_AGE = Long.MIN_VALUE;
-
-    /**
-     * How far the difference between the feed clock's wall and monotonic readings has to move from
-     * where an offset was measured for the wall clock to count as stepped: far above the jitter of
-     * reading two clocks and the slew of a synchronised one, a tenth of the least maximum
-     * inactivity there is, so a step that is not seen shows as an age of a second at most.
-     */
-    private static final long WALL_STEP = 1_000;
 
     /** No resume point: no session receives the producer, or none was published yet. */
     private static final long NO_POINT = -1;
@@ -504,11 +497,14 @@ final class RecoveryMachine {
      * positive timestamp is ignored: as the producer's clock it would put the producer's now at or
      * before the epoch, and every recovery and resume point capped at it with it.
      *
+     * @param markAt the stamp the safe point is taken from: {@code generatedAt}, or the producer's
+     *     now at receipt when the alive is stamped ahead of it. The offset is measured from {@code
+     *     generatedAt} as it is: it is the producer's clock
      * @param received when the SDK received it: the wall reading is compared with the producer's
      *     clock and published, the monotonic one measures the alive interval and orders it against
      *     the recovery's acceptance
      */
-    void alive(long producerId, long generatedAt, Stamp received, boolean subscribed) {
+    void alive(long producerId, long generatedAt, long markAt, Stamp received, boolean subscribed) {
         Track track = known(producerId);
         if (track == null || !enabled(track)) {
             return;
@@ -529,7 +525,7 @@ final class RecoveryMachine {
             track.aliveInterval += (measured - track.aliveInterval) / 4;
         }
         track.lastAliveAt = received.mono();
-        track.lastAliveGen = generatedAt;
+        track.lastAliveMark = markAt;
         track.offset = received.wall() - generatedAt;
         track.skew = received.wall() - received.mono();
         producers.setLastMessageTimestamp(producerId, Math.max(1, received.wall()));
@@ -539,9 +535,9 @@ final class RecoveryMachine {
             rearm(track);
         }
         if (subscribed) {
-            track.safePoint = Math.max(track.safePoint, generatedAt);
+            track.safePoint = Math.max(track.safePoint, markAt);
         } else {
-            openProducerGap(track, generatedAt);
+            openProducerGap(track, markAt);
             Active active = track.active;
             if (active != null && active.accepted && received.mono() >= active.acceptedAt) {
                 // still unsubscribed after the producer took the request: it lost it, restarting say,
@@ -554,6 +550,11 @@ final class RecoveryMachine {
         maybeRequest(track, mono);
     }
 
+    /** An alive whose stamp is not ahead of the producer's now: its own stamp is its mark. */
+    void alive(long producerId, long generatedAt, Stamp received, boolean subscribed) {
+        alive(producerId, generatedAt, generatedAt, received, subscribed);
+    }
+
     /**
      * A session has finished a message of the producer. A live one moves the session's checkpoint
      * and is the safety net's sample; a snapshot one, from a recovery, does neither. One without a
@@ -561,12 +562,15 @@ final class RecoveryMachine {
      * ignores, moves none: it was delivered, and a snapshot one still puts off the deadline for its
      * snapshot complete.
      *
+     * @param markAt the stamp the session's checkpoint is taken from: {@code generatedAt}, or the
+     *     producer's now at receipt when the message is stamped ahead of it. What is published and
+     *     compared with the request is the message's own stamp
      * @param taken when the session's dispatcher took it: the wall reading is published and
      *     compared with the producer's clock, the monotonic one orders it against the recovery that
      *     ended and times the safety net's window
      * @param requestId the recovery's request id a snapshot message carries, 0 for a live one
      */
-    void processed(int id, long producerId, long generatedAt, Stamp taken, long requestId) {
+    void processed(int id, long producerId, long generatedAt, long markAt, Stamp taken, long requestId) {
         Track track = known(producerId);
         SessionState session = sessions.get(id);
         Lane lane = session == null || track == null ? null : session.lanes.get(producerId);
@@ -587,17 +591,23 @@ final class RecoveryMachine {
         producers.setLastProcessedMessageGenTimestamp(producerId, generatedAt);
         heard(track, id, generatedAt, requestId);
         if (requestId == 0) {
-            lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
+            lane.checkpoint = Math.max(lane.checkpoint, markAt);
             sample(session, lane, track, generatedAt, taken);
         }
+    }
+
+    /** A message whose stamp is not ahead of the producer's now: its own stamp is its mark. */
+    void processed(int id, long producerId, long generatedAt, Stamp taken, long requestId) {
+        processed(id, producerId, generatedAt, generatedAt, taken, requestId);
     }
 
     /**
      * A session has finished an alive from its own queue: everything the producer sent before it is
      * done, so a subscribed one moves the session's checkpoint. Both kinds are samples. One without
-     * a positive timestamp is ignored, as {@link #alive} ignores it.
+     * a positive timestamp is ignored, as {@link #alive} ignores it. The checkpoint is taken from
+     * {@code markAt}, as {@link #processed} takes it.
      */
-    void sessionAlive(int id, long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+    void sessionAlive(int id, long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed) {
         if (generatedAt <= 0) {
             // not a time: the alive dispatcher logs the same alive on the SDK's own channel
             return;
@@ -612,9 +622,14 @@ final class RecoveryMachine {
         lane.lastAt = taken.mono();
         heard(track, id, generatedAt, 0);
         if (subscribed) {
-            lane.checkpoint = Math.max(lane.checkpoint, generatedAt);
+            lane.checkpoint = Math.max(lane.checkpoint, markAt);
         }
         sample(session, lane, track, generatedAt, taken);
+    }
+
+    /** An alive whose stamp is not ahead of the producer's now: its own stamp is its mark. */
+    void sessionAlive(int id, long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+        sessionAlive(id, producerId, generatedAt, generatedAt, taken, subscribed);
     }
 
     /**
@@ -884,7 +899,7 @@ final class RecoveryMachine {
                 long last = track.lastAliveAt != 0 ? track.lastAliveAt : startedAt;
                 if (!track.inactive && mono - last > settings.maxInactivity().toMillis()) {
                     track.inactive = true;
-                    openProducerGap(track, track.lastAliveGen);
+                    openProducerGap(track, track.lastAliveMark);
                     // a producer that went silent while a recovery was in flight may have lost it
                     giveUp(track, mono, "the producer sent no alive for " + settings.maxInactivity());
                     markDown(track, StatusCause.ALIVE_INTERVAL_VIOLATION);
@@ -1066,19 +1081,14 @@ final class RecoveryMachine {
 
     /**
      * The offset of the producer's clock, as of a reading. It was measured on an alive against the
-     * SDK's wall clock, and a step of that clock since moves the difference between its two
-     * readings, wall less monotonic, which no step can move: so a reading whose difference has moved
-     * by more than {@link #WALL_STEP} from the alive's says the wall clock stepped, and the offset
-     * is moved by the step, the producer's clock not having moved with it. Less than that is the
-     * jitter of reading two clocks, and a slew, and leaves it. Before the first alive there is no
-     * measure to correct.
+     * SDK's wall clock, and a step of that clock since moves it: see {@link ClockOffset#at}. Before
+     * the first alive there is no measure to correct.
      */
     private static long offsetAt(Track track, Stamp at) {
         if (track.lastAliveAt == 0) {
             return track.offset;
         }
-        long step = at.wall() - at.mono() - track.skew;
-        return Math.abs(step) > WALL_STEP ? track.offset + step : track.offset;
+        return ClockOffset.corrected(track.offset, track.skew, at);
     }
 
     private void accepted(Track track, Active active, long mono) {
@@ -1848,8 +1858,9 @@ final class RecoveryMachine {
         /** When the last alive arrived, on the monotonic clock; 0 before the first. */
         long lastAliveAt;
 
-        long lastAliveGen;
-        /** The last subscribed alive's timestamp: the producer has sent everything before it. */
+        /** The last alive's mark: where a gap starts for a producer that has no safe point. */
+        long lastAliveMark;
+        /** The last subscribed alive's mark: the producer has sent everything before it. */
         long safePoint;
         /** The SDK's wall clock minus the producer's, measured on the last alive. */
         long offset;

@@ -59,6 +59,10 @@ import org.slf4j.LoggerFactory;
  *       so is one of a producer the client disabled or that the session's interest is not for, as in
  *       0.0.x. Alives and snapshot completes go to the recovery actor and no further. A fixture change
  *       another session, or this one, has delivered already is dropped (see {@link FixtureChanges}).
+ *   <li><b>Mark.</b> What the recovery's checkpoints are taken from: the message's timestamp, or
+ *       its producer's now at receipt when the stamp is more than a second ahead of it (see {@link
+ *       ClockOffsets#mark}); a replay's are taken as they are. The client's message and the live
+ *       state keep the stamp.
  *   <li><b>Cache write.</b> An odds change's match status is written to the match's live state, unless
  *       an older message than one already written (KD-13) or older than the match status age by the
  *       producer's own clock (KD-14); a fixture change invalidates the match and its fixture, or the
@@ -396,11 +400,18 @@ public final class SessionDispatcher implements AutoCloseable {
             return;
         }
         SessionFacts told = facts;
+        long mark = replay
+                ? message.getTimestamp()
+                : pipeline.offsets()
+                        .mark(
+                                producerId,
+                                message.getTimestamp(),
+                                new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono()));
         switch (message) {
             case OFAlive alive -> {
                 admitControlFact();
                 if (told != null) {
-                    told.alive(producerId, alive.getTimestamp(), taken, alive.getSubscribed() == 1);
+                    told.alive(producerId, alive.getTimestamp(), mark, taken, alive.getSubscribed() == 1);
                 }
                 return;
             }
@@ -423,7 +434,7 @@ public final class SessionDispatcher implements AutoCloseable {
             if (told != null && !dropped && !dropsOnClose()) {
                 Long requestId = requestId(message);
                 // a live message carries no request id
-                told.processed(producerId, message.getTimestamp(), taken, requestId == null ? 0 : requestId);
+                told.processed(producerId, message.getTimestamp(), mark, taken, requestId == null ? 0 : requestId);
             }
         }
     }

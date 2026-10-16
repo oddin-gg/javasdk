@@ -13,15 +13,27 @@ public interface SessionFacts {
      * The session has finished a message of the producer, its callback included.
      *
      * @param generatedAt the message's timestamp, epoch millis by the producer's clock
+     * @param markAt what the session's checkpoint is taken from: {@code generatedAt}, or the
+     *     producer's now at receipt when the message is stamped ahead of it
      * @param taken when the dispatcher took it from the session's queue, both readings of the SDK's
      *     clock, so its age includes the broker's backlog and the session's own
      * @param requestId the request id it carries, which makes it a recovery's snapshot message; 0
      *     for a live message, which carries none
      */
-    void processed(long producerId, long generatedAt, Stamp taken, long requestId);
+    void processed(long producerId, long generatedAt, long markAt, Stamp taken, long requestId);
 
-    /** The session has finished an alive from its own queue. */
-    void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed);
+    /** A message whose stamp is not ahead of the producer's now: its own stamp is its mark. */
+    default void processed(long producerId, long generatedAt, Stamp taken, long requestId) {
+        processed(producerId, generatedAt, generatedAt, taken, requestId);
+    }
+
+    /** The session has finished an alive from its own queue; {@code markAt} is as for {@link #processed}. */
+    void alive(long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed);
+
+    /** An alive whose stamp is not ahead of the producer's now: its own stamp is its mark. */
+    default void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+        alive(producerId, generatedAt, generatedAt, taken, subscribed);
+    }
 
     void snapshotComplete(long producerId, long requestId);
 

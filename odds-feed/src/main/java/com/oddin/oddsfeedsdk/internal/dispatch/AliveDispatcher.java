@@ -230,8 +230,10 @@ public final class AliveDispatcher implements Consumer<RawDelivery>, AutoCloseab
             return;
         }
         var received = new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono());
-        offsets.alive(alive.getProduct(), alive.getTimestamp(), received.wall());
-        actor.alive(alive.getProduct(), alive.getTimestamp(), received, alive.getSubscribed() == 1);
+        // before the offset it shows is kept: an alive does not vouch for its own stamp
+        long mark = offsets.mark(alive.getProduct(), alive.getTimestamp(), received);
+        offsets.alive(alive.getProduct(), alive.getTimestamp(), received);
+        actor.alive(alive.getProduct(), alive.getTimestamp(), mark, received, alive.getSubscribed() == 1);
     }
 
     private void unreadable(RawDelivery delivery, Throwable why) {

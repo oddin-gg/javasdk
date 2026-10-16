@@ -656,8 +656,27 @@ and REST workers post facts to it; it decides and posts work out.
   last alive - so one message or alive stamped in the producer's future, from a
   component's fast clock or a bad value, moves neither past what the producer has
   sent: a request is not refused for a start ahead of the producer, and a client does
-  not persist one. The marks themselves still take the stamp; a tolerance that keeps
-  such a stamp from moving a checkpoint or a live-state watermark comes later. A
+  not persist one. The marks the recovery takes from a message - a session's checkpoint, a
+  producer's safe point, the start of a gap with no safe point - take its stamp as it is,
+  unless it is more than a second ahead of the producer's now at receipt, and then that
+  now: the SDK's wall clock when the delivery arrived, less the producer's most cautious
+  offset of the last minute - the largest, which puts the producer's now earliest, and always
+  one from before the newest alive - so an alive stamped ahead does not vouch for its own
+  stamp, for its copy on a session's queue, or for a message received before it and handled
+  after; none while no alive has shown one. A producer clock that steps back is taken at
+  once, one that steps forward, or is really ahead, a minute later. A mark that is lowered
+  only makes a recovery larger, so every error is on the safe side; the second is the
+  jitter a recovery's mark absorbs, so the stamp of an ordinary message is the mark exactly,
+  and a delivery that took more than a second longer than the longest alive of the minute
+  lowers the mark of what it carries for that minute. There is no tolerance setting. A
+  clamped stamp is logged at `WARN`, at most once a minute per producer, with the stamp, the
+  producer's now and the difference. The stamps a client sees, on the message and in the
+  producer's last processed timestamp, stay as the producer made them; one place,
+  `ClockOffsets.mark`, computes the mark for the alive dispatcher and the session
+  dispatchers, which hand it to the recovery actor. A replay session takes its stamps as
+  they are. The live state is not changed: its watermark is the message's own stamp, so a
+  status or score stamped in the producer's future holds back the following updates of that
+  match until the producer's clock passes it (KD-13); recorded for a later change. A
   recovery's start is clamped
   to the producer's stateful recovery window, as today - counted back by the producer's
   clock, as the gaps' starts are, with the offset measured on its alives - and a cold
@@ -1831,7 +1850,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   machine's own durations stayed on the wall clock then, until the 2026-10-14 entry on clocks.
   The published resume point and a
   recovery's start are capped at the producer's now, so a timestamp from the producer's
-  future moves neither past it; the tolerance on the checkpoints and watermarks follows.
+  future moves neither past it; the recovery's marks follow in the 2026-10-16 entry on stamps
+  ahead, the live state's watermark is recorded for a later change.
 - 2026-10-08, documentation for the release candidate: KNOWN-DIFFERENCES.md is written against
   0.0.58, the stale entries are corrected, and KD-34 to KD-41 name the differences no entry had,
   the small ones grouped in KD-41. A producer clock that steps back keeps the code as merged; KD-28
@@ -1954,3 +1974,25 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   reason"), and no second `HealthEvent`: an event is a change of state, the events dispatcher
   drops one whose state is the client's, and a client that alarms on `STALLED` would alarm twice.
   Only an ended thread does this; no other part's change of reason is told. No public API changes.
+- 2026-10-16, a stamp more than a second ahead of its producer moves no recovery mark past the
+  producer's now (the item the entries on the cap left open; the live state is left for a later
+  change): a message stamped in the producer's future, from a component's fast clock or a bad
+  value, kept a session's checkpoint and the producer's safe point ahead of what was processed,
+  so a gap opened meanwhile started at the request and never asked for what lay between. The
+  owner chose to clamp, with no tolerance setting: a mark is the stamp, or the producer's now at
+  receipt when the stamp is more than a second ahead of it - the SDK's wall clock then, less the
+  producer's most cautious offset of the last minute, corrected for a step of the wall clock
+  since it was measured, as the recovery machine corrects it. The offset of the latest alive was
+  wrong, as the alive dispatcher has kept an alive's own offset when the session's copy of it
+  is handled, and a later alive has moved it when a message queued behind a callback is; each
+  producer keeps the offsets of its alives over the minute, in an array replaced whole (a reader
+  never waits for the alive dispatcher), with the newest one older than the minute, and "no
+  offset" before the first, and the mark takes the largest. Clamping every message, which was
+  tried first, lowered the mark of ordinary messages by the jitter of the alives' delivery and
+  moved the recovery timestamps the system scenarios pin; the second absorbs it. A late alive
+  still lowers the marks by its delay for a minute when the delay is over a second: a larger
+  recovery, nothing lost. The live state was tried with the same mark and is not changed: a
+  clamped stamp is a receipt time, which overwrites the order of the true stamps, and the largest
+  offset of a late alive refuses correct writes. A status or score stamped in the producer's
+  future still holds back the updates that follow until the producer's clock passes it (KD-13).
+  No public API changes.

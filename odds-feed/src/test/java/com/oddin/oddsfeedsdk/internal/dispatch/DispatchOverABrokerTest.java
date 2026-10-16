@@ -59,7 +59,7 @@ class DispatchOverABrokerTest {
     private final AliveDispatcher aliveDispatcher = new AliveDispatcher(
             world.decoder,
             offsets,
-            (producer, generatedAt, receivedAt, subscribed) -> alives.add(producer + " " + subscribed));
+            (producer, generatedAt, markAt, receivedAt, subscribed) -> alives.add(producer + " " + subscribed));
     private final AmqpTransport transport = new AmqpTransport(
             new AmqpSettings(
                     feed().host(),
@@ -240,10 +240,10 @@ class DispatchOverABrokerTest {
 
     private final class Facts implements SessionFacts {
         @Override
-        public void processed(long producerId, long generatedAt, Stamp taken, long requestId) {}
+        public void processed(long producerId, long generatedAt, long markAt, Stamp taken, long requestId) {}
 
         @Override
-        public void alive(long producerId, long generatedAt, Stamp taken, boolean subscribed) {
+        public void alive(long producerId, long generatedAt, long markAt, Stamp taken, boolean subscribed) {
             heard.add("alive " + producerId + " " + Thread.currentThread().getName());
         }
 
