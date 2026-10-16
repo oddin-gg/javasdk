@@ -283,8 +283,8 @@ public final class OddsFeed {
      * deliberately gives up, for a health check or a metrics exporter. Cheap, and safe from any
      * thread, a callback included: it reads counters and flags, never waits for the feed, and does
      * not start it. Before the feed starts it has no part and counts nothing; once started it has the
-     * events, the catalogs, the timers and the SDK's threads, and once open the connection, the
-     * consumer and the sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
+     * events, the catalogs, the timers, the SDK's threads and the API, and once open the connection,
+     * the consumer and the sessions, and the alives and the recovery unless it is a replay feed. Once closed it still reads
      * what the feed counted, and each part as the watch last found it, but the timers healthy: a
      * watch stopped is not one wedged; and the connection as it was at the close, healthy unless it
      * had been down for longer than its limit by then, with no change told or logged after.
@@ -298,7 +298,11 @@ public final class OddsFeed {
      * API is no stall; unless set, they are twice the HTTP client timeout and 5 seconds, 30 seconds
      * at least: 65 seconds for the default timeout. A catalog that has served a value stale for its
      * limit or more, an hour unless set, is degraded, and so are a session lagging and the broker
-     * connection down for longer than its limit, 60 seconds unless set. Each change is logged - a
+     * connection down for longer than its limit, 60 seconds unless set. The API is stalled, for as
+     * long as no call has been answered with a success since, once it has refused the access token
+     * (HTTP 401 or 403, which no retry changes and {@code onFatalError} tells once): the token is read
+     * when the feed is built, so the remedy is a new feed; a timeout, a 5xx or a 429 is no refusal and
+     * changes nothing of it. Each change is logged - a
      * stall as an error - and told to
      * {@code onHealthEvent}, until the feed closes; a session's lagging as it changes. The feed never
      * interrupts a stalled thread: the remedy is to close it and open a new one. This call looks at

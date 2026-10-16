@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.stream.Collectors;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
 /** The feed before it opens: its start on the first call that needs it, its events, and its close. */
@@ -205,6 +206,7 @@ class OddsFeedTest {
     void aRefusedTokenIsTheApiPartsStallInGetHealthAndToldUntilACallSucceeds() throws Exception {
         try (var api = FakeRestServer.start()) {
             var changes = new LinkedBlockingQueue<HealthEvent>();
+            var fatal = new LinkedBlockingQueue<String>();
             var feed = new OddsFeed(
                     new GlobalEventsListener() {
                         @Override
@@ -220,11 +222,20 @@ class OddsFeedTest {
                         public void onHealthEvent(HealthEvent event) {
                             changes.add(event);
                         }
+
+                        @Override
+                        public void onFatalError(String reason, @Nullable Throwable cause) {
+                            fatal.add(reason);
+                        }
                     },
                     configurationAgainst(api));
             try {
                 api.respond(WHOAMI, 403, FORBIDDEN);
                 assertThatThrownBy(feed::getBookMakerDetail).isInstanceOf(InitException.class);
+                assertThat(requireNonNull(fatal.poll(WAIT.toSeconds(), TimeUnit.SECONDS)))
+                        .as("the fatal error is told as before")
+                        .startsWith("The API refused the access token: GET ")
+                        .contains(" answered 403");
                 var refused = requireNonNull(changes.poll(WAIT.toSeconds(), TimeUnit.SECONDS));
                 assertThat(refused.component()).isEqualTo(HealthComponent.API);
                 assertThat(refused.state()).isEqualTo(HealthState.STALLED);

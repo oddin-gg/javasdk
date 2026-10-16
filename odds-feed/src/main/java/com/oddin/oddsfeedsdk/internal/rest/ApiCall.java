@@ -13,6 +13,8 @@ import org.jspecify.annotations.Nullable;
  * @param latency from sending the request to having read the answer, or to giving up
  * @param attempt 1 for the first attempt of a call, 2 for its first retry, and so on
  * @param failure why the attempt failed, or null when it succeeded
+ * @param answeredAt when the attempt ended, by {@link System#nanoTime()}: for comparing which of
+ *     two answers is the newer, whatever order their reports arrive in
  */
 public record ApiCall(
         String method,
@@ -20,4 +22,11 @@ public record ApiCall(
         int status,
         Duration latency,
         int attempt,
-        @Nullable Exception failure) {}
+        @Nullable Exception failure,
+        long answeredAt) {
+
+    /** An attempt that ends now. */
+    public ApiCall(String method, URI uri, int status, Duration latency, int attempt, @Nullable Exception failure) {
+        this(method, uri, status, latency, attempt, failure, System.nanoTime());
+    }
+}
