@@ -673,8 +673,10 @@ and REST workers post facts to it; it decides and posts work out.
   producer's now and the difference. The stamps a client sees, on the message and in the
   producer's last processed timestamp, stay as the producer made them; one place,
   `ClockOffsets.mark`, computes the mark for the alive dispatcher and the session
-  dispatchers, which hand it to the recovery actor. A replay session takes its stamps as
-  they are. The live state is not changed: its watermark is the message's own stamp, so a
+  dispatchers, which hand it to the recovery actor; the session's copy of an alive takes the
+  mark the alive channel took from the same alive, whichever copy is handled first, so the
+  offset an alive shows cannot vouch for it. A replay session takes its stamps as they are.
+  The live state is not changed: its watermark is the message's own stamp, so a
   status or score stamped in the producer's future holds back the following updates of that
   match until the producer's clock passes it (KD-13); recorded for a later change. A
   recovery's start is clamped

@@ -268,6 +268,37 @@ class SessionDispatcherTest {
         assertThat(facts.marks).containsExactly(ahead);
     }
 
+    /** The first alive of a producer, stamped far ahead, has no offset before it: the channel's mark is the copy's. */
+    @Test
+    void theSessionsCopyOfAProducersFirstAliveStampedAheadIsMarkedAsTheChannelMarkedIt() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        long now = System.currentTimeMillis();
+        long ahead = now + Duration.ofMinutes(10).toMillis();
+        // the alive dispatcher first: the mark before its offset is kept, then the offset
+        long channel = offsets.markAlive(2, ahead, Stamp.of(now));
+        offsets.alive(2, ahead, Stamp.of(now));
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead));
+        assertThat(channel).as("no offset yet: the SDK's own clock").isEqualTo(now);
+        assertThat(facts.marks)
+                .as("the copy takes it, not the offset the alive showed")
+                .containsExactly(now);
+    }
+
+    @Test
+    void theSessionsCopyOfAProducersFirstAliveStampedAheadHandledBeforeTheChannelsIsMarkedByTheSdksClock() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        long ahead = System.currentTimeMillis() + Duration.ofMinutes(10).toMillis();
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead));
+        long received = lastReceived.toEpochMilli();
+        assertThat(facts.marks).as("no offset yet: the SDK's clock at receipt").containsExactly(received);
+        // then the channel's, with the same alive, whose offset is kept after its mark
+        long channel = offsets.markAlive(2, ahead, Stamp.of(received));
+        offsets.alive(2, ahead, Stamp.of(received));
+        assertThat(channel).isEqualTo(received);
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead));
+        assertThat(facts.marks).as("a second copy, after the channel's").containsExactly(received, received);
+    }
+
     /** Every session binds the alive key too: its copy comes after the alive dispatcher kept the offset. */
     @Test
     void theSessionsCopyOfAnAliveStampedAheadIsMarkedByTheOffsetBeforeIt() {

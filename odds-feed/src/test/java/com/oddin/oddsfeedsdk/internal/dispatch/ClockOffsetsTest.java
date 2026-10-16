@@ -94,6 +94,83 @@ class ClockOffsetsTest {
                 .isEqualTo(111_000);
     }
 
+    /** The first alive of a producer has no offset before it, and is the only one after it. */
+    @Test
+    void theSessionsCopyOfTheFirstAliveStampedAheadTakesTheChannelsMarkWhicheverCopyIsHandledFirst() {
+        long ahead = 110_000 + TEN_MINUTES;
+        // the channel first: its mark before the offset is kept, then the copy
+        long channel = offsets.markAlive(1, ahead, Stamp.of(110_000));
+        offsets.alive(1, ahead, Stamp.of(110_000));
+        assertThat(channel).as("no offset yet: the SDK's own clock").isEqualTo(110_000);
+        assertThat(offsets.markAliveCopy(1, ahead, Stamp.of(110_050)))
+                .as("the offset the alive showed now vouches for it; the copy takes the channel's mark")
+                .isEqualTo(110_000);
+        assertThat(offsets.markAliveCopy(1, ahead, Stamp.of(111_000)))
+                .as("so does every session's copy")
+                .isEqualTo(110_000);
+
+        // the copy first: the offset is still none
+        long copy = offsets.markAliveCopy(2, ahead, Stamp.of(110_000));
+        assertThat(copy).as("none: the SDK's own clock").isEqualTo(110_000);
+        assertThat(offsets.markAlive(2, ahead, Stamp.of(110_040))).isEqualTo(110_040);
+        offsets.alive(2, ahead, Stamp.of(110_040));
+        assertThat(offsets.markAliveCopy(2, ahead, Stamp.of(110_050)))
+                .as("a second session's copy, after the channel's: the channel's mark")
+                .isEqualTo(110_040);
+    }
+
+    @Test
+    void theChannelsMarkIsKeptForTheLastSixteenAlivesOfAProducer() {
+        long ahead = 110_000 + TEN_MINUTES;
+        offsets.markAlive(1, ahead, Stamp.of(110_000));
+        offsets.alive(1, ahead, Stamp.of(110_000));
+        for (int i = 1; i <= 15; i++) {
+            long received = 110_000 + 1_000L * i;
+            offsets.markAlive(1, received - 2_500, Stamp.of(received));
+            offsets.alive(1, received - 2_500, Stamp.of(received));
+        }
+        assertThat(offsets.markAliveCopy(1, ahead, Stamp.of(110_000)))
+                .as("the sixteenth since: still the channel's mark")
+                .isEqualTo(110_000);
+
+        offsets.markAlive(1, 126_000 - 2_500, Stamp.of(126_000));
+        assertThat(offsets.markAliveCopy(1, ahead, Stamp.of(110_000)))
+                .as("the seventeenth: forgotten, taken as any message, by the offsets kept now")
+                .isEqualTo(107_500);
+    }
+
+    /** Where the first of the 64 offsets goes, and what a lone alive after a silence is measured against. */
+    @Test
+    void aProducerKeepsTheOffsetsOfItsLastSixtyFourAlivesWithinAMinute() {
+        // 64 alives within a second apart: the first one, 10 minutes behind, is the largest offset
+        offsets.alive(1, 100_000 - TEN_MINUTES, Stamp.of(100_000));
+        for (int i = 1; i < 64; i++) {
+            long received = 100_000 + 500L * i;
+            offsets.alive(1, received - 2_500, Stamp.of(received));
+        }
+        long ordinary = 140_000 - 2_500;
+        assertThat(offsets.mark(1, ordinary, Stamp.of(140_000)))
+                .as("64 offsets kept: the first still clamps")
+                .isEqualTo(140_000 - TEN_MINUTES);
+
+        offsets.alive(1, 132_000 - 2_500, Stamp.of(132_000));
+        assertThat(offsets.mark(1, ordinary, Stamp.of(140_000)))
+                .as("65: the first is gone")
+                .isEqualTo(ordinary);
+    }
+
+    @Test
+    void aLoneAliveAfterASilenceIsMeasuredAgainstTheOneBeforeItAndNotTheOneBeforeThat() {
+        offsets.alive(1, 10_000 - 9_000, Stamp.of(10_000)); // 9 s
+        offsets.alive(1, 100_000 - 2_500, Stamp.of(100_000)); // 2.5 s
+        long ahead = 220_000 + TEN_MINUTES;
+        // two minutes of silence, then an alive stamped ahead, which keeps its own offset
+        offsets.alive(1, ahead, Stamp.of(220_000));
+        assertThat(offsets.mark(1, ahead, Stamp.of(220_000)))
+                .as("by the alive before the silence, not the one before it, nor its own")
+                .isEqualTo(220_000 - 2_500);
+    }
+
     @Test
     void aMessageReceivedBeforeAnAliveStampedAheadIsClampedWhenItIsHandledAfterIt() {
         offsets.alive(1, 100_000, Stamp.of(102_500));
@@ -178,6 +255,34 @@ class ClockOffsetsTest {
             assertThat(log.lines()).as("a minute not over").hasSize(2);
             offsets.mark(1, 300_000 + TEN_MINUTES, Stamp.of(200_000 + MINUTE));
             assertThat(log.lines()).as("a minute over").hasSize(3);
+        }
+    }
+
+    /** The channel's thread keeps the mark and then the offset; a session's thread never sees the one without the other. */
+    @org.junit.jupiter.api.Timeout(value = 60, threadMode = org.junit.jupiter.api.Timeout.ThreadMode.SEPARATE_THREAD)
+    @Test
+    void aSessionsCopyOfTheFirstAliveStampedAheadIsNeverTakenAtItsStampWhateverThreadIsFirst() throws Exception {
+        long ahead = 110_000 + TEN_MINUTES;
+        try (var pool = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            for (int i = 0; i < 2_000; i++) {
+                var fresh = new ClockOffsets(id -> true);
+                var start = new java.util.concurrent.CountDownLatch(1);
+                var channel = pool.submit(() -> {
+                    start.await();
+                    fresh.markAlive(1, ahead, Stamp.of(110_000));
+                    fresh.alive(1, ahead, Stamp.of(110_000));
+                    return null;
+                });
+                var copy = pool.submit(() -> {
+                    start.await();
+                    return fresh.markAliveCopy(1, ahead, Stamp.of(110_000));
+                });
+                start.countDown();
+                channel.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                assertThat(copy.get(30, java.util.concurrent.TimeUnit.SECONDS))
+                        .as("the SDK's own clock: no offset before the first alive")
+                        .isEqualTo(110_000);
+            }
         }
     }
 

@@ -400,13 +400,12 @@ public final class SessionDispatcher implements AutoCloseable {
             return;
         }
         SessionFacts told = facts;
+        var receipt = new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono());
         long mark = replay
                 ? message.getTimestamp()
-                : pipeline.offsets()
-                        .mark(
-                                producerId,
-                                message.getTimestamp(),
-                                new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono()));
+                : message instanceof OFAlive
+                        ? pipeline.offsets().markAliveCopy(producerId, message.getTimestamp(), receipt)
+                        : pipeline.offsets().mark(producerId, message.getTimestamp(), receipt);
         switch (message) {
             case OFAlive alive -> {
                 admitControlFact();
