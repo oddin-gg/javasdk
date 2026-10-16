@@ -24,13 +24,15 @@ import org.slf4j.LoggerFactory;
  * sends, the map holds one entry per producer of the list at most.
  *
  * <p>It also tells what a message may move the SDK's marks to - the recovery's checkpoints and
- * safe points, the live state's watermarks - see {@link #mark}: both dispatchers ask it, so the
- * recovery actor and the live state take the same stamp from one message. A mark is clamped by the
- * most cautious offset of the last minute, not the latest one, which an alive stamped ahead has
- * already moved when the message that needs the clamp is handled: the session's copy of that very
- * alive, or a message queued behind a callback while the alive dispatcher went on. Each producer
- * keeps the offsets of its alives over the window, in a small array that is replaced whole, so a
- * reader never waits for the alive dispatcher. Safe for concurrent use.
+ * safe points - see {@link #mark}, and the producer's now at a message's receipt, which the live
+ * state tells a watermark from a bad stamp by - see {@link #producerNow}. Both dispatchers ask it,
+ * so the recovery actor takes the same mark from one message that the live state takes the same
+ * now for. A mark is clamped by the most cautious offset of the last minute, not the latest one,
+ * which an alive stamped ahead has already moved when the message that needs the clamp is handled:
+ * the session's copy of that very alive, or a message queued behind a callback while the alive
+ * dispatcher went on. Each producer keeps the offsets of its alives over the window, in a small
+ * array that is replaced whole, so a reader never waits for the alive dispatcher. Safe for
+ * concurrent use.
  */
 public final class ClockOffsets {
 
@@ -50,6 +52,9 @@ public final class ClockOffsets {
      * holds a dozen; a faster one gets a shorter window rather than a larger array.
      */
     private static final int KEPT = 64;
+
+    /** The monotonic reading of the "no offset" every producer starts with: before any alive. */
+    private static final long BEFORE_ANY_ALIVE = Long.MIN_VALUE;
 
     /** An offset, with when the alive that showed it was received, on the monotonic clock. */
     private record Measured(ClockOffset offset, long mono) {}
@@ -87,7 +92,7 @@ public final class ClockOffsets {
         kept.compute(producerId, (id, before) -> {
             if (before == null) {
                 // before the first alive the offset is none: the SDK's own clock, stepping with it
-                var none = new Measured(new ClockOffset(0, offset.skew()), Long.MIN_VALUE);
+                var none = new Measured(new ClockOffset(0, offset.skew()), BEFORE_ANY_ALIVE);
                 return new Measured[] {none, measured};
             }
             var all = Arrays.copyOf(before, before.length + 1);
@@ -162,6 +167,30 @@ public final class ClockOffsets {
             largest = Math.max(largest, measured.offset().at(reading));
         }
         return largest;
+    }
+
+    /**
+     * The producer's now when the SDK received a message, by the smallest offset of the last minute:
+     * the latest the producer's clock can be taken to read, which is what the live state asks to
+     * tell a stamp or a watermark ahead of it. The largest offset would put it early by the longest
+     * delivery of the minute, and a single late alive would put it minutes early, so right stamps
+     * would look ahead and bad ones would pass; "no offset" does not count, only alives do; an alive stamped ahead puts it late for the minute
+     * it stays, which only delays the live state's recovery from a bad stamp by that long.
+     *
+     * @param received when the SDK received the message, both readings of its clock
+     */
+    long producerNow(long producerId, Stamp received) {
+        var offsets = kept.get(producerId);
+        if (offsets == null) {
+            return received.wall();
+        }
+        long smallest = Long.MAX_VALUE;
+        for (var measured : offsets) {
+            if (measured.mono() != BEFORE_ANY_ALIVE) {
+                smallest = Math.min(smallest, measured.offset().at(received));
+            }
+        }
+        return received.wall() - smallest;
     }
 
     /** Whether a log line is due for the producer at {@code mono}; if it is, it is taken. */

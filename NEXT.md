@@ -656,22 +656,30 @@ and REST workers post facts to it; it decides and posts work out.
   last alive - so one message or alive stamped in the producer's future, from a
   component's fast clock or a bad value, moves neither past what the producer has
   sent: a request is not refused for a start ahead of the producer, and a client does
-  not persist one. The marks the SDK takes from a message - a session's checkpoint, a
-  producer's safe point, the live state's watermark - take its stamp, but no later than the
-  producer's now at receipt: the SDK's wall clock when the delivery arrived, less the
-  producer's most cautious offset of the last minute - the one that puts the producer's now
-  earliest, and always one from before the newest alive - so an alive stamped ahead does not
-  vouch for its own stamp, for its copy on a session's queue, or for a message received before
-  it and handled after; none while no alive has shown one. A producer clock that steps back is
-  taken at once, one that steps forward, or is really ahead, a minute later; every error
-  lowers a mark. Every mark is clamped, with no tolerance setting: a
-  lower mark is the safe side of a checkpoint, and harmless to a watermark, which keeps the
-  order of the true stamps. One stamp more than a second ahead is logged at `WARN`, at most
-  once a minute per producer, with the stamp, the producer's now and the difference. The
-  stamps a client sees, on the message and in the producer's last processed timestamp, stay as
-  the producer made them; one place, `ClockOffsets.mark`, computes the mark for the alive
-  dispatcher and the session dispatchers, which hand it to the recovery actor and the live
-  state. A replay session takes its stamps as they are. A recovery's start is clamped
+  not persist one. The marks the recovery takes from a message - a session's checkpoint, a
+  producer's safe point, the start of a gap with no safe point - take its stamp, but no later
+  than the producer's now at receipt: the SDK's wall clock when the delivery arrived, less
+  the producer's most cautious offset of the last minute - the one that puts the producer's
+  now earliest, and always one from before the newest alive - so an alive stamped ahead does
+  not vouch for its own stamp, for its copy on a session's queue, or for a message received
+  before it and handled after; none while no alive has shown one. A producer clock that
+  steps back is taken at once, one that steps forward, or is really ahead, a minute later;
+  every error lowers a mark, which only makes a recovery larger. There is no tolerance
+  setting. One stamp more than a second ahead is logged at `WARN`, at most once a minute per
+  producer, with the stamp, the producer's now and the difference. The stamps a client sees,
+  on the message and in the producer's last processed timestamp, stay as the producer made
+  them; one place, `ClockOffsets.mark`, computes the mark for the alive dispatcher and the
+  session dispatchers. A replay session takes its stamps as they are. The live state does
+  not take a clamped mark: its watermark is the message's own stamp, so the order of the true
+  stamps is kept (clamped stamps all become receipt times, and a late alive would lower them
+  all below a watermark set before it). A watermark that is ahead of its producer's now
+  when a later message arrives, by more than a second, came from a stamp the producer's
+  clock could not have made; that message, if its own stamp is not ahead of the producer's now by
+  more than the same second, writes, and its stamp replaces the watermark. Of two stamps
+  ahead the newer stays. The producer's now for this is the receipt time less the smallest
+  offset of the last minute's alives - the latest the producer's clock can be taken to read:
+  a late alive or a long delivery does not make right stamps look ahead, and an alive stamped
+  ahead delays the live state's recovery from a bad stamp by no more than the minute it stays. A recovery's start is clamped
   to the producer's stateful recovery window, as today - counted back by the producer's
   clock, as the gaps' starts are, with the offset measured on its alives - and a cold
   start with no seed requests a full snapshot, or the configured initial snapshot
@@ -1973,8 +1981,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   fast clock or a bad value, kept a session's checkpoint and the producer's safe point ahead of
   what was processed, so a gap opened meanwhile started at the request and never asked for what
   lay between, and held the live state's watermark ahead, so the correct messages that followed
-  wrote no status or score until the producer's clock caught up. The owner chose to clamp, with
-  no tolerance setting: a mark is the stamp or the producer's now at receipt - the SDK's wall
+  wrote no status or score until the producer's clock caught up. The owner chose to clamp the
+  recovery's marks, with no tolerance setting: a mark is the stamp or the producer's now at receipt - the SDK's wall
   clock then, less the producer's most cautious offset of the last minute, corrected for a step
   of the wall clock since it was measured, as the recovery machine corrects it - whichever is
   less. The offset of the latest alive was the first choice, and was wrong: the alive dispatcher
@@ -1982,12 +1990,29 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   moved it when a message queued behind a callback is. Each producer keeps the offsets of its
   alives over the minute, in an array replaced whole (a reader never waits for the alive
   dispatcher), with the newest one older than the minute, and "no offset" before the first; the
-  mark takes the largest. It is the safe side of a
-  checkpoint and keeps the watermarks' order of the true stamps; the offset noise only lowers a mark a little. A
-  mark taken so can still be ahead of the message's true generation by the delivery's latency,
-  so a correct message generated within that latency of the bad one, and stamped before it was
-  received, is still older than the watermark. One place computes it, `ClockOffsets.mark`, for
-  both dispatchers, and it is handed to the recovery actor and the live state beside the
-  stamp, which the machine still publishes and compares as it was. The 0.0.x line kept no
-  checkpoint or watermark, so it has no behaviour to differ from: KD-13 says what a stamp ahead
-  counts as. No public API changes.
+  mark takes the largest. It is the safe side of a checkpoint: a lower mark only makes a recovery
+  larger, so a late alive costs nothing there. One place computes it, `ClockOffsets.mark`, for
+  both dispatchers, and it is handed to the recovery actor beside the stamp, which the machine
+  still publishes and compares as it was. The live state does not use it: see the next entry.
+  No public API changes.
+- 2026-10-16, the live state keeps the real stamp (follows the entry of 2026-10-15 on stamps
+  ahead): the first version also gave the live state the clamped mark, which was wrong in three
+  ways - two stamps ahead both clamped to their receipt times, so the older stamp overwrote the
+  newer; one late alive, the largest offset of the minute, put every mark below a watermark set
+  before it, so correct status and score writes were refused for the minute, under ordinary
+  delivery delay; and with the largest offset a mark is a receipt time shifted by a constant
+  for most messages, which cancels the order of the true stamps the watermark exists for. The
+  watermark is the message's own stamp again, as before the change. A message older than the
+  watermark still writes when the watermark is ahead of its producer's now at the message's
+  receipt, by more than a second, and its own stamp is not: the watermark came from a stamp the
+  producer's clock could not have made, and this stamp replaces it. For the producer's now the
+  options were the latest offset, the cautious window of the recovery's marks, or the smallest
+  offset of the minute. The window's largest offset puts the now early by the longest delivery,
+  so right stamps look ahead, and by a whole late alive's lateness, so a real watermark looks
+  bad and an old out-of-order message passes. The latest offset has the same fault for one
+  alive. The smallest puts the now at the latest the producer's clock can read: a real
+  watermark is never ahead of it by more than the jitter, which the second absorbs, and a late
+  alive moves nothing; its fault is an alive stamped ahead, which puts the now late and so
+  keeps a bad watermark in place, as it was before this change, for the minute it stays in the
+  window (plus an alive interval). Chosen as the one whose every error is the status quo. The
+  WARN is unchanged. No public API changes.

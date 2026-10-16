@@ -215,6 +215,45 @@ class LiveStateTest {
     }
 
     @Test
+    void aWatermarkAheadOfItsProducersNowIsReplacedByAMessageThatIsNot() {
+        long now = 1_000_000;
+        long tenMinutesAhead = now + 600_000;
+        assertThat(feedWrite("m1", LIVE, tenMinutesAhead, now))
+                .as("a bad stamp is a stamp")
+                .isTrue();
+        assertThat(feedWrite("m1", LIVE, now - 5_000, now))
+                .as("the producer's clock cannot have made the watermark: a right stamp writes")
+                .isTrue();
+        assertThat(timestampOf("m1")).as("and is the watermark now").isEqualTo(now - 5_000);
+        assertThat(feedWrite("m1", LIVE, now - 6_000, now))
+                .as("the one older than that is refused as usual")
+                .isFalse();
+    }
+
+    @Test
+    void ofTwoStampsAheadOfTheirProducerTheNewerStays() {
+        long now = 1_000_000;
+        assertThat(feedWrite("m1", LIVE, now + 600_000, now)).isTrue();
+        assertThat(feedWrite("m1", LIVE, now + 540_000, now))
+                .as("itself ahead: no right stamp, and older")
+                .isFalse();
+        assertThat(timestampOf("m1")).isEqualTo(now + 600_000);
+    }
+
+    @Test
+    void aWatermarkAheadOfItsProducerByNoMoreThanTheJitterIsNotTakenForABadOne() {
+        long now = 1_000_000;
+        assertThat(feedWrite("m1", LIVE, now + 1_000, now)).isTrue();
+        assertThat(feedWrite("m1", LIVE, now - 5_000, now))
+                .as("a second ahead is the jitter of delivery: an older message is out of order")
+                .isFalse();
+        assertThat(feedWrite("m1", LIVE, now + 2_000, now)).as("newer").isTrue();
+        assertThat(feedWrite("m1", LIVE, now - 5_000, now))
+                .as("two seconds ahead is not")
+                .isTrue();
+    }
+
+    @Test
     void aReplayedMessageWritesInTheOrderItComesAndTheWatermarkKeepsTheNewest() {
         live.feedWriteReplayed("m1", LIVE, 2_000, now(), status("ended"));
         time.advance(LiveState.STATUS_AGE.plusMinutes(1));
@@ -418,6 +457,18 @@ class LiveStateTest {
     private boolean feedWrite(String key, long producer, long timestamp, Duration age) {
         return live.feedWriteIfNewer(
                 key, producer, timestamp, age, now(), LiveWrite.of().put(TIMESTAMP, timestamp));
+    }
+
+    /** A write of a producer whose now, when it was received, was {@code producerNow}. */
+    private boolean feedWrite(String key, long producer, long timestamp, long producerNow) {
+        return live.feedWriteIfNewer(
+                key,
+                producer,
+                timestamp,
+                producerNow,
+                FRESH,
+                now(),
+                LiveWrite.of().put(TIMESTAMP, timestamp));
     }
 
     private boolean restWrite(String key) {

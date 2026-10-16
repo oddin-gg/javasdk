@@ -21,8 +21,10 @@ import org.jspecify.annotations.Nullable;
  * never waits for an entity cache, or its clear.
  *
  * <p>The watermark is the timestamp of the last live message that wrote, per entity and producer,
- * with when the SDK received it; a timestamp ahead of its producer's now at receipt is taken as that
- * now, so a producer's clock error does not hold the messages that follow back. A message older than the watermark of its producer does not write;
+ * with when the SDK received it. A watermark that is ahead of its producer's now when a later
+ * message arrives came from a stamp the producer's clock could not have made, and that message
+ * replaces it unless it is ahead itself, so a clock error holds the messages that follow back for
+ * no longer than the first right one. A message older than the watermark of its producer does not write;
  * it is still delivered. A replayed message writes in the order it comes. The feed's and the API's
  * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
  * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
@@ -49,6 +51,13 @@ public final class LiveState<K> {
     public static final Duration STATUS_AGE = Duration.ofMinutes(20);
 
     static final Duration AGE = Duration.ofHours(24);
+
+    /**
+     * How far ahead of its producer's now a stamp has to be to count as ahead: the jitter of reading
+     * two clocks and of a delivery's latency, so a message a few milliseconds out of order is not
+     * taken for a bad stamp's heir.
+     */
+    private static final long AHEAD = Duration.ofSeconds(1).toMillis();
 
     /** A reading that was never taken: the feed's monotonic clock reads 1 or more. */
     private static final long NEVER = 0;
@@ -82,18 +91,36 @@ public final class LiveState<K> {
     /**
      * Writes a live message's values for {@code entity}, and records its watermark, unless it is
      * older than the last one from its producer or its corrected age is over {@link #STATUS_AGE}.
+     * An older message still writes when the watermark is ahead of its producer's now, so came from
+     * a stamp the producer's clock could not have made, and this message is not: it replaces the
+     * watermark, so one bad stamp holds back nothing that follows it for longer than it takes a
+     * right one to arrive. A message that is itself ahead never does: of two bad stamps the newer
+     * stays.
      *
-     * @param timestamp the message's timestamp, the producer's clock, or the producer's now at receipt
-     *     when it is stamped ahead of that
+     * @param timestamp the message's timestamp, the producer's clock
+     * @param producerNow the producer's now when the SDK received the message, by the producer's
+     *     clock: what a stamp or a watermark is ahead of
      * @param receivedAt when the SDK received it, in millis on the feed's monotonic clock
      * @return whether it wrote
      */
     public boolean feedWriteIfNewer(
-            K entity, long producer, long timestamp, Duration correctedAge, long receivedAt, LiveWrite write) {
+            K entity,
+            long producer,
+            long timestamp,
+            long producerNow,
+            Duration correctedAge,
+            long receivedAt,
+            LiveWrite write) {
         if (correctedAge.compareTo(STATUS_AGE) > 0) {
             return false;
         }
-        return feedWrite(entity, producer, timestamp, receivedAt, write, true);
+        return feedWrite(entity, producer, timestamp, producerNow, receivedAt, write, true);
+    }
+
+    /** The same for a producer whose clock is not known: no watermark is taken for a bad one. */
+    public boolean feedWriteIfNewer(
+            K entity, long producer, long timestamp, Duration correctedAge, long receivedAt, LiveWrite write) {
+        return feedWriteIfNewer(entity, producer, timestamp, Long.MAX_VALUE, correctedAge, receivedAt, write);
     }
 
     /**
@@ -106,22 +133,33 @@ public final class LiveState<K> {
      * @param receivedAt when the SDK received it, in millis on the feed's monotonic clock
      */
     public void feedWriteReplayed(K entity, long producer, long timestamp, long receivedAt, LiveWrite write) {
-        feedWrite(entity, producer, timestamp, receivedAt, write, false);
+        feedWrite(entity, producer, timestamp, Long.MAX_VALUE, receivedAt, write, false);
     }
 
-    /** A feed write, refused when {@code inOrder} and older than its producer's watermark. */
+    /** A feed write, refused when {@code inOrder} and older than its producer's watermark, a bad one excepted. */
     private boolean feedWrite(
-            K entity, long producer, long timestamp, long receivedAt, LiveWrite write, boolean inOrder) {
+            K entity,
+            long producer,
+            long timestamp,
+            long producerNow,
+            long receivedAt,
+            LiveWrite write,
+            boolean inOrder) {
         lock.lock();
         try {
             long now = clock.monoMillis();
             Live current = current(entity, now);
             Mark last = current == null ? null : current.marks().get(producer);
+            boolean replaces = false;
             if (inOrder && last != null && last.timestamp() > timestamp) {
-                return false;
+                // a watermark the producer's clock cannot have made, and a message it could
+                replaces = last.timestamp() - producerNow > AHEAD && timestamp - producerNow <= AHEAD;
+                if (!replaces) {
+                    return false;
+                }
             }
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
-            long newest = last == null ? timestamp : Math.max(last.timestamp(), timestamp);
+            long newest = last == null || replaces ? timestamp : Math.max(last.timestamp(), timestamp);
             marks.put(producer, new Mark(newest, receivedAt));
             put(
                     entity,

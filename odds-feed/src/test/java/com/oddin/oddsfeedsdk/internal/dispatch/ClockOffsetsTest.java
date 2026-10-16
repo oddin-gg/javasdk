@@ -103,6 +103,28 @@ class ClockOffsetsTest {
     }
 
     @Test
+    void theProducersNowAtReceiptIsByTheSmallestOffsetOfTheMinute() {
+        assertThat(offsets.producerNow(1, Stamp.of(110_000)))
+                .as("no alive yet: the SDK's clock")
+                .isEqualTo(110_000);
+
+        offsets.alive(1, 100_000, Stamp.of(102_500));
+        assertThat(offsets.producerNow(1, Stamp.of(110_000)))
+                .as("the one offset, 2.5 s: \"no offset\" does not count")
+                .isEqualTo(107_500);
+
+        // a late alive, or one stamped behind: an offset of 10 minutes more
+        offsets.alive(1, 105_000 - TEN_MINUTES, Stamp.of(105_000));
+        assertThat(offsets.producerNow(1, Stamp.of(110_000)))
+                .as("it moves nothing")
+                .isEqualTo(107_500);
+
+        // one stamped ahead: 10 minutes less, for as long as it is in the window
+        offsets.alive(1, 108_000 + TEN_MINUTES, Stamp.of(108_000));
+        assertThat(offsets.producerNow(1, Stamp.of(110_000))).isEqualTo(110_000 + TEN_MINUTES);
+    }
+
+    @Test
     void aStepOfTheWallClockAfterTheOffsetWasMeasuredDoesNotLowerTheMarks() {
         // measured when the wall clock read 1 000 000 and the monotonic one 500 000
         offsets.alive(1, 1_000_000, new Stamp(1_000_000, 500_000));

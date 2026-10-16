@@ -59,11 +59,12 @@ import org.slf4j.LoggerFactory;
  *       so is one of a producer the client disabled or that the session's interest is not for, as in
  *       0.0.x. Alives and snapshot completes go to the recovery actor and no further. A fixture change
  *       another session, or this one, has delivered already is dropped (see {@link FixtureChanges}).
- *   <li><b>Mark.</b> What the recovery's checkpoints and the live state's watermarks are taken from:
- *       the message's timestamp, but no later than its producer's now at receipt (see {@link
- *       ClockOffsets#mark}); a replay's are taken as they are. The client's message keeps its own.
+ *   <li><b>Mark.</b> What the recovery's checkpoints are taken from: the message's timestamp, but no
+ *       later than its producer's now at receipt (see {@link ClockOffsets#mark}); a replay's are
+ *       taken as they are. The live state keeps the stamp, and is told the producer's now (see
+ *       {@link ClockOffsets#producerNow}). The client's message keeps its own.
  *   <li><b>Cache write.</b> An odds change's match status is written to the match's live state, unless
- *       an older message than one already written (KD-13) or older than the match status age by the
+ *       an older message than one already written, one from a bad stamp excepted (KD-13), or older than the match status age by the
  *       producer's own clock (KD-14); a fixture change invalidates the match and its fixture, or the
  *       tournament. Before the callback, so the callback reads what the message carried.
  *   <li><b>Build</b> the message the client gets.
@@ -399,13 +400,9 @@ public final class SessionDispatcher implements AutoCloseable {
             return;
         }
         SessionFacts told = facts;
-        long mark = replay
-                ? message.getTimestamp()
-                : pipeline.offsets()
-                        .mark(
-                                producerId,
-                                message.getTimestamp(),
-                                new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono()));
+        var receipt = new Stamp(delivery.receivedAt().toEpochMilli(), delivery.receivedMono());
+        long mark =
+                replay ? message.getTimestamp() : pipeline.offsets().mark(producerId, message.getTimestamp(), receipt);
         switch (message) {
             case OFAlive alive -> {
                 admitControlFact();
@@ -425,7 +422,7 @@ public final class SessionDispatcher implements AutoCloseable {
         }
         boolean dropped = false;
         try {
-            deliver(message, route, body, producer, timestamp(message.getTimestamp(), delivery), taken, mark, delivery);
+            deliver(message, route, body, producer, timestamp(message.getTimestamp(), delivery), taken, receipt);
         } catch (ClosedBeforeListener e) {
             dropped = true;
             throw e;
@@ -445,8 +442,7 @@ public final class SessionDispatcher implements AutoCloseable {
             Producer producer,
             MessageTimestamp timestamp,
             Stamp taken,
-            long mark,
-            RawDelivery delivery) {
+            Stamp receipt) {
         if (message instanceof OFFixtureChange change) {
             URN id;
             try {
@@ -462,7 +458,7 @@ public final class SessionDispatcher implements AutoCloseable {
             }
         }
         try {
-            write(message, producer.getId(), mark, taken.wall(), delivery.receivedMono());
+            write(message, producer.getId(), receipt, taken.wall());
         } catch (Throwable e) {
             sdkFailed("cache write", e);
             return;
@@ -481,7 +477,7 @@ public final class SessionDispatcher implements AutoCloseable {
     }
 
     /** What the message says of the caches, before the callback reads them. */
-    private void write(BasicMessage message, long producerId, long mark, long takenAt, long receivedAt) {
+    private void write(BasicMessage message, long producerId, Stamp receipt, long takenAt) {
         switch (message) {
             case OFOddsChange odds -> {
                 OFSportEventStatus status = odds.getSportEventStatus();
@@ -489,10 +485,19 @@ public final class SessionDispatcher implements AutoCloseable {
                 if (status != null && URN.TypeMatch.equals(id.getType())) {
                     if (replay) {
                         // old by design, and a run played again repeats the last one's timestamps
-                        pipeline.matches().replayed(id, producerId, odds.getTimestamp(), receivedAt, status);
+                        pipeline.matches().replayed(id, producerId, odds.getTimestamp(), receipt.mono(), status);
                     } else {
                         long age = pipeline.offsets().age(producerId, odds.getTimestamp(), takenAt);
-                        pipeline.matches().oddsChange(id, producerId, mark, Duration.ofMillis(age), receivedAt, status);
+                        long producerNow = pipeline.offsets().producerNow(producerId, receipt);
+                        pipeline.matches()
+                                .oddsChange(
+                                        id,
+                                        producerId,
+                                        odds.getTimestamp(),
+                                        producerNow,
+                                        Duration.ofMillis(age),
+                                        receipt.mono(),
+                                        status);
                     }
                 }
             }

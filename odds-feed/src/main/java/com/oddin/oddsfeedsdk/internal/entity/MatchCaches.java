@@ -174,13 +174,27 @@ public final class MatchCaches {
      * older than the last one from its producer, or too old to be live; written before the message
      * reaches the client, so its callback reads what the message carried.
      *
-     * @param timestamp the message's mark: its timestamp, or the producer's now at receipt when it is
-     *     stamped ahead of that, so a bad stamp does not hold later messages back
+     * @param timestamp the message's timestamp, by the producer's clock
+     * @param producerNow the producer's now when the SDK received it, which tells a watermark that
+     *     came from a bad stamp: see {@link LiveState#feedWriteIfNewer}
      * @return whether it was written
      */
     public boolean oddsChange(
+            URN id,
+            long producer,
+            long timestamp,
+            long producerNow,
+            Duration correctedAge,
+            long receivedAt,
+            OFSportEventStatus status) {
+        return live.feedWriteIfNewer(
+                id, producer, timestamp, producerNow, correctedAge, receivedAt, MatchWrites.live(status));
+    }
+
+    /** The same for a producer whose clock is not known. */
+    public boolean oddsChange(
             URN id, long producer, long timestamp, Duration correctedAge, long receivedAt, OFSportEventStatus status) {
-        return live.feedWriteIfNewer(id, producer, timestamp, correctedAge, receivedAt, MatchWrites.live(status));
+        return oddsChange(id, producer, timestamp, Long.MAX_VALUE, correctedAge, receivedAt, status);
     }
 
     /**

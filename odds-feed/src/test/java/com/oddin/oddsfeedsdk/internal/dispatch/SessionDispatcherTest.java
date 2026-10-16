@@ -460,17 +460,91 @@ class SessionDispatcherTest {
         assertThat(listener.messages).as("both delivered").hasSize(2);
     }
 
-    /** A producer's clock error must not hold what follows back: the watermark is the clamped stamp. */
+    /**
+     * A producer's clock error must not hold what follows back: a watermark ahead of the producer's
+     * now is replaced by a message that is not. The producer's clock here is 2.5 s behind the SDK's,
+     * as its alives showed.
+     */
     @Test
     void aMessageStampedAheadOfItsProducerDoesNotHoldTheStatusOfTheOnesThatFollowBack() {
         SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
         listener.onOdds = message -> listener.read.add(status(message));
-        long tenMinutes = Duration.ofMinutes(10).toMillis();
-        handle(dispatcher, withStatus("5", System.currentTimeMillis() + tenMinutes));
-        // stamped right, by the producer's clock, at the moment the SDK received the one before
-        handle(dispatcher, withStatus("1", lastReceived.toEpochMilli()));
+        long now = System.currentTimeMillis();
+        alive(2_500, now);
+        handle(dispatcher, withStatus("5", now - 2_500 + Duration.ofMinutes(10).toMillis()));
+        // stamped right by the producer's own clock, at the moment the SDK received the one before
+        handle(dispatcher, withStatus("1", lastReceived.toEpochMilli() - 2_500));
         assertThat(listener.read).containsExactly(EventStatus.Cancelled, EventStatus.Live);
         assertThat(listener.messages).as("both delivered").hasSize(2);
+    }
+
+    @Test
+    void ofTwoMessagesStampedAheadOfTheirProducerTheNewerStampStays() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        listener.onOdds = message -> listener.read.add(status(message));
+        long now = System.currentTimeMillis();
+        alive(2_500, now);
+        long tenMinutesAhead = now - 2_500 + Duration.ofMinutes(10).toMillis();
+        handle(dispatcher, withStatus("5", tenMinutesAhead));
+        handle(
+                dispatcher,
+                withStatus("1", tenMinutesAhead - Duration.ofMinutes(1).toMillis()));
+        assertThat(listener.read)
+                .as("the older stamp does not overwrite")
+                .containsExactly(EventStatus.Cancelled, EventStatus.Cancelled);
+    }
+
+    /** One alive delayed or stamped behind gives a large offset; it must not freeze correct writes. */
+    @Test
+    void aLateAliveDoesNotFreezeTheStatusWritesOfCorrectlyStampedMessages() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        listener.onOdds = message -> listener.read.add(status(message));
+        long now = System.currentTimeMillis();
+        alive(2_500, now - 20_000);
+        handle(dispatcher, withStatus("5", now - 2_500 + Duration.ofMinutes(10).toMillis()));
+        // an alive stamped ten minutes behind: the largest offset of the minute
+        alive(2_500 + Duration.ofMinutes(10).toMillis(), now - 5_000);
+        handle(dispatcher, withStatus("1", lastReceived.toEpochMilli() - 2_500));
+        assertThat(listener.read).containsExactly(EventStatus.Cancelled, EventStatus.Live);
+    }
+
+    /** An alive stamped ahead puts the producer's now late for the minute it stays, and no longer. */
+    @Test
+    void anAliveStampedAheadHoldsBackTheRecoveryFromABadStampOnlyForTheWindow() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        listener.onOdds = message -> listener.read.add(status(message));
+        long now = System.currentTimeMillis();
+        long tenMinutesAhead = now - 2_500 + Duration.ofMinutes(10).toMillis();
+        alive(2_500, now - 20_000);
+        alive(-Duration.ofMinutes(10).toMillis(), now - 5_000);
+        handle(dispatcher, withStatus("5", tenMinutesAhead));
+        handle(dispatcher, withStatus("1", lastReceived.toEpochMilli() - 2_500));
+        assertThat(listener.read)
+                .as("the alive that vouches for the bad stamp is still in the window")
+                .containsExactly(EventStatus.Cancelled, EventStatus.Cancelled);
+
+        // the bad alive, and the one before it, are a window and an interval old, with right ones since
+        var again = new ClockOffsets(world.producers);
+        again.alive(2, now - 200_000 + Duration.ofMinutes(10).toMillis(), Stamp.of(now - 200_000));
+        again.alive(2, now - 190_000 - 2_500, Stamp.of(now - 190_000));
+        again.alive(2, now - 10_000 - 2_500, Stamp.of(now - 10_000));
+        listener.read.clear();
+        var pipeline = new Pipeline(
+                world.decoder,
+                world.messages,
+                world.matches,
+                world.profiles,
+                world.producers,
+                fixtureChanges,
+                again,
+                events,
+                clock);
+        var later = new SessionDispatcher(
+                1, session, MessageInterest.ALL, listener, ext, transport, facts, false, feedClosed::get, pipeline);
+        handle(later, withStatus("1", lastReceived.toEpochMilli() - 2_500));
+        assertThat(listener.read)
+                .as("the producer's now is the right clock's: the bad watermark is replaced")
+                .containsExactly(EventStatus.Live);
     }
 
     /** KD-14: the age is the producer's own, by the offset its alives show. */
@@ -904,6 +978,11 @@ class SessionDispatcherTest {
                 receivedAt,
                 receivedAt.toEpochMilli(),
                 receivedAt.minusMillis(500));
+    }
+
+    /** An alive of a producer whose clock is {@code behind} behind the SDK's, received at {@code at}. */
+    private void alive(long behind, long at) {
+        offsets.alive(2, at - behind, Stamp.of(at));
     }
 
     private static String live(String fixture) {
