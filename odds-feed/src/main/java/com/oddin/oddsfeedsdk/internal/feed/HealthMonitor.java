@@ -100,6 +100,16 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
      */
     private volatile @Nullable Found connectionAtClose;
 
+    /**
+     * When the newest success the API answered ended, and when the newest refusal did that the
+     * stalled API part is held by, by {@link System#nanoTime()}, as the answers say; a feed's calls
+     * all come after this monitor, so its construction is before any of them. Guarded by {@link
+     * #noting}.
+     */
+    private long acceptedAt = System.nanoTime();
+
+    private long refusedAt;
+
     /** The sessions lagging, by the feed's number, as the recovery actor last told. */
     private final Set<Integer> lagging = ConcurrentHashMap.newKeySet();
     /** What the SDK's own watch last found of each part it watches; none until it finds something. */
@@ -244,38 +254,75 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
 
     /**
      * The REST client's word on an attempt, on the thread that made the call: the API's part is
-     * healthy again, told at once, when a refused token is answered with a success. Any other
-     * attempt changes nothing, and costs one read while the token is not refused.
+     * healthy again, told at once, when a refused token is answered with a success that is newer than
+     * the newest refusal. Any other attempt changes nothing.
      */
     @Override
     public void called(ApiCall call) {
-        if (call.failure() == null && call.status() / 100 == 2 && apiRefused()) {
-            note(
-                            HealthComponent.API,
-                            0,
-                            HealthState.HEALTHY,
-                            "the API answered " + call.method() + " " + call.uri() + " with " + call.status() + " at "
-                                    + clock.instant() + ", so it takes the access token again")
-                    .tell();
+        if (call.failure() != null || call.status() / 100 != 2) {
+            return;
+        }
+        @Nullable Noted healed = null;
+        noting.lock();
+        try {
+            acceptedAt = later(call.answeredAt(), acceptedAt);
+            if (apiRefused() && call.answeredAt() - refusedAt > 0) {
+                healed = note(
+                        HealthComponent.API,
+                        0,
+                        HealthState.HEALTHY,
+                        "the API answered " + call.method() + " " + call.uri() + " with " + call.status() + " at "
+                                + clock.instant() + ", so it takes the access token again");
+            }
+        } finally {
+            noting.unlock();
+        }
+        if (healed != null) {
+            healed.tell();
         }
     }
 
     /**
      * The REST client's word that the API refused the access token (401 or 403), on the thread that
-     * made the call: the API's part is stalled from now, told at once. A refusal while it is stalled
-     * already changes nothing, so the reason keeps the first one's status and time.
+     * made the call: the API's part is stalled from now, told at once, unless a success newer than
+     * this answer has been told already. A refusal while it is stalled already changes nothing but
+     * what a later report of an older success may do, so the reason keeps the first one's status and
+     * time.
+     *
+     * <p>Which answer is the newer is told by when the attempts ended, not by when their reports
+     * arrive, and the check and the change of state are one step under the lock the watch notes
+     * under: a success that was in flight before a refusal cannot heal the part after it, whichever
+     * is reported first.
      */
     @Override
     public void refused(ApiCall call) {
-        if (!apiRefused()) {
-            note(
+        @Nullable Noted stalled = null;
+        noting.lock();
+        try {
+            if (call.answeredAt() - acceptedAt >= 0) {
+                if (apiRefused()) {
+                    refusedAt = later(call.answeredAt(), refusedAt);
+                } else {
+                    refusedAt = call.answeredAt();
+                    stalled = note(
                             HealthComponent.API,
                             0,
                             HealthState.STALLED,
                             "the API refused the access token: " + call.method() + " " + call.uri() + " answered "
-                                    + call.status() + " at " + clock.instant())
-                    .tell();
+                                    + call.status() + " at " + clock.instant());
+                }
+            }
+        } finally {
+            noting.unlock();
         }
+        if (stalled != null) {
+            stalled.tell();
+        }
+    }
+
+    /** The later of two readings of {@link System#nanoTime()}. */
+    private static long later(long one, long other) {
+        return one - other >= 0 ? one : other;
     }
 
     /** Whether the API's part is stalled by a refusal not yet answered by a success. */

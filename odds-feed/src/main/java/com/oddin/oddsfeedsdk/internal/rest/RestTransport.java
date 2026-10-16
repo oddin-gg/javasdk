@@ -346,7 +346,8 @@ public final class RestTransport implements AutoCloseable {
     }
 
     private ApiCall report(String method, URI uri, int status, long started, int attempt, @Nullable Exception failure) {
-        var call = new ApiCall(method, uri, status, Duration.ofNanos(System.nanoTime() - started), attempt, failure);
+        long ended = System.nanoTime();
+        var call = new ApiCall(method, uri, status, Duration.ofNanos(ended - started), attempt, failure, ended);
         if (logCalls) {
             log(call);
         }

@@ -892,6 +892,114 @@ class HealthMonitorTest {
         heard.nothingMore("nothing but a success heals it");
     }
 
+    @Test
+    void aSuccessThatEndedBeforeANewerRefusalCannotHealAfterItsReport() throws InterruptedException {
+        events.start();
+        var base = System.nanoTime();
+        health.refused(call(401, null, base + 1));
+        heard.next();
+
+        // the refusal that ended last is reported first, the success that ended in between after it
+        health.refused(call(401, null, base + 3));
+        health.called(call(200, null, base + 2));
+        assertThat(read().components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+        heard.nothingMore("the older success told nothing");
+
+        health.called(call(200, null, base + 4));
+        assertThat(heard.next().state()).as("a newer success heals it").isEqualTo(HealthState.HEALTHY);
+    }
+
+    @Test
+    void aRefusalThatEndedBeforeASuccessAlreadyToldStallsNothing() throws InterruptedException {
+        events.start();
+        var base = System.nanoTime();
+        health.refused(call(403, null, base + 1));
+        heard.next();
+        health.called(call(200, null, base + 3));
+        assertThat(heard.next().state()).isEqualTo(HealthState.HEALTHY);
+
+        health.refused(call(401, null, base + 2));
+        assertThat(read().components())
+                .as("the success is the newer answer")
+                .containsEntry(HealthComponent.API, HealthState.HEALTHY);
+        heard.nothingMore("the older refusal told nothing");
+
+        health.refused(call(401, null, base + 4));
+        assertThat(heard.next().state()).as("a refusal newer than the success").isEqualTo(HealthState.STALLED);
+    }
+
+    /**
+     * The success is in the step that heals the part, its time read, when a refusal that ended after
+     * it is reported: the refusal waits for that step, then stalls the part again, since it is the
+     * newer answer.
+     */
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aRefusalReportedWhileAnOlderSuccessHealsTheApiStallsItAgainAfterTheHeal() throws Exception {
+        var hold = new Hold();
+        var health = new HealthMonitor(events, id -> null, hold, HOUR, logged::add);
+        events.start();
+        var base = System.nanoTime();
+        health.refused(call(401, null, base + 1));
+        heard.next();
+
+        var success = Worker.unstarted(() -> health.called(call(200, null, base + 2)));
+        hold.holder = success.thread();
+        var refusal = Worker.unstarted(() -> health.refused(call(401, null, base + 3)));
+        try {
+            success.thread().start();
+            await(hold.inside);
+            refusal.thread().start();
+            awaitParkedOrEnded(refusal.thread());
+            assertThat(refusal.thread().getState())
+                    .as("the refusal waits for the step that heals")
+                    .isEqualTo(Thread.State.WAITING);
+        } finally {
+            hold.release.countDown();
+        }
+        success.ended();
+        refusal.ended();
+
+        // as logged, in the order told: the client's slot may merge the two changes it was slow to hear
+        assertThat(logged)
+                .extracting(HealthEvent::state)
+                .as("the refusal is not swallowed")
+                .containsExactly(HealthState.STALLED, HealthState.HEALTHY, HealthState.STALLED);
+        assertThat(read(health).components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+    }
+
+    /** The refusal is in the step that stalls the part when a success that ended before it is reported. */
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aSuccessReportedWhileANewerRefusalStallsTheApiCannotHealIt() throws Exception {
+        var hold = new Hold();
+        var health = new HealthMonitor(events, id -> null, hold, HOUR, logged::add);
+        events.start();
+        var base = System.nanoTime();
+
+        var refusal = Worker.unstarted(() -> health.refused(call(401, null, base + 3)));
+        hold.holder = refusal.thread();
+        var success = Worker.unstarted(() -> health.called(call(200, null, base + 2)));
+        try {
+            refusal.thread().start();
+            await(hold.inside);
+            success.thread().start();
+            awaitParkedOrEnded(success.thread());
+            assertThat(success.thread().getState())
+                    .as("the success waits for the step that stalls")
+                    .isEqualTo(Thread.State.WAITING);
+        } finally {
+            hold.release.countDown();
+        }
+        refusal.ended();
+        success.ended();
+
+        assertThat(heard.next().state()).isEqualTo(HealthState.STALLED);
+        assertThat(read(health).components()).containsEntry(HealthComponent.API, HealthState.STALLED);
+        heard.nothingMore("the older success told nothing");
+        assertThat(logged).extracting(HealthEvent::state).containsExactly(HealthState.STALLED);
+    }
+
     /** The REST transport's own words reach the part: a refusal, other failures, a success. */
     @Test
     @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
@@ -995,6 +1103,30 @@ class HealthMonitorTest {
 
     private static ApiCall call(int status, @Nullable Exception failure) {
         return new ApiCall("GET", WHOAMI_URI, status, Duration.ZERO, 1, failure);
+    }
+
+    /** An attempt that ended at this reading of {@code System.nanoTime()}. */
+    private static ApiCall call(int status, @Nullable Exception failure, long answeredAt) {
+        return new ApiCall("GET", WHOAMI_URI, status, Duration.ZERO, 1, failure, answeredAt);
+    }
+
+    /**
+     * A clock that holds the one thread named in {@link #holder} at its first reading, until the
+     * test releases it: the thread is then inside the step that reads the time for a reason.
+     */
+    private static final class Hold implements InstantSource {
+        volatile @Nullable Thread holder;
+        final CountDownLatch inside = new CountDownLatch(1);
+        final CountDownLatch release = new CountDownLatch(1);
+
+        @Override
+        public Instant instant() {
+            if (Thread.currentThread().equals(holder) && inside.getCount() > 0) {
+                inside.countDown();
+                await(release);
+            }
+            return NOW;
+        }
     }
 
     // ------------------------------------------------------------------ readings
