@@ -98,8 +98,9 @@ final class RecoveryMachine {
     private static final long NO_POINT = -1;
 
     /**
-     * How many of a producer's recoveries that ended without completing are remembered: each sends
-     * a snapshot of its own at most, so the traffic that puts off a deadline stays bounded.
+     * How many of a producer's recoveries, and as many of its event recoveries, that ended without
+     * completing are remembered: each sends a snapshot of its own at most, so the traffic that puts
+     * off a deadline stays bounded.
      */
     private static final int ENDED_REMEMBERED = 8;
 
@@ -636,11 +637,12 @@ final class RecoveryMachine {
      * Whether what a session took says the recovery in flight is still on its way to it: a message
      * of its snapshot, or one the snapshot and its snapshot complete queue behind - a live message or
      * an alive sent before the request, or a snapshot message of an earlier recovery of the producer
-     * that failed or was given up, or of an event recovery asked for before it. Any of them puts off
-     * the deadline for its snapshot complete. An event recovery asked for since does not: one after
-     * another, they would hold a recovery whose snapshot complete is lost for the maximum recovery
-     * time. An event recovery's deadline is put off the same way, by its own snapshot and by what
-     * queues ahead of it: the recovery in flight asked for before it, say.
+     * that failed or was given up, or of an event recovery asked for before it, in flight or ended
+     * without completing. Any of them puts off the deadline for its snapshot complete. An event
+     * recovery asked for since does not: one after another, they would hold a recovery whose
+     * snapshot complete is lost for the maximum recovery time. An event recovery's deadline is put
+     * off the same way, by its own snapshot and by what queues ahead of it: a recovery or an event
+     * recovery asked for before it, in flight or ended without completing.
      */
     private void heard(Track track, int id, long generatedAt, long requestId) {
         for (EventRecovery event : eventRecoveries.values()) {
@@ -663,7 +665,8 @@ final class RecoveryMachine {
     /**
      * Whether what a session took is the event recovery's own snapshot, or queued ahead of it: a
      * live message or an alive generated before it was asked for, or a snapshot message of a
-     * recovery of the producer asked for before it, in flight still.
+     * recovery or an event recovery of the producer asked for before it, in flight still or ended
+     * without completing.
      */
     private boolean ahead(Track track, EventRecovery event, long generatedAt, long requestId) {
         if (requestId == 0) {
@@ -677,16 +680,35 @@ final class RecoveryMachine {
             return active.issuedMono < event.issuedMono;
         }
         EventRecovery other = eventRecoveries.get(requestId);
-        return other != null && other.producerId == track.id && other.issuedMono < event.issuedMono;
+        if (other != null) {
+            return other.producerId == track.id && other.issuedMono < event.issuedMono;
+        }
+        return askedBefore(track.ended, requestId, event.issuedMono)
+                || askedBefore(track.endedEvents, requestId, event.issuedMono);
+    }
+
+    /** Whether the request id is one of {@code ended}, asked for before {@code issuedMono}. */
+    private static boolean askedBefore(ArrayDeque<Ended> ended, long requestId, long issuedMono) {
+        for (Ended one : ended) {
+            if (one.requestId() == requestId) {
+                return one.issuedMono() < issuedMono;
+            }
+        }
+        return false;
     }
 
     /** Whether a snapshot message of {@code requestId} is the recovery's own, or queued ahead of it. */
     private boolean ahead(Track track, Active active, long requestId) {
-        if (requestId == active.requestId || track.ended.contains(requestId)) {
+        if (requestId == active.requestId) {
             return true;
         }
         EventRecovery event = eventRecoveries.get(requestId);
-        return event != null && event.producerId == track.id && event.issuedMono < active.issuedMono;
+        if (event != null) {
+            return event.producerId == track.id && event.issuedMono < active.issuedMono;
+        }
+        // what ended before the one in flight was asked for: the one in flight is the only one at a time
+        return track.ended.stream().anyMatch(one -> one.requestId() == requestId)
+                || askedBefore(track.endedEvents, requestId, active.issuedMono);
     }
 
     /** A session has seen a snapshot complete; an id the actor has not in flight is counted, and ignored. */
@@ -762,6 +784,7 @@ final class RecoveryMachine {
             } else {
                 EventRecovery refused = eventRecoveries.remove(requestId);
                 if (refused != null) {
+                    endedWithoutCompleting(refused);
                     ended(
                             refused,
                             EventRecoveryStatus.State.FAILED,
@@ -921,6 +944,7 @@ final class RecoveryMachine {
             }
             if (why != null) {
                 eventRecoveries.remove(recovery.requestId);
+                endedWithoutCompleting(recovery);
                 ended(recovery, EventRecoveryStatus.State.TIMED_OUT, why);
                 counters.eventExpired.incrementAndGet();
                 CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
@@ -1246,9 +1270,21 @@ final class RecoveryMachine {
     private void ended(Track track, Active active, long mono) {
         track.active = null;
         track.pausedUntil = mono;
-        track.ended.addFirst(active.requestId);
-        if (track.ended.size() > ENDED_REMEMBERED) {
-            track.ended.removeLast();
+        remember(track.ended, new Ended(active.requestId, active.issuedMono));
+    }
+
+    /** The event recovery ended without completing: what it sent may still be ahead of a later one. */
+    private void endedWithoutCompleting(EventRecovery recovery) {
+        var track = tracks.get(recovery.producerId);
+        if (track != null) {
+            remember(track.endedEvents, new Ended(recovery.requestId, recovery.issuedMono));
+        }
+    }
+
+    private static void remember(ArrayDeque<Ended> ended, Ended one) {
+        ended.addFirst(one);
+        if (ended.size() > ENDED_REMEMBERED) {
+            ended.removeLast();
         }
     }
 
@@ -1719,6 +1755,7 @@ final class RecoveryMachine {
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
             if (session == null || (recovery.awaited.contains(session) && !recovery.seen.contains(session))) {
                 eventRecoveries.remove(recovery.requestId);
+                endedWithoutCompleting(recovery);
                 ended(recovery, EventRecoveryStatus.State.FAILED, "its snapshot went with a lost queue");
                 counters.eventAbandoned.incrementAndGet();
                 CompletableFuture<@Nullable Long> reply = replies.remove(recovery.requestId);
@@ -1886,7 +1923,13 @@ final class RecoveryMachine {
          * The request ids of its last recoveries that failed or were given up, newest first, at most
          * {@code ENDED_REMEMBERED}: what they sent may still be ahead of the one in flight.
          */
-        final ArrayDeque<Long> ended = new ArrayDeque<>();
+        final ArrayDeque<Ended> ended = new ArrayDeque<>();
+        /**
+         * Its last event recoveries that failed, expired or were given up, newest first, at most
+         * {@code ENDED_REMEMBERED}: what they sent may still be ahead of the one in flight, or of
+         * an event recovery asked for later.
+         */
+        final ArrayDeque<Ended> endedEvents = new ArrayDeque<>();
         /** Samples taken up to this time are not the safety net's: a recovery was in flight. */
         long pausedUntil;
         /** Recoveries failed in a row. */
@@ -2049,6 +2092,9 @@ final class RecoveryMachine {
             this.heardAt = issuedMono;
         }
     }
+
+    /** A recovery or an event recovery that ended without completing: its id, and when it was asked for. */
+    private record Ended(long requestId, long issuedMono) {}
 
     /** An event recovery waiting for a session's reset to be done. */
     private record DeferredEvent(

@@ -1898,6 +1898,122 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void theSnapshotOfARecoveryGivenUpPutsOffTheDeadlineOfAnEventRecoveryAskedForAfterIt() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.unsubscribed(PRE);
+        var lost = feed.lastSnapshot(PRE);
+        feed.accept(lost);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.unsubscribed(PRE);
+        assertThat(feed.counters.abandoned()).isEqualTo(1);
+        feed.clock.advance(Duration.ofSeconds(1));
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var event = (Outbox.Call.Event) feed.calls.getLast();
+        feed.accept(event);
+        // a slow session takes what the one given up had sent, which the event recovery's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), lost.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six minutes in, still coming")
+                .isZero();
+        assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), event.requestId());
+        feed.machine.snapshotComplete(1, PRE, event.requestId());
+        assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.COMPLETED);
+        assertThat(feed.counters.eventExpired()).isZero();
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryThatExpiredPutsOffTheDeadlineOfOneAskedForAfterIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var earlier = feed.calls.getLast();
+        feed.accept(earlier);
+        feed.advance(feed.settings.snapshotCompleteTimeout().plusSeconds(1));
+        assertThat(statusOf(earlier).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.accept(later);
+        // a slow session takes what the expired one had sent, which the later one's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.advance(Duration.ofMinutes(1));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), earlier.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six minutes in, still coming")
+                .isEqualTo(1);
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), later.requestId());
+        feed.machine.snapshotComplete(1, LIVE, later.requestId());
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.COMPLETED);
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryThatExpiredPutsOffTheDeadlineOfARecoveryAskedForAfterIt() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var event = (Outbox.Call.Event) feed.calls.getLast();
+        feed.accept(event);
+        feed.advance(feed.settings.snapshotCompleteTimeout().plusSeconds(1));
+        assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+        feed.alive(PRE);
+        var recovery = feed.lastSnapshot(PRE);
+        assertThat(recovery.requestId()).isNotEqualTo(event.requestId());
+        feed.accept(recovery);
+        // a slow session takes what the event recovery had sent, which the recovery's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), event.requestId());
+        }
+        assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
+        feed.runWithAlives(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the last of it")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
+    }
+
+    @Test
+    void theSnapshotOfARecoveryGivenUpDoesNotPutOffTheDeadlineOfAnEventRecoveryAskedForBeforeIt() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var event = (Outbox.Call.Event) feed.calls.getLast();
+        feed.accept(event);
+        feed.clock.advance(Duration.ofSeconds(1));
+        feed.unsubscribed(PRE);
+        var lost = feed.lastSnapshot(PRE);
+        feed.accept(lost);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.unsubscribed(PRE);
+        assertThat(feed.counters.abandoned()).isEqualTo(1);
+        // what the one given up sent was asked for after the event recovery: its snapshot is not behind it
+        for (int i = 0; i < 4; i++) {
+            feed.runWithAlives(Duration.ofSeconds(70));
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), lost.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("under five minutes since it was accepted")
+                .isZero();
+        feed.runWithAlives(Duration.ofSeconds(30));
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes since it was accepted")
+                .isEqualTo(1);
+        assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+    }
+
+    @Test
     void aRecoveryStillOnItsWayAtTheMaximumRecoveryTimeTimesOut() {
         var settings = Harness.settings();
         var feed = new Harness(new RecoverySettings(
