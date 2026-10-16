@@ -159,7 +159,7 @@ runs each of these cases against a scratch repository and a stub Central, and
 `scripts/release-workflow-test.sh` holds `release.yml` and the workflows it calls to its policy:
 the release check always run, the upload only after check and build and only in the approved
 environment, no secrets or environment anywhere else, no cache there, the tag checked
-again first, and the bundle kept after a failed upload too. It also compares `release.yml` with its pinned form in
+again first, and the bundle kept after a failed or cancelled upload too. It also compares `release.yml` with its pinned form in
 `scripts/release-workflow.json`: a change to the release workflow updates that file too
 (`scripts/release-workflow-test.sh --update`), so the reviewer sees it. `scripts/release-bundle-test.sh` runs the signed release build with a throwaway
 key against a stand-in portal and checks the bundle.
@@ -173,26 +173,52 @@ next attempt is a new version - the next release candidate number, or the next p
   the release notes for the next version, merge them, and tag that merge commit - a commit of
   its own, since two tags on one commit are refused.
 - **During publish:** look the deployment up in the portal. Failed validation published
-  nothing: release the next version as above. If it shows Published (the wait timed out),
-  the version is out and a re-run would be refused: make the GitHub Release by hand, from the
-  bundle the run kept. The upload step keeps it as the run's `central-bundle` artifact also
-  when the publish failed: the plugin writes the bundle before it uploads it. In a checkout
-  of the tag (it has `release-notes/<version>.md`), with no `bundle/` directory left from an
-  earlier attempt, download it into the checkout's root - from the run's page under Actions,
-  (a zip around `central-bundle.zip`, to unzip once) or with
-  `gh run download <run id> -n central-bundle -D .` - so that `central-bundle.zip` lies there. Then, with `gh` logged in (or `GH_TOKEN`
-  set) as someone who may create releases, and `unzip` installed:
+  nothing: release the next version as above. If it shows Published (the wait timed out, or the
+  run was cancelled or ended some other way), the version is out and a re-run would be refused:
+  make the GitHub Release by hand, from a `central-bundle.zip` in the root of a checkout of the
+  tag (it has `release-notes/<version>.md`), with no `bundle/` directory left from an earlier
+  attempt. Then, with `gh` logged in (or `GH_TOKEN` set) as someone who may create releases, and
+  `unzip` installed:
 
   ```
   VERSION=<version> FINAL=<true|false> GITHUB_REF_NAME=v<version> GH_REPO=oddin-gg/javasdk scripts/release-github.sh
   ```
 
-  `FINAL` is `true` for a final and `false` for a release candidate. A run without the
-  artifact never reached the upload (the step warns that it found no file): nothing was
-  published from it. Artifacts are kept for the repository's retention period (90 days
-  unless changed), so do this soon.
+  `FINAL` is `true` for a final and `false` for a release candidate. The zip comes from one of
+  two places. A run that has no artifact may still have published: the artifact's own upload can
+  fail, a run can be cancelled or hit its timeout before that step, and artifacts expire, so the
+  portal decides, not the artifact.
+
+  1. **The run's artifact.** Every attempt of the publish job keeps its bundle as
+     `central-bundle-<attempt>`, also after a failed or cancelled publish, since the plugin writes
+     the bundle before it uploads it. A later attempt never replaces an earlier one's: take the
+     bundle of the attempt whose upload Central accepted, normally the first (a later attempt's
+     upload is refused, and its bundle is not what Central has). Download it into the checkout's
+     root - from the run's page under Actions (a zip around `central-bundle.zip`, to unzip once)
+     or with `gh run download <run id> -n central-bundle-<attempt> -D .` - so that
+     `central-bundle.zip` lies there. Artifacts are kept for the repository's retention period
+     (90 days unless changed), so do this soon.
+  2. **Central itself**, when there is no artifact for the attempt: once the files show on
+     `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/<version>/` (within about 30
+     minutes of Published), put the jar and the POM, each with its `.asc`, into the layout the
+     script reads, from the checkout's root:
+
+     ```
+     version=<version>
+     dir=gg/oddin/oddsfeed/odds-feed/$version
+     mkdir -p "$dir"
+     for name in "odds-feed-$version.jar" "odds-feed-$version.pom"; do
+       for file in "$name" "$name.asc"; do
+         curl -fsSLo "$dir/$file" "https://repo1.maven.org/maven2/$dir/$file"
+       done
+     done
+     python3 -m zipfile -c central-bundle.zip gg && rm -r gg
+     ```
+
+     These are the files Central serves, so the release page and Central agree by construction.
 - **GitHub Release failed:** re-run the failed job; the bundle is kept as the run's
-  `central-bundle` artifact. A draft the failed run left is never touched by the re-run,
+  `central-bundle-<attempt>` artifact of the publish that succeeded, which the job finds by name
+  from that job's output. A draft the failed run left is never touched by the re-run,
   which works only on the release it creates; delete the draft afterwards, by its id, not
   by the tag (which would also find the published release):
 
@@ -215,6 +241,15 @@ next attempt is a new version - the next release candidate number, or the next p
   `maven-central` environment, `MAVEN_GPG_KEY` and `MAVEN_GPG_PASSPHRASE`, publish the new
   public key on both keyservers, where Central looks for it, and sign the next release with it:
   it needs no change to the workflow. Versions already on Central stay as they are.
+
+  The key and the portal token are secrets of the same environment, so whatever exposed one may
+  have exposed the other. If the key left in a way that could not have read the environment (a
+  stolen backup of the key file, say), rotating the key is enough. If the environment's secrets
+  may have been read - a workflow run or log that showed them, someone with access to the
+  environment, a compromised job - rotate the portal token too, at the same time: generate a
+  new user token in the Central Portal, replace `CENTRAL_TOKEN_USERNAME` and
+  `CENTRAL_TOKEN_PASSWORD` in the environment, and revoke the old token in the portal. The old
+  token alone lets whoever holds it upload versions to the `gg.oddin` namespace.
 - Never reuse a version Central has.
 
 ## Dry run

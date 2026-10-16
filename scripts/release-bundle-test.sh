@@ -5,7 +5,8 @@
 # and checks the bundle: the parent POM and odds-feed's jar, sources, javadoc and POM, each
 # signed by that key and filed under the version built, and nothing else - no test-fakes, no
 # other module. next.yml runs it on every push, so broken signing or bundling shows up at review,
-# not once a tag is pushed.
+# not once a tag is pushed. It also fails the deployment once, and checks that the bundle is still
+# there for the release made by hand.
 #
 # central-publishing-maven-plugin has no dry run: it builds the bundle in the deploy phase and
 # uploads it there. So it uploads here too, to the stand-in, through centralBaseUrl. Nothing
@@ -40,7 +41,8 @@ fingerprint=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr
 # The stand-in portal: it keeps the upload and answers with a deployment id. Asked for the
 # deployment's state, it answers as Central would: PUBLISHED for an upload that asked to be
 # published (publishingType AUTOMATIC), VALIDATED - waiting for someone to press Publish - for any
-# other. Every request is recorded, with the publishing type the upload asked for.
+# other; FAILED once the file "fail" exists, as when Central rejects the bundle after taking it.
+# Every request is recorded, with the publishing type the upload asked for.
 python3 - "$work/port" "$work" <<'EOF' &
 import http.server, json, os, sys, urllib.parse
 port_file, out = sys.argv[1], sys.argv[2]
@@ -63,11 +65,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b'bundle-test-deployment')
         elif path == '/api/v1/publisher/status':
             published = 'PUBLISHED' if state['type'] == 'AUTOMATIC' else 'VALIDATED'
+            if os.path.exists(os.path.join(out, 'fail')):
+                published = 'FAILED'
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({'deploymentId': 'bundle-test-deployment', 'deploymentName': 'test',
-                'deploymentState': published, 'purls': [], 'errors': {}, 'warnings': []}).encode())
+                'deploymentState': published, 'purls': [],
+                'errors': {'bundle-test': ['rejected after the upload']} if published == 'FAILED' else {},
+                'warnings': []}).encode())
         else:
             self.send_response(404)
             self.end_headers()
@@ -211,3 +217,32 @@ if problems:
     sys.exit(1)
 print('the bundle holds the parent POM and odds-feed %s, all signed, and nothing else' % version)
 EOF
+
+# A publish that fails after the portal took the upload - what a wait for Central that ends badly
+# is - must still leave the bundle where release.yml's upload step looks for it: it is the copy of
+# what was uploaded, and the one a GitHub Release is made from by hand (RELEASING.md). The
+# stand-in now answers FAILED to the question for the deployment's state.
+touch "$work/fail"
+rm -rf target/central-publishing target/central-staging
+: > "$work/requests"
+rm -f "$work/upload"
+if MAVEN_GPG_KEY=$(gpg --batch --pinentry-mode loopback --passphrase bundle-test --armor --export-secret-keys "$fingerprint" 2>> "$work/gpg.log") \
+  MAVEN_GPG_PASSPHRASE=bundle-test \
+  ./mvnw --batch-mode --no-transfer-progress -s "$work/settings.xml" -Prelease -Drevision="$version" \
+    -Dcentral.autoPublish=true -Dcentral.waitUntil=published -DcentralBaseUrl="$portal" \
+    -Dmaven.install.skip=true -DskipTests -pl odds-feed -am deploy > "$work/failed-build.log" 2>&1; then
+  cat "$work/failed-build.log"
+  echo "the build succeeded although the stand-in portal failed the deployment" >&2
+  exit 1
+fi
+grep -qx /api/v1/publisher/upload "$work/requests" \
+  || { cat "$work/failed-build.log"; echo "the failed build never uploaded to the stand-in portal" >&2; exit 1; }
+[ -s "$bundle" ] \
+  || { cat "$work/failed-build.log"; echo "a publish that failed after the upload left no $bundle" >&2; exit 1; }
+python3 - "$bundle" "$work/upload" <<'EOF'
+import sys
+bundle, upload = sys.argv[1:]
+if open(bundle, 'rb').read() not in open(upload, 'rb').read():
+    sys.exit('the bundle a failed publish left is not what was uploaded')
+EOF
+echo "a publish that failed after the upload leaves its bundle at $bundle"

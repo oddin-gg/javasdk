@@ -11,7 +11,8 @@
 #   environment or reads a secret other than the job token;
 # - publish restores no cache, and checks the tag again before the upload, as github-release
 #   does before the release, which runs whenever publish succeeded;
-# - publish keeps the bundle after the upload, also when the upload failed;
+# - publish keeps the bundle after the upload, also when the upload failed or the run was cancelled,
+#   once per attempt, and github-release downloads the one whose publish succeeded;
 # - each job has the permissions it needs and no more, next.yml read only; the version comes
 #   from the check job; the two secret steps run exactly their commands;
 # - next.yml, which runs pull requests' code, forks' included, holds contents: read and nothing
@@ -215,12 +216,16 @@ if upload:
     check(re.match(r"\./mvnw .*-Prelease .*\bdeploy$", " ".join(str(upload[0].get("run", "")).split())) is not None,
           "publish: the upload step must run ./mvnw -Prelease ... deploy, not %r" % upload[0].get("run"))
 
-# publish: the bundle is kept after the upload, whether it succeeded or failed - a wait for Central
-# that timed out leaves the version published and the bundle the only copy of what was uploaded - and
-# is the one github-release downloads. A step's if: is evaluated, as the jobs' are, over a failed
-# earlier step and a cancelled run; none is success().
+# publish: the bundle is kept after the upload, whether it succeeded, failed or was cancelled - a
+# wait for Central that timed out, or was cancelled, leaves the version published and the bundle the
+# only copy of what was uploaded. It is kept under the name of its attempt and never overwritten: a
+# re-run builds another bundle, which Central refuses, and must not replace the first attempt's. The
+# job's output names it, and github-release downloads that one, from whichever attempt it runs in. A
+# step's if: is evaluated, as the jobs' are, over a failed earlier step and a cancelled run; none is
+# success().
+BUNDLE = "central-bundle-${{ github.run_attempt }}"
 def keeps_bundle(step):
-    return str(step.get("uses", "")).startswith("actions/upload-artifact@") and (step.get("with") or {}).get("name") == "central-bundle"
+    return str(step.get("uses", "")).startswith("actions/upload-artifact@") and str((step.get("with") or {}).get("name", "")).startswith("central-bundle")
 
 def step_runs(step, failed, cancelled):
     text = step.get("if")
@@ -249,9 +254,19 @@ for i in keep:
         runs = step_runs(steps("publish")[i], failed, False)
         check(runs is None or runs, "publish must keep the bundle also after a failed upload: runs=%s with the upload %s"
               % (runs, "failed" if failed else "succeeded"))
+        runs = step_runs(steps("publish")[i], failed, True)
+        check(runs is None or runs, "publish must keep the bundle also when the run is cancelled: runs=%s with the upload %s"
+              % (runs, "failed" if failed else "succeeded"))
+    with_ = steps("publish")[i].get("with") or {}
+    check(with_.get("name") == BUNDLE, "publish must keep the bundle as %s, one per attempt, not %r" % (BUNDLE, with_.get("name")))
+    check("overwrite" not in with_, "publish must not overwrite a bundle an earlier attempt kept: overwrite is %r" % with_.get("overwrite"))
     check("continue-on-error" not in steps("publish")[i], "publish: keeping the bundle must not continue on error")
-check(any(step.get("uses", "").startswith("actions/download-artifact@") and (step.get("with") or {}).get("name") == "central-bundle"
-          for step in steps("github-release")), "github-release must download the central-bundle artifact")
+bundle_output = (jobs["publish"].get("outputs") or {}).get("bundle")
+check(bundle_output == BUNDLE, "publish must output the bundle's name, %s, not %r" % (BUNDLE, bundle_output))
+check(any(step.get("uses", "").startswith("actions/download-artifact@")
+          and (step.get("with") or {}).get("name") == "${{ needs.publish.outputs.bundle }}"
+          for step in steps("github-release")),
+      "github-release must download the artifact named by ${{ needs.publish.outputs.bundle }}")
 
 # publish and github-release work on the commit check accepted, checked out first, before anything
 # runs from it; the tag may name another commit by then
@@ -739,7 +754,7 @@ ${publish_tag#*
 breaks release.yml replace "$publish_tag" "${publish_tag%
 } || true
 " "publish: the tag check must run"
-breaks release.yml move "$publish_tag_step" '          overwrite: true
+breaks release.yml move "$publish_tag_step" '          if-no-files-found: warn
 ' "publish must check the tag again before it deploys"
 breaks release.yml replace "$publish_ref" '' "publish must check out \${{ needs.check.outputs.commit }}, not None"
 breaks release.yml replace "$publish_ref" '          ref: ${{ github.ref }}
@@ -777,36 +792,60 @@ breaks release.yml replace "          distribution: 'corretto'
 
 # the bundle kept after a failed publish
 keep_step='      - name: Keep the published bundle
-        # Also after a publish that failed: the plugin writes the bundle before it uploads, so one
-        # whose wait for Central timed out still has it, and the release is made from it by hand
-        # (RELEASING.md). Nothing is released from a failed run: github-release needs publish to
-        # succeed. A step that failed before the build leaves no bundle, hence the warning.
-        if: ${{ !cancelled() }}
+        # Also after a publish that failed, and a run that was cancelled: the plugin writes the
+        # bundle before it uploads, so one whose wait for Central timed out, or was cancelled, still
+        # has it, and the release is made from it by hand (RELEASING.md). Nothing is released from a
+        # failed run: github-release needs publish to succeed. A step that failed before the build
+        # leaves no bundle, hence the warning.
+        if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: central-bundle
+          # one name per attempt, never overwritten: a re-run after a wait that timed out builds
+          # another bundle, which Central refuses, and must not replace the first attempt'"'"'s, the
+          # copy of what Central has
+          name: central-bundle-${{ github.run_attempt }}
           path: target/central-publishing/central-bundle.zip
           if-no-files-found: warn
-          # a re-run of the job finds its first attempt'"'"'s artifact there
-          overwrite: true
+
 '
-keep_if='        if: ${{ !cancelled() }}
+keep_if='        if: ${{ always() }}
+'
+keep_name='          name: central-bundle-${{ github.run_attempt }}
 '
 breaks release.yml replace "$keep_if" '' "publish must keep the bundle also after a failed upload"
 breaks release.yml replace "$keep_if" "        if: \${{ success() }}
 " "publish must keep the bundle also after a failed upload"
 breaks release.yml replace "$keep_if" "        if: \${{ failure() }}
 " "publish must keep the bundle also after a failed upload: runs=False with the upload succeeded"
+breaks release.yml replace "$keep_if" "        if: \${{ !cancelled() }}
+" "publish must keep the bundle also when the run is cancelled: runs=False with the upload succeeded"
+breaks release.yml replace "$keep_if" "        if: \${{ !failure() }}
+" "publish must keep the bundle also after a failed upload: runs=False with the upload failed"
 breaks release.yml replace "$keep_if" "$keep_if        continue-on-error: true
 " "publish: keeping the bundle must not continue on error"
-breaks release.yml replace '          name: central-bundle
-          path:' '          name: bundle
-          path:' "publish must keep the central-bundle artifact once, found 0"
-breaks release.yml replace '          name: central-bundle
-
-      - name: Create the release' '          name: bundle
-
-      - name: Create the release' "github-release must download the central-bundle artifact"
+breaks release.yml replace "$keep_name" '          name: central-bundle
+' "publish must keep the bundle as central-bundle-\${{ github.run_attempt }}, one per attempt"
+breaks release.yml replace "$keep_name" '          name: bundle
+' "publish must keep the central-bundle artifact once, found 0"
+breaks release.yml replace '          if-no-files-found: warn
+' '          if-no-files-found: warn
+          overwrite: true
+' "publish must not overwrite a bundle an earlier attempt kept"
+breaks release.yml replace '          if-no-files-found: warn
+' '          if-no-files-found: warn
+          overwrite: false
+' "publish must not overwrite a bundle an earlier attempt kept"
+breaks release.yml replace '      bundle: central-bundle-${{ github.run_attempt }}
+' '      bundle: central-bundle
+' "publish must output the bundle's name"
+breaks release.yml replace '      bundle: central-bundle-${{ github.run_attempt }}
+' '' "publish must output the bundle's name"
+breaks release.yml replace '          name: ${{ needs.publish.outputs.bundle }}
+' '          name: central-bundle
+' "github-release must download the artifact named by \${{ needs.publish.outputs.bundle }}"
+breaks release.yml replace '          name: ${{ needs.publish.outputs.bundle }}
+' '          name: bundle
+' "github-release must download the artifact named by \${{ needs.publish.outputs.bundle }}"
 breaks release.yml move "$keep_step" "$publish_tag_step" "publish must keep the bundle after the upload"
 
 # github-release

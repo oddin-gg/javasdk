@@ -74,7 +74,7 @@
           "name": "Fetch the published bundle",
           "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
           "with": {
-            "name": "central-bundle"
+            "name": "${{ needs.publish.outputs.bundle }}"
           }
         },
         {
@@ -101,6 +101,9 @@
         "check",
         "build"
       ],
+      "outputs": {
+        "bundle": "central-bundle-${{ github.run_attempt }}"
+      },
       "runs-on": "ubuntu-latest",
       "steps": [
         {
@@ -153,13 +156,12 @@
           "run": "./mvnw --batch-mode --no-transfer-progress -Prelease -Drevision=\"$VERSION\" -Dcentral.autoPublish=true -Dcentral.waitUntil=published -DskipTests -pl odds-feed -am deploy"
         },
         {
-          "if": "${{ !cancelled() }}",
+          "if": "${{ always() }}",
           "name": "Keep the published bundle",
           "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
             "if-no-files-found": "warn",
-            "name": "central-bundle",
-            "overwrite": true,
+            "name": "central-bundle-${{ github.run_attempt }}",
             "path": "target/central-publishing/central-bundle.zip"
           }
         }
