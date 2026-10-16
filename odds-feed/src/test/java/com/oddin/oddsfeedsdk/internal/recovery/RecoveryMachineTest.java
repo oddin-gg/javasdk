@@ -424,6 +424,19 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void aZeroInitialSnapshotIntervalAsksFromTheFeedClocksNowWithNoHistory() {
+        var feed = new Harness(Harness.withInitialSnapshotInterval(Duration.ZERO));
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        long opened = feed.now();
+        feed.clock.advance(Duration.ofSeconds(3));
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("from when the feed opened, not a full snapshot as for an interval that is not set")
+                .isEqualTo(Instant.ofEpochMilli(opened));
+    }
+
+    @Test
     void aLossToldBeforeStartLeavesTheFirstRecoveryAtTheClientsRecoveryPoint() {
         for (RecoverySettings settings :
                 List.of(Harness.settings(), Harness.withInitialSnapshotInterval(Duration.ofMinutes(30)))) {

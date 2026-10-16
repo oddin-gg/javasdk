@@ -1614,11 +1614,11 @@ class RecoveryActorTest {
         while (actor.running() && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
+        // the message on one line, cut at exactly 200 characters
         assertThat(actor.endedBy())
-                .startsWith("java.lang.IllegalStateException: a broken ticker xxx")
-                .hasSizeLessThan(260)
-                .endsWith("...")
-                .doesNotContain("\n");
+                .isEqualTo("java.lang.IllegalStateException: "
+                        + ("a broken ticker " + "x".repeat(500)).substring(0, 200)
+                        + "...");
     }
 
     @Test
