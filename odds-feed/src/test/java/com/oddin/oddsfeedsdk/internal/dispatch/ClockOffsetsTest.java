@@ -119,6 +119,22 @@ class ClockOffsetsTest {
                 .isEqualTo(110_040);
     }
 
+    /** A resend: the same stamp reaches the channel twice, the first clamped, the later one current. */
+    @Test
+    void theSessionsCopyOfAnAliveDeliveredTwiceTakesTheLowerMark() {
+        long stamp = 112_000;
+        long first = offsets.markAlive(1, stamp, Stamp.of(110_000));
+        offsets.alive(1, stamp, Stamp.of(110_000));
+        long second = offsets.markAlive(1, stamp, Stamp.of(112_000));
+        offsets.alive(1, stamp, Stamp.of(112_000));
+        assertThat(first).as("2 s ahead of the SDK's clock: clamped to it").isEqualTo(110_000);
+        assertThat(second).as("the stamp is current by then").isEqualTo(112_000);
+
+        assertThat(offsets.markAliveCopy(1, stamp, Stamp.of(110_100)))
+                .as("the first delivery's session copy, handled late: the lower mark, not the later one")
+                .isEqualTo(110_000);
+    }
+
     @Test
     void theChannelsMarkIsKeptForTheLastSixteenAlivesOfAProducer() {
         long ahead = 110_000 + TEN_MINUTES;

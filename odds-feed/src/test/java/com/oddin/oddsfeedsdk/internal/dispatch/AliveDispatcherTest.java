@@ -88,6 +88,22 @@ class AliveDispatcherTest {
                 .isEqualTo(30_000L);
     }
 
+    /** The dispatcher asks for the mark before it keeps the offset the alive shows: the first alive has no other. */
+    @Test
+    void theFirstAliveAProducerSendsStampedAheadIsMarkedAtTheSdksClockAndItsSessionCopyTakesThatMark()
+            throws InterruptedException {
+        AliveDispatcher dispatcher = started();
+        long ahead = 12_500 + 600_000;
+        dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), ahead), 12_500));
+        assertThat(next()).startsWith("2 " + ahead + " 12500 true");
+        assertThat(marks.poll(WAIT_SECONDS, TimeUnit.SECONDS))
+                .as("no offset before it: the SDK's clock at receipt, not the stamp")
+                .isEqualTo(12_500L);
+        assertThat(offsets.markAliveCopy(2, ahead, new Stamp(12_600, 12_600 + MONO_SHIFT)))
+                .as("its offset is kept now; the session's copy takes the channel's mark")
+                .isEqualTo(12_500L);
+    }
+
     @Test
     void anAliveReachesTheActorWithBothReadingsTheDeliveryWasStampedWith() throws InterruptedException {
         AliveDispatcher dispatcher = started();

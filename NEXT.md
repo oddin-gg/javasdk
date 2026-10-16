@@ -660,10 +660,12 @@ and REST workers post facts to it; it decides and posts work out.
   producer's safe point, the start of a gap with no safe point - take its stamp as it is,
   unless it is more than a second ahead of the producer's now at receipt, and then that
   now: the SDK's wall clock when the delivery arrived, less the producer's most cautious
-  offset of the last minute - the largest, which puts the producer's now earliest, and always
-  one from before the newest alive - so an alive stamped ahead does not vouch for its own
-  stamp, for its copy on a session's queue, or for a message received before it and handled
-  after; none while no alive has shown one. A producer clock that steps back is taken at
+  offset of the last minute - the largest, which puts the producer's now earliest. An alive
+  stamped ahead shows a small offset, so it does not lift it, and does not vouch for its own
+  stamp because its mark is taken before its offset is kept and the session's copies of it take
+  that mark; a message received before it and handled after is clamped as it was. An alive
+  that is late, or stamped behind, shows the largest offset and pulls the now towards it: what
+  follows is marked lower by its delay for the minute. None while no alive has shown one. A producer clock that steps back is taken at
   once, one that steps forward, or is really ahead, a minute later. A mark that is lowered
   only makes a recovery larger, so every error is on the safe side; the second is the
   jitter a recovery's mark absorbs, so the stamp of an ordinary message is the mark exactly,

@@ -299,6 +299,23 @@ class SessionDispatcherTest {
         assertThat(facts.marks).as("a second copy, after the channel's").containsExactly(received, received);
     }
 
+    @Test
+    void theSessionsCopyOfAnAliveTheChannelGotTwiceIsMarkedByTheLowerOfTheTwo() {
+        SessionDispatcher dispatcher = dispatcher(MessageInterest.ALL);
+        long now = System.currentTimeMillis();
+        long stamp = now + 2_000;
+        // a resend: the first delivery is 2 s ahead of the SDK's clock, the second finds the stamp current
+        long first = offsets.markAlive(2, stamp, Stamp.of(now));
+        offsets.alive(2, stamp, Stamp.of(now));
+        long second = offsets.markAlive(2, stamp, Stamp.of(stamp));
+        offsets.alive(2, stamp, Stamp.of(stamp));
+        assertThat(first).isEqualTo(now);
+        assertThat(second).isEqualTo(stamp);
+        // the session's copy of the first, handled after the second
+        handle(dispatcher, FeedMessages.stampedAt(FeedMessages.alive(2, true), stamp));
+        assertThat(facts.marks).as("bounded by the first delivery's receipt").containsExactly(now);
+    }
+
     /** Every session binds the alive key too: its copy comes after the alive dispatcher kept the offset. */
     @Test
     void theSessionsCopyOfAnAliveStampedAheadIsMarkedByTheOffsetBeforeIt() {
