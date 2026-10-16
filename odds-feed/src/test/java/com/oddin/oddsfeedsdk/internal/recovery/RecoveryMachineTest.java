@@ -1983,6 +1983,85 @@ class RecoveryMachineTest {
     }
 
     @Test
+    void theSnapshotOfAnEventRecoveryTheApiRefusedPutsOffTheDeadlineOfOneAskedForAfterIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var refused = feed.calls.getLast();
+        feed.refuse(refused);
+        assertThat(statusOf(refused).state()).isEqualTo(EventRecoveryStatus.State.FAILED);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.accept(later);
+        // a slow session takes what the refused one had sent, which the later one's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.advance(Duration.ofMinutes(1));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), refused.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six minutes in, still coming")
+                .isZero();
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), later.requestId());
+        feed.machine.snapshotComplete(1, LIVE, later.requestId());
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.COMPLETED);
+        assertThat(feed.counters.eventExpired()).isZero();
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryGivenUpWithALostQueuePutsOffTheDeadlineOfOneAskedForAfterIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var lost = feed.calls.getLast();
+        feed.accept(lost);
+        feed.machine.connectionDown();
+        assertThat(statusOf(lost).state()).isEqualTo(EventRecoveryStatus.State.FAILED);
+        assertThat(feed.counters.eventAbandoned()).isEqualTo(1);
+        feed.machine.connectionUp();
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.accept(later);
+        // a slow session takes what the one given up had sent, which the later one's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.advance(Duration.ofMinutes(1));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), lost.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six minutes in, still coming")
+                .isZero();
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), later.requestId());
+        feed.machine.snapshotComplete(1, LIVE, later.requestId());
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.COMPLETED);
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryAskedForAfterTheRecoveryDoesNotPutOffItsDeadlineOnceTheEventRecoveryEnded() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.runWithAlives(Duration.ofSeconds(1));
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.refuse(later);
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.FAILED);
+        // what the later one sent is behind the recovery's snapshot, not ahead of it
+        for (int minute = 1; minute <= 4; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), later.requestId());
+        }
+        assertThat(feed.counters.timedOut()).as("under five minutes").isZero();
+        feed.runWithAlives(Duration.ofMinutes(1));
+        assertThat(feed.counters.timedOut())
+                .as("five minutes after the request")
+                .isEqualTo(1);
+    }
+
+    @Test
     void theSnapshotOfARecoveryGivenUpDoesNotPutOffTheDeadlineOfAnEventRecoveryAskedForBeforeIt() {
         feed.open(1, MessageInterest.PREMATCH_ONLY);
         feed.start();
