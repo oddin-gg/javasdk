@@ -30,6 +30,7 @@ import org.junit.Before
 import org.junit.Test
 import org.slf4j.LoggerFactory
 import java.io.IOException
+import java.lang.reflect.Proxy
 
 // The access token is the AMQP user name, and the broker's refusals name the user. What the SDK
 // logs or throws of a broker failure must not carry it, and must otherwise read as it did.
@@ -95,7 +96,7 @@ class TokenRedactionTest {
         mockk(relaxed = true) { every { createChannel() } returns channel }
 
     private fun assertNoToken(failure: Throwable) {
-        generateSequence(failure) { it.cause }.forEach {
+        failure.reachable().forEach {
             assertFalse("the token is in ${it.javaClass.name}: $it", it.toString().contains(token))
         }
     }
@@ -218,5 +219,57 @@ class TokenRedactionTest {
         } catch (e: IOException) {
             assertSame(plain, e)
         }
+    }
+
+    @Test
+    fun aChannelFailureNamingTheTokenIsThrownWithoutIt() {
+        val original = IOException("channel error; $refusal")
+        val connection = mockk<Connection>(relaxed = true) { every { createChannel() } throws original }
+
+        try {
+            provider(connection).newChannel()
+            fail("the failure was swallowed")
+        } catch (e: Exception) {
+            assertNoToken(e)
+            assertTrue(e.toString(), e.toString().contains("refused for user '${TokenRedactor.MARKER}'"))
+            assertArrayEquals(original.stackTrace, e.stackTrace)
+        }
+    }
+
+    @Test
+    fun aSuppressedExceptionNamingTheTokenIsRedactedWhenTheFailureItselfIsClean() {
+        val cause = IOException("no route to host")
+        val suppressed = IOException(refusal)
+        val original = IOException("Connection refused", cause).also { it.addSuppressed(suppressed) }
+
+        try {
+            provider(newConnectionFails = original).newChannel()
+            fail("the connection failure was swallowed")
+        } catch (e: Exception) {
+            assertNoToken(e)
+            assertTrue(e.toString(), e.toString().startsWith("java.io.IOException: Connection refused"))
+            assertSame("a clean cause is the original", cause, e.cause)
+            assertTrue(e.suppressed.single().toString().contains("refused for user '${TokenRedactor.MARKER}'"))
+        }
+    }
+
+    @Test
+    fun aChannelHandedOutIsItsOwnProxyAndDescribesItselfWithoutTheToken() {
+        // a Channel that describes itself as the client library's does, with the user in it
+        val channel = Proxy.newProxyInstance(Channel::class.java.classLoader, arrayOf(Channel::class.java)) { self, method, args ->
+            when (method.name) {
+                "toString" -> "AMQChannel(amqp://$token@broker:5671//oddinfeed/1,1)"
+                "equals" -> self === args[0]
+                "hashCode" -> System.identityHashCode(self)
+                else -> null
+            }
+        } as Channel
+
+        val handedOut = provider(connectionWith(channel)).newChannel()
+
+        assertEquals(handedOut, handedOut)
+        assertEquals(handedOut.hashCode(), handedOut.hashCode())
+        assertFalse(handedOut == channel)
+        assertEquals("AMQChannel(amqp://${TokenRedactor.MARKER}@broker:5671//oddinfeed/1,1)", handedOut.toString())
     }
 }
