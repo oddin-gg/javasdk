@@ -606,6 +606,76 @@ class RecoveryMachineTest {
         assertThat(feed.machine.checkpoint(1, LIVE)).as("the other producer").isEqualTo(requestedAt);
     }
 
+    /**
+     * A message stamped ahead of its producer's now - a component's fast clock - would put the
+     * checkpoint ahead of what the session has processed: a gap opened before the stamp then starts
+     * at the request, and what lies between is never asked for. The dispatcher hands over the stamp
+     * clamped to the producer's now at receipt as the mark; the checkpoint is taken from it.
+     */
+    @Test
+    void aMessageStampedAheadOfItsProducerMovesTheCheckpointOnlyToTheMarkItIsGiven() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofMinutes(1));
+        long t = feed.now();
+        long tenMinutesAhead = t + Duration.ofMinutes(10).toMillis();
+        feed.machine.processed(1, PRE, tenMinutesAhead, t, Stamp.of(t), 0);
+        assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t);
+
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.machine.connectionDown();
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.machine.connectionUp();
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("the last real stamp, not the request's time")
+                .isEqualTo(Instant.ofEpochMilli(t));
+        assertThat(requireNonNull(feed.producers.getProducer(PRE)).getLastProcessedMessageGenTimestamp())
+                .as("what the client reads of the producer is the message's own stamp")
+                .isEqualTo(tenMinutesAhead);
+    }
+
+    @Test
+    void anAliveOfTheSessionStampedAheadOfItsProducerMovesTheCheckpointOnlyToTheMarkItIsGiven() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofMinutes(1));
+        long t = feed.now();
+        feed.machine.sessionAlive(1, PRE, t + Duration.ofMinutes(10).toMillis(), t, Stamp.of(t), true);
+        assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t);
+
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.machine.connectionDown();
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.machine.connectionUp();
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after()).isEqualTo(Instant.ofEpochMilli(t));
+    }
+
+    @Test
+    void anAliveStampedAheadOfItsProducerMovesTheSafePointOnlyToTheMarkItIsGiven() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofMinutes(1));
+        long t = feed.now();
+        feed.machine.alive(PRE, t + Duration.ofMinutes(10).toMillis(), t, feed.feedClock.stamp(), true);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.unsubscribed(PRE);
+        feed.clock.advance(Duration.ofSeconds(10));
+        feed.alive(PRE);
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("the producer's gap starts at the last safe point, which is the mark")
+                .isEqualTo(Instant.ofEpochMilli(t));
+    }
+
+    @Test
+    void aMessageNotAheadOfItsProducerMovesTheCheckpointToItsOwnStamp() {
+        var feed = Harness.upWith(MessageInterest.ALL);
+        feed.clock.advance(Duration.ofMinutes(1));
+        long t = feed.now();
+        feed.machine.processed(1, PRE, t - 10_000, Stamp.of(t), 0);
+        assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t - 10_000);
+        feed.machine.sessionAlive(1, PRE, t - 5_000, Stamp.of(t), true);
+        assertThat(feed.machine.checkpoint(1, PRE)).isEqualTo(t - 5_000);
+    }
+
     @Test
     void aLostConnectionRecoversFromTheOldestCheckpointOfTheSessionsThatReceiveTheProducer() {
         feed.open(1, MessageInterest.ALL);

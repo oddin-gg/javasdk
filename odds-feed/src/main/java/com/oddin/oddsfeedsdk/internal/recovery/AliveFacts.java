@@ -12,8 +12,15 @@ public interface AliveFacts {
      * An alive arrived.
      *
      * @param generatedAt the alive's timestamp, epoch millis by the producer's clock
+     * @param markAt what the safe point is taken from: {@code generatedAt}, or the producer's now at
+     *     receipt, by the offset known before this alive, when it is stamped ahead of it
      * @param received when the SDK received it: both readings of its clock, taken where the broker's
      *     delivery arrived
      */
-    void alive(long producerId, long generatedAt, Stamp received, boolean subscribed);
+    void alive(long producerId, long generatedAt, long markAt, Stamp received, boolean subscribed);
+
+    /** An alive whose stamp is not ahead of the producer's now: its own stamp is its mark. */
+    default void alive(long producerId, long generatedAt, Stamp received, boolean subscribed) {
+        alive(producerId, generatedAt, generatedAt, received, subscribed);
+    }
 }
