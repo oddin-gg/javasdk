@@ -56,7 +56,8 @@ if ! asked=$("$(dirname "$0")/release-tag-check.sh" "$tag" "$started_commit" "${
 fi
 
 # Releases are cut from main only: main alone has a ruleset that requires review (an approval,
-# code owners), while pull requests into next merge without one.
+# code owners), while pull requests into next merge without one. Once next is renamed to main
+# there is no origin/next: the check then simply never has a commit "on next only" to name.
 on_main() {
   local status
   git rev-parse -q --verify refs/remotes/origin/main > /dev/null || fail "this clone has no origin/main"

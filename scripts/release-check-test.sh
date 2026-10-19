@@ -251,7 +251,7 @@ release_workflow='on:
       - v1.*
 '
 commit ".github/workflows/release.yml=$release_workflow" \
-  ".github/workflows/next.yml=on: {push: {branches: [next]}, pull_request: {branches: [next]}, workflow_call: {}}"
+  ".github/workflows/next.yml=on: {push: {branches: [next, main]}, pull_request: {branches: [next, main]}, workflow_call: {}}"
 
 # on main
 git -C "$repo" checkout -q -b main
@@ -392,6 +392,15 @@ expect refuse v1.0.0 "$central/500" "could not tell whether Central has odds-fee
 expect refuse v1.0.0 "$central/404-500" "could not tell whether Central has odds-feed 1.0.0 (500"
 expect refuse v1.0.0 "$silent" "could not tell whether Central has odds-feed-parent 1.0.0 (no answer"
 expect refuse v1.0.0 "$central/stall" "could not tell whether Central has odds-feed-parent 1.0.0 (no answer"
+
+# After next is renamed to main there is no origin/next. The checks that read it must carry on
+# without it: main's commits are still accepted, and a commit that was only on next is refused as
+# not being on main, without a word about a branch that no longer exists.
+git -C "$repo" update-ref -d refs/remotes/origin/next
+expect accept v1.0.10 "$absent" 1.0.10 true
+expect refuse v1.1.0 "$absent" "is not on main"
+! grep -q "next" "$work/err" || failed "v1.1.0: without origin/next the refusal still names next: $(cat "$work/err")"
+expect refuse v1.2.0 "$absent" "is not on main"
 
 # the tag as the remote has it, right before the upload
 released=$(git -C "$repo" rev-parse "v1.0.0^{commit}")
