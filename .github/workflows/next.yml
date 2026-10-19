@@ -52,6 +52,11 @@ jobs:
         # maven-central reviewer; it runs on tags alone, so its cases run here, on a scratch repository
         run: ./scripts/release-check-test.sh
 
+      - name: Check the release refuses a signing key that is not fit to sign
+        # release.yml's key check, against stub keyservers and keys made on this runner: a subkey
+        # about to expire, expired or revoked, a copy gone stale on one server, a server without it
+        run: ./scripts/release-key-check-test.sh
+
       - name: Check the GitHub Release is a draft until its files are on it
         run: ./scripts/release-github-test.sh
 

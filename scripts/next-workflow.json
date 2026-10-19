@@ -21,6 +21,10 @@
           "run": "./scripts/release-check-test.sh"
         },
         {
+          "name": "Check the release refuses a signing key that is not fit to sign",
+          "run": "./scripts/release-key-check-test.sh"
+        },
+        {
           "name": "Check the GitHub Release is a draft until its files are on it",
           "run": "./scripts/release-github-test.sh"
         },
