@@ -64,6 +64,8 @@ import java.util.function.Consumer;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * A session's dispatcher, one delivery at a time, over the real decoder, message factory and caches
@@ -532,6 +534,60 @@ class SessionDispatcherTest {
         assertThat(listener.read).last().isEqualTo(EventStatus.Cancelled);
     }
 
+    /**
+     * KD-14 across a step of the SDK's wall clock: the offset an alive measured before it is read as
+     * of the message's own reading, so a fresh message is not refused for the step, and an old one
+     * is not taken for fresh by it.
+     */
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void theStatusAgeOfAMessageIsNotMovedByAStepOfTheWallClockAfterItsProducersOffsetWasMeasured(long step) {
+        var split = new SplitClock();
+        split.advanceMono(Duration.ofHours(5));
+        try (var shared = MessageWorld.start(ExceptionHandlingStrategy.THROW, split.clock())) {
+            var dispatcher = new SessionDispatcher(
+                    1,
+                    session,
+                    MessageInterest.ALL,
+                    listener,
+                    ext,
+                    transport,
+                    facts,
+                    false,
+                    feedClosed::get,
+                    new Pipeline(
+                            shared.decoder,
+                            shared.messages,
+                            shared.matches,
+                            shared.profiles,
+                            shared.producers,
+                            fixtureChanges,
+                            offsets,
+                            events,
+                            split.clock()));
+            listener.onOdds = message -> listener.read.add(status(message));
+            // a producer whose clock is the SDK's: the alive measured no offset
+            var alive = split.clock().stamp();
+            offsets.alive(2, alive.wall(), alive);
+            split.stepWall(Duration.ofMinutes(step));
+
+            // the producer's clock did not step. A message 25 minutes old by it is that old whatever way
+            // the wall clock stepped: older than the status age less the minutes the step would add or take
+            long producerNow = alive.wall();
+            deliver(
+                    dispatcher,
+                    split,
+                    withStatus("1", producerNow - Duration.ofMinutes(25).toMillis()));
+            assertThat(listener.read)
+                    .as("25 minutes old: no status of its own, the summary's, which says closed")
+                    .containsExactly(EventStatus.Finished);
+
+            // and one sent now is as fresh as it was, not older than the status age by the step
+            deliver(dispatcher, split, withStatus("5", producerNow));
+            assertThat(listener.read).last().as("sent now").isEqualTo(EventStatus.Cancelled);
+        }
+    }
+
     @Test
     void aReplaysOldMessagesWriteTheStatusAsCurrent() {
         SessionDispatcher replay = dispatcher(MessageInterest.ALL, true);
@@ -933,6 +989,20 @@ class SessionDispatcherTest {
 
     private void handle(SessionDispatcher dispatcher, String xml, String routingKey) {
         dispatcher.handle(delivery(xml.getBytes(StandardCharsets.UTF_8), routingKey));
+    }
+
+    /** One delivery received by the split clock's reading now. */
+    private void deliver(SessionDispatcher dispatcher, SplitClock split, String xml) {
+        var received = Instant.ofEpochMilli(split.clock().wallMillis());
+        dispatcher.handle(new RawDelivery(
+                xml.getBytes(StandardCharsets.UTF_8),
+                xml.length(),
+                FakeFeed.routingKey(xml),
+                ++tag,
+                0,
+                received,
+                split.clock().monoMillis(),
+                received.minusMillis(500)));
     }
 
     private RawDelivery delivery(byte[] body, String routingKey) {

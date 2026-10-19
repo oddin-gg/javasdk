@@ -53,10 +53,10 @@ class AliveDispatcherTest {
         AliveDispatcher dispatcher = started();
         dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(2, true), 10_000), 12_500));
         assertThat(next()).isEqualTo("2 10000 12500 true oddsfeed-alives");
-        assertThat(offsets.age(2, 20_000, 22_500))
+        assertThat(offsets.age(2, 20_000, new Stamp(22_500, 22_500 + MONO_SHIFT)))
                 .as("the producer's clock 2.5 s behind")
                 .isZero();
-        assertThat(offsets.age(1, 20_000, 22_500))
+        assertThat(offsets.age(1, 20_000, new Stamp(22_500, 22_500 + MONO_SHIFT)))
                 .as("no alive of producer 1: no offset")
                 .isEqualTo(2_500);
 
@@ -119,7 +119,9 @@ class AliveDispatcherTest {
         AliveDispatcher dispatcher = started();
         dispatcher.accept(alive(FeedMessages.stampedAt(FeedMessages.alive(7, true), 10_000), 12_500));
         assertThat(next()).as("the actor drops and counts it").startsWith("7 10000 12500 true");
-        assertThat(offsets.age(7, 20_000, 22_500)).as("no offset").isEqualTo(2_500);
+        assertThat(offsets.age(7, 20_000, new Stamp(22_500, 22_500 + MONO_SHIFT)))
+                .as("no offset")
+                .isEqualTo(2_500);
     }
 
     @Test
@@ -154,7 +156,7 @@ class AliveDispatcherTest {
         assertThat(dispatcher.handled()).isEqualTo(3);
         assertThat(dispatcher.unreadable()).isEqualTo(2);
         assertThat(posted).as("posted to the actor").isEmpty();
-        assertThat(offsets.age(2, 20_000, 22_500))
+        assertThat(offsets.age(2, 20_000, new Stamp(22_500, 22_500 + MONO_SHIFT)))
                 .as("the offset of the alive with a time, 2.5 s")
                 .isZero();
     }
