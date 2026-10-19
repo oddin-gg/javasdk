@@ -4,7 +4,10 @@
 # the upload - with a throwaway signing key and a stand-in for the Central Portal on 127.0.0.1,
 # and checks the bundle: the parent POM and odds-feed's jar, sources, javadoc and POM, each
 # signed by that key and filed under the version built, and nothing else - no test-fakes, no
-# other module. next.yml runs it on every push, so broken signing or bundling shows up at review,
+# other module. The key has the layout of RELEASING.md: a primary that only certifies and a
+# signing subkey, and MAVEN_GPG_KEY is what the release hands CI, the export of the subkey with
+# the primary as a stub (gpg --export-secret-subkeys). Every signature must have been made by the
+# subkey, not the primary, which the build does not have. next.yml runs it on every push, so broken signing or bundling shows up at review,
 # not once a tag is pushed. It also fails the deployment once, and checks that the bundle is still
 # there for the release made by hand.
 #
@@ -32,11 +35,33 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# a key for this run only, never exported anywhere but the build below
+# a key for this run only, never exported anywhere but the build below: a primary that only
+# certifies, and a signing subkey, as RELEASING.md makes it
 gpg --batch --pinentry-mode loopback --passphrase bundle-test \
-  --quick-gen-key 'Bundle Test <bundle-test@example.invalid>' ed25519 sign 1d > "$work/gpg.log" 2>&1 \
+  --quick-gen-key 'Bundle Test <bundle-test@example.invalid>' ed25519 cert 1d > "$work/gpg.log" 2>&1 \
   || { cat "$work/gpg.log"; echo "could not make the test key" >&2; exit 1; }
 fingerprint=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { print $10; exit }')
+gpg --batch --pinentry-mode loopback --passphrase bundle-test \
+  --quick-add-key "$fingerprint" ed25519 sign 1d >> "$work/gpg.log" 2>&1 \
+  || { cat "$work/gpg.log"; echo "could not add the signing subkey" >&2; exit 1; }
+subkey=$(gpg --batch --with-colons --list-secret-keys | awk -F: '$1 == "fpr" { n++; if (n == 2) print $10 }')
+[ -n "$subkey" ] || { echo "the test key has no subkey" >&2; exit 1; }
+
+# MAVEN_GPG_KEY as release.yml's secret holds it: the subkey alone, the primary a stub
+secret_key() {
+  gpg --batch --pinentry-mode loopback --passphrase bundle-test --armor --export-secret-subkeys "$fingerprint" 2>> "$work/gpg.log"
+}
+# and it must be that: imported where the primary is not, it has no secret primary
+scratch=$(mktemp -d /tmp/bundle-gpg.XXXXXX)
+secret_key | GNUPGHOME=$scratch gpg --batch --import > "$work/import.log" 2>&1 \
+  || { cat "$work/import.log"; echo "could not import the subkey export" >&2; exit 1; }
+listing=$(GNUPGHOME=$scratch gpg --batch --with-colons --list-secret-keys)
+gpgconf --homedir "$scratch" --kill gpg-agent 2>/dev/null || true
+rm -rf "$scratch"
+if ! printf '%s\n' "$listing" | grep -q '^sec:.*:#::' || ! printf '%s\n' "$listing" | grep -q '^ssb:'; then
+  echo "the export is not a subkey with the primary as a stub: $listing" >&2
+  exit 1
+fi
 
 # The stand-in portal: it keeps the upload and answers with a deployment id. Asked for the
 # deployment's state, it answers as Central would: PUBLISHED for an upload that asked to be
@@ -108,7 +133,7 @@ EOF
 
 cd "$root"
 rm -rf target/central-publishing target/central-staging
-MAVEN_GPG_KEY=$(gpg --batch --pinentry-mode loopback --passphrase bundle-test --armor --export-secret-keys "$fingerprint" 2>> "$work/gpg.log") \
+MAVEN_GPG_KEY=$(secret_key) \
 MAVEN_GPG_PASSPHRASE=bundle-test \
   ./mvnw --batch-mode --no-transfer-progress -s "$work/settings.xml" -Prelease -Drevision="$version" \
     -Dcentral.autoPublish=true -Dcentral.waitUntil=published -DcentralBaseUrl="$portal" \
@@ -118,9 +143,9 @@ grep -F "Using Central baseUrl: $portal" "$work/build.log" > /dev/null \
   || { cat "$work/build.log"; echo "the build did not use the stand-in portal" >&2; exit 1; }
 
 bundle=target/central-publishing/central-bundle.zip
-python3 - "$bundle" "$work" "$version" <<'EOF'
+python3 - "$bundle" "$work" "$version" "$fingerprint" "$subkey" <<'EOF'
 import hashlib, os, re, subprocess, sys, zipfile
-bundle, work, version = sys.argv[1:]
+bundle, work, version, primary, subkey = sys.argv[1:]
 problems = []
 def check(ok, message):
     if not ok:
@@ -145,6 +170,10 @@ for artifact in sorted(expected & files - {a + '.asc' for a in artifacts}):
                             capture_output=True, text=True)
     check(verify.returncode == 0 and '[GNUPG:] VALIDSIG' in verify.stdout,
           '%s: its signature does not verify against the test key' % artifact)
+    # VALIDSIG <fingerprint of the key that signed> ... <fingerprint of the primary key>
+    valid = [line.split() for line in verify.stdout.splitlines() if line.startswith('[GNUPG:] VALIDSIG')]
+    check(len(valid) == 1 and valid[0][2] == subkey and valid[0][-1] == primary and valid[0][2] != primary,
+          '%s: not signed by the subkey %s of %s: %s' % (artifact, subkey, primary, valid))
     for algorithm in ('md5', 'sha1'):
         digest = os.path.join(work, 'bundle', artifact + '.' + algorithm)
         check(os.path.exists(digest) and open(digest).read().strip()
@@ -226,7 +255,7 @@ touch "$work/fail"
 rm -rf target/central-publishing target/central-staging
 : > "$work/requests"
 rm -f "$work/upload"
-if MAVEN_GPG_KEY=$(gpg --batch --pinentry-mode loopback --passphrase bundle-test --armor --export-secret-keys "$fingerprint" 2>> "$work/gpg.log") \
+if MAVEN_GPG_KEY=$(secret_key) \
   MAVEN_GPG_PASSPHRASE=bundle-test \
   ./mvnw --batch-mode --no-transfer-progress -s "$work/settings.xml" -Prelease -Drevision="$version" \
     -Dcentral.autoPublish=true -Dcentral.waitUntil=published -DcentralBaseUrl="$portal" \
