@@ -128,7 +128,7 @@ oldnear=$(addsub nearold ed25519 sign 10d)
 oldnear_date=$(date -u -d '+10 days' +%Y-%m-%d)
 subkeys nearold > "$work/nearold.older"
 sleep 1.1
-addsub nearold ed25519 sign 2y > /dev/null
+newernear=$(addsub nearold ed25519 sign 2y)
 subkeys nearold > "$work/nearold.both"
 both older-expiring nearold
 both newer-held nearold
@@ -249,6 +249,33 @@ run nosecret unset "$fit" "MAVEN_GPG_KEY is empty"
 run emptysecret empty "$fit" "MAVEN_GPG_KEY is empty"
 run garbage "$work/garbage" "$fit" "is not a key gpg can import"
 run public "$work/fit.public" "$fit" "holds no secret key"
+
+# The keyserver check is a child of the script, and the secret must not reach it: a copy of the script
+# beside a stand-in for release-key-check.sh, which records what it was given. It is handed the
+# subkey the secret signs with and the fingerprint, and no MAVEN_GPG_KEY.
+mkdir "$work/child"
+cp "$check" "$work/child/release-signing-key-check.sh"
+cat > "$work/child/release-key-check.sh" <<'EOF'
+#!/usr/bin/env bash
+{
+  if [ "${MAVEN_GPG_KEY+set}" = set ]; then echo "MAVEN_GPG_KEY is set in the child"; else echo "MAVEN_GPG_KEY is absent"; fi
+  echo "RELEASE_SIGNING_SUBKEY=${RELEASE_SIGNING_SUBKEY-}"
+  echo "RELEASE_KEY_FINGERPRINT=${RELEASE_KEY_FINGERPRINT-}"
+} > "$CHILD_RECORD"
+EOF
+chmod +x "$work/child/release-key-check.sh"
+if ! RELEASE_KEY_FINGERPRINT=$(fpr nearold) MAVEN_GPG_KEY=$(cat "$work/nearold.both") CHILD_RECORD="$work/child/record" \
+  "$work/child/release-signing-key-check.sh" > "$work/child/out" 2>&1; then
+  echo "FAIL child: the script failed with the stand-in: $(cat "$work/child/out")" >&2
+  failures=$((failures + 1))
+elif [ "$(cat "$work/child/record" 2> /dev/null)" != "MAVEN_GPG_KEY is absent
+RELEASE_SIGNING_SUBKEY=$newernear
+RELEASE_KEY_FINGERPRINT=$(fpr nearold)" ]; then
+  echo "FAIL child: the keyserver check was not given the selected subkey $newernear and no secret: $(cat "$work/child/record" 2> /dev/null)" >&2
+  failures=$((failures + 1))
+else
+  echo "ok   child: the keyserver check gets RELEASE_SIGNING_SUBKEY=$newernear and no MAVEN_GPG_KEY"
+fi
 
 if [ "$failures" -ne 0 ]; then
   echo "$failures failed" >&2
