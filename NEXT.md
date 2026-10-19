@@ -561,7 +561,9 @@ Ownership and ordering:
     delayed backlog message, and REST has since taken over. It is still delivered.
     The offset that corrects it is the producer's, which the alive dispatcher measures
     on the SDK's alive channel and keeps for the session dispatchers to read without
-    asking the recovery actor; before the producer's first alive it is taken as none.
+    asking the recovery actor, as of the reading the dispatcher took the message at, so a
+    step of the wall clock since the alive does not move the age (the Clocks rule);
+    before the producer's first alive it is taken as none.
     A replay session's messages are old by design and write as current, in the order
     they come: the watermark does not hold them back, so a replay played again writes
     each run; the watermark itself never moves back. As in 0.0.x, a field the new run
@@ -795,7 +797,8 @@ and REST workers post facts to it; it decides and posts work out.
   cap at the producer's now and the start of a stateful recovery window. A step of the wall
   clock since an offset was measured does not show in them: the offset is measured on an alive
   together with the difference of the fact's two readings, wall less monotonic, which no step
-  moves, and wherever the offset is read - a sample's age, the cap, the window, the producer's
+  moves, and wherever the offset is read - a sample's age, the age that keeps a stale message from
+  writing the live state, the cap, the window, the producer's
   now a recovery is stamped with - it is moved by how far that difference has since moved, when
   it has moved by more than a second (less is jitter and slew, and is left). The producer's
   clock is taken not to have moved with the SDK's, so the next alive measures the same offset
@@ -2009,3 +2012,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
 - 2026-10-19, the soak length is agreed: 72 hours on the test environment, a weekend day among them,
   the scenarios on the first day and two days of normal traffic with one fault a day after them.
   No public API changes.
+- 2026-10-19, the age of a message by a stepped wall clock: the age that keeps a message older than
+  the match status age from writing the live state (KD-14) was read by the producer's latest
+  offset as it was measured, so a step of the SDK's wall clock since the alive made it wrong by the
+  step until the next alive - a fresh message refused after a step forward, a message 25 minutes
+  old written after a step back - the one place the offset was still read as it stood; the
+  recovery machine's samples, marks, cap and window already read it as of the reading. It now
+  reads it as of the dispatcher's own reading of the message, the way those do, which changes the
+  signature of an internal method only: the sample of the safety net (processing delay) is not
+  changed, it read the offset that way already. No public API changes.
