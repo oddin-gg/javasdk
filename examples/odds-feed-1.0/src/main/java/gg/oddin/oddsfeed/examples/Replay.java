@@ -33,10 +33,24 @@ public final class Replay {
             feed.open();
 
             var replay = feed.getReplayManager();
-            events.forEach(replay::addSportEvent);
+            // The list lives on the replay server, so the events of an earlier run are on it still:
+            // start from an empty one. The calls answer false when the API refuses them (the SDK
+            // logs why).
+            if (!replay.clear()) {
+                LOG.error("the replay list could not be cleared");
+                return;
+            }
+            for (var event : events) {
+                if (!replay.addSportEvent(event)) {
+                    LOG.warn("{} was not added to the replay", event);
+                }
+            }
 
             // 30 times the speed, at most 500 ms between two messages
-            replay.play(30, 500);
+            if (!replay.play(30, 500)) {
+                LOG.error("the replay was not started");
+                return;
+            }
             LOG.info("replay status: {}", replay.getReplayStatus());
 
             // The messages arrive on the listener; stop with Ctrl-C.
