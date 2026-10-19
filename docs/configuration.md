@@ -75,6 +75,9 @@ watermark, when all of these hold:
   **future stamp margin** (30 s): two ordinary deliveries do not differ so much;
 - it is timely: its age by its producer's alives is at most the **timely message age** (10 s), so a
   message that sat in a backlog never counts;
+- it is not older than the update the status had before the jump: a bad timestamp that came after
+  a correct update leaves that update's timestamp as the floor, so an ordinary delayed message
+  cannot put an older status back;
 - it is not an answer to a recovery request: a recovery never moves the live state back, and the
   next live message repairs a bad timestamp.
 
