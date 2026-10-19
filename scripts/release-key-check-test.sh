@@ -200,6 +200,26 @@ revoke late "$(subs late)"
 full late > "$work/late.rev.full"
 nouid late > "$work/late.rev.nouid"
 
+# a subkey that was revoked and replaced, with a copy taken before and one after
+gen swapped cert
+oldsub=$(addsub swapped 2y)
+full swapped > "$work/swapped.old.full"
+nouid swapped > "$work/swapped.old.nouid"
+sleep 1.1
+revoke swapped "$oldsub"
+addsub swapped 2y > /dev/null
+full swapped > "$work/swapped.new.full"
+nouid swapped > "$work/swapped.new.nouid"
+
+# a subkey of 90 days, renewed to two years: both copies are fit alone
+gen lagging cert
+lagsub=$(addsub lagging 90d)
+full lagging > "$work/lagging.old.full"
+nouid lagging > "$work/lagging.old.nouid"
+gpgh lagging --quick-set-expire "$(fpr lagging)" 2y "$lagsub"
+full lagging > "$work/lagging.new.full"
+nouid lagging > "$work/lagging.new.nouid"
+
 # another key, for a fingerprint that is not the served one
 gen other cert
 addsub other 2y > /dev/null
@@ -359,6 +379,28 @@ put openpgp late.rev2 "$work/late.good.nouid"
 put ubuntu late.rev2 "$work/late.rev.full"
 run late.rev2 "$(fpr late)" 5 "keyserver.ubuntu.com: the signing subkey" "is revoked"
 run late.good "$(fpr late)" 5 ok
+
+# each server is fit alone, but they do not serve the same: the old copy still has the replaced subkey
+# unrevoked while the other has its revocation and the new subkey - the stolen one would pass
+put openpgp swapped.fresh "$work/swapped.new.nouid"
+put ubuntu swapped.fresh "$work/swapped.new.full"
+run swapped.fresh "$(fpr swapped)" 5 ok
+put openpgp swapped.old "$work/swapped.old.nouid"
+put ubuntu swapped.old "$work/swapped.new.full"
+run swapped.old "$(fpr swapped)" 5 "the servers serve different signing subkeys: $oldsub expires" "but revoked on keyserver.ubuntu.com" "is on keyserver.ubuntu.com and not on keys.openpgp.org"
+put openpgp swapped.old2 "$work/swapped.new.nouid"
+put ubuntu swapped.old2 "$work/swapped.old.full"
+run swapped.old2 "$(fpr swapped)" 5 "the servers serve different signing subkeys: $oldsub revoked on keys.openpgp.org but expires" "is on keys.openpgp.org and not on keyserver.ubuntu.com"
+# the same subkey with two expiries, both far enough away
+put openpgp lagging.old "$work/lagging.old.nouid"
+put ubuntu lagging.old "$work/lagging.new.full"
+run lagging.old "$(fpr lagging)" 5 "the servers serve different signing subkeys: $lagsub expires" "on keys.openpgp.org but expires"
+put openpgp lagging.old2 "$work/lagging.new.nouid"
+put ubuntu lagging.old2 "$work/lagging.old.full"
+run lagging.old2 "$(fpr lagging)" 5 "the servers serve different signing subkeys: $lagsub expires" "on keyserver.ubuntu.com"
+put openpgp lagging.ok "$work/lagging.new.nouid"
+put ubuntu lagging.ok "$work/lagging.new.full"
+run lagging.ok "$(fpr lagging)" 5 ok
 
 # something that is not a key
 echo "<html>Not a key</html>" > "$work/garbage"

@@ -17,7 +17,9 @@
 # holds the old expiry makes Central refuse the signature. The primary's fingerprint must be the
 # variable's, and the key must have a signing subkey - the primary alone signing does not count,
 # since the layout keeps the primary out of CI. The subkey gpg would sign with, the newest one
-# not revoked or expired, must have no expiry or one at least 30 days away.
+# not revoked or expired, must have no expiry or one at least 30 days away. The two servers must
+# also serve the same signing subkeys, each revoked or not and with the same expiry: one that
+# still has a replaced subkey unrevoked would else pass beside one that has the revocation.
 #
 # keys.openpgp.org serves only the user IDs whose email its owner verified, and none otherwise;
 # gpg lists such a key, but shows no key flags for its primary, marks every key of it invalid and
@@ -65,9 +67,9 @@ check_server() {
     echo "$name answered with something gpg cannot read as a public key: $(tr '\n' ' ' < "$work/$name.err")"
     return
   fi
-  python3 -I - "$name" "$fingerprint" "$work/$name.colons" <<'EOF' || echo "$name: could not read the key gpg listed"
+  python3 -I - "$name" "$fingerprint" "$work/$name.colons" "$work/$name.signing" <<'EOF' || echo "$name: could not read the key gpg listed"
 import sys, time
-name, wanted, path = sys.argv[1:]
+name, wanted, path, summary = sys.argv[1:]
 now = time.time()
 horizon = now + 30 * 86400
 
@@ -103,6 +105,11 @@ if not mine:
     problems.append("%s serves %s, not the key %s" % (name, ", ".join(k.get("fpr", "?") for k in keys) or "no key", wanted))
 else:
     key = mine[0]
+    # every signing subkey this server has, revoked or not, for the comparison with the other server
+    with open(summary, "w") as out:
+        for sub in sorted(key["subs"], key=lambda s: s.get("fpr", "")):
+            if "s" in sub["caps"]:
+                out.write("%s %d %d\n" % (sub.get("fpr", "?"), sub["revoked"] or sub["validity"] == "r", sub["expires"]))
     if key["revoked"] or key["validity"] == "r":
         problems.append("%s: the key %s is revoked: make a new key as RELEASING.md says" % (name, wanted))
     elif key["expires"] and key["expires"] <= now:
@@ -137,9 +144,40 @@ for p in problems:
 EOF
 }
 
+# Each server passing alone is not enough: after a subkey was revoked and replaced, one that still
+# serves the old copy, the stolen subkey unrevoked, would pass beside one that has the revocation.
+# Both must serve the same signing subkeys, each revoked or not and with the same expiry.
+compare_servers() {
+  [ -e "$work/keys.openpgp.org.signing" ] && [ -e "$work/keyserver.ubuntu.com.signing" ] || return 0
+  python3 -I - "$work/keys.openpgp.org.signing" "$work/keyserver.ubuntu.com.signing" <<'EOF' || echo "could not compare the two servers' keys"
+import sys, time
+first, second = "keys.openpgp.org", "keyserver.ubuntu.com"
+def read(path):
+    subs = {}
+    for line in open(path):
+        fpr, revoked, expires = line.split()
+        subs[fpr] = (revoked == "1", int(expires))
+    return subs
+def show(sub):
+    revoked, expires = sub
+    if revoked:
+        return "revoked"
+    return "expires " + time.strftime("%Y-%m-%d", time.gmtime(expires)) if expires else "no expiry"
+a, b = read(sys.argv[1]), read(sys.argv[2])
+for fpr in sorted(set(a) | set(b)):
+    if fpr not in b:
+        print("the servers serve different signing subkeys: %s (%s) is on %s and not on %s" % (fpr, show(a[fpr]), first, second))
+    elif fpr not in a:
+        print("the servers serve different signing subkeys: %s (%s) is on %s and not on %s" % (fpr, show(b[fpr]), second, first))
+    elif a[fpr] != b[fpr]:
+        print("the servers serve different signing subkeys: %s %s on %s but %s on %s" % (fpr, show(a[fpr]), first, show(b[fpr]), second))
+EOF
+}
+
 refusals=$(
   check_server keys.openpgp.org "$openpgp/vks/v1/by-fingerprint/$fingerprint"
   check_server keyserver.ubuntu.com "$ubuntu/pks/lookup?op=get&options=mr&search=0x$fingerprint"
+  compare_servers
 )
 if [ -n "$refusals" ]; then
   echo "release key: the signing key $fingerprint is not fit to sign a release:" >&2
