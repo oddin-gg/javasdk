@@ -52,8 +52,9 @@ public final class EventRecovery {
 
             // An ended recovery stays readable for five minutes.
             var giveUp = Instant.now().plus(Duration.ofMinutes(5));
+            EventRecoveryStatus status = null;
             while (Instant.now().isBefore(giveUp)) {
-                var status = recovery.getEventRecoveryStatus(requestId);
+                status = recovery.getEventRecoveryStatus(requestId);
                 LOG.info("recovery {}: {}", requestId, status == null ? "unknown" : status.state());
                 if (status != null && status.state() != EventRecoveryStatus.State.PENDING) {
                     LOG.info("ended: {}", status);
@@ -61,6 +62,7 @@ public final class EventRecovery {
                 }
                 Thread.sleep(2_000);
             }
+            LOG.warn("recovery {} had not ended after five minutes, last seen {}", requestId, status);
         } finally {
             feed.close();
         }
