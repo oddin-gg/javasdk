@@ -35,8 +35,8 @@ we keep running into:
 - **Almost no tests.** Six test files, all added in 2026.
 - **Weak observability.** Only a "connection down" event, no "connection up". Recovery
   gives back a bare request id. No SDK version in HTTP headers.
-- **Missing features compared with the Go SDK.** Category, reference ids, statistics,
-  single-item getters, cache clear methods, default locale, timeouts, prefetch.
+- **Missing features compared with the Go SDK.** Single-item getters, cache clear methods,
+  default locale, timeouts, prefetch.
 
 Fixing these one at a time inside the Kotlin code is not realistic. The threading
 model is the problem, and it touches everything.
@@ -1201,10 +1201,14 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
   (`Tournament.getCompetitorIds`, `Sport.getTournamentIds`), read from what the views
   already hold, without loading the competitors or building the tournaments, and a
   tournament's icon path (`Tournament.getIconPath`, from the tournament info, the same in
-  every locale). `Category` on tournaments, reference ids on matches and
-  tournaments, `Statistics` on match status and a settlement's void reason id and
-  parameters are not on the list: the schema does not declare them yet, so they come
-  after 1.0, once it does and the API is confirmed to send them.
+  every locale). Not on the list, and not planned: `Category` on teams and tournaments,
+  reference ids on matches and tournaments, `Statistics` on match status and a
+  settlement's void reason id and parameters. The Go SDK decodes them, but the producer
+  sends none of them and the schema declares none (its notes record each as not sent):
+  `category` is an empty placeholder, the void reason id and parameters are sent on a
+  bet cancel's markets only, where 1.0 reads them (`MarketCancel`), and statistics and
+  reference ids are not there at all. Should the producer start sending one, the schema
+  declares it and it comes as a 1.x addition.
 - Getters: recovery status by request id, `getHealth()` (its transport counts the channel
   refusals, the broker's refusals to open a channel again on a live connection), a single sport, tournament and
   player by id on `SportsInfoManager` (`getSport`, `getTournament`, and `getPlayer` without
@@ -2035,3 +2039,7 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   competitor (`MessageFactoryTest`). And the .NET fallback of a match's tournament to the fixture when the
   summary fails is not taken, by the owner's decision: 1.0 keeps what 0.0.x and the Go SDK do (section 3,
   behaviour that stays). No code and no public API changes.
+- 2026-10-19, the Go SDK's category, reference ids, statistics and settlement void reason are no
+  longer a goal: the producer sends none of them and the schema declares none, so they are not
+  planned, rather than waiting for a schema release. A bet cancel's void reason id and parameters,
+  which the producer does send, were already read. No public API changes.
