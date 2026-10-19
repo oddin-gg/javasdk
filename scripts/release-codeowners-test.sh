@@ -19,7 +19,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 -I - "$root" <<'PY'
-import json, os, re, subprocess, sys
+import json, os, re, shutil, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 root = sys.argv[1]
@@ -52,35 +52,24 @@ def owners(lines, path):
             found = text[1:]
     return found
 
-def modules(directory):
+def modules(tree, directory):
     """Every module of the reactor, from <modules> of the root POM down, as paths from the root."""
-    tree = ET.parse(os.path.join(root, directory, "pom.xml"))
-    names = [m.text.strip() for m in tree.getroot().iter() if m.tag.rsplit("}", 1)[-1] == "module"]
+    pom = ET.parse(os.path.join(tree, directory, "pom.xml"))
+    names = [m.text.strip() for m in pom.getroot().iter() if m.tag.rsplit("}", 1)[-1] == "module"]
     found = []
     for name in names:
         path = os.path.normpath(os.path.join(directory, name))
         found.append(path)
-        found.extend(modules(path))
+        found.extend(modules(tree, path))
     return found
-
-owned = [
-    ".github/workflows/release.yml", ".github/workflows/next.yml", ".github/CODEOWNERS",
-    "RELEASING.md", "mvnw", "mvnw.cmd", ".mvn/wrapper/maven-wrapper.properties",
-    "pom.xml", "scripts/release-check.sh", "scripts/release-codeowners-test.sh",
-    "scripts/fetch-sdk.sh", "scripts/next-workflow.json", "release-notes/x.md",
-]
-reactor = modules(".")
-if not reactor:
-    sys.exit("FAIL the root pom.xml names no modules, so the POMs of the reactor were not checked")
-owned += [os.path.join(module, "pom.xml") for module in reactor]
 
 # What the workflows run and what those scripts read is derived, so that a script or a file added
 # to the build cannot be missed by a list kept by hand: every scripts/ path in a run: of a
 # workflow, and every file such a script names by a literal path from the repository root
 # ($root/..., or $here/... in the scripts that set it to their own directory).
-def workflow_scripts():
+def workflow_scripts(tree):
     found = {}
-    directory = os.path.join(root, ".github/workflows")
+    directory = os.path.join(tree, ".github/workflows")
     for name in sorted(os.listdir(directory)):
         if not name.endswith((".yml", ".yaml")):
             continue
@@ -91,33 +80,48 @@ def workflow_scripts():
                 found.setdefault(path, name)
     return found
 
-def script_reads(script):
+def script_reads(tree, script):
     found = set()
-    for variable, path in re.findall(r"(\$\{?root\}?|\$\{?here\}?)/(\.?[A-Za-z0-9_][A-Za-z0-9_./-]*)", open(os.path.join(root, script)).read()):
+    for variable, path in re.findall(r"(\$\{?root\}?|\$\{?here\}?)/(\.?[A-Za-z0-9_][A-Za-z0-9_./-]*)", open(os.path.join(tree, script)).read()):
         found.add(("scripts/" if "here" in variable else "") + path.rstrip("./"))
     return found
 
-derived = workflow_scripts()
-reads = {}
-for script in derived:
-    if not os.path.isfile(os.path.join(root, script)):
-        sys.exit("FAIL %s, run by %s, is not a file" % (script, derived[script]))
-    for path in script_reads(script):
-        reads.setdefault(path, script)
-# the derivation must have found what it is for, or an empty one would pass
-expected_derived = ["scripts/fetch-sdk.sh", "scripts/fetch-sdk-test.sh", "scripts/release-check.sh", "scripts/schema-drift.sh"]
-expected_reads = ["system-tests/src/test/resources/sdk-jar-checksums.properties", "pom.xml", "mvnw"]
-if [p for p in expected_derived if p not in derived] or [p for p in expected_reads if p not in reads]:
-    sys.exit("FAIL the workflows' scripts were not derived: %s; their reads: %s" % (sorted(derived), sorted(reads)))
-for path in reads:
-    if not os.path.exists(os.path.join(root, path)):
-        sys.exit("FAIL %s, read by %s, does not exist: the derivation read a path wrong" % (path, reads[path]))
-owned += [p for p in derived if p not in owned] + [p for p in reads if p not in owned]
+def survey(tree):
+    """The paths that must be owned in a tree: the list kept here, the reactor's POMs, and what is
+    derived from the workflows. Returns them with the reactor, the derived scripts and the reads."""
+    owned = [
+        ".github/workflows/release.yml", ".github/workflows/next.yml", ".github/CODEOWNERS",
+        "RELEASING.md", "mvnw", "mvnw.cmd", ".mvn/wrapper/maven-wrapper.properties",
+        "pom.xml", "scripts/release-check.sh", "scripts/release-codeowners-test.sh",
+        "scripts/fetch-sdk.sh", "scripts/next-workflow.json", "release-notes/x.md",
+    ]
+    reactor = modules(tree, ".")
+    if not reactor:
+        sys.exit("FAIL the root pom.xml names no modules, so the POMs of the reactor were not checked")
+    owned += [os.path.join(module, "pom.xml") for module in reactor]
+    derived = workflow_scripts(tree)
+    reads = {}
+    for script in derived:
+        if not os.path.isfile(os.path.join(tree, script)):
+            sys.exit("FAIL %s, run by %s, is not a file" % (script, derived[script]))
+        for path in script_reads(tree, script):
+            reads.setdefault(path, script)
+    # the derivation must have found what it is for, or an empty one would pass
+    expected_derived = ["scripts/fetch-sdk.sh", "scripts/fetch-sdk-test.sh", "scripts/release-check.sh", "scripts/schema-drift.sh"]
+    expected_reads = ["system-tests/src/test/resources/sdk-jar-checksums.properties", "pom.xml", "mvnw"]
+    if [p for p in expected_derived if p not in derived] or [p for p in expected_reads if p not in reads]:
+        sys.exit("FAIL the workflows' scripts were not derived: %s; their reads: %s" % (sorted(derived), sorted(reads)))
+    for path in reads:
+        if not os.path.exists(os.path.join(tree, path)):
+            sys.exit("FAIL %s, read by %s, does not exist: the derivation read a path wrong" % (path, reads[path]))
+    owned += [p for p in derived if p not in owned] + [p for p in reads if p not in owned]
+    return owned, reactor, derived, reads
+
 # what the release only compiles belongs to nobody in particular: owning everything would make
 # the release managers review every change
 unowned = ["odds-feed/src/main/java/X.java", "README.md"]
 
-def problems(lines):
+def problems(lines, owned):
     found = []
     for path in owned:
         got = owners(lines, path)
@@ -130,7 +134,8 @@ def problems(lines):
     return found
 
 lines = open(os.path.join(root, ".github/CODEOWNERS")).read().splitlines()
-failed = problems(lines)
+owned, reactor, derived, reads = survey(root)
+failed = problems(lines, owned)
 for problem in failed:
     print("FAIL " + problem, file=sys.stderr)
 if not failed:
@@ -153,10 +158,49 @@ for what, changed in cases.items():
     if changed == lines:
         failed.append("the case %r changed nothing" % what)
         print("FAIL the case %r changed nothing" % what, file=sys.stderr)
-    elif not problems(changed):
+    elif not problems(changed, owned):
         failed.append(what)
         print("FAIL the test accepted CODEOWNERS with %s" % what, file=sys.stderr)
     else:
         print("ok   refused CODEOWNERS with %s" % what)
+
+# and what the derivation is for: a workflow that runs a script nobody owns yet, and a script that
+# reads a file nobody owns yet, in a copy of the tree with the real CODEOWNERS, must each be found,
+# and the path named
+def copy_of_tree(into):
+    shutil.copytree(os.path.join(root, ".github"), os.path.join(into, ".github"))
+    shutil.copytree(os.path.join(root, "scripts"), os.path.join(into, "scripts"))
+    for path in ["mvnw"] + [os.path.join(m, "pom.xml") for m in ["."] + reactor] + sorted(reads):
+        if os.path.isfile(os.path.join(root, path)) and not os.path.exists(os.path.join(into, path)):
+            os.makedirs(os.path.dirname(os.path.join(into, path)) or into, exist_ok=True)
+            shutil.copy(os.path.join(root, path), os.path.join(into, path))
+
+def append(tree, path, text):
+    with open(os.path.join(tree, path), "a") as handle:
+        handle.write(text)
+
+def new_script(tree):
+    # a step in a workflow that calls a script no pattern of CODEOWNERS names
+    append(tree, ".github/workflows/next.yml", "\n      - name: Brand new\n        run: ./scripts/brand-new.sh\n")
+    append(tree, "scripts/brand-new.sh", "#!/usr/bin/env bash\n")
+
+def new_read(tree):
+    # a script a workflow runs, now reading a file no pattern names
+    os.makedirs(os.path.join(tree, "odds-feed/src/main/resources"), exist_ok=True)
+    append(tree, "odds-feed/src/main/resources/brand-new.properties", "x=1\n")
+    # (the variable is written apart: this script is run by a workflow too, and is read the same way)
+    append(tree, "scripts/fetch-sdk.sh", '\n: "$' + 'root/odds-feed/src/main/resources/brand-new.properties"\n')
+
+for what, change, path in [("a workflow running a new script", new_script, "scripts/brand-new.sh"),
+                           ("a workflow script reading a new file", new_read, "odds-feed/src/main/resources/brand-new.properties")]:
+    with tempfile.TemporaryDirectory() as tree:
+        copy_of_tree(tree)
+        change(tree)
+        found = problems(lines, survey(tree)[0])
+        if not any(line.startswith(path + " is owned by nobody") for line in found):
+            failed.append(what)
+            print("FAIL the test did not name %s for %s: %s" % (path, what, found), file=sys.stderr)
+        else:
+            print("ok   refused %s: %s" % (what, [line for line in found if line.startswith(path)][0]))
 sys.exit(1 if failed else 0)
 PY
