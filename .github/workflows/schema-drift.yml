@@ -1,0 +1,83 @@
+name: Schema drift
+
+# Each release line vendors oddsfeedschema at a pinned commit. This compares the pins on both
+# lines with the schema's main every weekday: see scripts/schema-drift.sh for the rules. It fails
+# when a line lags an additive schema change for more than seven days, and opens an issue, once per
+# schema commit, for every shape change, because that needs a decision rather than a refresh.
+#
+# GitHub runs scheduled workflows only from the default branch, so this file lives on main and
+# reads the other branches by name. When next becomes main, this file must come along and the
+# branch list below changes to "release/0.x main".
+
+on:
+  schedule:
+    - cron: '17 6 * * 1-5'
+  workflow_dispatch:
+  # the drift check's own tests, whenever it changes
+  pull_request:
+    paths:
+      - 'scripts/schema-drift.sh'
+      - 'scripts/schema-drift-test.sh'
+      - 'scripts/schema_shape.py'
+      - 'scripts/schema-drift-issues.sh'
+      - '.github/workflows/schema-drift.yml'
+  push:
+    branches:
+      - 'main'
+    paths:
+      - 'scripts/schema-drift.sh'
+      - 'scripts/schema-drift-test.sh'
+      - 'scripts/schema_shape.py'
+      - 'scripts/schema-drift-issues.sh'
+      - '.github/workflows/schema-drift.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Drift check tests
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run the tests
+        run: scripts/schema-drift-test.sh
+
+  drift:
+    name: Schema pins
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    # one drift run at a time, so two runs cannot both find an issue missing and both open it;
+    # only this job, so test runs of different pull requests never wait for or cancel each other
+    concurrency:
+      group: schema-drift
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Compare the pins with the schema
+        run: scripts/schema-drift.sh release/0.x next
+        env:
+          SHAPE_REPORT: ${{ runner.temp }}/shape.tsv
+
+      - name: Ask for a decision on a shape change
+        # also after a failing comparison: one line can be stale while the other needs a decision
+        if: always()
+        run: scripts/schema-drift-issues.sh "$SHAPE_REPORT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHAPE_REPORT: ${{ runner.temp }}/shape.tsv
