@@ -6,8 +6,9 @@ name: Schema drift
 # schema commit, for every shape change, because that needs a decision rather than a refresh.
 #
 # GitHub runs scheduled workflows only from the default branch, so this file lives on main and
-# reads the other branches by name. When next becomes main, this file must come along and the
-# branch list below changes to "release/0.x main".
+# reads the other branches by name: the 0.x line on release/0.x and the 1.0 line on main. It is
+# written for the layout after `next` became main. On `next` it does nothing until then: its
+# schedule does not run from a branch that is not the default, and its push trigger names main.
 
 on:
   schedule:
@@ -69,7 +70,7 @@ jobs:
           persist-credentials: false
 
       - name: Compare the pins with the schema
-        run: scripts/schema-drift.sh release/0.x next
+        run: scripts/schema-drift.sh release/0.x main
         env:
           SHAPE_REPORT: ${{ runner.temp }}/shape.tsv
 

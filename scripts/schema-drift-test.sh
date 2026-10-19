@@ -284,6 +284,16 @@ for expected in "ok   fresh: up to date" "FAIL stale: additive" "FAIL unpinned: 
 done
 if [ "$got" = 1 ]; then pass "a run with any failing branch fails"; else fail "the run exited $got, expected 1"; fi
 
+# with no branches named, a run judges the two release lines: release/0.x and main, the 1.0 line
+# once `next` is renamed to it
+pin_branch release/0.x "$c1"
+pin_branch main "$c1"
+out=$(cd "$sdk" && SCHEMA_REPO="file://$repo" SDK_REMOTE="$sdk" NOW="$(days 30)" \
+  "$here/schema-drift.sh" 2>&1) && got=0 || got=$?
+if [ "$got" = 0 ] && grep -q -- "ok   release/0.x: up to date" <<<"$out" \
+  && grep -q -- "ok   main: up to date" <<<"$out"; then pass "by default: release/0.x and main"; else
+  fail "by default the run exited $got without judging release/0.x and main" "$out"; fi
+
 # the issue script, against a gh that records what it is asked
 bin=$work/bin
 mkdir -p "$bin"
@@ -302,7 +312,7 @@ if [ "$1 $2" = "issue create" ]; then
 fi
 EOF
 chmod +x "$bin/gh"
-printf 'release/0.x\t%s\tone\nnext\t%s\ttwo\n' "$c6" "$c8" >"$work/report"
+printf 'release/0.x\t%s\tone\nmain\t%s\ttwo\n' "$c6" "$c8" >"$work/report"
 asked="Schema drift: release/0.x needs a decision on oddsfeedschema ${c6:0:7}"
 issues() { # issues <titles gh finds> [fail]; sets out, got, creates
   : >"$work/gh.log"

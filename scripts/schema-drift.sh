@@ -2,7 +2,7 @@
 #
 # Compare each release line's vendored oddsfeedschema pin with the schema repository's main.
 #
-#   scripts/schema-drift.sh [branch ...]        default: release/0.x next
+#   scripts/schema-drift.sh [branch ...]        default: release/0.x main
 #
 # Each line vendors the schema at a pinned commit (vendor/oddsfeedschema/SOURCE on its branch)
 # and decodes the fixtures in its own tests. This is the check that the pins keep up. For each
@@ -36,7 +36,7 @@ sdk_remote=${SDK_REMOTE:-origin}
 now=${NOW:-$(date +%s)}
 max_lag_days=${MAX_LAG_DAYS:-7}
 if [ "$#" -eq 0 ]; then
-  set -- release/0.x next
+  set -- release/0.x main
 fi
 here=$(cd "$(dirname "$0")" && pwd)
 
