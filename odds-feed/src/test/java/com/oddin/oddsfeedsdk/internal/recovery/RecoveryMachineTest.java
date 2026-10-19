@@ -185,17 +185,106 @@ class RecoveryMachineTest {
         feed.open(1, MessageInterest.ALL);
         feed.start();
         feed.clock.advance(Duration.ofHours(1));
+        try (var log = LogCapture.of(RecoveryMachine.class, Level.DEBUG)) {
+            feed.alive(PRE);
+            var first = feed.lastSnapshot(PRE);
+            feed.refuse(first);
+            feed.advance(Duration.ofSeconds(5));
+            var again = feed.lastSnapshot(PRE);
+            assertThat(again.requestId()).as("asked for again").isNotEqualTo(first.requestId());
+            assertThat(again.after())
+                    .as("clamped again, the window moved on")
+                    .isEqualTo(requireNonNull(first.after()).plusSeconds(5));
+            var clamps = log.lines().stream()
+                    .filter(line -> line.contains("stateful recovery window"))
+                    .toList();
+            assertThat(clamps)
+                    .as("one warning for the gap, then the same said at debug")
+                    .containsExactly(clampLine("WARN", first, from), clampLine("DEBUG", again, from));
+        }
+    }
+
+    @Test
+    void aNewGapClampedToTheWindowIsAWarningOfItsOwn() {
+        long from = feed.now()
+                - Duration.ofDays(3).toMillis()
+                + Duration.ofMinutes(1).toMillis();
+        feed.producers.setProducerRecoveryFromTimestamp(PRE, from);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.clock.advance(Duration.ofHours(1));
         try (var log = LogCapture.of(RecoveryMachine.class)) {
             feed.alive(PRE);
-            int asked = feed.snapshots(PRE).size();
-            feed.refuse(feed.lastSnapshot(PRE));
-            feed.advance(Duration.ofSeconds(5));
-            assertThat(feed.snapshots(PRE)).as("asked for again").hasSizeGreaterThan(asked);
+            var first = feed.lastSnapshot(PRE);
+            feed.complete(first, 1);
+            // the producer is quiet for four days: the gap its next alive finds began, at its last
+            // alive, before the window
+            long lastAlive = feed.now();
+            feed.advance(Duration.ofDays(4));
+            feed.alive(PRE);
+            var second = feed.lastSnapshot(PRE);
+            assertThat(second.requestId()).isNotEqualTo(first.requestId());
             assertThat(log.lines())
-                    .filteredOn(line -> line.contains("stateful recovery window"))
-                    .as("one warning for the gap, not one per request")
-                    .hasSize(1);
+                    .as("a warning for each gap")
+                    .containsExactly(clampLine("WARN", first, from), clampLine("WARN", second, lastAlive));
         }
+    }
+
+    @Test
+    void aProducerWithNoStatefulWindowClampsNothing() {
+        var feed = new Harness(Harness.settings(), false, 0);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        // quiet for ten days: the gap its next alive finds began at its last alive
+        long lastAlive = feed.now();
+        feed.advance(Duration.ofDays(10));
+        try (var log = LogCapture.of(RecoveryMachine.class, Level.DEBUG)) {
+            feed.alive(PRE);
+            assertThat(feed.snapshots(PRE)).hasSize(2);
+            assertThat(feed.lastSnapshot(PRE).after())
+                    .as("from where the gap began, however long ago")
+                    .isEqualTo(Instant.ofEpochMilli(lastAlive));
+            assertThat(log.lines()).noneMatch(line -> line.contains("stateful recovery window"));
+        }
+    }
+
+    @Test
+    void aFullSnapshotIsNoClamp() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.clock.advance(Duration.ofHours(1));
+        try (var log = LogCapture.of(RecoveryMachine.class, Level.DEBUG)) {
+            feed.alive(PRE);
+            assertThat(feed.lastSnapshot(PRE).after()).as("a full snapshot").isNull();
+            assertThat(log.lines()).noneMatch(line -> line.contains("stateful recovery window"));
+        }
+    }
+
+    @Test
+    void aStartCappedAtTheProducersNowIsNoClamp() {
+        // the client's start is an hour ahead of the producer's clock: the recovery asks from its now
+        feed.producers.setProducerRecoveryFromTimestamp(
+                PRE, feed.now() + Duration.ofHours(1).toMillis());
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        try (var log = LogCapture.of(RecoveryMachine.class, Level.DEBUG)) {
+            feed.alive(PRE);
+            assertThat(feed.lastSnapshot(PRE).after())
+                    .as("capped at the producer's now")
+                    .isEqualTo(Instant.ofEpochMilli(feed.now()));
+            assertThat(log.lines()).noneMatch(line -> line.contains("stateful recovery window"));
+        }
+    }
+
+    /** What a recovery clamped to the stateful window of 4320 minutes logs, at the level. */
+    private static String clampLine(String level, Outbox.Call.Snapshot recovery, long gapStart) {
+        var after = requireNonNull(recovery.after());
+        return level + " Recovery " + recovery.requestId() + " of producer 1: the gap began at "
+                + Instant.ofEpochMilli(gapStart) + ", before the producer's stateful recovery window of 4320"
+                + " minutes; asking from " + after + ", so " + Duration.between(Instant.ofEpochMilli(gapStart), after)
+                + " of what the producer sent cannot be recovered";
     }
 
     @Test
