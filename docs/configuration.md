@@ -1,7 +1,7 @@
 # Configuration
 
 Everything is set on the builder, `OddsFeed.getOddsFeedConfigurationBuilder()`, and checked when the
-setter is called or, for the one rule that spans two options, in `build()`. A null argument throws
+setter is called or, for the rules that span two options, in `build()`. A null argument throws
 `NullPointerException` at once. An out-of-bounds value throws `IllegalArgumentException` with the
 bounds in its message. [Integration guide](integration-guide.md) - [Health and logging](health-and-logging.md)
 
@@ -48,6 +48,8 @@ minutes after the feed or the API last wrote it.
 | `setStaleMessageWindow(Duration)` | 1 min | At least 1 s, at most 1 day. How long they must stay that old before the safety net acts. |
 | `setExchangeName(String)` | `oddinfeed` | Not blank, at most 255 bytes in UTF-8. |
 | `setReplayExchangeName(String)` | `oddinreplay` | Not blank, at most 255 bytes in UTF-8. |
+| `setFutureStampMargin(Duration)` | 30 s | Positive, at most 1 day (a day is as good as off). How far ahead of its producer a message's timestamp may be and still hold back the status of the messages that follow it. See [the status order](#the-order-of-the-live-status) below. |
+| `setTimelyMessageAge(Duration)` | 10 s, or the margin if that is shorter | Positive, at most the margin (checked in `build()`). How old, by the producer's alives, a message may be to write the status in place of one with a later timestamp. |
 | `setApiCallLogging(boolean)` | off | Each attempt of an API call at INFO. `onApiCall` hears them either way. |
 | `setDefaultLocale(Locale)` | English | Must name a language (not `Locale.ROOT`). The locale a getter without one reads in, and the one messages are built in. |
 | `setPreloadLocales(List<Locale>)` | none | Each must name a language. See below. |
@@ -58,6 +60,30 @@ The health thresholds, `setCatalogStaleLimit`, `setCallbackStallLimit`, `setQueu
 
 The safety net's other numbers are fixed: three resets per session per ten minutes, a minute's
 backoff doubling between them.
+
+### The order of the live status
+
+A match's live status and scores are written from a message only if no later timestamp of its
+producer has written them already, so a delayed message does not turn a score back (still delivered
+either way). A timestamp that is wrong and ahead of its producer - a component with a fast clock -
+would then block every correct message after it until the real time catches up. To avoid that, a
+message older than the one that wrote last writes anyway, and its timestamp becomes the new
+watermark, when all of these hold:
+
+- it was received after the other, by the SDK's own clock;
+- the time between the two receipts plus the gap between their timestamps is more than the
+  **future stamp margin** (30 s): two ordinary deliveries do not differ so much;
+- it is timely: its age by its producer's alives is at most the **timely message age** (10 s), so a
+  message that sat in a backlog never counts;
+- it is not an answer to a recovery request: a recovery never moves the live state back, and the
+  next live message repairs a bad timestamp.
+
+A timestamp ahead by less than the margin cannot be told from a delivery delay: it holds the
+messages that follow back until their timestamps catch up, at most the margin. Of two timestamps
+ahead, the one received last writes. A margin of a few seconds lets the ordinary jitter of the
+deliveries pass for a bad timestamp and writes an older status over a newer one; the margin less the
+timely age is how late a producer's alives may be before a delayed message passes for a timely one,
+which is why the timely age is at most the margin.
 
 ### Recovery behaviour you do not configure
 
