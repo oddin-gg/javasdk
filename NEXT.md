@@ -562,11 +562,41 @@ Ownership and ordering:
 - The feed watermark is the `timestamp` of the last live feed message that wrote
   feed-owned fields, kept per entity and producer in the live state, which lives 24
   hours after its last write. A message from the same producer with an older
-  timestamp does not write feed-owned fields. It is still built and delivered; the
+  timestamp does not write feed-owned fields, with one exception for a watermark no
+  delivery delay explains (below). It is still built and delivered; the
   watermark orders cache writes, never delivery. Messages that carry no feed-owned
   fields (settlements, cancels, bet stops) are not watermark-checked at all. Snapshot
   messages, recognisable by their recovery request id, write like live messages but
   never advance checkpoints (see recovery).
+- The exception to the watermark's order. A timestamp in the producer's future - a
+  component's fast clock, a bad value - would otherwise hold back every correct write
+  that follows until the producer's clock passes it. A message older than the
+  watermark writes, and takes the watermark down to its own timestamp and receipt,
+  when all of these hold: (1) it was received strictly after the watermark's message,
+  by the SDK's monotonic clock, so two sessions handling two messages in another order
+  than they received them leave the order of receipt right; (2) the time between the
+  two receipts plus the gap between their timestamps is more than the **future stamp
+  margin**, 30 s by default: two deliveries that differ by more than that are not
+  jitter, so either the older was delayed or the watermark is ahead of the producer;
+  (3) its corrected age (the 20-minute rule's, by the producer's alives) is at most the
+  **timely message age**, 10 s by default, which tells the first reading from the second:
+  a message that sat in a backlog looks the same by (2) and is old by (3); (4) its
+  timestamp is after the epoch, since the age of one far before it wraps around. The
+  arithmetic is overflow-free on any long. A wrong takeover needs a delivery
+  more than the margin slower than another's and a producer's alive late by more than
+  margin less timely age, 20 s by default, which is already an inactivity violation; so
+  the timely age is at most the margin, and the setters are checked together in `build()`
+  (the timely age defaults to the margin if that is shorter). Both are settings of the
+  configuration builder, `setFutureStampMargin` and `setTimelyMessageAge`; the margin is
+  at most a day, a day being as good as off. A stamp ahead by less than the margin cannot
+  be told from a delay and holds the following writes back until the stamps catch up,
+  at most the margin; of two stamps ahead the one received last writes, as 0.0.x writes
+  every one; two components of one match whose clocks are more than the margin apart are
+  not protected, as in 0.0.x. A replay session never takes this path. **A message that
+  answers a recovery request (it carries a request id) never takes the exception:** a
+  recovery must not move the live state back, and the next live message repairs a bad
+  stamp; it is written by the plain order of the watermark. The one condition is
+  `SessionDispatcher.mayTakeOver`.
 - Feed and REST clocks are never compared directly. Two rules replace the comparison:
   - REST writes feed-owned fields only when the entity has no feed watermark, or when
     the watermark is older than the match status age (20 minutes) by the SDK's own
@@ -696,9 +726,8 @@ and REST workers post facts to it; it decides and posts work out.
   dispatchers, which hand it to the recovery actor; the session's copy of an alive takes the
   mark the alive channel took from the same alive, whichever copy is handled first, so the
   offset an alive shows cannot vouch for it. A replay session takes its stamps as they are.
-  The live state is not changed: its watermark is the message's own stamp, so a
-  status or score stamped in the producer's future holds back the following updates of that
-  match until the producer's clock passes it (KD-13); recorded for a later change. A
+  The live state takes the stamp as it is, and orders its writes by the exception to
+  the watermark's order (Ownership and ordering), not by a mark. A
   recovery's start is clamped
   to the producer's stateful recovery window, as today - counted back by the producer's
   clock, as the gaps' starts are, with the offset measured on its alives - and a cold
@@ -1899,7 +1928,7 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   The published resume point and a
   recovery's start are capped at the producer's now, so a timestamp from the producer's
   future moves neither past it; the recovery's marks follow in the 2026-10-16 entry on stamps
-  ahead, the live state's watermark is recorded for a later change.
+  ahead, the live state's watermark in the 2026-10-19 entry.
 - 2026-10-08, documentation for the release candidate: KNOWN-DIFFERENCES.md is written against
   0.0.58, the stale entries are corrected, and KD-34 to KD-41 name the differences no entry had,
   the small ones grouped in KD-41. A producer clock that steps back keeps the code as merged; KD-28
@@ -2042,8 +2071,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   recovery, nothing lost. The live state was tried with the same mark and is not changed: a
   clamped stamp is a receipt time, which overwrites the order of the true stamps, and the largest
   offset of a late alive refuses correct writes. A status or score stamped in the producer's
-  future still holds back the updates that follow until the producer's clock passes it (KD-13).
-  No public API changes.
+  future still held back the updates that follow until the producer's clock passed it; the
+  2026-10-19 entry changes that. No public API changes.
 - 2026-10-16, the baseline moves to 0.0.59, a security release with no API change: the system tests
   and the API check run against it. It checks the broker's certificate and host name against the
   JVM's default trust (KD-19 now says up to 0.0.58 for the old behaviour), parses XML with DTDs and
@@ -2121,3 +2150,24 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   is held by two threads. The 100 cold runs pinned to two cores made the expected requests every time, but
   the same 100 with the fix switched off did too, so they do not show the repair; the tests do. No public API
   changes.
+- 2026-10-19, a status or score stamped in the producer's future no longer holds back the correct
+  writes that follow (the live state half the 2026-10-16 entry left open; KD-13 narrowed, not
+  removed: an older message still does not write). Three rules for the live state had failed
+  review: a watermark clamped to the producer's now, which turns the order of true stamps into the
+  order of receipts; a watermark distrusted by the producer's now at receipt, which a late alive
+  moves, so that correct writes were refused under ordinary delivery delay; and the same with the
+  largest offset, which reordered ordinary traffic. What replaces them uses no estimate of the
+  producer's now: a message older than the watermark writes when it was received after the
+  watermark's message, the time between their receipts plus the gap between their stamps is more
+  than a margin, and its age by the producer's alives is at most a timely age; the watermark then
+  goes down to its stamp (Ownership and ordering has the rule, with its limits). The margin and
+  the timely age, 30 s and 10 s, are settings, `setFutureStampMargin` and `setTimelyMessageAge`:
+  the owner chose settings over constants; each is positive, the margin at most a day, and the timely
+  age at most the margin, checked together in `build()`, because a wrong takeover needs an alive
+  later than their difference. A message that answers a recovery request never takes the
+  exception, by the owner's decision: a recovery must not move the live state back, and the next
+  live message repairs a bad stamp. A stamp is also refused the exception when it is not after
+  the epoch: the age of a stamp near the least long wraps to a small negative one, so a hostile
+  stamp would otherwise take the watermark to the bottom. The wall-step caveat of the age (a step
+  of the wall clock reads as an age error until the next alive) is a separate change and is not
+  made here. Public API additions only: the two getters and setters.

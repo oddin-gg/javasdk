@@ -210,11 +210,17 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
 - **1.0:** "A message from the same producer with an older timestamp does not write feed-owned
   fields. It is still built and delivered" (section 4, Caches and loaders, Ownership and
   ordering). A replay session's messages write in the order they come, as on 0.0.x: a match
-  played again repeats the timestamps of its last run. The watermark is the message's own
-  stamp, so a status or score stamped in the producer's future - a component's fast clock - holds
-  back the following updates of that match until the producer's clock passes it: they are
-  older, so they write nothing, and are still delivered. 0.0.x wrote every one. Recorded for a
-  later change (NEXT.md section 4, Recovery and producers). As on 0.0.x, a winner or a score the new
+  played again repeats the timestamps of its last run. A stamp in the producer's
+  future - a component's fast clock - does not hold the correct messages that follow back for
+  long: one that is older than the watermark, was received after it, was generated more than 30
+  seconds before it counting the time between their receipts, and is itself timely (its age by
+  the producer's alives at most 10 seconds) writes, and the watermark goes down to its stamp. A
+  stamp ahead by less than those 30 seconds still holds the following updates back until the
+  stamps catch up, at most that long, and they are still delivered; of two stamps ahead, the one
+  received last writes. Both numbers are settings (`setFutureStampMargin`,
+  `setTimelyMessageAge`). A message that answers a recovery request never takes the status over
+  this way: a recovery must not move the live state back, and the next live message repairs a
+  bad stamp. 0.0.x wrote every one. As on 0.0.x, a winner or a score the new
   run leaves out keeps the last run's value until a message replaces it; so do period scores and
   whether a scoreboard is available, which 0.0.x emptied and set false (KD-39).
 - **Why:** Out-of-order delivery turns a score back.
