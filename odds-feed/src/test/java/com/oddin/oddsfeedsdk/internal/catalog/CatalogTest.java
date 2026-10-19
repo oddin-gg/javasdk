@@ -8,6 +8,7 @@ import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -888,12 +889,14 @@ class CatalogTest {
         answer = () -> {
             throw new ApiException("down");
         };
+        var failedAt = Instant.ofEpochMilli(split.clock().wallMillis());
         assertThatThrownBy(() -> catalog.get("k")).isInstanceOf(ApiException.class);
 
         split.stepWall(Duration.ofHours(1));
         assertThatThrownBy(() -> catalog.get("k"))
                 .as("a step forward of the wall clock does not end the backoff")
-                .hasMessageContaining("not fetched again before");
+                .hasMessageContaining("not fetched again before " + failedAt.plus(Catalog.FIRST_BACKOFF)
+                        + ", 1 fetches in a row failed, the last at " + failedAt);
         assertThat(fetches).hasValue(1);
 
         split.advanceMono(Catalog.FIRST_BACKOFF.plus(TICK));
