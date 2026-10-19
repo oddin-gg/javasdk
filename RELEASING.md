@@ -2,8 +2,10 @@
 
 A `v1.*` tag on the merge commit of a PR merged into `main` releases
 `gg.oddin.oddsfeed:odds-feed` to Maven Central. Releases - release candidates included - are
-cut from `main` only, after ticket 44 of NEXT.md makes it the 1.0 line; never from `next`.
-`.github/workflows/release.yml` does the work:
+cut from `main` only, never from `next`. `main` is the 1.0 line once ticket 44 of NEXT.md has
+renamed `next` to it: the Kotlin line then moves to `legacy/main`, with an archive tag, and
+`next` no longer exists. Until that rename there is nothing to release from: `release.yml` and the
+1.0 code are on `next` alone. `.github/workflows/release.yml` does the work:
 
 1. **check** - refuses the tag unless every pre-release check below passes.
 2. **build** - the branch CI (`next.yml`) on the commit the check accepted, at the tag's
@@ -49,7 +51,10 @@ GitHub Packages.
 
       `next` is deliberately not protected this way: its PRs merge without a required
       approval. That is why releases never come from it - the check refuses a commit that is on
-      `next` but not on `main`.
+      `next` but not on `main` - and why the rename described at the top is what makes a release
+      possible.
+      The code owners are named in `.github/CODEOWNERS`: the workflows, this file, the release
+      scripts and notes, and the root POM.
 - [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
       creator included - may update or delete one. A published version keeps its tag for good.
       Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in

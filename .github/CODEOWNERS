@@ -1,0 +1,22 @@
+# What a release is built, signed and published from. A tag runs release.yml as its commit has
+# it, with the signing key and the Central token at hand, so a change to any of these paths must
+# be reviewed by the release managers; everything else is reviewed as usual. Paths are matched
+# on their own: nothing here makes anyone the owner of the code.
+# Branch protection on main requires a code owners' review (RELEASING.md).
+
+# the workflows and their policy, this file and the PR template included
+/.github/                       @oddin-gg/ragnar-admin
+
+# the process, the notes that become the public release text, and the scripts the release runs
+/RELEASING.md                   @oddin-gg/ragnar-admin
+/release-notes/                 @oddin-gg/ragnar-admin
+/scripts/release-*              @oddin-gg/ragnar-admin
+# the pinned form of next.yml, which the release builds with and release-workflow-test.sh holds
+/scripts/next-workflow.json     @oddin-gg/ragnar-admin
+
+# the schema drift job (schema_shape.py is part of it)
+/scripts/schema-drift*          @oddin-gg/ragnar-admin
+/scripts/schema_shape.py        @oddin-gg/ragnar-admin
+
+# the root POM: the release profile (signing, bundle, upload) lives in it, and owners are per path
+/pom.xml                        @oddin-gg/ragnar-admin
