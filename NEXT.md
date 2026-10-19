@@ -572,8 +572,11 @@ Ownership and ordering:
   component's fast clock, a bad value - would otherwise hold back every correct write
   that follows until the producer's clock passes it. A message older than the
   watermark writes, and takes the watermark down to its own timestamp and receipt,
-  when all of these hold: (1) it was received strictly after the watermark's message,
-  by the SDK's monotonic clock, so two sessions handling two messages in another order
+  when all of these hold: (1) it was received strictly after every message that wrote
+  for the producer, by the SDK's monotonic clock - the greatest receipt of the writes
+  accepted for the entity and producer, kept apart from the watermark message's receipt
+  and never moved back, since a message with a newer stamp received earlier than one
+  before it may have written last - so two sessions handling messages in another order
   than they received them leave the order of receipt right; (2) the time between the
   two receipts plus the gap between their timestamps is more than the **future stamp
   margin**, 30 s by default: two deliveries that differ by more than that are not
@@ -590,8 +593,9 @@ Ownership and ordering:
   configuration builder, `setFutureStampMargin` and `setTimelyMessageAge`; the margin is
   at most a day, a day being as good as off. A stamp ahead by less than the margin cannot
   be told from a delay and holds the following writes back until the stamps catch up,
-  at most the margin; of two stamps ahead the one received last writes, as 0.0.x writes
-  every one; two components of one match whose clocks are more than the margin apart are
+  at most the margin; of two stamps ahead the one received last writes when the same
+  rule holds for it (as 0.0.x writes every one), and stamps closer than the margin leave
+  the first in charge until they catch up; two components of one match whose clocks are more than the margin apart are
   not protected, as in 0.0.x. A replay session never takes this path. **A message that
   answers a recovery request (it carries a request id) never takes the exception:** a
   recovery must not move the live state back, and the next live message repairs a bad
