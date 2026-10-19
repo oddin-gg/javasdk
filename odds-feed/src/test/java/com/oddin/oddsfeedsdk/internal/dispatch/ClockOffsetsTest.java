@@ -7,6 +7,8 @@ import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.internal.clock.Stamp;
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * What the recovery takes a message's stamp as: the stamp itself, unless it is more than a second
@@ -242,6 +244,41 @@ class ClockOffsetsTest {
         assertThat(offsets.mark(1, 1_010_000 + TEN_MINUTES, later))
                 .as("still clamped to the producer's now")
                 .isEqualTo(1_010_000);
+    }
+
+    /** The age a message has, by its producer's clock, when the SDK's wall clock stepped by {@code step} millis. */
+    @ParameterizedTest
+    @ValueSource(longs = {1_800_000, -1_800_000})
+    void aMessageTakenAfterAStepOfTheWallClockIsAgedByTheOffsetOfItsOwnReading(long step) {
+        // measured when both clocks read alike: the producer's clock is the SDK's
+        offsets.alive(1, 1_000_000, new Stamp(1_000_000, 500_000));
+        // the wall clock steps, the producer's clock and the monotonic one do not: a message 4 s old
+        var taken = new Stamp(1_010_000 + step, 510_000);
+        assertThat(offsets.age(1, 1_006_000, taken))
+                .as("by the step-safe offset")
+                .isEqualTo(4_000);
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {1_800_000, -1_800_000})
+    void aMessageTakenBeforeAStepOfTheWallClockIsAgedByTheOffsetOfItsOwnReadingWhenAnAliveAfterTheStepIsKept(
+            long step) {
+        // the message was taken at 1 010 000 on the wall clock, 510 000 on the monotonic one, then the wall clock
+        // stepped, and an alive measured the offset anew before the message's age was read
+        offsets.alive(1, 1_020_000, new Stamp(1_020_000 + step, 520_000));
+        var taken = new Stamp(1_010_000, 510_000);
+        assertThat(offsets.age(1, 1_006_000, taken)).isEqualTo(4_000);
+    }
+
+    @Test
+    void aMessageIsAgedByTheSdksOwnClockBeforeTheFirstAliveOfItsProducer() {
+        assertThat(offsets.age(1, 1_006_000, new Stamp(1_010_000, 510_000))).isEqualTo(4_000);
+    }
+
+    @Test
+    void aStepOfTheWallClockUnderASecondIsJitterAndLeavesTheAge() {
+        offsets.alive(1, 1_000_000, new Stamp(1_000_000, 500_000));
+        assertThat(offsets.age(1, 1_006_000, new Stamp(1_010_900, 510_000))).isEqualTo(4_900);
     }
 
     @Test

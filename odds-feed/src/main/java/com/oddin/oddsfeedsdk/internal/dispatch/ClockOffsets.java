@@ -119,15 +119,20 @@ public final class ClockOffsets {
     }
 
     /**
-     * How old a message of the producer is: from its timestamp to {@code takenAt}, corrected by the
-     * producer's latest offset. Before the producer's first alive its offset is taken as none, so the
-     * age is read by the two clocks as they are.
+     * How old a message of the producer is: from its timestamp to when the SDK took it, corrected by
+     * the producer's latest offset as of that reading, so that a step of the SDK's wall clock since
+     * the alive measured the offset does not show in the age (see {@link ClockOffset#at}). Before the
+     * producer's first alive its offset is taken as none, so the age is read by the two clocks as
+     * they are.
+     *
+     * @param generatedAt the message's timestamp, epoch millis by the producer's clock
+     * @param taken when the SDK took the message, both readings of its clock
      */
-    long age(long producerId, long generatedAt, long takenAt) {
+    long age(long producerId, long generatedAt, Stamp taken) {
         var offsets = kept.get(producerId);
-        return takenAt
+        return taken.wall()
                 - generatedAt
-                - (offsets == null ? 0 : offsets[offsets.length - 1].offset().offset());
+                - (offsets == null ? 0 : offsets[offsets.length - 1].offset().at(taken));
     }
 
     /**
