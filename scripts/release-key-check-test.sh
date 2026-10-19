@@ -96,13 +96,13 @@ gpgh() {
   GNUPGHOME=$work/homes/$home gpg --batch --no-tty --pinentry-mode loopback --passphrase '' "$@" 2> /dev/null
 }
 
-# gen <home> <usage of the primary> [fake time]: a key made at the fake time ("-60 days" says
-# how far back); its primary's fingerprint goes to $work/homes/<home>.fpr
+# gen <home> <usage of the primary> [fake time] [expiry of the primary]: a key made at the fake
+# time ("-60 days" says how far back); its primary's fingerprint goes to $work/homes/<home>.fpr
 gen() {
-  local home=$1 usage=$2 when=${3:-} faked=()
+  local home=$1 usage=$2 when=${3:-} expiry=${4:-never} faked=()
   mkdir -m 700 "$work/homes/$home"
   [ -z "$when" ] || faked=(--faked-system-time "$(date -u -d "$when" +%Y%m%dT%H%M%S)")
-  gpgh "$home" "${faked[@]}" --quick-gen-key "Release <release@example.invalid>" ed25519 "$usage" never
+  gpgh "$home" "${faked[@]}" --quick-gen-key "Release <release@example.invalid>" ed25519 "$usage" "$expiry"
   gpgh "$home" --list-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }' > "$work/homes/$home.fpr"
 }
 fpr() { cat "$work/homes/$1.fpr"; }
@@ -172,6 +172,15 @@ addsub outside 31d > /dev/null
 # ran out five days ago, made 60 days ago with 55 days of life
 gen expired cert "-60 days"
 addsub expired 55d "-60 days" > /dev/null
+
+# a primary that expires, which the layout never gives it: in 10 days, and ran out five days ago.
+# The expiry date is worked out as the key is made, so that midnight in between does not move it.
+gen primarynear cert "" 10d
+primarynear_date=$(date -u -d '+10 days' +%Y-%m-%d)
+addsub primarynear 2y > /dev/null
+gen primaryexpired cert "-60 days" 55d
+primaryexpired_date=$(date -u -d '-5 days' +%Y-%m-%d)
+addsub primaryexpired 2y "-60 days" > /dev/null
 
 # revoked
 gen revoked cert
@@ -308,6 +317,16 @@ both rotating rotating
 run rotating "$(fpr rotating)" 5 "less than 30"
 both expired expired
 run expired "$(fpr expired)" 5 "keys.openpgp.org: the signing subkey" "keyserver.ubuntu.com: the signing subkey" "expired on $(date -u -d '-5 days' +%Y-%m-%d)" "no signing subkey of the key"
+# served with their user IDs by both (the expiry of a primary is in a user ID's signature, which
+# keys.openpgp.org does not serve for an unverified one), so both servers name it
+full primarynear > "$work/primarynear.full"
+put openpgp primarynear "$work/primarynear.full"
+put ubuntu primarynear "$work/primarynear.full"
+run primarynear "$(fpr primarynear)" 5 "keys.openpgp.org: the key $(fpr primarynear) expires on $primarynear_date" "keyserver.ubuntu.com: the key $(fpr primarynear) expires on $primarynear_date"
+full primaryexpired > "$work/primaryexpired.full"
+put openpgp primaryexpired "$work/primaryexpired.full"
+put ubuntu primaryexpired "$work/primaryexpired.full"
+run primaryexpired "$(fpr primaryexpired)" 5 "keys.openpgp.org: the key $(fpr primaryexpired) expired on $primaryexpired_date" "keyserver.ubuntu.com: the key $(fpr primaryexpired) expired on $primaryexpired_date"
 both revoked revoked
 run revoked "$(fpr revoked)" 5 "keys.openpgp.org: the signing subkey" "keyserver.ubuntu.com: the signing subkey" "is revoked"
 # the older subkey is the one gpg signs with, and it is fit
