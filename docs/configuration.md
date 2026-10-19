@@ -70,7 +70,7 @@ would then block every correct message after it until the real time catches up. 
 message older than the one that wrote last writes anyway, and its timestamp becomes the new
 watermark, when all of these hold:
 
-- it was received after the other, by the SDK's own clock;
+- it was received after every message that wrote the status before it, by the SDK's own clock;
 - the time between the two receipts plus the gap between their timestamps is more than the
   **future stamp margin** (30 s): two ordinary deliveries do not differ so much;
 - it is timely: its age by its producer's alives is at most the **timely message age** (10 s), so a
@@ -80,7 +80,8 @@ watermark, when all of these hold:
 
 A timestamp ahead by less than the margin cannot be told from a delivery delay: it holds the
 messages that follow back until their timestamps catch up, at most the margin. Of two timestamps
-ahead, the one received last writes. A margin of a few seconds lets the ordinary jitter of the
+ahead, the one received last writes when the same rule holds for it; with the stamps closer than the
+margin the first stays in charge until they catch up. A margin of a few seconds lets the ordinary jitter of the
 deliveries pass for a bad timestamp and writes an older status over a newer one; the margin less the
 timely age is how late a producer's alives may be before a delayed message passes for a timely one,
 which is why the timely age is at most the margin.
