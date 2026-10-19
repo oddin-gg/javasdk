@@ -476,10 +476,10 @@ final class TestEnvironmentRestart {
                 // learned from messages made after the run began only - a recovery's old messages say how
                 // old they are, not what the network adds, and would put the floor too high until a live
                 // message came; before the first live one the floor is none, so an old message is late
-                boolean live = made >= run.startInstant.toEpochMilli();
+                boolean live = RestartStats.teachesFloor(made, run.startInstant.toEpochMilli());
                 long floor =
                         live ? run.floor.accumulateAndGet(stamps.getReceived() - made, Math::min) : run.floor.get();
-                if (Math.max(0, age - (floor == Long.MAX_VALUE ? 0 : floor)) * 1_000_000
+                if (RestartStats.beyondFloor(age, floor) * 1_000_000
                         > run.settings.lagLimit().toNanos()) {
                     lastLateAt.set(sinceStart);
                 }
