@@ -74,6 +74,11 @@ jobs:
         # approve; no secrets or environment in any other job; release.yml itself runs on tags alone
         run: ./scripts/release-workflow-test.sh
 
+      - name: Check CODEOWNERS makes the release managers own what the release build runs
+        # GitHub reports a CODEOWNERS file it cannot read, not a line that was removed: the owner of
+        # the workflows, the wrapper and every POM of the reactor is resolved here, as GitHub does
+        run: ./scripts/release-codeowners-test.sh
+
       - name: Check fetch-sdk.sh installs only what matches its digests
         # its download path against a stub server on this runner: a redirect to plain http, or a
         # jar or POM with another digest, leaves nothing in the local repository

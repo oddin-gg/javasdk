@@ -492,6 +492,12 @@ for path in sorted(seen):
             without_token = dict(step, env={k: v for k, v in (step.get("env") or {}).items() if k != "GH_TOKEN"})
             ask_tokens = token_reads(dict(ask, steps=[without_token]))
             check(not ask_tokens, "%s > codeowners must hand the job token to GH_TOKEN only: %s" % (where, "; ".join(ask_tokens)))
+    # the build job resolves CODEOWNERS the way GitHub does, once, on every run
+    owners_steps = [step for step in (next_workflow.get("jobs", {}).get("build") or {}).get("steps", [])
+                    if str(step.get("run", "")).strip() == "./scripts/release-codeowners-test.sh"]
+    check(len(owners_steps) == 1, "%s > build must run ./scripts/release-codeowners-test.sh, once" % where)
+    for step in owners_steps:
+        unconditional("build", step, "the CODEOWNERS ownership test")
     # and the whole of next.yml against its pinned form, as release.yml below
     actual_next = json.dumps(load(path), indent=2, sort_keys=True) + "\n"
     pinned_next = open(pinned_next_path).read()
@@ -1415,6 +1421,14 @@ breaks next.yml replace '          REPOSITORY: ${{ github.repository }}
 breaks next.yml replace '          GH_TOKEN: ${{ github.token }}
           REPOSITORY' '          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPOSITORY' "./.github/workflows/next.yml > codeowners must call GitHub with GH_TOKEN: \${{ github.token }}"
+
+breaks next.yml replace '        run: ./scripts/release-codeowners-test.sh
+' '        run: ./scripts/release-codeowners-test.sh --none
+' "./.github/workflows/next.yml > build must run ./scripts/release-codeowners-test.sh, once"
+breaks next.yml replace '      - name: Check CODEOWNERS makes the release managers own what the release build runs
+' '      - name: Check CODEOWNERS makes the release managers own what the release build runs
+        continue-on-error: true
+' "build: the CODEOWNERS ownership test must not continue on error"
 
 # That job's script, run as it is written (bash -e, GitHub's shell for a step that names none)
 # against a gh that gives the answers GitHub gives: no errors, errors, no list, and a failed call.

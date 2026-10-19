@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+#
+# Checks that .github/CODEOWNERS makes the release managers' team the owner of everything the
+# release build runs with the signing key and the Central token. GitHub reports a file it cannot
+# read (next.yml asks it), but not an ownership line that was removed or no longer matches: the
+# file stays valid and the path is simply owned by nobody. So the owner of each path is resolved
+# here, the way GitHub does, and must be the team. next.yml runs it on every push. Needs python3.
+#
+#   scripts/release-codeowners-test.sh
+#
+# Only patterns whose meaning is the same in .gitignore and in CODEOWNERS are resolved, and the
+# test refuses any other, so that it never guesses: a leading / (from the root), a trailing / (the
+# directory and all below it), * within one path segment, and a leading **/ (at any depth). A
+# pattern without a / is read as at any depth; an owner list is the whole of the last pattern that
+# matches, as GitHub has it.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+python3 -I - "$root" <<'PY'
+import os, re, sys
+import xml.etree.ElementTree as ET
+
+root = sys.argv[1]
+TEAM = ["@oddin-gg/ragnar-admin"]
+
+def regex(pattern):
+    """The regular expression for one CODEOWNERS pattern, or a refusal for what is not unambiguous."""
+    if re.search(r"[^A-Za-z0-9._*/@+-]", pattern) or "***" in pattern or "[" in pattern:
+        raise ValueError("pattern %r has syntax this test does not resolve" % pattern)
+    directory = pattern.endswith("/")
+    body = pattern.strip("/")
+    anchored = pattern.startswith("/") or "/" in body
+    if body.startswith("**/"):
+        anchored, body = False, body[3:]
+    if "**" in body or not body:
+        raise ValueError("pattern %r has a ** this test does not resolve" % pattern)
+    expression = "/".join(re.escape(part).replace(r"\*", "[^/]*") for part in body.split("/"))
+    prefix = "" if anchored else "(?:.*/)?"
+    # a path is matched by its own pattern or by one of its parent directories, as in gitignore
+    return re.compile("^" + prefix + expression + "/.*$" if directory else "^" + prefix + expression + "(?:/.*)?$")
+
+def owners(lines, path):
+    """The owners of a path: those of the last pattern that matches it, [] when none does."""
+    found = []
+    for number, line in enumerate(lines, 1):
+        text = line.split("#", 1)[0].split()
+        if not text:
+            continue
+        if regex(text[0]).match(path):
+            found = text[1:]
+    return found
+
+def modules(directory):
+    """Every module of the reactor, from <modules> of the root POM down, as paths from the root."""
+    tree = ET.parse(os.path.join(root, directory, "pom.xml"))
+    names = [m.text.strip() for m in tree.getroot().iter() if m.tag.rsplit("}", 1)[-1] == "module"]
+    found = []
+    for name in names:
+        path = os.path.normpath(os.path.join(directory, name))
+        found.append(path)
+        found.extend(modules(path))
+    return found
+
+owned = [
+    ".github/workflows/release.yml", ".github/workflows/next.yml", ".github/CODEOWNERS",
+    "RELEASING.md", "mvnw", "mvnw.cmd", ".mvn/wrapper/maven-wrapper.properties",
+    "pom.xml", "scripts/release-check.sh", "scripts/release-codeowners-test.sh",
+    "scripts/fetch-sdk.sh", "scripts/next-workflow.json", "release-notes/x.md",
+]
+reactor = modules(".")
+if not reactor:
+    sys.exit("FAIL the root pom.xml names no modules, so the POMs of the reactor were not checked")
+owned += [os.path.join(module, "pom.xml") for module in reactor]
+# what the release only compiles belongs to nobody in particular: owning everything would make
+# the release managers review every change
+unowned = ["odds-feed/src/main/java/X.java", "README.md"]
+
+def problems(lines):
+    found = []
+    for path in owned:
+        got = owners(lines, path)
+        if got != TEAM:
+            found.append("%s is owned by %s, not by %s" % (path, " ".join(got) or "nobody", " ".join(TEAM)))
+    for path in unowned:
+        got = owners(lines, path)
+        if got:
+            found.append("%s must stay unowned, but %s own it" % (path, " ".join(got)))
+    return found
+
+lines = open(os.path.join(root, ".github/CODEOWNERS")).read().splitlines()
+failed = problems(lines)
+for problem in failed:
+    print("FAIL " + problem, file=sys.stderr)
+if not failed:
+    print("ok   %d paths owned by %s, %d unowned, %d modules of the reactor: %s"
+          % (len(owned), TEAM[0], len(unowned), len(reactor), ", ".join(reactor)))
+
+# the check must see what it is for: a line removed, a line another owner overrides, a line
+# that matches nothing, and an owner it does not know all have to be found
+cases = {
+    "a removed line": [l for l in lines if not l.startswith("/mvnw ")],
+    "the POM line removed": [l for l in lines if not l.startswith("**/pom.xml")],
+    "a later line for another owner": lines + ["/RELEASING.md @someone-else"],
+    "a line that no longer matches": [l.replace("/.mvn/ ", "/.mvm/ ") for l in lines],
+    "everything owned": lines + ["* @oddin-gg/ragnar-admin"],
+}
+for what, changed in cases.items():
+    if changed == lines:
+        failed.append("the case %r changed nothing" % what)
+        print("FAIL the case %r changed nothing" % what, file=sys.stderr)
+    elif not problems(changed):
+        failed.append(what)
+        print("FAIL the test accepted CODEOWNERS with %s" % what, file=sys.stderr)
+    else:
+        print("ok   refused CODEOWNERS with %s" % what)
+sys.exit(1 if failed else 0)
+PY

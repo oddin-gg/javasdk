@@ -63,6 +63,9 @@ GitHub Packages.
       skipped, and run nothing there.
       GitHub drops what it cannot read from a CODEOWNERS file, so `next.yml` asks it on every
       run (the `codeowners` job, `gh api repos/<repo>/codeowners/errors`) and fails on any error.
+      It does not notice a line that was removed, so `scripts/release-codeowners-test.sh` resolves
+      the owner of the workflows, the wrapper, the release scripts and every POM of the reactor
+      (from the root POM's `<modules>`) and requires the team.
 - [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
       creator included - may update or delete one. A published version keeps its tag for good.
       Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in

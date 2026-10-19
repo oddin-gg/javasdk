@@ -37,6 +37,10 @@
           "run": "./scripts/release-workflow-test.sh"
         },
         {
+          "name": "Check CODEOWNERS makes the release managers own what the release build runs",
+          "run": "./scripts/release-codeowners-test.sh"
+        },
+        {
           "name": "Check fetch-sdk.sh installs only what matches its digests",
           "run": "./scripts/fetch-sdk-test.sh"
         },
