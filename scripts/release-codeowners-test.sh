@@ -191,13 +191,34 @@ def new_read(tree):
     # (the variable is written apart: this script is run by a workflow too, and is read the same way)
     append(tree, "scripts/fetch-sdk.sh", '\n: "$' + 'root/odds-feed/src/main/resources/brand-new.properties"\n')
 
-for what, change, path in [("a workflow running a new script", new_script, "scripts/brand-new.sh"),
-                           ("a workflow script reading a new file", new_read, "odds-feed/src/main/resources/brand-new.properties")]:
+def new_here_read(tree):
+    # the same through $here, which schema-drift.sh sets to its own directory: scripts/, not the root
+    append(tree, "scripts/brand-new-helper.py", "print()\n")
+    append(tree, "scripts/schema-drift.sh", '\n: "$' + 'here/brand-new-helper.py"\n')
+
+def nested_module(tree):
+    # a module listed in a child POM's <modules>, not in the root POM's, as a nested reactor has it
+    pom = os.path.join(tree, "test-fakes/pom.xml")
+    text = open(pom).read()
+    assert "</project>" in text
+    open(pom, "w").write(text.replace("</project>", "<modules><module>nested</module></modules></project>"))
+    os.makedirs(os.path.join(tree, "test-fakes/nested"))
+    append(tree, "test-fakes/nested/pom.xml", "<project><modelVersion>4.0.0</modelVersion></project>\n")
+
+# what makes the change, the path that must be named, and the lines of CODEOWNERS it is judged by
+cases = [
+    ("a workflow running a new script", new_script, "scripts/brand-new.sh", lines),
+    ("a workflow script reading a new file", new_read, "odds-feed/src/main/resources/brand-new.properties", lines),
+    ("a workflow script reading a new file through $here", new_here_read, "scripts/brand-new-helper.py", lines),
+    ("a nested module whose POM CODEOWNERS gives to another owner", nested_module, "test-fakes/nested/pom.xml",
+     lines + ["/test-fakes/nested/pom.xml @someone-else"]),
+]
+for what, change, path, judged_by in cases:
     with tempfile.TemporaryDirectory() as tree:
         copy_of_tree(tree)
         change(tree)
-        found = problems(lines, survey(tree)[0])
-        if not any(line.startswith(path + " is owned by nobody") for line in found):
+        found = problems(judged_by, survey(tree)[0])
+        if not any(line.startswith(path + " is owned by ") for line in found):
             failed.append(what)
             print("FAIL the test did not name %s for %s: %s" % (path, what, found), file=sys.stderr)
         else:
