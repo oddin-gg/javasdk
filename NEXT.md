@@ -166,7 +166,7 @@ types in packages whose name contains `internal`.
   names the tournament; the .NET SDK reads the tournament id from the fixture then (its #63). The fallback
   is a few lines and one more request on that failure path, and would be added, with a known-difference
   entry, if a client needs it.
-- `ExceptionHandlingStrategy` keeps its meaning, getter by getter as 0.0.57 has it.
+- `ExceptionHandlingStrategy` keeps its meaning, getter by getter as 0.0.59 has it.
   Default stays `THROW`.
   - Under `THROW` a failure reaches the caller as the exception 0.0.x threw there. An
     entity or catalog getter that cannot load what it reads throws
@@ -192,7 +192,9 @@ types in packages whose name contains `internal`.
     getters fail.
   - Every collection a getter returns is a new mutable one, the caller's own.
 - The cache is updated before the listener callback runs, so `match.getStatus()` inside
-  `onOddsChange` sees the state the message carried. Same as today.
+  `onOddsChange` sees the state the message carried, unless the cache turned the message down:
+  one older than the last its producer wrote for the match, or whose corrected age is over the
+  match status age (20 minutes), is delivered but writes no status (see the feed watermark below).
 - Multi-session with the priority-split interests and the interest-combination
   validation stays exactly as today. A client may still create its own
   `SYSTEM_ALIVE_ONLY` session next to live sessions. A replay session stays the only
@@ -1584,18 +1586,19 @@ group by group.
     Once the system tests run against 1.0, the KD-12 and KD-27 scenarios also check the
     second recovery's `after` and the producer going down and back up.
     The recovery runs in the feed, and the whole system-test suite passes against 1.0 as
-    well as 0.0.57, in CI; `getHealth()` and the watchdog are in.
+    well as 0.0.59, in CI; `getHealth()` and the watchdog are in.
 
     42. Concurrency stress suite on the assembled SDK, in CI.
 
 ### Phase 3 – Parity and polish
 
-27. Field parity with the Go SDK, in small groups.
+27. Field parity with the Go SDK, in small groups. Done: section 5 lists what came and what stays
+    out and why.
 28. Option and method parity: the options and methods of section 5 the release candidate
     does not have. Includes the safety-net, inactivity, recovery-time and
     shutdown-timeout options, the eager entity preload for messages with its option, the
     locale preload, and the test that pins KD-17. The maximum recovery time keeps
-    0.0.x's default of 360 minutes. Before 1.0.0, not in the release candidate. Done: the
+    0.0.x's default of 360 minutes. Done: the
     maximum inactivity, maximum recovery time, shutdown timeout, stale-message limit and
     window, exchange names and API call logging options, each checked by the builder, and
     KD-17's test, which sets the safety net's options on 1.0; the health thresholds -
