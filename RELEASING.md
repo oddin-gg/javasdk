@@ -236,8 +236,11 @@ release, before anything is built, when:
   the key; when a server serves another key than the variable names, or a revoked one; or when
   the key has no signing subkey (a primary that signs does not count: it is not in CI), or the
   subkey gpg would sign with - the newest one not revoked and not expired - expires within 30
-  days, or none is left. Both servers are asked because after a renewal one that still holds the
-  old expiry makes Central refuse the signature; the message names the server and the date.
+  days, or none is left; or when the two servers do not serve the same signing subkeys, each
+  revoked or not and with the same expiry (after a revocation, a server still holding the old
+  copy would pass alone, with the stolen subkey unrevoked). Both servers are asked because after
+  a renewal one that still holds the old expiry makes Central refuse the signature; the message
+  names the server, the subkey and the date.
   "The signing subkey nears its expiry" below says what to do.
 
 Right before the upload, and again before the GitHub Release, the run asks GitHub whether the
