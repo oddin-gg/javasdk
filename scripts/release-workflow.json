@@ -40,6 +40,13 @@
           "id": "tag",
           "name": "Check the tag",
           "run": "./scripts/release-check.sh \"$GITHUB_REF_NAME\""
+        },
+        {
+          "env": {
+            "RELEASE_KEY_FINGERPRINT": "${{ vars.RELEASE_KEY_FINGERPRINT }}"
+          },
+          "name": "Check the signing key",
+          "run": "./scripts/release-key-check.sh"
         }
       ]
     },

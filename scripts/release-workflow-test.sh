@@ -6,6 +6,8 @@
 # no run can show before a release:
 #
 # - the check job runs scripts/release-check.sh, unconditionally, and its outputs are that step's;
+#   it also runs scripts/release-key-check.sh, unconditionally, with the key's fingerprint from the
+#   repository variable RELEASE_KEY_FINGERPRINT;
 # - publish runs only after check and build succeeded, in the maven-central environment, whose
 #   reviewers approve every upload; no other job, here or in a called workflow, uses an
 #   environment or reads a secret other than the job token;
@@ -111,6 +113,16 @@ if len(found) == 1:
     for name in ("version", "final", "commit"):
         check(outputs.get(name) == "${{ steps.%s.outputs.%s }}" % (step.get("id"), name),
               "check's %s must be the release check's own output, not %r" % (name, outputs.get(name)))
+
+# check: the signing key is checked, always, with the fingerprint of the repository variable
+KEY_CHECK = './scripts/release-key-check.sh'
+found = [s for s in steps("check") if str(s.get("run", "")).strip() == KEY_CHECK]
+check(len(found) == 1, "check must run %s as a step of its own, once" % KEY_CHECK)
+if len(found) == 1:
+    unconditional("check", found[0], "the signing key check")
+    check(found[0].get("env", {}).get("RELEASE_KEY_FINGERPRINT") == "${{ vars.RELEASE_KEY_FINGERPRINT }}",
+          "the signing key check must read RELEASE_KEY_FINGERPRINT from the repository variable, not %r"
+          % found[0].get("env", {}).get("RELEASE_KEY_FINGERPRINT"))
 
 # publish: after check and build succeeded, in the environment whose reviewers approve it
 check(environment(jobs["publish"]) == "maven-central", "publish must use maven-central")
@@ -680,6 +692,18 @@ breaks release.yml replace '      contents: read
 ' '      contents: read
       pull-requests: write
 ' "check's permissions must be"
+
+# the signing key check
+key_step='        run: ./scripts/release-key-check.sh'
+breaks release.yml replace "$key_step" '        run: echo "the key is fine"' \
+  'check must run ./scripts/release-key-check.sh as a step of its own'
+breaks release.yml replace "$key_step" "        if: false
+$key_step" "check: the signing key check must not be conditional"
+breaks release.yml replace "$key_step" "        continue-on-error: true
+$key_step" "check: the signing key check must not continue on error"
+breaks release.yml replace '          RELEASE_KEY_FINGERPRINT: ${{ vars.RELEASE_KEY_FINGERPRINT }}' \
+  '          RELEASE_KEY_FINGERPRINT: 0000000000000000000000000000000000000000' \
+  "the signing key check must read RELEASE_KEY_FINGERPRINT from the repository variable"
 
 # build
 breaks release.yml replace '      commit: ${{ needs.check.outputs.commit }}

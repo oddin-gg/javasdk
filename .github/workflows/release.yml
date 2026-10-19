@@ -2,7 +2,9 @@ name: Java SDK 1.0 release
 
 # A v1.* tag publishes that version to Maven Central - a release candidate (v1.0.0-rc.1) or a
 # final (v1.0.0) - once a second person approves the upload. RELEASING.md has the checklist,
-# the secrets and the environment this needs.
+# the secrets, the repository variable (RELEASE_KEY_FINGERPRINT) and the environment this needs.
+# The check job refuses a tag whose commit, notes or version are wrong, and a signing key that is
+# not fit to sign, before anything is built.
 on:
   push:
     tags:
@@ -38,10 +40,20 @@ jobs:
         # The tag's form, its commit the merge commit of a pull request merged into main
         # and alone, the release notes, no other workflow reacting to tags, and the version not
         # on Central. release-check-test.sh, run by next.yml on every push, holds each of these
-        # to its cases.
+        # to its cases. The signing key is checked by the step after this one.
         run: ./scripts/release-check.sh "$GITHUB_REF_NAME"
         env:
           GH_TOKEN: ${{ github.token }}
+
+      - name: Check the signing key
+        # The key the upload will sign with is on both keyservers Central reads, with a signing
+        # subkey that is not revoked and does not expire within 30 days: found here, before a
+        # reviewer is asked, and not by the upload. It needs no secret; the public key is fetched
+        # by the primary's fingerprint, the repository variable (RELEASING.md).
+        # release-key-check-test.sh, run by next.yml on every push, holds it to its cases.
+        run: ./scripts/release-key-check.sh
+        env:
+          RELEASE_KEY_FINGERPRINT: ${{ vars.RELEASE_KEY_FINGERPRINT }}
 
   build:
     name: Build and test
