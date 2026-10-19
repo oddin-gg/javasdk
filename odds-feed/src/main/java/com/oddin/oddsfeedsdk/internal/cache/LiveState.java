@@ -25,8 +25,8 @@ import org.jspecify.annotations.Nullable;
  * with when the SDK received it. A message older than the watermark of its producer does not write;
  * it is still delivered. One exception: a watermark that no delivery delay explains must not hold the
  * correct messages that follow back, so a message older than it writes, and takes the watermark down
- * to its own timestamp, when it was received after the watermark's message, was generated so much
- * before it that the two deliveries' delays cannot account for the gap (see {@link Takeover}), and
+ * to its own timestamp, when it was received after every message that wrote, was generated so much
+ * before the watermark's that the two deliveries' delays cannot account for the gap (see {@link Takeover}), and
  * is itself timely. A replayed message writes in the order it comes. The feed's and the API's
  * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
  * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
@@ -155,7 +155,13 @@ public final class LiveState<K> {
             boolean older = false;
             if (inOrder && last != null && last.timestamp() > timestamp) {
                 if (correctedAge == null
-                        || !takeover.allows(last.timestamp(), last.receivedAt(), timestamp, receivedAt, correctedAge)) {
+                        || !takeover.allows(
+                                last.timestamp(),
+                                last.receivedAt(),
+                                last.newestReceivedAt(),
+                                timestamp,
+                                receivedAt,
+                                correctedAge)) {
                     return false;
                 }
                 older = true;
@@ -163,7 +169,10 @@ public final class LiveState<K> {
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
             // a message that took the watermark over lowers it: the next one is judged by this one
             long newest = last == null || older ? timestamp : Math.max(last.timestamp(), timestamp);
-            marks.put(producer, new Mark(newest, receivedAt));
+            // never moved back: a write received earlier than one before it, by a session that took
+            // the lock later, leaves the latest receipt where it was
+            long latest = last == null ? receivedAt : Math.max(last.newestReceivedAt(), receivedAt);
+            marks.put(producer, new Mark(newest, receivedAt, latest));
             put(
                     entity,
                     new Live(
@@ -415,9 +424,10 @@ public final class LiveState<K> {
      * the caller computes:
      *
      * <ol>
-     *   <li>it was received after the watermark's message, strictly, by the monotonic clock: two
-     *       sessions that handle two messages in another order than they received them leave the
-     *       order of receipt right;
+     *   <li>it was received strictly after every message that wrote for the producer - not only
+     *       the watermark's, which a message with a newer stamp received earlier may have written
+     *       last - by the monotonic clock: two sessions that handle messages in another order than
+     *       they received them leave the order of receipt right;
      *   <li>{@code R + G} is more than the {@code margin}: two deliveries that differ by more than
      *       that are no jitter;
      *   <li>its corrected age is at most {@code timelyAge}: it is a timely message, not one that
@@ -430,7 +440,8 @@ public final class LiveState<K> {
      *
      * A watermark ahead of the true time by less than the margin holds the messages that follow it
      * back until their timestamps catch up, as before. Of two timestamps ahead, the one received last
-     * writes.
+     * writes when the same rule holds for it; stamps closer than the margin leave the first in charge
+     * until they catch up.
      *
      * @param margin the least {@code R + G} that makes the watermark a bad one
      * @param timelyAge the most a message's corrected age may be to take over
@@ -458,17 +469,24 @@ public final class LiveState<K> {
          *
          * @param watermark the watermark's timestamp, greater than {@code timestamp}
          * @param watermarkReceivedAt when its message was received, on the monotonic clock
+         * @param newestReceivedAt the latest receipt of any message that wrote for the producer, at
+         *     least {@code watermarkReceivedAt}
          * @param timestamp the message's timestamp
          * @param receivedAt when it was received
          * @param correctedAge the message's age by the producer's clock, less the producer's offset
          */
         boolean allows(
-                long watermark, long watermarkReceivedAt, long timestamp, long receivedAt, Duration correctedAge) {
+                long watermark,
+                long watermarkReceivedAt,
+                long newestReceivedAt,
+                long timestamp,
+                long receivedAt,
+                Duration correctedAge) {
             // the timestamp is the producer's, any long: nothing below may overflow on it
             if (timestamp <= 0) {
                 return false;
             }
-            if (receivedAt <= watermarkReceivedAt) {
+            if (receivedAt <= newestReceivedAt) {
                 return false;
             }
             if (correctedAge.compareTo(timelyAge) > 0) {
@@ -483,9 +501,10 @@ public final class LiveState<K> {
 
     /**
      * A producer's last live message on an entity: its timestamp, the producer's clock, and when the
-     * SDK received it, on the feed's monotonic clock.
+     * SDK received it, on the feed's monotonic clock; and the latest receipt of any message that wrote
+     * for the producer, which only grows.
      */
-    private record Mark(long timestamp, long receivedAt) {}
+    private record Mark(long timestamp, long receivedAt, long newestReceivedAt) {}
 
     /**
      * An entity's watermarks and values.

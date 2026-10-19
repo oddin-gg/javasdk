@@ -492,7 +492,8 @@ public final class OddsFeedConfigurationBuilder {
      * received after the other plus the time it was generated before it is more than this margin, and
      * it is timely (see {@link #setTimelyMessageAge}). A timestamp ahead by less than the margin
      * cannot be told from a delivery delay, and holds the messages that follow back until they catch
-     * up, at most this long. Of two timestamps ahead, the one received last writes.
+     * up, at most this long. Of two timestamps ahead, the one received last writes when the same rule holds
+     * for it; with the stamps closer than the margin the first stays in charge until they catch up.
      *
      * <p>A larger margin leaves a bad timestamp in charge for longer, and tells fewer of them from a
      * delay; a smaller one lets the ordinary jitter of deliveries pass for a bad timestamp and

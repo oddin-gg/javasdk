@@ -284,7 +284,7 @@ class LiveStateTest {
     void aRecordOutlivesTheStatusByADayAndIsBounded() {
         feedWrite("m1", LIVE, 5_000, FRESH);
         time.advance(Duration.ofHours(23));
-        assertThat(live.get("m1")).as("still remembered").isNotNull();
+        assertThat(feedWrite("m1", LIVE, 4_000, STALE)).as("still remembered").isFalse();
         time.advance(Duration.ofHours(2));
         assertThat(live.get("m1")).as("forgotten after 24 hours").isNull();
         assertThat(feedWrite("m1", LIVE, 4_000, FRESH)).isTrue();
@@ -573,6 +573,31 @@ class LiveStateTest {
                 .as("in the same millisecond")
                 .isFalse();
         assertThat(message("m1", BASE, 5_001, FRESH)).as("a millisecond later").isTrue();
+    }
+
+    /**
+     * Two sessions take the lock in another order than they received: the correct update U,
+     * received at 1000, writes first; then the bad F, received at 900, writes by its newer stamp and
+     * the watermark's receipt is 900; then the timely C, received at 950, is older than U. It is
+     * received before U, so it must not take the watermark over and put U's score back.
+     */
+    @Test
+    void aMessageReceivedBeforeAnUpdateThatWroteDoesNotTakeOverWhateverTheWatermarksReceiptIs() {
+        assertThat(message("m1", BASE + 800, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES, 900, FRESH))
+                .as("F: newer by its stamp, received before U")
+                .isTrue();
+        assertThat(message("m1", BASE + 750, 950, FRESH))
+                .as("C: timely, older than U, received before it")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + TEN_MINUTES);
+        assertThat(message("m1", BASE + 750, 1_000, FRESH))
+                .as("received with U: not after it")
+                .isFalse();
+        assertThat(message("m1", BASE + 1_100, 1_001, FRESH))
+                .as("a correct message received after all of them takes over")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 1_100);
     }
 
     @Test
