@@ -2081,3 +2081,19 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   every instance a node id; 0.0.x and Go logged every one at INFO, which 1.0's levels (an hour of
   normal traffic is quiet) do not allow, and a WARN that repeats fails the soak check. The binding
   is unchanged. No public API changes.
+- 2026-10-20, docs and examples text, from a check of the review leftovers against the code: the
+  soak table no longer asks a TCP proxy for a login refusal, a 5xx or one producer's messages, says
+  per duration what the refusal rule does (30 s is ridden out, three minutes end the reconnecting),
+  counts the snapshot deadline from the request and from each snapshot message, names the tests
+  that cover the slow client and the close during a recovery (and says none does it in a system
+  test), exempts the slow client's deliberate stall from "any part STALLED", asks for an
+  independent consumer to reconcile lost messages against, and limits the long run's counter rule to
+  failure counters; the published-signature check compares the key's fingerprint with a pinned
+  one, which waits for the key; a callback's `match.getStatus()` is the cache's state, which a
+  message the cache turned down did not write, and a fixture change is deduplicated for an hour
+  within 100 000 changes; the active tournaments can come back short under `CATCH`. Section 5 no
+  longer calls anything planned, and records that the Go SDK's name and abbreviation maps and a
+  match's per-locale extra info stay out of 1.0, by decision of 2026-10-19; the 0.0.57 baselines of
+  sections 3 and 10 are 0.0.59. The logging, replay, event recovery and resume examples handle an
+  unparsable message, a refused replay call, a recovery still pending after five minutes and a
+  start that fails. No SDK code and no public API changes.
