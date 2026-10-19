@@ -50,6 +50,8 @@ public final class OddsFeedConfigurationBuilder {
     private Duration connectionDownLimit = OddsFeedConfiguration.DEFAULT_CONNECTION_DOWN_LIMIT;
     private List<Locale> preloadLocales = List.of();
     private boolean eagerEntityPreload;
+    private Duration futureStampMargin = OddsFeedConfiguration.DEFAULT_FUTURE_STAMP_MARGIN;
+    private @Nullable Duration timelyMessageAge;
 
     /** Public because 0.0.x's constructor was, to Java callers; {@code OddsFeed.getOddsFeedConfigurationBuilder()} makes one. */
     public OddsFeedConfigurationBuilder() {}
@@ -477,6 +479,53 @@ public final class OddsFeedConfigurationBuilder {
         return this;
     }
 
+    /**
+     * How far ahead of its producer's real time a live message's timestamp may be and still hold back
+     * the live status and the scores of the messages that follow it. 30 seconds unless set. New in
+     * 1.0.
+     *
+     * <p>The SDK writes the status and scores of a live message only if no later timestamp of its
+     * producer has written them already, so a delayed message does not undo a newer one. A timestamp
+     * that is wrong and ahead - a producer component with a fast clock - would then block every
+     * correct message until the real time catches up. A message with an older timestamp that
+     * arrives after such a one is taken as the correct one instead, and writes, when the time it was
+     * received after the other plus the time it was generated before it is more than this margin, and
+     * it is timely (see {@link #setTimelyMessageAge}). A timestamp ahead by less than the margin
+     * cannot be told from a delivery delay, and holds the messages that follow back until they catch
+     * up, at most this long. Of two timestamps ahead, the one received last writes.
+     *
+     * <p>A larger margin leaves a bad timestamp in charge for longer, and tells fewer of them from a
+     * delay; a smaller one lets the ordinary jitter of deliveries pass for a bad timestamp and
+     * writes an older status over a newer one, so a margin of a few seconds is not recommended.
+     *
+     * @throws IllegalArgumentException unless it is positive and at most a day, a day being as good
+     *     as off; {@link #build} also refuses it under the {@linkplain #setTimelyMessageAge timely
+     *     message age}
+     */
+    public OddsFeedConfigurationBuilder setFutureStampMargin(Duration margin) {
+        this.futureStampMargin =
+                positiveAtMost(margin, OddsFeedConfiguration.MAX_FUTURE_STAMP_MARGIN, "future stamp margin");
+        return this;
+    }
+
+    /**
+     * How old a live message may be, by its timestamp corrected by the producer's alives, to write
+     * the status in place of a message with a later timestamp (see {@link #setFutureStampMargin}).
+     * 10 seconds unless set, or the margin if that is shorter. New in 1.0.
+     *
+     * <p>A message that sat in a backlog is old by this measure and writes nothing over a newer
+     * status, whatever its timestamp. The margin less this age is also how late a producer's alives
+     * may be before a delayed message passes for a timely one, so this is at most the margin, and the
+     * smaller it is the later the alives may be.
+     *
+     * @throws IllegalArgumentException unless it is positive; {@link #build} also refuses it over
+     *     the {@linkplain #setFutureStampMargin future stamp margin}
+     */
+    public OddsFeedConfigurationBuilder setTimelyMessageAge(Duration age) {
+        this.timelyMessageAge = positive(age, "timely message age");
+        return this;
+    }
+
     private static Locale language(Locale locale, String what) {
         if (requireNonNull(locale, what).getLanguage().isEmpty()) {
             throw new IllegalArgumentException(what + " must name a language, was \"" + locale + "\"");
@@ -515,8 +564,9 @@ public final class OddsFeedConfigurationBuilder {
     /**
      * The configuration.
      *
-     * @throws IllegalArgumentException without an access token or an environment, or with a stall
-     *     limit set under {@code 2 × HTTP timeout + 5 s}
+     * @throws IllegalArgumentException without an access token or an environment, with a stall
+     *     limit set under {@code 2 × HTTP timeout + 5 s}, or with a timely message age over the
+     *     future stamp margin
      */
     public OddsFeedConfiguration build() {
         String token = accessToken;
@@ -526,6 +576,16 @@ public final class OddsFeedConfigurationBuilder {
         Environment environment = selectedEnvironment;
         if (environment == null) {
             throw new IllegalArgumentException("Missing environment. Please select environment.");
+        }
+        Duration timely = timelyMessageAge;
+        if (timely == null) {
+            timely = OddsFeedConfiguration.DEFAULT_TIMELY_MESSAGE_AGE;
+            if (timely.compareTo(futureStampMargin) > 0) {
+                timely = futureStampMargin;
+            }
+        } else if (timely.compareTo(futureStampMargin) > 0) {
+            throw new IllegalArgumentException("timely message age must be at most the future stamp margin of "
+                    + futureStampMargin + ", was " + timely);
         }
         Duration startup = startupTimeout;
         Duration callbackStall = stallLimit(callbackStallLimit, "callback stall limit");
@@ -561,7 +621,9 @@ public final class OddsFeedConfigurationBuilder {
                 watchdogInterval,
                 connectionDownLimit,
                 preloadLocales,
-                eagerEntityPreload);
+                eagerEntityPreload,
+                futureStampMargin,
+                timely);
     }
 
     /** The stall limit set, if it sits above the SDK's own waits for the API; the derived one if none. */

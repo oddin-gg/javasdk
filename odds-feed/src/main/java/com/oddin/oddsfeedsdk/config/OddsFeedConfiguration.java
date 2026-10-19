@@ -68,6 +68,16 @@ public final class OddsFeedConfiguration {
     /** The longest watchdog interval the builder takes. */
     static final Duration MAX_WATCHDOG_INTERVAL = Duration.ofMinutes(1);
 
+    /**
+     * How far a live message's timestamp may be ahead of its producer's real time and still hold back
+     * the status of the messages that follow it, unless set.
+     */
+    static final Duration DEFAULT_FUTURE_STAMP_MARGIN = Duration.ofSeconds(30);
+    /** How old, corrected by its producer's alives, a message may be to replace a status of a later timestamp, unless set. */
+    static final Duration DEFAULT_TIMELY_MESSAGE_AGE = Duration.ofSeconds(10);
+    /** The most the future stamp margin takes: a day is as good as off. */
+    static final Duration MAX_FUTURE_STAMP_MARGIN = Duration.ofDays(1);
+
     static final Duration DEFAULT_HTTP_CLIENT_TIMEOUT = Duration.ofSeconds(30);
     static final int DEFAULT_REST_CONCURRENCY_LIMIT = 16;
     /** The startup timeout, when none is set, is this many HTTP timeouts. */
@@ -112,6 +122,8 @@ public final class OddsFeedConfiguration {
     private final Duration connectionDownLimit;
     private final List<Locale> preloadLocales;
     private final boolean eagerEntityPreload;
+    private final Duration futureStampMargin;
+    private final Duration timelyMessageAge;
 
     /**
      * Public because 0.0.x's constructor was, to Java callers; {@link OddsFeedConfigurationBuilder}
@@ -161,7 +173,9 @@ public final class OddsFeedConfiguration {
                 DEFAULT_WATCHDOG_INTERVAL,
                 DEFAULT_CONNECTION_DOWN_LIMIT,
                 List.of(),
-                false);
+                false,
+                DEFAULT_FUTURE_STAMP_MARGIN,
+                DEFAULT_TIMELY_MESSAGE_AGE);
     }
 
     OddsFeedConfiguration(
@@ -195,7 +209,9 @@ public final class OddsFeedConfiguration {
             Duration watchdogInterval,
             Duration connectionDownLimit,
             List<Locale> preloadLocales,
-            boolean eagerEntityPreload) {
+            boolean eagerEntityPreload,
+            Duration futureStampMargin,
+            Duration timelyMessageAge) {
         this.accessToken = accessToken;
         this.defaultLocale = defaultLocale;
         this.maxInactivitySeconds = maxInactivitySeconds;
@@ -227,6 +243,8 @@ public final class OddsFeedConfiguration {
         this.connectionDownLimit = connectionDownLimit;
         this.preloadLocales = List.copyOf(preloadLocales);
         this.eagerEntityPreload = eagerEntityPreload;
+        this.futureStampMargin = futureStampMargin;
+        this.timelyMessageAge = timelyMessageAge;
     }
 
     /**
@@ -464,6 +482,29 @@ public final class OddsFeedConfiguration {
      */
     public boolean isEagerEntityPreload() {
         return eagerEntityPreload;
+    }
+
+    /**
+     * How far ahead of its producer's real time a live message's timestamp may be and still hold
+     * back the live status and the scores of the messages that follow it: 30 seconds unless set. A
+     * timestamp further ahead no longer does, the next message received with an older timestamp
+     * writing in its place; one less far ahead holds them back until the timestamps catch up, at most
+     * this long. It is also how much later than another a message's delivery must be, with the gap
+     * between their timestamps, for its older timestamp to be taken as a late delivery and not a bad
+     * one. New in 1.0.
+     */
+    public Duration getFutureStampMargin() {
+        return futureStampMargin;
+    }
+
+    /**
+     * How old a live message may be, by its timestamp corrected by the producer's alives, to write
+     * the status in place of one with a later timestamp: 10 seconds unless set, or the {@linkplain
+     * #getFutureStampMargin margin} if that is shorter. An older message is
+     * taken for a delayed one, which writes nothing over a newer one. New in 1.0.
+     */
+    public Duration getTimelyMessageAge() {
+        return timelyMessageAge;
     }
 
     /** 0.0.x's companion object; the constants are on the class. */

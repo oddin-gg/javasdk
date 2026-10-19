@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.oddin.oddsfeedsdk.OddsFeed;
+import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -619,6 +620,96 @@ class OddsFeedConfigurationBuilderTest {
         assertThat(configuration.getInitialSnapshotRecoveryInterval()).isNull();
         assertThat(configuration.getHttpClientTimeout()).isEqualTo(Duration.ofSeconds(30));
         assertThat(configuration.getMessagingSslContext()).isNull();
+    }
+
+    @Test
+    void theFutureStampMarginAndTheTimelyMessageAgeHaveTheirDefaultsAndBounds() {
+        OddsFeedConfiguration defaults =
+                builder().selectProduction().setAccessToken("token").build();
+        assertThat(defaults.getFutureStampMargin()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(defaults.getTimelyMessageAge()).isEqualTo(Duration.ofSeconds(10));
+        assertThat(defaults.getFutureStampMargin()).isEqualTo(LiveState.Takeover.DEFAULTS.margin());
+        assertThat(defaults.getTimelyMessageAge()).isEqualTo(LiveState.Takeover.DEFAULTS.timelyAge());
+
+        OddsFeedConfiguration zeroZeroX = new OddsFeedConfiguration(
+                "token",
+                Locale.ENGLISH,
+                20,
+                360,
+                null,
+                ExceptionHandlingStrategy.THROW,
+                new Environment("mq", "api", 5672),
+                null,
+                1,
+                1,
+                1,
+                1);
+        assertThat(zeroZeroX.getFutureStampMargin()).isEqualTo(Duration.ofSeconds(30));
+        assertThat(zeroZeroX.getTimelyMessageAge()).isEqualTo(Duration.ofSeconds(10));
+
+        OddsFeedConfiguration set = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setFutureStampMargin(Duration.ofDays(1))
+                .setTimelyMessageAge(Duration.ofDays(1))
+                .build();
+        assertThat(set.getFutureStampMargin()).isEqualTo(Duration.ofDays(1));
+        assertThat(set.getTimelyMessageAge()).isEqualTo(Duration.ofDays(1));
+        OddsFeedConfiguration smallest = builder()
+                .selectProduction()
+                .setAccessToken("token")
+                .setFutureStampMargin(Duration.ofMillis(1))
+                .setTimelyMessageAge(Duration.ofMillis(1))
+                .build();
+        assertThat(smallest.getFutureStampMargin()).isEqualTo(Duration.ofMillis(1));
+        assertThat(smallest.getTimelyMessageAge()).isEqualTo(Duration.ofMillis(1));
+    }
+
+    @Test
+    void theFutureStampMarginAndTheTimelyMessageAgeRefuseNonsenseAtBuildTime() {
+        assertThatThrownBy(() -> builder().setFutureStampMargin(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("future stamp margin");
+        assertThatThrownBy(() -> builder().setFutureStampMargin(Duration.ofSeconds(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(
+                        () -> builder().setFutureStampMargin(Duration.ofDays(1).plusMillis(1)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most");
+        assertThatThrownBy(() -> builder().setTimelyMessageAge(Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timely message age");
+        assertThatThrownBy(() -> builder().setTimelyMessageAge(Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> builder().setFutureStampMargin(nullValue())).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> builder().setTimelyMessageAge(nullValue())).isInstanceOf(NullPointerException.class);
+
+        var builder = builder().selectProduction().setAccessToken("token");
+        assertThatThrownBy(() ->
+                        builder.setTimelyMessageAge(Duration.ofSeconds(31)).build())
+                .as("the timely age over the default margin")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("timely message age must be at most the future stamp margin");
+        assertThat(builder.setFutureStampMargin(Duration.ofSeconds(31)).build().getTimelyMessageAge())
+                .as("in either order of the two setters")
+                .isEqualTo(Duration.ofSeconds(31));
+        assertThat(builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setFutureStampMargin(Duration.ofSeconds(5))
+                        .setTimelyMessageAge(Duration.ofSeconds(5))
+                        .build()
+                        .getFutureStampMargin())
+                .as("the timely age may equal the margin")
+                .isEqualTo(Duration.ofSeconds(5));
+        assertThat(builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setFutureStampMargin(Duration.ofSeconds(5))
+                        .build()
+                        .getTimelyMessageAge())
+                .as("a margin under the default timely age, with that unset: the margin")
+                .isEqualTo(Duration.ofSeconds(5));
     }
 
     @Test

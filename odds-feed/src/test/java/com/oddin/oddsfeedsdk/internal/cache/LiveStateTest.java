@@ -4,16 +4,21 @@ import static java.util.Objects.requireNonNull;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.oddin.oddsfeedsdk.OddsFeed;
+import com.oddin.oddsfeedsdk.internal.cache.LiveState.Takeover;
 import com.oddin.oddsfeedsdk.internal.clock.SplitClock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /** Who writes the fields the feed owns: the feed while it is live, REST once it is quiet. */
@@ -22,6 +27,9 @@ class LiveStateTest {
     private static final long LIVE = 2;
     private static final long PREMATCH = 1;
     private static final Duration FRESH = Duration.ofSeconds(1);
+    /** The age of a message a few minutes late: no timely one, so no exception to the watermark's order. */
+    private static final Duration STALE = Duration.ofMinutes(5);
+
     private static final Field<String> STATUS = Field.shared("status");
     private static final Field<Long> TIMESTAMP = Field.shared("timestamp");
     private static final Field<Integer> HOME_SCORE = Field.shared("homeScore");
@@ -144,7 +152,7 @@ class LiveStateTest {
         assertThat(requireNonNull(live.get("m1")).isFresh(now()))
                 .as("a fill is no REST write: quiet since the feed's last message")
                 .isFalse();
-        assertThat(feedWrite("m1", LIVE, 999, FRESH))
+        assertThat(feedWrite("m1", LIVE, 999, STALE))
                 .as("nor did it move the watermark")
                 .isFalse();
         assertThat(live.restWriteIfQuiet("m1", status("ended"))).isTrue();
@@ -267,7 +275,7 @@ class LiveStateTest {
                 .isFalse();
         time.advance(Duration.ofMinutes(19));
         assertThat(restWrite("m1")).as("both quiet for over 20 minutes").isTrue();
-        assertThat(feedWrite("m1", LIVE, 900, FRESH))
+        assertThat(feedWrite("m1", LIVE, 900, STALE))
                 .as("REST taking over does not forget the watermarks")
                 .isFalse();
     }
@@ -276,7 +284,7 @@ class LiveStateTest {
     void aRecordOutlivesTheStatusByADayAndIsBounded() {
         feedWrite("m1", LIVE, 5_000, FRESH);
         time.advance(Duration.ofHours(23));
-        assertThat(feedWrite("m1", LIVE, 4_000, FRESH)).as("still remembered").isFalse();
+        assertThat(live.get("m1")).as("still remembered").isNotNull();
         time.advance(Duration.ofHours(2));
         assertThat(live.get("m1")).as("forgotten after 24 hours").isNull();
         assertThat(feedWrite("m1", LIVE, 4_000, FRESH)).isTrue();
@@ -387,7 +395,7 @@ class LiveStateTest {
                 }))
                 .isInstanceOf(IllegalStateException.class);
         assertThat(statusOf("m1")).isEqualTo("live");
-        assertThat(feedWrite("m1", LIVE, 4_000, FRESH))
+        assertThat(feedWrite("m1", LIVE, 4_000, STALE))
                 .as("its watermark is still there")
                 .isFalse();
         assertThat(live.restWriteIfQuiet("m1", status("ended")))
@@ -471,6 +479,284 @@ class LiveStateTest {
         split.advanceMono(LiveState.AGE.plusHours(1));
         split.stepWall(LiveState.AGE.plusHours(1).negated());
         assertThat(state.holds("m1")).as("the record's own day is over").isFalse();
+    }
+
+    // ---- a watermark no delivery delay explains does not hold the correct messages back
+
+    private static final long BASE = 1_000_000;
+    private static final long TEN_MINUTES = Duration.ofMinutes(10).toMillis();
+
+    /** A message with its timestamp as its value, received {@code at} after the test's start. */
+    private boolean message(String key, long timestamp, long at, Duration age) {
+        return live.feedWriteIfNewer(
+                key, LIVE, timestamp, age, start + at, LiveWrite.of().put(TIMESTAMP, timestamp));
+    }
+
+    private final long start = now();
+
+    @Test
+    void aTimestampAheadOfItsProducerDoesNotHoldBackTheCorrectMessagesThatFollow() {
+        assertThat(message("m1", BASE + TEN_MINUTES, 0, FRESH))
+                .as("the bad one")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH))
+                .as("a correct one a second later")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 1_000);
+        assertThat(message("m1", BASE + 2_000, 2_000, FRESH))
+                .as("the next, in order")
+                .isTrue();
+        assertThat(message("m1", BASE + 1_500, 2_500, FRESH))
+                .as("a swapped one: the watermark is the correct one's now")
+                .isFalse();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 2_000);
+
+        assertThat(message("m1", BASE + TEN_MINUTES + 5_000, 3_000, FRESH))
+                .as("another bad one is newer by its stamp")
+                .isTrue();
+        assertThat(message("m1", BASE + 4_000, 4_000, FRESH))
+                .as("and the correct one after it takes over again")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 4_000);
+    }
+
+    /** The swaps the rule must keep refusing: every earlier rule died on one of these. */
+    @ParameterizedTest
+    @CsvSource({
+        // swapped by (ms), received after the newer one by (ms), the age by the producer's alives (ms)
+        "50, 3, 100",
+        "1000, 5, 100",
+        "5000, 100, 100",
+        "25000, 300, 100",
+        // alives 3 s and 25 s late: the corrected age is negative
+        "2000, 300, -2700",
+        "1000, 300, -24700",
+        // R + G is 31 s, but the message is 28 s old: it is a late one
+        "28000, 3000, 28000",
+    })
+    void anOrdinarilySwappedMessageIsStillRefused(long swap, long receivedAfter, long ageMillis) {
+        assertThat(message("m1", BASE, 0, FRESH)).isTrue();
+        assertThat(message("m1", BASE - swap, receivedAfter, Duration.ofMillis(ageMillis)))
+                .isFalse();
+        assertThat(timestampOf("m1")).isEqualTo(BASE);
+    }
+
+    @Test
+    void aMessageThatSatInABacklogDoesNotTakeTheWatermarkOver() {
+        assertThat(message("m1", BASE, 0, FRESH)).isTrue();
+        Duration timely = Takeover.DEFAULTS.timelyAge();
+        assertThat(message("m1", BASE - 40_000, 1_000, timely.plusMillis(1)))
+                .as("R + G is 41 s, and it is a millisecond too old to be timely")
+                .isFalse();
+        assertThat(message("m1", BASE - 40_000, 2_000, timely))
+                .as("at the timely age exactly, it is")
+                .isTrue();
+    }
+
+    /** The stated limit: a producer's alives 35 s late make a backlog message of 45 s look timely. */
+    @Test
+    void aBacklogMessageOfAProducerWhoseAlivesAreVeryLateTakesTheWatermarkOver() {
+        assertThat(message("m1", BASE, 0, FRESH)).isTrue();
+        assertThat(message("m1", BASE - 45_000, 100, Duration.ofSeconds(45 - 35)))
+                .as("the alives' delay is taken off its age: it reads timely")
+                .isTrue();
+    }
+
+    @Test
+    void aMessageReceivedBeforeTheWatermarksIsNotTheLaterOneWhateverElseIsTrue() {
+        assertThat(message("m1", BASE + TEN_MINUTES, 5_000, FRESH)).isTrue();
+        assertThat(message("m1", BASE, 4_000, FRESH))
+                .as("received before it, handled after it by another session")
+                .isFalse();
+        assertThat(message("m1", BASE, 5_000, FRESH))
+                .as("in the same millisecond")
+                .isFalse();
+        assertThat(message("m1", BASE, 5_001, FRESH)).as("a millisecond later").isTrue();
+    }
+
+    @Test
+    void theTimestampsAndTheReceiptsMustAddUpToMoreThanTheMargin() {
+        long margin = Takeover.DEFAULTS.margin().toMillis();
+        assertThat(message("m1", BASE, 0, FRESH)).isTrue();
+        assertThat(message("m1", BASE - 20_000, 10_000, FRESH))
+                .as("R + G is the margin exactly")
+                .isFalse();
+        assertThat(message("m1", BASE - 20_000, 10_001, FRESH))
+                .as("a millisecond more")
+                .isTrue();
+        assertThat(margin).isEqualTo(30_000);
+    }
+
+    @Test
+    void aTimestampThatIsNotARealOneNeverOverflowsIntoATakeover() {
+        assertThat(message("m1", Long.MAX_VALUE, 0, FRESH))
+                .as("a bad one first")
+                .isTrue();
+        assertThat(message("m1", 0, 1_000, FRESH)).as("zero").isFalse();
+        assertThat(message("m1", -1, 2_000, FRESH)).as("negative").isFalse();
+        assertThat(message("m1", Long.MIN_VALUE, 3_000, FRESH))
+                .as("the least a long can be, which its age wraps around for")
+                .isFalse();
+        assertThat(message("m1", BASE, 4_000, FRESH))
+                .as("a correct one, against the greatest a long can be")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE);
+
+        assertThat(message("m2", 1, 0, FRESH)).isTrue();
+        assertThat(message("m2", Long.MIN_VALUE, 1_000, FRESH)).isFalse();
+        assertThat(timestampOf("m2")).isEqualTo(1);
+    }
+
+    @Test
+    void ofTwoTimestampsAheadTheOneReceivedLastWritesAndOfTwoOfOneFastComponentTheNewerStays() {
+        assertThat(message("m1", BASE + TEN_MINUTES, 0, FRESH)).isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES - 60_000, 100, FRESH))
+                .as("a minute older, received later: the receipt order is what is left to go by")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + TEN_MINUTES - 60_000);
+
+        assertThat(message("m2", BASE + TEN_MINUTES, 0, FRESH)).isTrue();
+        assertThat(message("m2", BASE + TEN_MINUTES - 1_000, 5, FRESH))
+                .as("swapped by a second: the same fast component")
+                .isFalse();
+    }
+
+    @Test
+    void theExceptionReadsOnlyTheWatermarkOfTheMessagesOwnProducer() {
+        assertThat(live.feedWriteIfNewer(
+                        "m1",
+                        LIVE,
+                        BASE + TEN_MINUTES,
+                        FRESH,
+                        start,
+                        LiveWrite.of().put(TIMESTAMP, 1L)))
+                .isTrue();
+        assertThat(live.feedWriteIfNewer("m1", PREMATCH, BASE + 1_000, FRESH, start + 10, status("a")))
+                .isTrue();
+        assertThat(live.feedWriteIfNewer("m1", PREMATCH, BASE + 500, FRESH, start + 20_000, status("b")))
+                .as("20.5 s against its own producer's watermark, 600 s against the other's")
+                .isFalse();
+    }
+
+    @Test
+    void aWriteByTheExceptionKeepsTheEntityOwnedByTheFeedFromThenOn() {
+        assertThat(message("m1", BASE + TEN_MINUTES, 0, FRESH)).isTrue();
+        time.advance(Duration.ofMinutes(19));
+        assertThat(live.feedWriteIfNewer("m1", LIVE, BASE + 1_000, FRESH, now(), status("live")))
+                .as("a correct message, 19 minutes on")
+                .isTrue();
+
+        time.advance(Duration.ofMinutes(2));
+        assertThat(restWrite("m1"))
+                .as("21 minutes after the bad one, 2 after the correct one: still the feed's")
+                .isFalse();
+        time.advance(Duration.ofMinutes(19));
+        assertThat(restWrite("m1"))
+                .as("quiet for the status age since the correct one")
+                .isTrue();
+    }
+
+    @Test
+    void aBadTimestampUnderTheMarginStillFreezesTheFeedUntilRestTakesOver() {
+        assertThat(message("m1", BASE + 25_000, 0, FRESH)).isTrue();
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH))
+                .as("R + G is 25 s, under the margin")
+                .isFalse();
+        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
+        assertThat(restWrite("m1"))
+                .as("REST takes it over once the feed is quiet, as before")
+                .isTrue();
+    }
+
+    @Test
+    void aMessageThatMayNotTakeOverIsRefusedWhateverElseIsTrueOfIt() {
+        assertThat(message("m1", BASE + TEN_MINUTES, 0, FRESH)).isTrue();
+        assertThat(live.feedWriteIfNewer("m1", LIVE, BASE, FRESH, start + 1_000, false, status("recovery")))
+                .as("received later, generated long before, timely: and it answers a recovery request")
+                .isFalse();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + TEN_MINUTES);
+        assertThat(live.feedWriteIfNewer("m1", LIVE, BASE + TEN_MINUTES + 1, FRESH, start + 2_000, false, status("r")))
+                .as("one that is newer writes as it ever did")
+                .isTrue();
+        assertThat(message("m1", BASE, 3_000, FRESH))
+                .as("the next live message repairs it")
+                .isTrue();
+    }
+
+    @Test
+    void theMarginAndTheTimelyAgeAreTheOnesSet() {
+        var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.invalid", "api.invalid")
+                .setAccessToken("token")
+                .setFutureStampMargin(Duration.ofSeconds(60))
+                .setTimelyMessageAge(Duration.ofSeconds(20))
+                .build();
+        var state = new LiveState<String>(1_000, time.clock(), Takeover.from(configuration));
+        state.feedWriteIfNewer("m1", LIVE, BASE, FRESH, start, status("newer"));
+
+        assertThat(state.feedWriteIfNewer("m1", LIVE, BASE - 40_000, FRESH, start + 1_000, status("older")))
+                .as("R + G is 41 s: over the default margin, under the 60 s set")
+                .isFalse();
+        assertThat(state.feedWriteIfNewer(
+                        "m1", LIVE, BASE - 70_000, Duration.ofSeconds(20), start + 2_000, status("a")))
+                .as("a message of 20 s is timely by the 20 s set, not by the default 10 s")
+                .isTrue();
+        assertThat(state.feedWriteIfNewer(
+                        "m1", LIVE, BASE - 140_000, Duration.ofMillis(20_001), start + 3_000, status("b")))
+                .isFalse();
+    }
+
+    @Test
+    void aTakeoverNeedsAPositiveMarginAndATimelyAgeOfAtMostIt() {
+        var second = Duration.ofSeconds(1);
+        assertThatThrownBy(() -> new Takeover(Duration.ZERO, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new Takeover(second, Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new Takeover(second.negated(), second.negated()))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new Takeover(second, second.plusMillis(1)))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThat(new Takeover(second, second).timelyAge()).isEqualTo(second);
+    }
+
+    /**
+     * A bad-stamped and a correct message handled by two threads at once, either first: the value is
+     * the last one's whichever it is, and never one older than both, and the watermark after it is
+     * the value's, so what follows is judged by it.
+     */
+    @Test
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aBadAndACorrectMessageHandledAtOnceLeaveTheValueOfOneOfThemAndItsWatermark() throws Exception {
+        try (var threads = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int round = 0; round < 50; round++) {
+                String entity = "m" + round;
+                var go = new CountDownLatch(1);
+                long bad = BASE + TEN_MINUTES;
+                long correct = BASE + 1_000;
+                Future<Boolean> badWrite = threads.submit(() -> {
+                    go.await();
+                    return message(entity, bad, 0, FRESH);
+                });
+                Future<Boolean> correctWrite = threads.submit(() -> {
+                    go.await();
+                    return message(entity, correct, 1_000, FRESH);
+                });
+                go.countDown();
+                assertThat(badWrite.get(5, TimeUnit.SECONDS))
+                        .as("newer, or first: it writes")
+                        .isTrue();
+                assertThat(correctWrite.get(5, TimeUnit.SECONDS))
+                        .as("first, or taking over: it writes")
+                        .isTrue();
+
+                long value = timestampOf(entity);
+                assertThat(value).as("one of the two").isIn(bad, correct);
+                assertThat(message(entity, correct - 500, 1_100, FRESH))
+                        .as("a message just behind the correct one: refused by its watermark, taken by the bad one's")
+                        .isEqualTo(value == bad);
+            }
+        }
     }
 
     private static LiveWrite status(String status) {

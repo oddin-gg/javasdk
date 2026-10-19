@@ -155,6 +155,38 @@ class FeedCoreTest {
     }
 
     /**
+     * The margin the configuration sets reaches the rule of the live state: an older message that
+     * the default margin takes for the correct one, 41 s of receipt and stamp apart from the bad one
+     * before it, is refused under a margin of a minute.
+     */
+    @ParameterizedTest
+    @CsvSource({"30, true", "60, false"})
+    @Timeout(value = 60, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void theFutureStampMarginTheConfigurationSetsIsTheOneTheLiveStateRuleUses(int marginSeconds, boolean writes)
+            throws Exception {
+        var match = URN.parse("od:match:198314");
+        try (var api = FakeRestServer.start()) {
+            var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                    .selectEnvironment("127.0.0.1", api.apiHost(), 1)
+                    .setAccessToken("token")
+                    .setFutureStampMargin(Duration.ofSeconds(marginSeconds))
+                    .build();
+            var core = FeedCore.start(configuration, new EventsDispatcher(new Quiet(), null, id -> null), client -> {});
+            try {
+                var live = new OFSportEventStatus();
+                live.setStatus(OFEventStatus.LIVE);
+                assertThat(core.matches().oddsChange(match, 1, 100_000, Duration.ZERO, 1_000, live))
+                        .isTrue();
+                assertThat(core.matches().oddsChange(match, 1, 100_000 - 40_000, Duration.ZERO, 2_000, live))
+                        .as("40 s older, received 1 s later, with a margin of %d s", marginSeconds)
+                        .isEqualTo(writes);
+            } finally {
+                core.close();
+            }
+        }
+    }
+
+    /**
      * A warm-up the side-loads run reaches the profile loaders with the deadline the side-load was
      * given, which counts on the feed's clock: with that clock's reading hours from any other, the
      * loader keeps to what is left of it. A fetch that never answers is waited for 50 milliseconds,

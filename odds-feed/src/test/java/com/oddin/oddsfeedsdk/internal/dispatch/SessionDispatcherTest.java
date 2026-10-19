@@ -588,6 +588,197 @@ class SessionDispatcherTest {
         }
     }
 
+    // ---- a stamp ahead of its producer does not hold back the correct messages that follow
+
+    /**
+     * A message stamped ten minutes ahead, and then the correct ones, whatever the producer's alives
+     * show - its clock 2.5 s behind the SDK's, or its alives 3 s or 25 s late: the correct one writes
+     * the status the callback reads. Offsets are always established through the alives; an empty map
+     * is a different case (below).
+     */
+    @ParameterizedTest
+    @ValueSource(longs = {2_500, 3_000, 25_000})
+    void aMessageStampedAheadOfItsProducerDoesNotHoldBackTheStatusOfTheOnesThatFollow(long offset) {
+        try (var feed = new OnSplitClock()) {
+            feed.alive(offset);
+            feed.deliver("5", Duration.ofMinutes(10).toMillis());
+            assertThat(listener.read).as("the bad one writes").containsExactly(EventStatus.Cancelled);
+
+            feed.at(1_000);
+            feed.deliver("1", 1_000 - offset - 100);
+            feed.at(2_000);
+            feed.deliver("5", 2_000 - offset - 100);
+            feed.at(2_500);
+            feed.deliver("1", 2_000 - offset - 600);
+
+            assertThat(listener.read)
+                    .as("the correct one after it, the next in order, and a swapped one that is refused")
+                    .containsExactly(
+                            EventStatus.Cancelled, EventStatus.Live, EventStatus.Cancelled, EventStatus.Cancelled);
+        }
+    }
+
+    @Test
+    void theSwapsOfOrdinaryTrafficAreStillRefusedWhateverTheAlivesShow() {
+        for (long offset : new long[] {100, 3_000, 25_000}) {
+            listener.read.clear();
+            try (var feed = new OnSplitClock()) {
+                feed.alive(offset);
+                feed.deliver("5", -offset);
+                feed.at(2_300);
+                feed.deliver("1", -offset - 2_000);
+                feed.at(2_400);
+                feed.deliver("1", -offset + 20_000);
+                assertThat(listener.read)
+                        .as("alives %d ms late: the older one, swapped by 2 s, leaves the status", offset)
+                        .containsExactly(EventStatus.Cancelled, EventStatus.Cancelled, EventStatus.Live);
+            }
+        }
+    }
+
+    @Test
+    void beforeTheFirstAliveABadStampDoesNotHoldBackTheCorrectOnesAndAProducerFarBehindKeepsTheOldRule() {
+        try (var feed = new OnSplitClock()) {
+            feed.deliver("5", Duration.ofMinutes(10).toMillis());
+            feed.at(1_000);
+            feed.deliver("1", 1_000 - 50);
+            assertThat(listener.read).containsExactly(EventStatus.Cancelled, EventStatus.Live);
+        }
+        listener.read.clear();
+        try (var feed = new OnSplitClock()) {
+            feed.deliver("5", Duration.ofMinutes(10).toMillis());
+            feed.at(1_000);
+            feed.deliver("1", 1_000 - 120_000);
+            assertThat(listener.read)
+                    .as("a producer 120 s behind with no alive yet: its message is 120 s old, not timely")
+                    .containsExactly(EventStatus.Cancelled, EventStatus.Cancelled);
+        }
+    }
+
+    /**
+     * Two sessions, the one that lags handling an older message last: it was received before the
+     * newer one, which a session cannot tell from its own queue, and it does not roll the status back.
+     */
+    @Test
+    void aMessageReceivedBeforeTheOneThatWroteIsRefusedWhicheverSessionHandlesItLast() {
+        try (var feed = new OnSplitClock()) {
+            feed.alive(100);
+            feed.at(10_000);
+            feed.deliver(feed.dispatcher, "5", Duration.ofMinutes(10).toMillis(), 10_000);
+            feed.at(10_100);
+            feed.deliver(feed.other, "1", 9_000 - 200, 9_000);
+            assertThat(listener.read).containsExactly(EventStatus.Cancelled, EventStatus.Cancelled);
+
+            feed.deliver(feed.other, "1", 10_100 - 200, 10_100);
+            assertThat(listener.read)
+                    .last()
+                    .as("received after it: it takes over")
+                    .isEqualTo(EventStatus.Live);
+        }
+    }
+
+    /**
+     * A message that answers a recovery request never takes the status over from a later stamp: a
+     * recovery must not move the live state back, and the next live message repairs a bad stamp.
+     */
+    @Test
+    void aMessageThatAnswersARecoveryRequestNeverTakesTheStatusOverFromALaterStamp() {
+        try (var feed = new OnSplitClock()) {
+            feed.alive(100);
+            feed.deliver("5", Duration.ofMinutes(10).toMillis());
+            feed.at(1_000);
+            feed.deliverAsAnswerToARecovery("1", 1_000 - 200);
+            assertThat(listener.read)
+                    .as("timely and received after it, as the rule asks, but it answers a request")
+                    .containsExactly(EventStatus.Cancelled, EventStatus.Cancelled);
+
+            feed.at(2_000);
+            feed.deliver("1", 2_000 - 200);
+            assertThat(listener.read)
+                    .last()
+                    .as("the next live message repairs it")
+                    .isEqualTo(EventStatus.Live);
+        }
+    }
+
+    /** The odds changes and alives of one producer, 2, on a clock the test moves: wall and monotonic together. */
+    private final class OnSplitClock implements AutoCloseable {
+        final SplitClock split = new SplitClock();
+        final MessageWorld shared;
+        final SessionDispatcher dispatcher;
+        final SessionDispatcher other;
+        final long wall0;
+        final long mono0;
+        private long elapsed;
+
+        OnSplitClock() {
+            split.advanceMono(Duration.ofHours(5));
+            shared = MessageWorld.start(ExceptionHandlingStrategy.THROW, split.clock());
+            var pipeline = new Pipeline(
+                    shared.decoder,
+                    shared.messages,
+                    shared.matches,
+                    shared.profiles,
+                    shared.producers,
+                    fixtureChanges,
+                    offsets,
+                    events,
+                    split.clock());
+            dispatcher = new SessionDispatcher(
+                    1, session, MessageInterest.ALL, listener, ext, transport, facts, false, feedClosed::get, pipeline);
+            other = new SessionDispatcher(
+                    2, session, MessageInterest.ALL, listener, ext, transport, facts, false, feedClosed::get, pipeline);
+            wall0 = split.clock().wallMillis();
+            mono0 = split.clock().monoMillis();
+            listener.onOdds = message -> listener.read.add(status(message));
+        }
+
+        /** Moves to {@code millis} after the start. */
+        void at(long millis) {
+            split.advance(Duration.ofMillis(millis - elapsed));
+            elapsed = millis;
+        }
+
+        /** An alive of the producer received now, generated {@code offset} before: its clock that far behind. */
+        void alive(long offset) {
+            offsets.alive(2, wall0 + elapsed - offset, new Stamp(wall0 + elapsed, mono0 + elapsed));
+        }
+
+        /** A live odds change with this status, stamped {@code stamp} after the start, received now. */
+        void deliver(String status, long stamp) {
+            deliver(dispatcher, status, stamp, elapsed);
+        }
+
+        void deliver(SessionDispatcher to, String status, long stamp, long receivedAt) {
+            deliver(to, withStatus(status, wall0 + stamp), receivedAt);
+        }
+
+        void deliverAsAnswerToARecovery(String status, long stamp) {
+            deliver(
+                    dispatcher,
+                    withStatus(status, wall0 + stamp).replace("<odds_change ", "<odds_change request_id=\"77\" "),
+                    elapsed);
+        }
+
+        private void deliver(SessionDispatcher to, String xml, long receivedAt) {
+            var at = Instant.ofEpochMilli(wall0 + receivedAt);
+            to.handle(new RawDelivery(
+                    xml.getBytes(StandardCharsets.UTF_8),
+                    xml.length(),
+                    FakeFeed.routingKey(xml),
+                    ++tag,
+                    0,
+                    at,
+                    mono0 + receivedAt,
+                    at.minusMillis(500)));
+        }
+
+        @Override
+        public void close() {
+            shared.close();
+        }
+    }
+
     @Test
     void aReplaysOldMessagesWriteTheStatusAsCurrent() {
         SessionDispatcher replay = dispatcher(MessageInterest.ALL, true);
