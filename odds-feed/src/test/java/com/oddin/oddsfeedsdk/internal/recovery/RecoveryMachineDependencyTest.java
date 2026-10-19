@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import java.io.IOException;
 import java.lang.classfile.ClassFile;
 import java.lang.classfile.ClassModel;
+import java.lang.classfile.constantpool.MemberRefEntry;
 import java.lang.classfile.constantpool.PoolEntry;
 import java.lang.classfile.constantpool.Utf8Entry;
 import java.net.URISyntaxException;
@@ -34,7 +35,12 @@ class RecoveryMachineDependencyTest {
             "java/util/concurrent/CountDownLatch",
             "java/util/concurrent/Semaphore");
 
-    /** What reads a clock directly: the machine reads the feed clock's two sides only, by name. */
+    /**
+     * What reads a clock directly: the machine reads the feed clock's two sides only, by name. A
+     * call of {@code now} on any {@code java.time} class, {@code Instant.now} too, is checked
+     * apart, as the caches' guard does: the name of the class alone is in the classes that only
+     * build an instant.
+     */
     private static final List<String> DIRECT_CLOCK_READS =
             List.of("java/time/InstantSource", "java/time/Clock", "nanoTime", "currentTimeMillis");
 
@@ -49,6 +55,11 @@ class RecoveryMachineDependencyTest {
                             violations.add(model.thisClass().asInternalName() + " refers to " + text.stringValue());
                         }
                     }
+                } else if (entry instanceof MemberRefEntry member
+                        && member.owner().asInternalName().startsWith("java/time/")
+                        && member.name().stringValue().equals("now")) {
+                    violations.add(model.thisClass().asInternalName() + " calls "
+                            + member.owner().asInternalName() + ".now");
                 }
             }
         }
