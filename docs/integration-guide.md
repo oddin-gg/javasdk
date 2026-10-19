@@ -119,8 +119,11 @@ Which thread runs what:
 - A callback that throws is logged and reported to `onCallbackFailure`; the session goes on and
   the message is acknowledged.
 
-The cache is updated before your callback runs, so `match.getStatus()` inside `onOddsChange` sees
-the state the message carried.
+The cache is updated before your callback runs, so `match.getStatus()` inside `onOddsChange` reads
+the cache's state, which is what the message carried unless the cache turned the message down. The
+cache keeps a status that is newer: a message older than the last one its producer wrote for the
+match, or more than 20 minutes old by the age the SDK works out, is still delivered to you, but it
+writes no status.
 
 ## Closing
 
@@ -249,7 +252,10 @@ So a correct client treats `onProducerStatusChange` (down and up) as part of the
 means messages may be missing, and up means they have been recovered.
 
 Fixture changes are the one place the SDK drops a message itself: the same change (producer, event
-id and change timestamp) is delivered once per feed within an hour, whichever session it comes in.
+id and change timestamp) is delivered once per feed, whichever session it comes in, for as long as
+the feed remembers it: an hour, and no more than 100 000 changes at a time. A change forgotten for
+room before its hour is up is delivered again if it comes again (`caches.dedup_evictions` in
+`getHealth().counters()` counts them), so handle a repeated fixture change as harmless.
 
 ## Replay
 
