@@ -8,6 +8,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.tuple;
 
+import ch.qos.logback.classic.Level;
+import com.oddin.oddsfeedsdk.LogCapture;
 import com.oddin.oddsfeedsdk.api.entities.Producer;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.amqp.Queues;
@@ -572,6 +574,68 @@ class RecoveryActorTest {
         assertThat(actor.counters().unknownCompletions())
                 .as("snapshot completes dropped as strays")
                 .isZero();
+    }
+
+    @Test
+    void strayCompletionsOfAFeedWithoutANodeIdAreCountedAndLoggedAtDebugWithOneInfoToSetANodeId() {
+        try (var log = LogCapture.of(RecoveryActor.class, Level.DEBUG)) {
+            var actor = actor(withNode(null));
+            SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+
+            for (int i = 0; i < 5; i++) {
+                session.snapshotComplete(PRE, 53_059_000L + i);
+            }
+
+            assertThat(actor.counters().unknownCompletions()).as("counted").isEqualTo(5);
+            assertThat(log.lines())
+                    .as("the first stray told once at INFO, each of them at DEBUG, none at WARN")
+                    .containsExactly(
+                            "DEBUG A snapshot complete of request 53059000, which this feed did not ask for, is dropped, 1 so far",
+                            "INFO A snapshot complete of request 53059000 arrived which this feed did not ask for:"
+                                    + " another instance of this bookmaker asked for it. A feed without a node id takes"
+                                    + " the completions of the others: set a distinct node id on every instance"
+                                    + " (setSDKNodeId). They are dropped and counted (recovery.unknown_completions),"
+                                    + " and logged at DEBUG",
+                            "DEBUG A snapshot complete of request 53059001, which this feed did not ask for, is dropped, 2 so far",
+                            "DEBUG A snapshot complete of request 53059002, which this feed did not ask for, is dropped, 3 so far",
+                            "DEBUG A snapshot complete of request 53059003, which this feed did not ask for, is dropped, 4 so far",
+                            "DEBUG A snapshot complete of request 53059004, which this feed did not ask for, is dropped, 5 so far");
+        }
+    }
+
+    @Test
+    void aStrayCompletionOfAFeedWithANodeIdIsToldOnceAtInfoWithTheNodeId() {
+        try (var log = LogCapture.of(RecoveryActor.class, Level.INFO)) {
+            var actor = actor(withNode(7));
+            SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+
+            session.snapshotComplete(PRE, 11);
+            session.snapshotComplete(PRE, 12);
+
+            assertThat(actor.counters().unknownCompletions()).as("counted").isEqualTo(2);
+            assertThat(log.lines())
+                    .as("told once at INFO, and nothing at WARN or for the second")
+                    .containsExactly("INFO A snapshot complete of request 11 arrived which this feed did not ask for:"
+                            + " another instance of this bookmaker asked for it, one with this feed's node id 7"
+                            + " or, for a session of message interest ALL, one without a node id. Set a distinct"
+                            + " node id on every instance (setSDKNodeId). They are dropped and counted"
+                            + " (recovery.unknown_completions), and logged at DEBUG");
+        }
+    }
+
+    @Test
+    void aFloodOfStrayCompletionsLogsNothingAtWarn() {
+        try (var log = LogCapture.of(RecoveryActor.class)) {
+            var actor = actor(withNode(null));
+            SessionFacts session = actor.openSession(new SessionInfo(1, MessageInterest.ALL, true), transport);
+
+            for (int i = 0; i < 3_000; i++) {
+                session.snapshotComplete(PRE, 53_059_000L + i);
+            }
+
+            assertThat(actor.counters().unknownCompletions()).as("counted").isEqualTo(3_000);
+            assertThat(log.lines()).as("what the client reads at WARN or above").isEmpty();
+        }
     }
 
     /** An actor on the real workers that keeps {@code kept} request ids, ended ones evicted first. */
@@ -2737,6 +2801,27 @@ class RecoveryActorTest {
                 settings.firstResetBackoff(),
                 settings.eventRecoveries(),
                 tick);
+    }
+
+    /** The design's numbers, with the node id the requests carry, or none. */
+    private static RecoverySettings withNode(@Nullable Integer nodeId) {
+        RecoverySettings settings = settings();
+        return new RecoverySettings(
+                settings.maxInactivity(),
+                settings.maxRecoveryTime(),
+                settings.snapshotCompleteTimeout(),
+                settings.initialSnapshotInterval(),
+                nodeId,
+                settings.reissues(),
+                settings.firstReissueBackoff(),
+                settings.cooldown(),
+                settings.aliveInterval(),
+                settings.staleLimit(),
+                settings.staleWindow(),
+                settings.resets(),
+                settings.firstResetBackoff(),
+                settings.eventRecoveries(),
+                settings.tick());
     }
 
     /** The design's numbers, with another maximum inactivity and initial snapshot interval. */
