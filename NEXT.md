@@ -1334,15 +1334,15 @@ attempt to bring it back pending.
 | Restart with many live matches | Restart the client with `setEagerEntityPreload(true)` and the default REST limit while as many matches as the environment has are live | the API's concurrent requests against the limit; the side-load workers (half the limit, eight by default); dropped and failed side-loads; time until the sessions are caught up; getter latency in callbacks; the safety net | the preload takes no more than half the data permits, so callbacks' own reads stay inside their deadline; the API sees no more concurrent requests than the limit; dropped side-loads are 0, or the burst the queue of 1 000 could not hold, counted and logged; the sessions are caught up within the cold benchmark's budget (section 8, scaled to the environment's size); no safety-net reset comes from the restart | 429s; a session reset by the cold start; a read past its deadline; a failed preload neither logged nor counted. Against the fakes: the cold benchmark (section 8), no system test |
 | Long run | Normal traffic for the length below, the scenarios above repeated in it | the whole list above, as trends over days | no trend in heap, threads, descriptors or queue depth; nothing grows in quiet traffic but a state change's counters; every fault healed on its own | a leak; a counter climbing in quiet traffic; a producer never up; a part still `DEGRADED` after its cause ended |
 
-**Soak length: proposed, to be agreed.** 72 hours on the test environment, a weekend day
+**Soak length: 72 hours**, agreed by the owner on 2026-10-19: on the test environment, a weekend day
 among them. The longest timer the scenarios depend on is the catalog stale limit of one
 hour, so the API outage needs 70 minutes of its own, and the ten-minute cool-downs have to
 be seen to expire; together the scenarios take most of a working day. What a day cannot
 show is the daily cycle of matches coming and going, cache expiry and eviction across it,
 and weekend traffic, so after the scenarios the feed runs at least two more days with
 nothing done to it but one fault a day, one of them on the weekend. Shorter would miss a
-slow leak; a week would show little the second and third day have not. The owner has not
-agreed a length, and what the first candidate shows may change it.
+slow leak; a week would show little the second and third day have not. What the first
+candidate shows may still change it.
 
 **Two checks that move to the first release candidate**, because they need the real thing:
 
@@ -2006,3 +2006,6 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   external entities off, and keeps the access token out of its logs, exception messages and a
   channel's description. No scenario expected 0.0.x to accept any certificate, so none changed: the
   fake broker's certificate is trusted by the JVM default in every test. No public API changes.
+- 2026-10-19, the soak length is agreed: 72 hours on the test environment, a weekend day among them,
+  the scenarios on the first day and two days of normal traffic with one fault a day after them. No public API
+  changes.
