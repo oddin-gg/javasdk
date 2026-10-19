@@ -113,9 +113,12 @@ Entity getters are synchronous and call the API when the cache is cold, on your 
 That is the `ExceptionHandlingStrategy`, `THROW` by default. Under `THROW` an entity or catalog
 getter that cannot load throws `ItemNotFoundException`, with the API's `ApiException` as its cause,
 and a manager method that asks the API throws the `ApiException` itself. Under `CATCH` the getter logs
-and returns null; a collection getter never returns a partial list. As in 0.0.x, under either strategy
-the sports, active tournaments and market descriptions are an empty list when they cannot load, and
-a market description by id is null.
+and returns null; a collection getter never returns a partial list, but for the active tournaments
+below. As in 0.0.x, under either strategy the sports and market descriptions are an empty list when
+they cannot load, and so are the active tournaments when the list of sports cannot, and a market
+description by id is null. The active tournaments are the one collection that can come back short: a
+sport whose tournaments cannot load fails the call under `THROW`, and is left out of the list under
+`CATCH`.
 
 ## Producers and recovery
 
