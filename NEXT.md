@@ -831,8 +831,8 @@ and REST workers post facts to it; it decides and posts work out.
   own reopening; and the
   `snapshot_complete`s, one queued per request per session until handled, by the
   recoveries this feed asked for: one of a request id it did not ask for - another
-  instance's sharing the node id, say - is dropped and counted as it is posted, which the
-  machine would have ignored anyway.
+  instance's sharing the node id, or one the binding takes of an instance with another or none - is
+  dropped and counted as it is posted, which the machine would have ignored anyway.
   The rest - event recovery requests, and the messages and alives a session finished -
   are bounded and dropped with a count when full; a dropped request is answered as not
   accepted. The lesser queues yield to the essential one: after taking a fact, the actor
@@ -1143,8 +1143,11 @@ Normal traffic is quiet: an hour of it logs state changes at INFO and nothing pe
 Levels:
 
 - INFO: a state change. The feed opened, a producer up or down, a recovery started, ended
-  or given up, a session caught up, a part of the feed back to healthy. The opt-in API
-  call log is the one exception, one line per attempt, off unless the client asks.
+  or given up, a session caught up, a part of the feed back to healthy. Two exceptions: the
+  opt-in API call log, one line per attempt, off unless the client asks; and the first
+  snapshot complete of a request the feed did not ask for, told once per feed with the advice
+  to set a node id (the rest are counted and at DEBUG: another instance's recoveries reach a
+  feed with no node id by the thousand, and 0.0.x logged each at INFO).
 - WARN: something the client may need to act on, or should know is lost: a dropped
   message, a queue full, a failed preload, a part of the feed degraded, a recovery
   clamped to the producer's stateful window (it names the producer, the gap's start, the
@@ -2043,3 +2046,17 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   longer a goal: the producer sends none of them and the schema declares none, so they are not
   planned, rather than waiting for a schema release. A bet cancel's void reason id and parameters,
   which the producer does send, were already read. No public API changes.
+- 2026-10-19, stray snapshot completes: on the test environment a feed with no node id and the
+  message interest ALL logged "a snapshot complete ... which this feed did not ask for" at WARN
+  2,000 to 2,999 times in 30 minutes. The binding lets them in, as 0.0.x and the Go SDK bind it
+  (the same keys, read from their code): a session of interest ALL binds every message with its
+  node as `base.#` without a node id, so it takes the completions of every instance of the
+  bookmaker, node-addressed or not; with a node id, `base.<node>.#` and `base.-.#`, so those of its
+  node and of the instances without one; any other interest binds one completion key of its own,
+  its node's or the no-node one. Checked on a real broker (`StraySnapshotCompleteScenarioIT`; the
+  first guess, that a node id leaves a feed only its own node's completions, was wrong for ALL). So
+  the line is expected, not a fault, and nothing is lost: the completion is dropped and counted as
+  before. It is logged at DEBUG each, and the first of a feed once at INFO with the advice to give
+  every instance a node id; 0.0.x and Go logged every one at INFO, which 1.0's levels (an hour of
+  normal traffic is quiet) do not allow, and a WARN that repeats fails the soak check. The binding
+  is unchanged. No public API changes.
