@@ -584,7 +584,18 @@ Ownership and ordering:
   (3) its corrected age (the 20-minute rule's, by the producer's alives) is at most the
   **timely message age**, 10 s by default, which tells the first reading from the second:
   a message that sat in a backlog looks the same by (2) and is old by (3); (4) its
-  timestamp is after the epoch, since the age of one far before it wraps around. The
+  timestamp is after the epoch, since the age of one far before it wraps around; (5) its
+  timestamp is not below the one the watermark had before it jumped (below). A write that
+  raises the watermark by more than the margin more than the time since the watermark's
+  message was received - a stamp ahead of the stream it follows; a quiet match's next
+  message raises it by as much as the quiet lasted, which is no jump - leaves behind the
+  stamp it raised it from, per entity and producer. That stamp is kept through every
+  later write until a message takes the watermark over, which forgets it, since the next
+  jump is judged from that message. Without it, a correct update U written first and a
+  bad F handled by another session after it leave a watermark that has forgotten U, and
+  an ordinary older message that follows U by a moment would take over and put U's
+  score back. The limit: of two bad stamps in a row, the second older than the first,
+  the second takes over and the stamp before the first jump is forgotten with it. The
   arithmetic is overflow-free on any long. A wrong takeover needs a delivery
   more than the margin slower than another's and a producer's alive late by more than
   margin less timely age, 20 s by default, which is already an inactivity violation; so
