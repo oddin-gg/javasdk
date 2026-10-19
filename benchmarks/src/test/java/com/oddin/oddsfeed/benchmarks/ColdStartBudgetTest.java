@@ -296,9 +296,11 @@ class ColdStartBudgetTest {
         // the latency was really injected: with at most F requests answered at once, N of them
         // cannot be done in under ceil(N / F) latencies, whatever the SDK does
         for (var result : runs) {
-            long floor = Math.ceilDiv(result.total(), result.mostInFlight()) * LATENCY.toMillis();
+            long floor = Math.ceilDiv(result.inBurst(), result.mostInFlight()) * LATENCY.toMillis();
             assertThat(result.caughtUp().toMillis())
-                    .as("%d requests, at most %d at once, %d ms each", result.total(), result.mostInFlight(), 50)
+                    .as(
+                            "%d requests, at most %d at once, %d ms each",
+                            result.inBurst(), result.mostInFlight(), LATENCY.toMillis())
                     .isGreaterThanOrEqualTo(floor);
         }
         assertThat(caughtUp.toMillis())
@@ -321,9 +323,11 @@ class ColdStartBudgetTest {
         var budget = budget("cold.variants.caughtUp.ms");
 
         for (var result : runs) {
-            long floor = Math.ceilDiv(result.total(), result.mostInFlight()) * LATENCY.toMillis();
+            long floor = Math.ceilDiv(result.inBurst(), result.mostInFlight()) * LATENCY.toMillis();
             assertThat(result.caughtUp().toMillis())
-                    .as("%d requests, at most %d at once, %d ms each", result.total(), result.mostInFlight(), 50)
+                    .as(
+                            "%d requests, at most %d at once, %d ms each",
+                            result.inBurst(), result.mostInFlight(), LATENCY.toMillis())
                     .isGreaterThanOrEqualTo(floor);
             assertThat(result.longestRead())
                     .as("the longest market name read, against the %s call deadline", CALL_DEADLINE)
