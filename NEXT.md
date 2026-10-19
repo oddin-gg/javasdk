@@ -1390,11 +1390,10 @@ candidate shows may still change it.
    - the jar, the sources jar, the javadoc jar and the POM are there, each with a `.asc`
      and its checksums;
    - every `.asc` verifies against the release key fetched from `keyserver.ubuntu.com` or
-     `keys.openpgp.org`, not from the build; the fetched key's fingerprint is compared first
-     with the one pinned in `RELEASING.md`, and a key that fetches and verifies but has another
-     fingerprint is a substituted one and fails the check; the key has not expired. The pin is
-     written when the release key is made; nothing is pinned yet, so until then this bullet
-     cannot be met;
+     `keys.openpgp.org` by the fingerprint in the repository variable `RELEASE_KEY_FINGERPRINT`
+     (the one the release's key check uses), not from the build; a key with another fingerprint
+     is a substituted one and fails the check; the key has not expired. Until the key exists
+     this cannot be met;
    - the POM is the flattened one: the right coordinates, no `${revision}` left, the
      licence, SCM and developer entries Central requires, and the dependencies the module
      needs and no others;
@@ -2088,8 +2087,8 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   that cover the slow client and the close during a recovery (and says none does it in a system
   test), exempts the slow client's deliberate stall from "any part STALLED", asks for an
   independent consumer to reconcile lost messages against, and limits the long run's counter rule to
-  failure counters; the published-signature check compares the key's fingerprint with a pinned
-  one, which waits for the key; a callback's `match.getStatus()` is the cache's state, which a
+  failure counters; the published-signature check fetches the key by the fingerprint in
+  `RELEASE_KEY_FINGERPRINT`, which waits for the key; a callback's `match.getStatus()` is the cache's state, which a
   message the cache turned down did not write, and a fixture change is deduplicated for an hour
   within 100 000 changes; the active tournaments can come back short under `CATCH`. Section 5 no
   longer calls anything planned, and records that the Go SDK's name and abbreviation maps and a
