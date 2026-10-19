@@ -2007,5 +2007,5 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   channel's description. No scenario expected 0.0.x to accept any certificate, so none changed: the
   fake broker's certificate is trusted by the JVM default in every test. No public API changes.
 - 2026-10-19, the soak length is agreed: 72 hours on the test environment, a weekend day among them,
-  the scenarios on the first day and two days of normal traffic with one fault a day after them. No public API
-  changes.
+  the scenarios on the first day and two days of normal traffic with one fault a day after them.
+  No public API changes.
