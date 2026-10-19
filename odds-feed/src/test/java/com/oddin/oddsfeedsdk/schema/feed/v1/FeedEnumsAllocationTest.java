@@ -16,7 +16,22 @@ class FeedEnumsAllocationTest {
 
     private static volatile @Nullable Object sink = null;
 
-    record Lookup(String name, int number, java.util.function.IntFunction<Object> read) {
+    /** A number no constant has. */
+    private static final Integer UNNUMBERED = 12_345;
+
+    /**
+     * @param raw what the JAXB adapter calls, with the number boxed as it comes: a constant held in a
+     *     field, so that boxing the number is not counted
+     * @param boxed the number, boxed once
+     * @param unknown what a number without a constant is
+     */
+    record Lookup(
+            String name,
+            int number,
+            java.util.function.IntFunction<Object> read,
+            Integer boxed,
+            java.util.function.Function<Integer, Object> raw,
+            Object unknown) {
         @Override
         public String toString() {
             return name;
@@ -25,12 +40,48 @@ class FeedEnumsAllocationTest {
 
     static Stream<Lookup> lookups() {
         return Stream.of(
-                new Lookup("OFMarketStatus", OFMarketStatus.ACTIVE.value(), OFMarketStatus::fromValue),
-                new Lookup("OFFavourite", OFFavourite.YES.value(), OFFavourite::fromValue),
-                new Lookup("OFOutcomeActive", OFOutcomeActive.ACTIVE.value(), OFOutcomeActive::fromValue),
-                new Lookup("OFResult", OFResult.WON.value(), OFResult::fromValue),
-                new Lookup("OFChangeType", OFChangeType.NEW.value(), OFChangeType::fromValue),
-                new Lookup("OFEventStatus", OFEventStatus.LIVE.value(), OFEventStatus::fromValue));
+                new Lookup(
+                        "OFMarketStatus",
+                        OFMarketStatus.ACTIVE.value(),
+                        OFMarketStatus::fromValue,
+                        OFMarketStatus.ACTIVE.value(),
+                        OFMarketStatus::fromRaw,
+                        OFMarketStatus.UNKNOWN),
+                new Lookup(
+                        "OFFavourite",
+                        OFFavourite.YES.value(),
+                        OFFavourite::fromValue,
+                        OFFavourite.YES.value(),
+                        OFFavourite::fromRaw,
+                        OFFavourite.UNKNOWN),
+                new Lookup(
+                        "OFOutcomeActive",
+                        OFOutcomeActive.ACTIVE.value(),
+                        OFOutcomeActive::fromValue,
+                        OFOutcomeActive.ACTIVE.value(),
+                        OFOutcomeActive::fromRaw,
+                        OFOutcomeActive.UNKNOWN),
+                new Lookup(
+                        "OFResult",
+                        OFResult.WON.value(),
+                        OFResult::fromValue,
+                        OFResult.WON.value(),
+                        OFResult::fromRaw,
+                        OFResult.UNKNOWN),
+                new Lookup(
+                        "OFChangeType",
+                        OFChangeType.NEW.value(),
+                        OFChangeType::fromValue,
+                        OFChangeType.NEW.value(),
+                        OFChangeType::fromRaw,
+                        OFChangeType.UNKNOWN),
+                new Lookup(
+                        "OFEventStatus",
+                        OFEventStatus.LIVE.value(),
+                        OFEventStatus::fromValue,
+                        OFEventStatus.LIVE.value(),
+                        OFEventStatus::fromRaw,
+                        OFEventStatus.UNKNOWN));
     }
 
     @ParameterizedTest
@@ -40,5 +91,24 @@ class FeedEnumsAllocationTest {
         assertThat(Allocations.perCall(500, 3, () -> sink = lookup.read().apply(lookup.number())))
                 .as("bytes a lookup of %s allocates", lookup.name())
                 .isZero();
+    }
+
+    @ParameterizedTest
+    @MethodSource("lookups")
+    void aLookupOfTheNumberAsDecodedAllocatesNothing(Lookup lookup) {
+        assertThat(lookup.raw().apply(lookup.boxed())).isEqualTo(lookup.read().apply(lookup.number()));
+        assertThat(Allocations.perCall(500, 3, () -> sink = lookup.raw().apply(lookup.boxed())))
+                .as("bytes a lookup of %s by the number as decoded allocates", lookup.name())
+                .isZero();
+    }
+
+    @ParameterizedTest
+    @MethodSource("lookups")
+    void aNumberAsDecodedIsItsConstantNullForNoneAndUnknownWithoutOne(Lookup lookup) {
+        assertThat(lookup.raw().apply(lookup.boxed()))
+                .as("its constant")
+                .isSameAs(lookup.read().apply(lookup.number()));
+        assertThat(lookup.raw().apply(null)).as("none").isNull();
+        assertThat(lookup.raw().apply(UNNUMBERED)).as("no constant").isSameAs(lookup.unknown());
     }
 }
