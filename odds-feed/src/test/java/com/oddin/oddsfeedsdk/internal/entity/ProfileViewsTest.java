@@ -23,6 +23,8 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 
@@ -42,6 +44,10 @@ class ProfileViewsTest {
     private static final String PLAYER_EN = "/v1/sports/en/players/od:player:9001/profile";
     private static final String PLAYER_DE = "/v1/sports/de/players/od:player:9001/profile";
     private static final String TOURNAMENT_EN = "/v1/sports/en/tournaments/od:tournament:1042/info";
+    /** How many of the 4 workers {@link EntityWorld#warm} gives the side-loads run warm-ups at once. */
+    private static final int IDLE_SLOTS = 2;
+
+    private static final String TOURNAMENT_DE = "/v1/sports/de/tournaments/od:tournament:1042/info";
     private static final String SPORTS_EN = "/v1/sports/en/sports";
 
     @Test
@@ -437,8 +443,9 @@ class ProfileViewsTest {
     }
 
     @Test
-    void aTournamentsCompetitorIdsAreItsInfosInItsOrderAndLoadNoCompetitor() {
-        try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
+    void aTournamentsCompetitorIdsAreItsInfosInItsOrderAndLoadNoCompetitor() throws Exception {
+        // with the side-load workers, which a load the ids queued would reach
+        try (var world = EntityWorld.warm(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(
                     TOURNAMENT_EN,
                     200,
@@ -452,14 +459,16 @@ class ProfileViewsTest {
 
             List<URN> ids = requireNonNull(tournament.getCompetitorIds());
             assertThat(ids).containsExactly(URN.parse("od:competitor:2"), URN.parse("od:competitor:1"));
+            drainSideLoads(world);
             assertThat(world.api.requests())
-                    .as("the info, and no competitor's profile")
+                    .as("the info, and no competitor's profile, in the background either")
                     .hasSize(1);
             assertThat(world.api.requests("GET", TOURNAMENT_EN)).hasSize(1);
             assertThat(requireNonNull(tournament.getCompetitors()))
                     .as("the ids its competitors have")
                     .extracting(Competitor::getId)
                     .containsExactlyElementsOf(ids);
+            world.api.awaitQuiet();
             ids.clear();
             assertThat(tournament.getCompetitorIds())
                     .as("the caller's own list")
@@ -473,12 +482,15 @@ class ProfileViewsTest {
         try (var world = EntityWorld.start(ExceptionHandlingStrategy.THROW)) {
             world.api.respond(
                     TOURNAMENT_EN, 200, info.replace("risk_tier=\"1\"", "risk_tier=\"1\" icon_path=\"/icons/tt.svg\""));
-            world.api.respond("/v1/sports/de/tournaments/od:tournament:1042/info", 200, info);
+            world.api.respond(TOURNAMENT_DE, 200, info);
             Tournament tournament = world.entities.tournament(TOURNAMENT, CS2, List.of(EN, DE));
             assertThat(world.api.requests()).as("built, not loaded").isEmpty();
 
             assertThat(tournament.getIconPath()).isEqualTo("/icons/tt.svg");
             assertThat(world.api.requests("GET", TOURNAMENT_EN)).hasSize(1);
+            assertThat(world.api.requests("GET", TOURNAMENT_DE))
+                    .as("and in German")
+                    .hasSize(1);
         }
     }
 
@@ -552,14 +564,20 @@ class ProfileViewsTest {
         Tournament tournament = stub(Tournament.class, Map.of("getCompetitors", List.of(two, one)));
         assertThat(tournament.getCompetitorIds())
                 .containsExactly(URN.parse("od:competitor:2"), URN.parse("od:competitor:1"));
+        var ids = requireNonNull(tournament.getCompetitorIds());
+        ids.clear();
+        assertThat(tournament.getCompetitorIds()).as("the caller's own list").hasSize(2);
         assertThat(stub(Tournament.class, Map.of()).getCompetitorIds()).isNull();
     }
 
     @Test
     void aClientsOwnSportListsTheIdsOfItsTournaments() {
         Tournament named = stub(Tournament.class, Map.of("getId", TOURNAMENT));
-        assertThat(stub(Sport.class, Map.of("getTournaments", List.of(named))).getTournamentIds())
-                .containsExactly(TOURNAMENT);
+        Sport sport = stub(Sport.class, Map.of("getTournaments", List.of(named)));
+        assertThat(sport.getTournamentIds()).containsExactly(TOURNAMENT);
+        var ids = requireNonNull(sport.getTournamentIds());
+        ids.clear();
+        assertThat(sport.getTournamentIds()).as("the caller's own list").hasSize(1);
         assertThat(stub(Sport.class, Map.of()).getTournamentIds()).isNull();
     }
 
@@ -841,6 +859,34 @@ class ProfileViewsTest {
             assertThat(world.entities.competitor(COMPETITOR, List.of(EN, EN)).getNames())
                     .containsExactly(entry(EN, "Team Alpha"));
             assertThat(world.api.requests("GET", PROFILE_EN)).hasSize(1);
+        }
+    }
+
+    /**
+     * Returns once every warm-up queued so far has run to its end. They run on the side-loads' idle
+     * slots, in the order queued: as many loads as there are slots are queued behind them, and each
+     * waits for the others, so all of them run at once only when every slot is free of the loads
+     * from before. A request a load made is in the API's log by then.
+     */
+    private static void drainSideLoads(EntityWorld world) throws InterruptedException {
+        var arrived = new CountDownLatch(IDLE_SLOTS);
+        for (int slot = 0; slot < IDLE_SLOTS; slot++) {
+            assertThat(world.sideLoads.offerWhenIdle(_ -> {
+                        arrived.countDown();
+                        await(arrived);
+                    }))
+                    .isTrue();
+        }
+        assertThat(arrived.await(EntityWorld.TIMEOUT.toSeconds(), TimeUnit.SECONDS))
+                .as("every idle slot of the side-loads free")
+                .isTrue();
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await(EntityWorld.TIMEOUT.toSeconds(), TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
