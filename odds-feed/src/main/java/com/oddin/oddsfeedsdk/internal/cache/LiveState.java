@@ -26,8 +26,8 @@ import org.jspecify.annotations.Nullable;
  * it is still delivered. One exception: a watermark that no delivery delay explains must not hold the
  * correct messages that follow back, so a message older than it writes, and takes the watermark down
  * to its own timestamp, when it was received after every message that wrote, was generated so much
- * before the watermark's that the two deliveries' delays cannot account for the gap (see {@link Takeover}), and
- * is itself timely. A replayed message writes in the order it comes. The feed's and the API's
+ * before the watermark's that the two deliveries' delays cannot account for the gap (see {@link Takeover}), is itself timely,
+ * and is not older than the timestamp the watermark jumped from. A replayed message writes in the order it comes. The feed's and the API's
  * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
  * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
  * writes nothing either, being a delayed backlog message REST has since taken over from. That
@@ -56,6 +56,9 @@ public final class LiveState<K> {
 
     /** A reading that was never taken: the feed's monotonic clock reads 1 or more. */
     private static final long NEVER = 0;
+
+    /** A mark with no stamp before a jump to keep: no takeover is bound below any. */
+    private static final long NO_FLOOR = Long.MIN_VALUE;
 
     private final FeedClock clock;
     private final Takeover takeover;
@@ -153,18 +156,28 @@ public final class LiveState<K> {
             Live current = current(entity, now);
             Mark last = current == null ? null : current.marks().get(producer);
             boolean older = false;
+            long floor = last == null ? NO_FLOOR : last.floor();
             if (inOrder && last != null && last.timestamp() > timestamp) {
                 if (correctedAge == null
                         || !takeover.allows(
                                 last.timestamp(),
                                 last.receivedAt(),
                                 last.newestReceivedAt(),
+                                floor,
                                 timestamp,
                                 receivedAt,
                                 correctedAge)) {
                     return false;
                 }
                 older = true;
+                // the message is believed over the watermark: the next jump is judged from it
+                floor = NO_FLOOR;
+            } else if (inOrder
+                    && last != null
+                    && floor == NO_FLOOR
+                    && takeover.jumped(last.timestamp(), last.receivedAt(), timestamp, receivedAt)) {
+                // the stamp before the jump: what an older message that is yet to come must not go below
+                floor = last.timestamp();
             }
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
             // a message that took the watermark over lowers it: the next one is judged by this one
@@ -172,7 +185,7 @@ public final class LiveState<K> {
             // never moved back: a write received earlier than one before it, by a session that took
             // the lock later, leaves the latest receipt where it was
             long latest = last == null ? receivedAt : Math.max(last.newestReceivedAt(), receivedAt);
-            marks.put(producer, new Mark(newest, receivedAt, latest));
+            marks.put(producer, new Mark(newest, receivedAt, latest, floor));
             put(
                     entity,
                     new Live(
@@ -435,7 +448,13 @@ public final class LiveState<K> {
      *       takeover is then an alive later than {@code margin - timelyAge}, which is why the
      *       timely age is at most the margin;
      *   <li>its timestamp is after the epoch: it is the producer's, and nothing else of it is
-     *       trusted; the age of one far before it wraps around.
+     *       trusted; the age of one far before it wraps around;
+     *   <li>its timestamp is not below the one the watermark had before it jumped: a write that
+     *       raises the watermark by more than the margin more than the time between the two receipts
+     *       leaves the stamp it raised it from behind, and a message older than that one is older
+     *       than a write that was correct, whichever session took the lock first. That stamp is kept
+     *       through further raises, and forgotten when a message takes the watermark over, since the
+     *       next jump is then judged from that message.
      * </ol>
      *
      * A watermark ahead of the true time by less than the margin holds the messages that follow it
@@ -465,12 +484,33 @@ public final class LiveState<K> {
         }
 
         /**
+         * Whether a message that is not older than the watermark raises it by more than the margin
+         * more than the time since the watermark's message was received: a stamp ahead of the stream
+         * it follows, where a quiet match's next message raises it by as much as the quiet lasted.
+         *
+         * @param watermark the watermark's timestamp, at most {@code timestamp}
+         * @param watermarkReceivedAt when its message was received, on the monotonic clock
+         */
+        boolean jumped(long watermark, long watermarkReceivedAt, long timestamp, long receivedAt) {
+            long raised = timestamp - watermark;
+            if (raised < 0) {
+                // both are the producer's, any long: the difference of two that overflowed
+                raised = Long.MAX_VALUE;
+            }
+            // a message received before the watermark's, by a session that took the lock later, is
+            // no time passed
+            long elapsed = Math.max(0, receivedAt - watermarkReceivedAt);
+            return raised > margin.toMillis() + elapsed;
+        }
+
+        /**
          * Whether a message older than the watermark replaces it.
          *
          * @param watermark the watermark's timestamp, greater than {@code timestamp}
          * @param watermarkReceivedAt when its message was received, on the monotonic clock
          * @param newestReceivedAt the latest receipt of any message that wrote for the producer, at
          *     least {@code watermarkReceivedAt}
+         * @param floor the stamp the watermark had before it jumped, or none
          * @param timestamp the message's timestamp
          * @param receivedAt when it was received
          * @param correctedAge the message's age by the producer's clock, less the producer's offset
@@ -479,6 +519,7 @@ public final class LiveState<K> {
                 long watermark,
                 long watermarkReceivedAt,
                 long newestReceivedAt,
+                long floor,
                 long timestamp,
                 long receivedAt,
                 Duration correctedAge) {
@@ -487,6 +528,9 @@ public final class LiveState<K> {
                 return false;
             }
             if (receivedAt <= newestReceivedAt) {
+                return false;
+            }
+            if (timestamp < floor) {
                 return false;
             }
             if (correctedAge.compareTo(timelyAge) > 0) {
@@ -502,9 +546,10 @@ public final class LiveState<K> {
     /**
      * A producer's last live message on an entity: its timestamp, the producer's clock, and when the
      * SDK received it, on the feed's monotonic clock; and the latest receipt of any message that wrote
-     * for the producer, which only grows.
+     * for the producer, which only grows; and the stamp the watermark had before it last jumped,
+     * {@link #NO_FLOOR} if it did not.
      */
-    private record Mark(long timestamp, long receivedAt, long newestReceivedAt) {}
+    private record Mark(long timestamp, long receivedAt, long newestReceivedAt, long floor) {}
 
     /**
      * An entity's watermarks and values.

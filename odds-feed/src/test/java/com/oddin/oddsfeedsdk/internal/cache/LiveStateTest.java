@@ -578,8 +578,9 @@ class LiveStateTest {
     /**
      * Two sessions take the lock in another order than they received: the correct update U,
      * received at 1000, writes first; then the bad F, received at 900, writes by its newer stamp and
-     * the watermark's receipt is 900; then the timely C, received at 950, is older than U. It is
-     * received before U, so it must not take the watermark over and put U's score back.
+     * the watermark's receipt is 900; then the timely C, received at 950, is stamped after U's
+     * (so the stamp floor below does not refuse it) but received before it: it must not take the
+     * watermark over.
      */
     @Test
     void aMessageReceivedBeforeAnUpdateThatWroteDoesNotTakeOverWhateverTheWatermarksReceiptIs() {
@@ -587,17 +588,119 @@ class LiveStateTest {
         assertThat(message("m1", BASE + TEN_MINUTES, 900, FRESH))
                 .as("F: newer by its stamp, received before U")
                 .isTrue();
-        assertThat(message("m1", BASE + 750, 950, FRESH))
-                .as("C: timely, older than U, received before it")
+        assertThat(message("m1", BASE + 850, 950, FRESH))
+                .as("C: timely, received before U")
                 .isFalse();
         assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + TEN_MINUTES);
-        assertThat(message("m1", BASE + 750, 1_000, FRESH))
+        assertThat(message("m1", BASE + 850, 1_000, FRESH))
                 .as("received with U: not after it")
                 .isFalse();
         assertThat(message("m1", BASE + 1_100, 1_001, FRESH))
                 .as("a correct message received after all of them takes over")
                 .isTrue();
         assertThat(timestampOf("m1")).isEqualTo(BASE + 1_100);
+    }
+
+    /**
+     * Two sessions take the lock in another order than they received: the correct update U,
+     * received at 1000, writes first; then F, stamped ten minutes ahead and received at 900, writes
+     * by its newer stamp. A timely C stamped before U, received after U (by a millisecond, or by a
+     * moment), passes the receipt and the gap against F, but is older than a write that was
+     * correct: it is refused, by the stamp F's jump left U's behind. A message stamped after U
+     * takes over.
+     */
+    @Test
+    void aMessageOlderThanTheUpdateBeforeTheJumpIsRefusedWhateverItsReceipt() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES, 900, FRESH))
+                .as("F: newer by its stamp, handled after U, received before it")
+                .isTrue();
+        assertThat(message("m1", BASE + 950, 1_001, FRESH))
+                .as("C: received a millisecond after U, stamped before it")
+                .isFalse();
+        assertThat(message("m1", BASE + 950, 1_100, FRESH))
+                .as("or a moment after")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + TEN_MINUTES);
+        assertThat(message("m1", BASE + 1_010, 1_100, FRESH))
+                .as("a message stamped after U takes over")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 1_010);
+    }
+
+    @Test
+    void theStampBeforeTheJumpIsKeptThroughFurtherRaisesAndForgottenWhenAMessageTakesOver() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_100, FRESH))
+                .as("the jump")
+                .isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES + 500, 1_200, FRESH))
+                .as("a small raise")
+                .isTrue();
+        assertThat(message("m1", BASE + 3 * TEN_MINUTES, 1_300, FRESH))
+                .as("a second jump, which does not take the bad stamp before it")
+                .isTrue();
+        assertThat(message("m1", BASE + 950, 1_400, FRESH))
+                .as("still below U's")
+                .isFalse();
+        assertThat(message("m1", BASE + 1_020, 1_500, FRESH))
+                .as("C1 takes over")
+                .isTrue();
+
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_600, FRESH))
+                .as("a new jump, from C1")
+                .isTrue();
+        assertThat(message("m1", BASE + 1_010, 1_700, FRESH))
+                .as("between U and C1: older than the write the jump left behind")
+                .isFalse();
+        assertThat(message("m1", BASE + 1_030, 1_800, FRESH)).as("after C1").isTrue();
+    }
+
+    /** A quiet match's next message raises the stamp by as much as the quiet lasted: no jump. */
+    @Test
+    void aMessageAfterAQuietMatchIsNoJumpAndLeavesNoStampBehind() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 301_000, 301_000, FRESH))
+                .as("five minutes on, by the stamp and by the receipt")
+                .isTrue();
+        assertThat(message("m1", BASE + 900_000, 302_000, FRESH))
+                .as("F, the jump")
+                .isTrue();
+        assertThat(message("m1", BASE + 150_000, 303_000, FRESH))
+                .as("older than the quiet match's message, newer than U: below the stamp before the jump")
+                .isFalse();
+        assertThat(message("m1", BASE + 301_500, 304_000, FRESH)).isTrue();
+    }
+
+    /** A bad stamp inside the margin still freezes: it is the watermark the next jump is judged from. */
+    @Test
+    void aBadStampInsideTheMarginBeforeAJumpHoldsBackNoLongerThanTheMargin() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 21_000, 1_100, FRESH))
+                .as("F0, 20 s ahead")
+                .isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_200, FRESH))
+                .as("F1, the jump")
+                .isTrue();
+        assertThat(message("m1", BASE + 2_000, 1_300, FRESH))
+                .as("a correct message, below F0's stamp")
+                .isFalse();
+        assertThat(message("m1", BASE + 21_500, 1_400, FRESH))
+                .as("one that has caught up with F0 takes over")
+                .isTrue();
+    }
+
+    /** The stated limit: two bad stamps in a row, the second older, leave nothing of the first jump's stamp. */
+    @Test
+    void ofTwoBadStampsTheSecondOlderOneTheStampBeforeTheFirstJumpIsForgotten() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_100, FRESH)).as("F1").isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES - 60_000, 1_200, FRESH))
+                .as("F2, older than F1, received after it: takes over")
+                .isTrue();
+        assertThat(message("m1", BASE + 950, 1_300, FRESH))
+                .as("C, older than U: written - a second fault")
+                .isTrue();
     }
 
     @Test
@@ -778,8 +881,11 @@ class LiveStateTest {
                 long value = timestampOf(entity);
                 assertThat(value).as("one of the two").isIn(bad, correct);
                 assertThat(message(entity, correct - 500, 1_100, FRESH))
-                        .as("a message just behind the correct one: refused by its watermark, taken by the bad one's")
-                        .isEqualTo(value == bad);
+                        .as("a message just behind the correct one is refused, whichever lock order")
+                        .isFalse();
+                assertThat(message(entity, correct + 500, 1_200, FRESH))
+                        .as("one just after it writes, by the watermark that is left")
+                        .isTrue();
             }
         }
     }
