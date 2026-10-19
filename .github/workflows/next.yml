@@ -57,6 +57,11 @@ jobs:
         # about to expire, expired or revoked, a copy gone stale on one server, a server without it
         run: ./scripts/release-key-check-test.sh
 
+      - name: Check the release refuses a signing secret that is not the checked key's subkeys
+        # release.yml's check of MAVEN_GPG_KEY before it signs, against keys made on this runner:
+        # the whole key with its primary, another key, no signing subkey, a revoked or expired one
+        run: ./scripts/release-signing-key-check-test.sh
+
       - name: Check the GitHub Release is a draft until its files are on it
         run: ./scripts/release-github-test.sh
 
