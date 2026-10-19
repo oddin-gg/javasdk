@@ -6,10 +6,13 @@
 # secret included; another key than RELEASE_KEY_FINGERPRINT names; a key without a signing
 # subkey, or with one that is revoked or expired; a secret that is empty, no key or only a public
 # key; a variable that is unset or no fingerprint. No refusal may print any of the key. next.yml
-# runs it on every push. Needs bash, gpg and python3.
+# runs it on every push. The secret is also held against the keyservers as they are when it is
+# checked - stub ones here, with the public keys as they were or became: a secret exported before
+# its subkey was revoked and replaced, or before its subkey was published, is refused. Needs bash,
+# curl, gpg and python3.
 set -euo pipefail
 
-for tool in gpg python3; do
+for tool in curl gpg python3; do
   command -v "$tool" > /dev/null || { echo "needs $tool" >&2; exit 1; }
 done
 
@@ -17,15 +20,30 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 check=${RELEASE_SIGNING_KEY_CHECK:-$root/scripts/release-signing-key-check.sh}
 work=$(mktemp -d)
 chmod 700 "$work"
+server=
 cleanup() {
   local home
   for home in "$work"/homes/*; do
     [ -d "$home" ] && gpgconf --homedir "$home" --kill all 2> /dev/null || true
   done
+  if [ -n "$server" ]; then
+    kill "$server" 2> /dev/null || true
+    wait "$server" 2> /dev/null || true
+  fi
   rm -rf "$work"
 }
 trap cleanup EXIT
-mkdir -p "$work/homes"
+mkdir -p "$work/homes" "$work/www"
+
+# the stub keyservers of release-key-check-test.sh
+python3 "$root/scripts/release-keyserver-stub.py" "$work/port" "$work/www" "$work/requests" &
+server=$!
+for _ in $(seq 100); do
+  [ -s "$work/port" ] && break
+  sleep 0.1
+done
+[ -s "$work/port" ] || { echo "the stub keyservers did not start" >&2; exit 1; }
+stub=http://127.0.0.1:$(cat "$work/port")
 
 gpgh() {
   local home=$1
@@ -41,11 +59,13 @@ gen() {
   gpgh "$home" --list-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }' > "$work/homes/$home.fpr"
 }
 fpr() { cat "$work/homes/$1.fpr"; }
-# addsub <home> <algorithm> <usage> <expiry> [fake time]
+# addsub <home> <algorithm> <usage> <expiry> [fake time]: the new subkey's fingerprint on stdout
 addsub() {
-  local home=$1 when=${5:-} faked=()
+  local home=$1 when=${5:-} faked=() before
   [ -z "$when" ] || faked=(--faked-system-time "$(date -u -d "$when" +%Y%m%dT%H%M%S)")
+  before=$(subs "$home")
   gpgh "$home" "${faked[@]}" --quick-add-key "$(fpr "$home")" "$2" "$3" "$4"
+  subs "$home" | grep -vxF -e "$before" || true
 }
 subs() {
   gpgh "$1" --list-keys --with-colons | awk -F: '$1 == "sub" { sub_ = 1 } $1 == "fpr" && sub_ { print $10; sub_ = 0 }'
@@ -57,25 +77,48 @@ revoke() {
 subkeys() { gpgh "$1" --armor --export-secret-subkeys "$(fpr "$1")"; }
 whole() { gpgh "$1" --armor --export-secret-keys "$(fpr "$1")"; }
 public() { gpgh "$1" --armor --export "$(fpr "$1")"; }
+# what the keyservers serve of a key at this moment, keys.openpgp.org without user IDs: both <label> <home>
+both() {
+  mkdir -p "$work/www/openpgp/$1" "$work/www/ubuntu/$1"
+  gpgh "$2" --armor --export --export-filter keep-uid='uid=none-at-all' "$(fpr "$2")" > "$work/www/openpgp/$1/key"
+  public "$2" > "$work/www/ubuntu/$1/key"
+}
 
 gen fit cert
-addsub fit ed25519 sign 2y
+addsub fit ed25519 sign 2y > /dev/null
 gen other cert
-addsub other ed25519 sign 2y
+addsub other ed25519 sign 2y > /dev/null
 gen nosigning cert
-addsub nosigning cv25519 encr 2y
+addsub nosigning cv25519 encr 2y > /dev/null
 gen primaryonly cert,sign
 gen revoked cert
-addsub revoked ed25519 sign 2y
+addsub revoked ed25519 sign 2y > /dev/null
 revoke revoked "$(subs revoked)"
 gen expired cert "-60 days"
-addsub expired ed25519 sign 7d "-60 days"
+addsub expired ed25519 sign 7d "-60 days" > /dev/null
 # the older subkey fit, the newer revoked: still a signing subkey that is fit
 gen older cert
-addsub older ed25519 sign 2y
+addsub older ed25519 sign 2y > /dev/null
 sleep 1.1
-addsub older ed25519 sign 2y
+addsub older ed25519 sign 2y > /dev/null
 revoke older "$(subs older | tail -1)"
+
+# a secret exported before its subkey was revoked and replaced: the keyservers have the revocation
+# and the new subkey by now
+gen rotated cert
+oldsub=$(addsub rotated ed25519 sign 2y)
+subkeys rotated > "$work/rotated.subkeys"
+sleep 1.1
+revoke rotated "$oldsub"
+addsub rotated ed25519 sign 2y > /dev/null
+both exported-before-revocation rotated
+# a secret exported after a new subkey, which the keyservers do not have yet
+gen unpublished cert
+addsub unpublished ed25519 sign 2y > /dev/null
+both exported-before-publication unpublished
+sleep 1.1
+newsub=$(addsub unpublished ed25519 sign 2y)
+subkeys unpublished > "$work/unpublished.subkeys"
 
 failures=0
 # run <label> <secret file, "unset" or "empty"> <variable value, "unset" or "empty"> <"ok", or the texts the refusal has>...
@@ -94,7 +137,15 @@ run() {
     *) assign+=(MAVEN_GPG_KEY="$(cat "$secret")") ;;
   esac
   env+=("${assign[@]}")
-  out=$(env "${env[@]}" "$check" 2>&1) || status=$?
+  out=$(env "${env[@]}" KEYS_OPENPGP_URL="$stub/openpgp/$label" KEYSERVER_UBUNTU_URL="$stub/ubuntu/$label" KEYSERVER_TIMEOUT=5 \
+    "$check" 2>&1) || status=$?
+  # nothing of the key in what it says, whatever it decides: no armor, and no line of the body of
+  # the secret it was given
+  if [ -f "$secret" ] && { grep -q 'BEGIN PGP\|PRIVATE KEY' <<< "$out" || grep -qFx -f <(sed -n '/^$/,/^=/{/^[^=]/p}' "$secret" | grep .) <<< "$out"; }; then
+    echo "FAIL $label: the output prints key material: $out" >&2
+    failures=$((failures + 1))
+    return
+  fi
   if [ "$1" = ok ]; then
     if [ "$status" -ne 0 ]; then
       echo "FAIL $label: refused ($status), should pass: $out" >&2
@@ -117,18 +168,13 @@ run() {
       return
     fi
   done
-  # nothing of the key in what it says: no armor, and no line of the body of the one it was given
-  if [ -f "$secret" ] && { grep -q 'BEGIN PGP\|PRIVATE KEY' <<< "$out" || grep -qFx -f <(sed -n '/^$/,/^=/{/^[^=]/p}' "$secret" | grep .) <<< "$out"; }; then
-    echo "FAIL $label: the refusal prints key material: $out" >&2
-    failures=$((failures + 1))
-    return
-  fi
   echo "ok   $label: refused: $1"
 }
 
 subkeys fit > "$work/fit.subkeys"
 whole fit > "$work/fit.whole"
 subkeys other > "$work/other.subkeys"
+whole other > "$work/other.whole"
 subkeys nosigning > "$work/nosigning.subkeys"
 subkeys primaryonly > "$work/primaryonly.subkeys"
 subkeys revoked > "$work/revoked.subkeys"
@@ -138,9 +184,27 @@ public fit > "$work/fit.public"
 echo "not a key" > "$work/garbage"
 
 fit=$(fpr fit)
+both fit fit
+both lowercase fit
+both older older
 run fit "$work/fit.subkeys" "$fit" ok
 run lowercase "$work/fit.subkeys" "$(tr 'A-F' 'a-f' <<< "$fit")" ok
 run older "$work/older.subkeys" "$(fpr older)" ok
+# the secret of one subkey, the keyservers having revoked it and made another since; and a secret
+# whose newest subkey the keyservers do not have yet
+run exported-before-revocation "$work/rotated.subkeys" "$(fpr rotated)" \
+  "keys.openpgp.org: the subkey $oldsub MAVEN_GPG_KEY signs with is revoked" \
+  "keyserver.ubuntu.com: the subkey $oldsub MAVEN_GPG_KEY signs with is revoked"
+run exported-before-publication "$work/unpublished.subkeys" "$(fpr unpublished)" \
+  "keys.openpgp.org: the key $(fpr unpublished) has no signing subkey $newsub" \
+  "keyserver.ubuntu.com: the key $(fpr unpublished) has no signing subkey $newsub"
+# more than one secret key in the import: a valid subkey export, and another key whole
+both two-keys fit
+both two-keys-reversed fit
+cat "$work/fit.subkeys" "$work/other.whole" > "$work/two.keys"
+run two-keys "$work/two.keys" "$fit" "holds 2 secret keys, not one"
+cat "$work/other.whole" "$work/fit.subkeys" > "$work/two.reversed.keys"
+run two-keys-reversed "$work/two.reversed.keys" "$fit" "holds 2 secret keys, not one"
 run whole "$work/fit.whole" "$fit" "carries the secret of the primary key $fit" "gpg --export-secret-subkeys"
 run other "$work/other.subkeys" "$fit" "is the key $(fpr other), not $fit of RELEASE_KEY_FINGERPRINT"
 run nosigning "$work/nosigning.subkeys" "$(fpr nosigning)" "no secret signing subkey"

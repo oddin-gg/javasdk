@@ -26,6 +26,13 @@
 # says nothing of a revoked subkey. So the primary's flags are not read, and revocations are read
 # from their own signatures, which are checked (--with-sig-check).
 #
+# The publish job runs it again, after the approval and right before it signs, for the secret it
+# holds: RELEASE_SIGNING_SUBKEY, set by scripts/release-signing-key-check.sh, is the fingerprint of
+# the subkey gpg would sign with, the newest usable one of MAVEN_GPG_KEY. Both servers must then
+# have that very subkey, not revoked and not within 30 days of its expiry. A secret exported before
+# its subkey was revoked, or before the one it holds was published, is refused even when the key
+# has a newer subkey that is fit.
+#
 # KEYS_OPENPGP_URL and KEYSERVER_UBUNTU_URL replace the keyservers' base URLs and KEYSERVER_TIMEOUT
 # the time limit in seconds of each request, for the test.
 set -euo pipefail
@@ -67,9 +74,9 @@ check_server() {
     echo "$name answered with something gpg cannot read as a public key: $(tr '\n' ' ' < "$work/$name.err")"
     return
   fi
-  python3 -I - "$name" "$fingerprint" "$work/$name.colons" "$work/$name.signing" <<'EOF' || echo "$name: could not read the key gpg listed"
+  python3 -I - "$name" "$fingerprint" "$work/$name.colons" "$work/$name.signing" "${RELEASE_SIGNING_SUBKEY:-}" <<'EOF' || echo "$name: could not read the key gpg listed"
 import sys, time
-name, wanted, path, summary = sys.argv[1:]
+name, wanted, path, summary, signs_with = sys.argv[1:]
 now = time.time()
 horizon = now + 30 * 86400
 
@@ -139,6 +146,24 @@ else:
                     days = int((best["expires"] - now) // 86400)
                     problems.append("%s: the signing subkey %s expires on %s, in %d days, less than 30: renew it as RELEASING.md says"
                                     % (name, best["fpr"], date(best["expires"]), days))
+# the publish job names the subkey its secret signs with: this server must have that very subkey,
+# not revoked and not about to expire, whatever newer subkeys the key has by now
+if mine and signs_with:
+    key = mine[0]
+    sub = next((s for s in key["subs"] if s.get("fpr") == signs_with), None)
+    if sub is None or "s" not in sub["caps"]:
+        problems.append("%s: the key %s has no signing subkey %s, the one MAVEN_GPG_KEY signs with: the secret was exported after "
+                        "the subkey was made and before it was published, or is not of this key; replace the secret as RELEASING.md says"
+                        % (name, wanted, signs_with))
+    elif sub["revoked"] or sub["validity"] == "r":
+        problems.append("%s: the subkey %s MAVEN_GPG_KEY signs with is revoked: replace the secret with the export of a subkey in use, as RELEASING.md says"
+                        % (name, signs_with))
+    elif sub["expires"] and sub["expires"] <= now:
+        problems.append("%s: the subkey %s MAVEN_GPG_KEY signs with expired on %s: replace the secret as RELEASING.md says"
+                        % (name, signs_with, date(sub["expires"])))
+    elif sub["expires"] and sub["expires"] < horizon:
+        problems.append("%s: the subkey %s MAVEN_GPG_KEY signs with expires on %s, in less than 30 days: replace the secret as RELEASING.md says"
+                        % (name, signs_with, date(sub["expires"])))
 for p in problems:
     print(p)
 EOF

@@ -12,7 +12,16 @@
 # subkey export, its primary a stub (gpg --export-secret-subkeys), so one that carries the
 # primary's secret is refused; the key of RELEASE_KEY_FINGERPRINT, not another; and it must hold
 # the secret of a signing subkey that is neither revoked nor expired. The passphrase is not
-# needed to list a key and is not read. Nothing of the key is ever printed. Needs gpg and python3.
+# needed to list a key and is not read. Nothing of the key is ever printed.
+#
+# That is the secret alone. A secret exported before its subkey was revoked, or before the one it
+# holds was published, still looks fine by itself, so it is then held against the keyservers as
+# they are now - this runs in the publish job, after the approval, which can be days after the
+# check job: scripts/release-key-check.sh asks both for the subkey gpg would sign with, the newest
+# usable one of the secret, and refuses unless both have it, the same, not revoked and not within
+# 30 days of its expiry. Needs curl too, and the keyservers' URLs, as release-key-check.sh takes
+# them (KEYS_OPENPGP_URL, KEYSERVER_UBUNTU_URL, KEYSERVER_TIMEOUT), for the test.
+# Needs gpg, python3 and curl.
 set -euo pipefail
 
 fail() {
@@ -20,7 +29,7 @@ fail() {
   exit 1
 }
 
-for tool in gpg python3; do
+for tool in gpg python3 curl; do
   command -v "$tool" > /dev/null || fail "needs $tool"
 done
 
@@ -40,7 +49,7 @@ printf '%s\n' "$MAVEN_GPG_KEY" | gpg --batch --no-tty --import > "$work/import.l
   || fail "the secret MAVEN_GPG_KEY is not a key gpg can import: $(tr '\n' ' ' < "$work/import.log")"
 gpg --batch --no-tty --list-secret-keys --with-colons > "$work/colons"
 
-python3 -I - "$fingerprint" "$work/colons" <<'PY' || exit 1
+signs_with=$(python3 -I - "$fingerprint" "$work/colons" <<'PY'
 import sys, time
 wanted, path = sys.argv[1:]
 now = time.time()
@@ -54,7 +63,7 @@ for line in open(path):
         target = {"validity": f[1], "expires": int(f[6] or 0), "stub": f[14] == "#", "subs": []}
         keys.append(target)
     elif f[0] == "ssb" and keys:
-        target = {"validity": f[1], "expires": int(f[6] or 0), "stub": f[14] in ("#", ">"), "caps": f[11]}
+        target = {"validity": f[1], "expires": int(f[6] or 0), "created": int(f[5] or 0), "stub": f[14] in ("#", ">"), "caps": f[11]}
         keys[-1]["subs"].append(target)
     elif f[0] == "fpr" and target is not None and "fpr" not in target:
         target["fpr"] = f[9]
@@ -74,5 +83,12 @@ usable = [s for s in key["subs"]
 if not usable:
     fail("the secret MAVEN_GPG_KEY has no secret signing subkey that is neither revoked nor expired; "
          "export the subkeys again as RELEASING.md says")
+# gpg signs with the newest of them
+print(max(usable, key=lambda s: s["created"])["fpr"])
 PY
-echo "signing key: MAVEN_GPG_KEY is a subkey export of $fingerprint, with a signing subkey fit to sign" >&2
+) || exit 1
+echo "signing key: MAVEN_GPG_KEY is a subkey export of $fingerprint, signing with $signs_with" >&2
+
+# and that subkey, on both keyservers as they are now; the secret is not handed on
+env -u MAVEN_GPG_KEY RELEASE_KEY_FINGERPRINT="$fingerprint" RELEASE_SIGNING_SUBKEY="$signs_with" \
+  "$(dirname "$0")/release-key-check.sh"
