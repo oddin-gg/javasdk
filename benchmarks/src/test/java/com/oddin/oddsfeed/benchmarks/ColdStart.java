@@ -66,12 +66,11 @@ final class ColdStart {
     private static final Pattern VARIANT = Pattern.compile("/v1/descriptions/en/markets/(\\d+)/variants/([^/]+)");
     private static final Pattern ID = Pattern.compile("od:[a-z]+:\\d+");
 
+    private static final String MARKETS = "/v1/descriptions/en/markets";
+
     /** What the open's preload asks for (FeedCore.preload): the void reasons, and in the one preload locale the markets, statuses and sports. */
     private static final List<String> PRELOADED = List.of(
-            "/v1/descriptions/void_reasons",
-            "/v1/descriptions/en/markets",
-            "/v1/descriptions/en/match_status",
-            "/v1/sports/en/sports");
+            "/v1/descriptions/void_reasons", MARKETS, "/v1/descriptions/en/match_status", "/v1/sports/en/sports");
 
     static final String SUMMARIES = "GET /v1/sports/en/sport_events/{id}/summary";
     static final String PROFILES = "GET /v1/sports/en/competitors/{id}/profile";
@@ -142,6 +141,7 @@ final class ColdStart {
     /**
      * @param caughtUp first publish until every callback ran and the requests they caused were answered
      * @param afterLastPublish the same, counted from the last publish
+     * @param opening how many requests were answered before the first publish: the open's, not the burst's
      * @param requests the requests the feed made, by method and path with the ids left out
      * @param repeated paths asked for more than once, with their counts
      * @param mostInFlight the most requests the fake API was answering at once
@@ -154,6 +154,7 @@ final class ColdStart {
     record Result(
             Duration caughtUp,
             Duration afterLastPublish,
+            int opening,
             Map<String, Integer> requests,
             Map<String, Integer> repeated,
             int mostInFlight,
@@ -168,6 +169,11 @@ final class ColdStart {
 
         int total() {
             return requests.values().stream().mapToInt(Integer::intValue).sum();
+        }
+
+        /** The requests made after the first publish, which {@link #caughtUp} counts the time of. */
+        int inBurst() {
+            return total() - opening;
         }
     }
 
@@ -248,6 +254,20 @@ final class ColdStart {
             }
             // arrived is not answered, and an answer may start a request of its own
             api.awaitQuiet();
+            // quiet is the fake's side only: the SDK may still be parsing the list it was sent. Read one plain
+            // market's name here, as a callback does: a list not loaded yet is fetched again for the read,
+            // which the count of its requests shows, instead of the burst's counts depending on the timing
+            var before = api.requests("GET", MARKETS).size();
+            var market = requireNonNull(requireNonNull(feed).getMarketDescriptionManager())
+                    .getMarketDescription(1, null, EN);
+            if (market == null || !requireNonNull(market.getName(EN)).startsWith("Market ")) {
+                throw new AssertionError("the market list of the preload does not name market 1: " + market);
+            }
+            var after = api.requests("GET", MARKETS).size();
+            if (before != 1 || after != before) {
+                throw new AssertionError("the preload asked for the market list " + before
+                        + " times and the read of a name made it " + after + ": the preload was not done");
+            }
         }
 
         FeedHealth health() {
@@ -285,6 +305,8 @@ final class ColdStart {
                         : corpus;
                 messages[i] = Fixtures.replace(odds, "od:match:198314", "od:match:" + (FIRST_MATCH + i));
             }
+            // the open's own requests are answered by now, and are not the burst's
+            int opening = running.api.requests().size();
             long started = System.nanoTime();
             long lastPublished = started;
             for (var message : messages) {
@@ -305,6 +327,7 @@ final class ColdStart {
             return new Result(
                     Duration.ofNanos(end - started),
                     Duration.ofNanos(end - lastPublished),
+                    opening,
                     requests.counts(),
                     requests.repeated(),
                     running.api.mostInFlight(),
