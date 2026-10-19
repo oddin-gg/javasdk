@@ -74,9 +74,14 @@ final class Harness {
      *     same number.
      */
     Harness(RecoverySettings settings, boolean split) {
+        this(settings, split, 4320);
+    }
+
+    /** As above, with producers whose stateful recovery window is this many minutes; 0 for none. */
+    Harness(RecoverySettings settings, boolean split, int statefulWindowMinutes) {
         this.settings = settings;
         this.feedClock = split ? FeedClock.of(clock, () -> monoNanos[0]) : FeedClock.following(clock);
-        this.producers = new Producers(list(), clock);
+        this.producers = new Producers(list(statefulWindowMinutes), clock);
         this.recoveryStatuses = new EventRecoveryStatuses(feedClock, counters);
         Outbox outbox = new Outbox() {
             @Override
@@ -219,14 +224,14 @@ final class Harness {
                 settings.tick());
     }
 
-    private static RAProducers list() {
+    private static RAProducers list(int statefulWindowMinutes) {
         var list = new RAProducers();
-        list.getProducer().add(producer(PRE, "pre", "prematch"));
-        list.getProducer().add(producer(LIVE, "live", "live"));
+        list.getProducer().add(producer(PRE, "pre", "prematch", statefulWindowMinutes));
+        list.getProducer().add(producer(LIVE, "live", "live", statefulWindowMinutes));
         return list;
     }
 
-    private static RAProducer producer(long id, String name, String scope) {
+    private static RAProducer producer(long id, String name, String scope, int statefulWindowMinutes) {
         var producer = new RAProducer();
         producer.setId(id);
         producer.setName(name);
@@ -234,7 +239,7 @@ final class Harness {
         producer.setApiUrl("https://api.example.invalid/v1/" + name);
         producer.setActive(true);
         producer.setScope(scope);
-        producer.setStatefulRecoveryWindowInMinutes(4320);
+        producer.setStatefulRecoveryWindowInMinutes(statefulWindowMinutes);
         return producer;
     }
 
