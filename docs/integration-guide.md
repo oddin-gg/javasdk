@@ -201,7 +201,12 @@ Before you take the feed to production:
 - [ ] **A distinct node id for every running instance.** Set it with `setSDKNodeId`. Node ids
       select node-addressed messages, such as the snapshots of the recoveries an instance asks
       for. Two instances that share one node id cannot be told apart by the SDK, and recovery
-      messages meant for one reach the other.
+      messages meant for one reach the other. An instance with no node id and the message
+      interest `ALL` takes the snapshot completes of every other instance of the bookmaker, so it
+      can see thousands of them; with a node id it takes those of its node and of the instances
+      that have none; any other interest takes those of its own node, or, with no node id, of
+      the instances that have none. The SDK drops what it did not ask for, counts it as `recovery.unknown_completions`, and logs the first at INFO, with
+      this advice, and the rest at DEBUG. A distinct node id on every instance ends it.
 - [ ] **A queue length limit on the broker above the prefetch.** The SDK does not declare an
       `x-max-length` for its queues; the broker's operator may set one. If it is not larger than
       the configured prefetch (200 by default), the broker silently drops the oldest ready messages

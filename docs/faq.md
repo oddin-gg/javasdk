@@ -150,6 +150,19 @@ See [Resuming after a restart](integration-guide.md#resuming-after-a-restart).
 
 It must be set before `open()`. After it, it is ignored with a warning in the log.
 
+### The log says a snapshot complete is for a request this feed did not ask for.
+
+Another instance of your bookmaker asked for a recovery, and its snapshot complete reached this
+feed's queue too. The broker routes a completion by the node id of the request: a feed with no node
+id and the message interest `ALL` takes those of every instance, one with a node id takes those of
+its node and, with `ALL`, of the instances that have none. The SDK drops them, counts them
+(`recovery.unknown_completions` in `getHealth().counters()`) and tells the first once at INFO; the
+rest are at DEBUG, as there can be thousands. Nothing is lost. Give each instance its own node id
+(`setSDKNodeId`), so that none of them runs without one; see the
+[checklist](integration-guide.md#onboarding-checklist). If the INFO line names your node id and you
+gave every instance its own, another instance runs with the same node id, which is a fault of the
+setup.
+
 ### How do I know my node id is right?
 
 It must differ between every instance that runs at the same time against the same account. See the

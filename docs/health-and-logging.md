@@ -112,7 +112,7 @@ down. Normal traffic is quiet: an hour of it logs state changes at INFO and noth
 
 | Level | What |
 |---|---|
-| INFO | A state change: the feed opened, a producer up or down, a recovery started, ended or given up, a session caught up, a part of the feed healthy again. The one exception is API call logging, one line per attempt, off unless you set `setApiCallLogging(true)`. |
+| INFO | A state change: the feed opened, a producer up or down, a recovery started, ended or given up, a session caught up, a part of the feed healthy again. Two exceptions: API call logging, one line per attempt, off unless you set `setApiCallLogging(true)`; and the first snapshot complete of another instance's recovery that reaches the feed, told once with the advice to set a node id (the rest of them are at DEBUG and in `recovery.unknown_completions`; see [the FAQ](faq.md#the-log-says-a-snapshot-complete-is-for-a-request-this-feed-did-not-ask-for)). |
 | WARN | Something you may need to act on, or should know is lost: a dropped message, a full queue, a failed preload, a degraded part, a recovery that starts after where its gap began because the producer's stateful recovery window is shorter (the line says how much of the gap is dropped). |
 | ERROR | A part that stalled, or client code that threw. |
 | DEBUG | The detail behind a warning, the stack of a failure, what happens per request. Nothing here is needed to run the feed. |
