@@ -113,6 +113,36 @@ class StaleFeedScenarioIT {
     }
 
     /**
+     * An odds change stamped ten minutes ahead of its producer, then a correct one with another
+     * score. 0.0.x writes every message, so the second's score is read; 1.0 does not let the bad
+     * stamp hold the correct message back, as it would if it kept the watermark in the future.
+     * Both are delivered, as they were stamped.
+     */
+    @Test
+    void aMessageStampedAheadOfItsProducerDoesNotHoldBackTheCorrectOneThatFollows() throws InterruptedException {
+        try (FakeRestServer rest = FakeRestServer.start();
+                FakeFeed feed = FakeFeed.start();
+                Sdk sdk = Sdk.against(rest, feed)) {
+            Received received = sdk.open(MessageInterest.ALL);
+            feed.publish(alive(2, true));
+            long now = System.currentTimeMillis();
+            long ahead = now + Duration.ofMinutes(10).toMillis();
+            feed.publishAsIs(stampedAt(withHomeScore(7), ahead));
+            feed.publishAsIs(stampedAt(withHomeScore(2), now));
+
+            assertThat(received.next(OddsChange.class).getTimestamp().getCreated())
+                    .as("first")
+                    .isEqualTo(ahead);
+            OddsChange<?> second = received.next(OddsChange.class);
+            assertThat(second.getTimestamp().getCreated()).as("second").isEqualTo(now);
+            var match = (Match) second.getEvent();
+            assertThat(match.getStatus().getHomeScore())
+                    .as("home score, from the correct message")
+                    .isEqualTo(2.0);
+        }
+    }
+
+    /**
      * A session falls far behind: producer 1's live messages arrive a minute after the feed stamped
      * them, for three of the safety net's windows, after an alive on time. 0.0.x has no
      * safety net and processes them one by one, asking for nothing; 1.0's asks for a recovery of the
