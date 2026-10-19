@@ -53,8 +53,14 @@ GitHub Packages.
       approval. That is why releases never come from it - the check refuses a commit that is on
       `next` but not on `main` - and why the rename described at the top is what makes a release
       possible.
-      The code owners are named in `.github/CODEOWNERS`: the workflows, this file, the release
-      scripts and notes, and the root POM.
+      `.github/CODEOWNERS` names the release managers' team as owner of what the publish job
+      runs with the key and the token, or what decides that it runs: `.github/` (the workflows
+      and the policy that holds them), this file and `release-notes/`, `scripts/release-*`,
+      the Maven wrapper (`mvnw`, `mvnw.cmd`, `.mvn/`), every `pom.xml` of the reactor, not only
+      the root one, and, for the build job that tests the commit first, `scripts/fetch-sdk.sh`
+      and the pinned `scripts/next-workflow.json`, besides the schema drift job's files. Nothing
+      else is owned: the sources under `src/` are only compiled by the publish job, with the tests
+      skipped, and run nothing there.
 - [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
       creator included - may update or delete one. A published version keeps its tag for good.
       Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in
