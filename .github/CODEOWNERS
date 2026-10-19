@@ -14,9 +14,11 @@
 
 # the scripts the release job runs: the checks, the tag check, the GitHub Release
 /scripts/release-*              @oddin-gg/ragnar-admin
-# the legacy SDK installer, which the release's build job runs on the commit it publishes (the
-# publish job does not), and the pinned form of next.yml, which that build is held to
-/scripts/fetch-sdk.sh           @oddin-gg/ragnar-admin
+# the legacy SDK installer and its test, which the release's build job runs on the commit it
+# publishes (the publish job does not), the checksums the installer reads, and the pinned form of
+# next.yml, which that build is held to
+/scripts/fetch-sdk*             @oddin-gg/ragnar-admin
+/system-tests/src/test/resources/sdk-jar-checksums.properties @oddin-gg/ragnar-admin
 /scripts/next-workflow.json     @oddin-gg/ragnar-admin
 
 # the Maven wrapper runs before any POM is read, and downloads the Maven that runs the build
