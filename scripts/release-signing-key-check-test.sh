@@ -120,6 +120,27 @@ sleep 1.1
 newsub=$(addsub unpublished ed25519 sign 2y)
 subkeys unpublished > "$work/unpublished.subkeys"
 
+# a secret whose subkey is about to expire while a newer one is fit, both on the keyservers: the
+# secret holds the older (exported before the newer was made), and the newer. The date is worked out
+# as the key is made, so that midnight in between does not move it.
+gen nearold cert
+oldnear=$(addsub nearold ed25519 sign 10d)
+oldnear_date=$(date -u -d '+10 days' +%Y-%m-%d)
+subkeys nearold > "$work/nearold.older"
+sleep 1.1
+addsub nearold ed25519 sign 2y > /dev/null
+subkeys nearold > "$work/nearold.both"
+both older-expiring nearold
+both newer-held nearold
+# a secret exported while its subkey was valid, the keyservers showing it expired since: made 60 days
+# ago with a year of life, then given a day from 30 days ago
+gen shownexpired cert "-60 days"
+expiredsub=$(addsub shownexpired ed25519 sign 365d "-60 days")
+subkeys shownexpired > "$work/shownexpired.subkeys"
+gpgh shownexpired --faked-system-time "$(date -u -d '-30 days' +%Y%m%dT%H%M%S)" --quick-set-expire "$(fpr shownexpired)" 1d "$expiredsub"
+expired_date=$(date -u -d '-29 days' +%Y-%m-%d)
+both expired-on-servers shownexpired
+
 failures=0
 # run <label> <secret file, "unset" or "empty"> <variable value, "unset" or "empty"> <"ok", or the texts the refusal has>...
 run() {
@@ -198,6 +219,16 @@ run exported-before-revocation "$work/rotated.subkeys" "$(fpr rotated)" \
 run exported-before-publication "$work/unpublished.subkeys" "$(fpr unpublished)" \
   "keys.openpgp.org: the key $(fpr unpublished) has no signing subkey $newsub" \
   "keyserver.ubuntu.com: the key $(fpr unpublished) has no signing subkey $newsub"
+# the subkey the secret signs with is about to expire, however fit the newer one on the keyservers
+# is: the secret must be replaced; and it is fit when the secret holds the newer one
+run older-expiring "$work/nearold.older" "$(fpr nearold)" \
+  "keys.openpgp.org: the subkey $oldnear MAVEN_GPG_KEY signs with expires on $oldnear_date, in less than 30 days" \
+  "keyserver.ubuntu.com: the subkey $oldnear MAVEN_GPG_KEY signs with expires on $oldnear_date, in less than 30 days"
+run newer-held "$work/nearold.both" "$(fpr nearold)" ok
+# the keyservers show it expired
+run expired-on-servers "$work/shownexpired.subkeys" "$(fpr shownexpired)" \
+  "keys.openpgp.org: the subkey $expiredsub MAVEN_GPG_KEY signs with expired on $expired_date" \
+  "keyserver.ubuntu.com: the subkey $expiredsub MAVEN_GPG_KEY signs with expired on $expired_date"
 # more than one secret key in the import: a valid subkey export, and another key whole
 both two-keys fit
 both two-keys-reversed fit
