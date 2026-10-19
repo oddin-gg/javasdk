@@ -677,6 +677,21 @@ class SessionDispatcherTest {
         }
     }
 
+    /** Two sessions: the update received first writes first, then a bad stamp received before it, then a timely one between. */
+    @Test
+    void aMessageReceivedBeforeAnUpdateThatWroteIsRefusedWhateverTheWatermarksReceiptIs() {
+        try (var feed = new OnSplitClock()) {
+            feed.alive(100);
+            feed.at(1_100);
+            feed.deliver(feed.dispatcher, "5", 1_000 - 200, 1_000);
+            feed.deliver(feed.other, "1", Duration.ofMinutes(10).toMillis(), 900);
+            feed.deliver(feed.other, "5", 950 - 200 - 50, 950);
+            assertThat(listener.read)
+                    .as("U, then F by its newer stamp, then C, received before U, is refused")
+                    .containsExactly(EventStatus.Cancelled, EventStatus.Live, EventStatus.Live);
+        }
+    }
+
     /**
      * A message that answers a recovery request never takes the status over from a later stamp: a
      * recovery must not move the live state back, and the next live message repairs a bad stamp.
