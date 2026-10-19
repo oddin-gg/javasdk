@@ -12,6 +12,7 @@ import java.nio.file.StandardCopyOption;
 import java.time.Instant;
 import java.util.Collection;
 import java.util.Properties;
+import java.util.concurrent.CopyOnWriteArrayList;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,11 +35,15 @@ public final class ResumeAfterRestart {
         var file = Path.of(args.length > 0 ? args[0] : "resume-points.properties");
         var feed = new OddsFeed(new LoggingGlobalListener(), ExampleConfig.fromEnvironment());
 
+        // The producers are known once the feed has started, and the hook and the finally cover that
+        // start too: they save nothing while the list is empty, so a start that failed leaves the
+        // file as it was.
+        var all = new CopyOnWriteArrayList<Producer>();
         // The hook saves after close(): that is when the points are final.
-        var producers = feed.getProducerManager(); // this starts the feed, so it needs the API
-        Collection<Producer> all = producers.getAvailableProducers().values();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> closeAndSave(feed, all, file), "close-feed"));
         try {
+            var producers = feed.getProducerManager(); // this starts the feed, so it needs the API
+            all.addAll(producers.getAvailableProducers().values());
             var saved = load(file);
             for (var producer : all) {
                 var id = producer.getId();
@@ -72,7 +77,9 @@ public final class ResumeAfterRestart {
 
     private static void closeAndSave(OddsFeed feed, Collection<Producer> producers, Path file) {
         feed.close();
-        save(file, producers);
+        if (!producers.isEmpty()) {
+            save(file, producers);
+        }
     }
 
     private static Properties load(Path file) throws IOException {
