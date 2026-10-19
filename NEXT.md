@@ -1390,8 +1390,11 @@ candidate shows may still change it.
    - the jar, the sources jar, the javadoc jar and the POM are there, each with a `.asc`
      and its checksums;
    - every `.asc` verifies against the release key fetched from `keyserver.ubuntu.com` or
-     `keys.openpgp.org`, not from the build, and the key is the one the release uses and
-     has not expired;
+     `keys.openpgp.org`, not from the build; the fetched key's fingerprint is compared first
+     with the one pinned in `RELEASING.md`, and a key that fetches and verifies but has another
+     fingerprint is a substituted one and fails the check; the key has not expired. The pin is
+     written when the release key is made; nothing is pinned yet, so until then this bullet
+     cannot be met;
    - the POM is the flattened one: the right coordinates, no `${revision}` left, the
      licence, SCM and developer entries Central requires, and the dependencies the module
      needs and no others;
