@@ -65,10 +65,8 @@ class LoggingListener implements OddsFeedListener {
     }
 
     private static void log(String what, SportEvent event, Message message) {
-        LOG.info(
-                "{} of {} from producer {}",
-                what,
-                event.getId(),
-                message.getProducer().getId());
+        // an unparsable message has no producer: the SDK could not read it to find out which
+        var producer = message.getProducer();
+        LOG.info("{} of {} from producer {}", what, event.getId(), producer == null ? "unknown" : producer.getId());
     }
 }
