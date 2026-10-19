@@ -103,6 +103,10 @@ added | config/OddsFeedConfiguration.isEagerEntityPreload ()Z | whether a messag
 added | config/OddsFeedConfigurationBuilder.setDefaultLocale (Ljava/util/Locale;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | 0.0.x's default locale, which it had no setter for
 added | config/OddsFeedConfigurationBuilder.setPreloadLocales (Ljava/util/List;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | the locales whose catalogs open() starts loading
 added | config/OddsFeedConfigurationBuilder.setEagerEntityPreload (Z)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | whether a message's match is loaded as the message arrives
+added | config/OddsFeedConfiguration.getFutureStampMargin ()Ljava/time/Duration; | how far ahead of its producer a message's timestamp may be and still hold back the status that follows
+added | config/OddsFeedConfiguration.getTimelyMessageAge ()Ljava/time/Duration; | how old a message may be to write the status in place of one with a later timestamp
+added | config/OddsFeedConfigurationBuilder.setFutureStampMargin (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how far ahead of its producer a message's timestamp may be and still hold back the status that follows
+added | config/OddsFeedConfigurationBuilder.setTimelyMessageAge (Ljava/time/Duration;)Lcom/oddin/oddsfeedsdk/config/OddsFeedConfigurationBuilder; | how old a message may be to write the status in place of one with a later timestamp
 
 # Events of the feed as a whole, as default methods, so a listener written for 0.0.x compiles as it is.
 added | subscribe/GlobalEventsListener.onConnectionStateChange (Lcom/oddin/oddsfeedsdk/subscribe/ConnectionStateChange;)V | the broker connection's state, up as well as down

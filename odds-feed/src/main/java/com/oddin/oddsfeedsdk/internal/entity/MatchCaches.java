@@ -11,6 +11,7 @@ import com.oddin.oddsfeedsdk.internal.cache.EntityCache.Stamp;
 import com.oddin.oddsfeedsdk.internal.cache.Entry;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.cache.LiveState.LiveValues;
+import com.oddin.oddsfeedsdk.internal.cache.LiveState.Takeover;
 import com.oddin.oddsfeedsdk.internal.cache.LiveWrite;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.entity.ProfileCaches.Stamps;
@@ -114,6 +115,20 @@ public final class MatchCaches {
             Locale defaultLocale,
             Executor fetches,
             FeedClock clock) {
+        this(client, profiles, sideLoads, timeout, sizes, defaultLocale, fetches, clock, Takeover.DEFAULTS);
+    }
+
+    /** With the margins of the live state's exception to the watermark's order. */
+    public MatchCaches(
+            ApiClient client,
+            ProfileCaches profiles,
+            SideLoads sideLoads,
+            Duration timeout,
+            CacheSizes sizes,
+            Locale defaultLocale,
+            Executor fetches,
+            FeedClock clock,
+            Takeover takeover) {
         this.client = client;
         this.profiles = profiles;
         this.sideLoads = sideLoads;
@@ -123,7 +138,7 @@ public final class MatchCaches {
         this.matches = new EntityCache<>("match", sizes.matches(), AGE, longestFetch, clock);
         this.fixtures = new EntityCache<>("fixture", sizes.fixtures(), AGE, longestFetch, clock);
         // one record per match, read with it
-        this.live = new LiveState<>(sizes.matches(), clock);
+        this.live = new LiveState<>(sizes.matches(), clock, takeover);
         this.summaries = new Loader<>("match", this::fetchSummary, timeout, MARGIN, fetches, clock);
         this.fixtureLoads = new Loader<>("fixture", this::fetchFixture, timeout, MARGIN, fetches, clock);
     }
@@ -178,14 +193,28 @@ public final class MatchCaches {
 
     /**
      * A live message's status for the match, its winner included when it carries one: written unless
-     * older than the last one from its producer, or too old to be live; written before the message
-     * reaches the client, so its callback reads what the message carried.
+     * older than the last one from its producer, with the exception of {@link LiveState.Takeover},
+     * or too old to be live; written before the message reaches the client, so its callback reads
+     * what the message carried.
      *
      * @return whether it was written
      */
     public boolean oddsChange(
             URN id, long producer, long timestamp, Duration correctedAge, long receivedAt, OFSportEventStatus status) {
-        return live.feedWriteIfNewer(id, producer, timestamp, correctedAge, receivedAt, MatchWrites.live(status));
+        return oddsChange(id, producer, timestamp, correctedAge, receivedAt, true, status);
+    }
+
+    /** As above; {@code mayTakeOver} whether the message may replace a watermark of a later timestamp. */
+    public boolean oddsChange(
+            URN id,
+            long producer,
+            long timestamp,
+            Duration correctedAge,
+            long receivedAt,
+            boolean mayTakeOver,
+            OFSportEventStatus status) {
+        return live.feedWriteIfNewer(
+                id, producer, timestamp, correctedAge, receivedAt, mayTakeOver, MatchWrites.live(status));
     }
 
     /**

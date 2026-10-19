@@ -64,8 +64,10 @@ import org.slf4j.LoggerFactory;
  *       ClockOffsets#mark}); a replay's are taken as they are. The client's message and the live
  *       state keep the stamp.
  *   <li><b>Cache write.</b> An odds change's match status is written to the match's live state, unless
- *       an older message than one already written (KD-13) or older than the match status age by the
- *       producer's own clock (KD-14); a fixture change invalidates the match and its fixture, or the
+ *       an older message than one already written (KD-13; one that answers a recovery request is
+ *       never an exception to it, a live one may be, see {@link
+ *       com.oddin.oddsfeedsdk.internal.cache.LiveState.Takeover}) or older than the match status age
+ *       by the producer's own clock (KD-14); a fixture change invalidates the match and its fixture, or the
  *       tournament. Before the callback, so the callback reads what the message carried.
  *   <li><b>Build</b> the message the client gets.
  *   <li><b>Callback</b> on the session's listener.
@@ -498,6 +500,7 @@ public final class SessionDispatcher implements AutoCloseable {
                                         odds.getTimestamp(),
                                         Duration.ofMillis(age),
                                         receivedAt,
+                                        mayTakeOver(odds),
                                         status);
                     }
                 }
@@ -512,6 +515,17 @@ public final class SessionDispatcher implements AutoCloseable {
             }
             default -> {}
         }
+    }
+
+    /**
+     * Whether an odds change may replace the live status of a later timestamp than its own, when it
+     * is received after it and timely (see {@link com.oddin.oddsfeedsdk.internal.cache.LiveState.Takeover}).
+     * One that answers a recovery request - a snapshot message, old by design - never does: a
+     * recovery must not move the live state back, and the next live message repairs a bad timestamp.
+     * It is written by the plain order of the watermark.
+     */
+    private static boolean mayTakeOver(OFOddsChange odds) {
+        return odds.getRequestId() == null;
     }
 
     private void callback(EventMessage<SportEvent> message) {

@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.internal.feed;
 
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.internal.cache.LiveState.Takeover;
 import com.oddin.oddsfeedsdk.internal.catalog.CatalogHealth;
 import com.oddin.oddsfeedsdk.internal.catalog.MarketDescriptions;
 import com.oddin.oddsfeedsdk.internal.catalog.MatchStatusDescriptions;
@@ -171,7 +172,8 @@ public record FeedCore(
         var strategy = configuration.getExceptionHandlingStrategy();
         var sizes = CacheSizes.from(configuration);
         var profiles = new ProfileCaches(api, timeout, sizes, fetches, clock);
-        var matches = new MatchCaches(api, profiles, sideLoads, timeout, sizes, locale, fetches, clock);
+        var matches = new MatchCaches(
+                api, profiles, sideLoads, timeout, sizes, locale, fetches, clock, Takeover.from(configuration));
         var markets = new MarketDescriptions(api, timeout, fetches, fetches, clock);
         var voidReasons = new VoidReasons(api, timeout, fetches, fetches, clock);
         var statuses = new MatchStatusDescriptions(api, timeout, fetches, fetches, clock);

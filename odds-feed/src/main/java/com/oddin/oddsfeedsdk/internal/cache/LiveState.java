@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.internal.cache;
 
+import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import java.time.Duration;
 import java.util.HashMap;
@@ -22,7 +23,11 @@ import org.jspecify.annotations.Nullable;
  *
  * <p>The watermark is the timestamp of the last live message that wrote, per entity and producer,
  * with when the SDK received it. A message older than the watermark of its producer does not write;
- * it is still delivered. A replayed message writes in the order it comes. The feed's and the API's
+ * it is still delivered. One exception: a watermark that no delivery delay explains must not hold the
+ * correct messages that follow back, so a message older than it writes, and takes the watermark down
+ * to its own timestamp, when it was received after the watermark's message, was generated so much
+ * before it that the two deliveries' delays cannot account for the gap (see {@link Takeover}), and
+ * is itself timely. A replayed message writes in the order it comes. The feed's and the API's
  * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
  * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
  * writes nothing either, being a delayed backlog message REST has since taken over from. That
@@ -53,6 +58,7 @@ public final class LiveState<K> {
     private static final long NEVER = 0;
 
     private final FeedClock clock;
+    private final Takeover takeover;
     private final long maximumSize;
     private final ReentrantLock lock = new ReentrantLock();
     /** Those the feed owns, in the order it wrote them, oldest first; under the lock. */
@@ -71,16 +77,23 @@ public final class LiveState<K> {
 
     /** With the feed's clock, of which the monotonic side counts every age here. */
     public LiveState(long maximumSize, FeedClock clock) {
+        this(maximumSize, clock, Takeover.DEFAULTS);
+    }
+
+    /** With the margins of the exception to the watermark's order. */
+    public LiveState(long maximumSize, FeedClock clock, Takeover takeover) {
         if (maximumSize < 1) {
             throw new IllegalArgumentException("a live state holds one record at least");
         }
         this.clock = clock;
+        this.takeover = takeover;
         this.maximumSize = maximumSize;
     }
 
     /**
      * Writes a live message's values for {@code entity}, and records its watermark, unless it is
-     * older than the last one from its producer or its corrected age is over {@link #STATUS_AGE}.
+     * older than the last one from its producer, with the exception of {@link Takeover}, or its
+     * corrected age is over {@link #STATUS_AGE}. For a message that may take the watermark over.
      *
      * @param timestamp the message's timestamp, the feed's clock
      * @param receivedAt when the SDK received it, in millis on the feed's monotonic clock
@@ -88,10 +101,25 @@ public final class LiveState<K> {
      */
     public boolean feedWriteIfNewer(
             K entity, long producer, long timestamp, Duration correctedAge, long receivedAt, LiveWrite write) {
+        return feedWriteIfNewer(entity, producer, timestamp, correctedAge, receivedAt, true, write);
+    }
+
+    /**
+     * As above, for a message that {@code mayTakeOver} the watermark of a later timestamp, or not:
+     * then it is refused when older than the watermark, whatever else is true of it.
+     */
+    public boolean feedWriteIfNewer(
+            K entity,
+            long producer,
+            long timestamp,
+            Duration correctedAge,
+            long receivedAt,
+            boolean mayTakeOver,
+            LiveWrite write) {
         if (correctedAge.compareTo(STATUS_AGE) > 0) {
             return false;
         }
-        return feedWrite(entity, producer, timestamp, receivedAt, write, true);
+        return feedWrite(entity, producer, timestamp, receivedAt, mayTakeOver ? correctedAge : null, write, true);
     }
 
     /**
@@ -104,22 +132,37 @@ public final class LiveState<K> {
      * @param receivedAt when the SDK received it, in millis on the feed's monotonic clock
      */
     public void feedWriteReplayed(K entity, long producer, long timestamp, long receivedAt, LiveWrite write) {
-        feedWrite(entity, producer, timestamp, receivedAt, write, false);
+        feedWrite(entity, producer, timestamp, receivedAt, null, write, false);
     }
 
-    /** A feed write, refused when {@code inOrder} and older than its producer's watermark. */
+    /**
+     * A feed write, refused when {@code inOrder} and older than its producer's watermark, unless
+     * {@code correctedAge} is given and {@link Takeover#allows} the message to replace the watermark.
+     */
     private boolean feedWrite(
-            K entity, long producer, long timestamp, long receivedAt, LiveWrite write, boolean inOrder) {
+            K entity,
+            long producer,
+            long timestamp,
+            long receivedAt,
+            @Nullable Duration correctedAge,
+            LiveWrite write,
+            boolean inOrder) {
         lock.lock();
         try {
             long now = clock.monoMillis();
             Live current = current(entity, now);
             Mark last = current == null ? null : current.marks().get(producer);
+            boolean older = false;
             if (inOrder && last != null && last.timestamp() > timestamp) {
-                return false;
+                if (correctedAge == null
+                        || !takeover.allows(last.timestamp(), last.receivedAt(), timestamp, receivedAt, correctedAge)) {
+                    return false;
+                }
+                older = true;
             }
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
-            long newest = last == null ? timestamp : Math.max(last.timestamp(), timestamp);
+            // a message that took the watermark over lowers it: the next one is judged by this one
+            long newest = last == null || older ? timestamp : Math.max(last.timestamp(), timestamp);
             marks.put(producer, new Mark(newest, receivedAt));
             put(
                     entity,
@@ -357,6 +400,84 @@ public final class LiveState<K> {
         public boolean isFresh(long now) {
             long since = now - STATUS_AGE.toMillis();
             return (lastFeed != NEVER && lastFeed >= since) || (lastRest != NEVER && lastRest >= since);
+        }
+    }
+
+    /**
+     * The exception to the order of the watermark: a message older than its producer's watermark is
+     * believed over it when the watermark's timestamp is more likely a bad one than the message a
+     * late one.
+     *
+     * <p>A message received {@code R} after the watermark's message, yet generated {@code G} before
+     * it, had a delivery {@code R + G} slower than the other's, or the watermark's timestamp is ahead
+     * of the true time. It replaces the watermark, and takes it down to its own timestamp, when all
+     * of these hold; the producer's clock is never compared with the SDK's but in the corrected age
+     * the caller computes:
+     *
+     * <ol>
+     *   <li>it was received after the watermark's message, strictly, by the monotonic clock: two
+     *       sessions that handle two messages in another order than they received them leave the
+     *       order of receipt right;
+     *   <li>{@code R + G} is more than the {@code margin}: two deliveries that differ by more than
+     *       that are no jitter;
+     *   <li>its corrected age is at most {@code timelyAge}: it is a timely message, not one that
+     *       sat in a backlog, which would look the same by {@code R + G}. The bound on a wrong
+     *       takeover is then an alive later than {@code margin - timelyAge}, which is why the
+     *       timely age is at most the margin;
+     *   <li>its timestamp is after the epoch: it is the producer's, and nothing else of it is
+     *       trusted; the age of one far before it wraps around.
+     * </ol>
+     *
+     * A watermark ahead of the true time by less than the margin holds the messages that follow it
+     * back until their timestamps catch up, as before. Of two timestamps ahead, the one received last
+     * writes.
+     *
+     * @param margin the least {@code R + G} that makes the watermark a bad one
+     * @param timelyAge the most a message's corrected age may be to take over
+     */
+    public record Takeover(Duration margin, Duration timelyAge) {
+
+        /** 30 seconds and 10 seconds. */
+        public static final Takeover DEFAULTS = new Takeover(Duration.ofSeconds(30), Duration.ofSeconds(10));
+
+        public Takeover {
+            if (!margin.isPositive() || !timelyAge.isPositive() || timelyAge.compareTo(margin) > 0) {
+                throw new IllegalArgumentException(
+                        "a takeover needs a positive margin and a positive timely age of at most the margin, was "
+                                + margin + " and " + timelyAge);
+            }
+        }
+
+        /** What the configuration sets. */
+        public static Takeover from(OddsFeedConfiguration configuration) {
+            return new Takeover(configuration.getFutureStampMargin(), configuration.getTimelyMessageAge());
+        }
+
+        /**
+         * Whether a message older than the watermark replaces it.
+         *
+         * @param watermark the watermark's timestamp, greater than {@code timestamp}
+         * @param watermarkReceivedAt when its message was received, on the monotonic clock
+         * @param timestamp the message's timestamp
+         * @param receivedAt when it was received
+         * @param correctedAge the message's age by the producer's clock, less the producer's offset
+         */
+        boolean allows(
+                long watermark, long watermarkReceivedAt, long timestamp, long receivedAt, Duration correctedAge) {
+            // the timestamp is the producer's, any long: nothing below may overflow on it
+            if (timestamp <= 0) {
+                return false;
+            }
+            if (receivedAt <= watermarkReceivedAt) {
+                return false;
+            }
+            if (correctedAge.compareTo(timelyAge) > 0) {
+                return false;
+            }
+            long receivedAfter = receivedAt - watermarkReceivedAt;
+            long generatedBefore = watermark - timestamp;
+            // R + G > margin, as R > margin - G: with G positive, neither side can overflow
+            return receivedAfter > margin.toMillis() - generatedBefore;
         }
     }
 
