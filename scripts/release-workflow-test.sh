@@ -794,8 +794,10 @@ signing_key_step='      - name: Check the signing key is the one that was checke
         id: signing-key
         # The check job looked at the public key of RELEASE_KEY_FINGERPRINT; what signs is this
         # secret, which nothing else ties to it. It must be the export of that key'"'"'s subkeys, its
-        # primary a stub, with a signing subkey that is neither revoked nor expired. Before the
-        # build, so that a wrong secret fails here and signs nothing. release-signing-key-check-test.sh,
+        # primary a stub, with a signing subkey that is neither revoked nor expired. It then asks
+        # both keyservers again, now that the approval is given, for the subkey this secret signs
+        # with: they must have it, not revoked, not about to expire. Before the build, so that a
+        # wrong or stale secret fails here and signs nothing. release-signing-key-check-test.sh,
         # run by next.yml on every push, holds it to its cases.
         run: ./scripts/release-signing-key-check.sh
         env:

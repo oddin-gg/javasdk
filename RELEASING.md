@@ -90,10 +90,12 @@ The release key has two parts, and only one of them goes to GitHub:
   any environment: it lives only in the release managers' vault entry (the release managers
   are the required reviewers of the `maven-central` environment), together with its passphrase
   and its revocation certificate. Anyone with the primary can make a new subkey, so it is used
-  only to create and renew the subkey, on a machine that is cleaned afterwards;
-- the **signing subkey** signs the release and expires two years after it is made. `MAVEN_GPG_KEY`
-  is its export, `MAVEN_GPG_PASSPHRASE` its passphrase. A leak of the environment then costs a
-  subkey, which the primary replaces under the same fingerprint, not the key.
+  only to make and revoke subkeys, on a machine that is cleaned afterwards;
+- the **signing subkey** signs the release and expires two years after it is made. It is never
+  extended: a renewal makes a new subkey and revokes the old one, so a subkey that leaked without
+  anyone noticing is good for its two years at most. `MAVEN_GPG_KEY` is its export,
+  `MAVEN_GPG_PASSPHRASE` its passphrase. A leak of the environment then costs a subkey, which the
+  primary replaces under the same fingerprint, not the key.
 
 The fingerprint of the primary is what everything is looked up by: the repository variable
 `RELEASE_KEY_FINGERPRINT` (Settings - Secrets and variables - Actions - Variables, a repository
@@ -141,13 +143,14 @@ can receive mail, for the verification below. Then:
    says whether a release would pass its key check on the public key. That check reads no
    secret; the publish job checks the secret itself, once approved, and refuses a
    `MAVEN_GPG_KEY` that is not the export of this key's subkeys.
-4. **The expiry date, here.** Change the line below to the subkey's expiry (`YYYY-MM-DD`) by a PR:
+4. **The expiry date, here.** Change the line below to the expiry of the subkey `MAVEN_GPG_KEY`
+   holds (`YYYY-MM-DD`) by a PR:
 
    Signing subkey expires: **not created yet**
 
 5. **The reminder.** A calendar event for the release managers and a tracked task, both dated 60
-   days before that expiry, saying to renew the subkey as in "The signing subkey nears its
-   expiry" under "When something fails". A scheduled GitHub workflow is not used for it: GitHub
+   days before that expiry, saying to replace the subkey with a new one as in "The signing subkey
+   nears its expiry" under "When something fails". A scheduled GitHub workflow is not used for it: GitHub
    turns scheduled workflows off in a public repository after 60 days without activity.
 6. **Delete the throwaway home** (`gpgconf --kill gpg-agent`, then remove the directory) and
    every file the steps wrote, once the vault entry and the secrets are in place and checked.
@@ -253,6 +256,14 @@ secret, is refused: that is a leak of the primary), the primary's fingerprint is
 expired. It names the reason and prints nothing of the key; the passphrase is not needed for it.
 A secret that was replaced with another key, or exported wrongly, fails here and signs nothing.
 
+That is the secret alone, and the approval may come days after the check job looked at the
+keyservers. So the same step then holds the secret against them as they are now:
+`scripts/release-key-check.sh` is asked again, for the subkey gpg would sign with - the newest
+usable signing subkey of the secret - and refuses unless both keyservers have that very subkey,
+the same, not revoked and not within 30 days of its expiry. A secret exported before its subkey
+was revoked, or before the one it holds was published, is refused, even when the key has a newer
+subkey that is fit. This asks the keyservers from the publish job, as the check job does.
+
 Right before the upload, and again before the GitHub Release, the run asks GitHub whether the
 tag still names the commit it checked and built (`scripts/release-tag-check.sh`), and stops if
 it was moved or deleted - a release may have waited days for its approval.
@@ -341,34 +352,53 @@ next attempt is a new version - the next release candidate number, or the next p
   the usual channel. The release managers named as the reviewers of the `maven-central`
   environment decide that a version is defective and that the next one goes out.
 - **The signing subkey nears its expiry** - the reminder, or the check job refusing a release
-  whose subkey expires within 30 days or has expired. Renew it before the next release; the
-  fingerprint stays, so nothing changes for anyone who checks signatures. gpg refuses to sign
-  with an expired subkey, and the export in `MAVEN_GPG_KEY` keeps the date it had, so renewing
-  the subkey is not enough: the secret is replaced too.
+  whose subkey expires within 30 days or has expired. Do not extend it: make a new signing
+  subkey, put that one into `MAVEN_GPG_KEY`, and revoke the old one, so that a subkey that leaked
+  unnoticed does not outlive its own two years. The fingerprint stays, so nothing changes for
+  anyone who checks signatures. The order keeps every release signing with a subkey the keyservers
+  show as valid: the new subkey is published before the secret changes, and the old one is revoked
+  only once the secret holds the new one and no publish job that read the old secret is still
+  running.
   1. On a machine you trust, import the primary from the vault entry into a throwaway home:
 
      ```
      export GNUPGHOME=$(mktemp -d)
      gpg --import <the key file of the vault entry>
+     ```
+
+  2. Make the new subkey, two years from today (it asks for the passphrase from the vault
+     entry), and note its fingerprint, the newer of the two:
+
+     ```
+     gpg --quick-add-key <primary fingerprint> ed25519 sign 2y
      gpg --list-keys --with-subkey-fingerprints <primary fingerprint>
      ```
 
-  2. Give the subkey two more years, counted from today (it asks for the passphrase from the
-     vault entry):
-
-     ```
-     gpg --quick-set-expire <primary fingerprint> 2y <subkey fingerprint>
-     ```
-
   3. Upload the public key to both keyservers, as in "The signing key", step 2 (the verification
-     is done once). Until both serve the new date the check job refuses the release, naming
-     the one that does not; upload again.
-  4. `gpg --armor --export-secret-subkeys <primary fingerprint>` is the new `MAVEN_GPG_KEY`;
-     replace the secret. The passphrase is unchanged.
-  5. Put the new date in the line "Signing subkey expires" above, by a PR, and move the reminder
-     to 60 days before it. Replace the key file in the vault entry with `gpg --armor
-     --export-secret-keys <primary fingerprint>`, so that the entry has the new date.
-  6. Run `RELEASE_KEY_FINGERPRINT=<primary fingerprint> scripts/release-key-check.sh`; it must
+     is done once). The old subkey stays valid, so releases go on signing with it. Until both
+     serve the same keys the check job refuses the release, naming the one that does not; upload
+     again.
+  4. `gpg --armor --export-secret-subkeys '<new subkey fingerprint>!'` (the `!` exports that one
+     subkey alone) is the new `MAVEN_GPG_KEY`; replace the secret. The passphrase is unchanged.
+     The publish job refuses a secret whose subkey the keyservers do not have yet, so this
+     comes after step 3. A run still waiting for its approval takes the new secret when it is
+     approved.
+  5. When no publish job is running (Actions - "Java SDK 1.0 release"; a running one holds the
+     old secret, and Central checks its signatures against what the keyservers say of the old
+     subkey), revoke the old subkey with the primary, giving "Key is superseded" as the reason
+     (2), and upload the public key to both keyservers again:
+
+     ```
+     gpg --edit-key <primary fingerprint>
+     gpg> key <old subkey fingerprint>
+     gpg> revkey
+     gpg> save
+     ```
+
+  6. Put the new subkey's expiry in the line "Signing subkey expires" above, by a PR, and move
+     the reminder to 60 days before it. Replace the key file in the vault entry with `gpg --armor
+     --export-secret-keys <primary fingerprint>`, so that the entry has the new subkey.
+  7. Run `RELEASE_KEY_FINGERPRINT=<primary fingerprint> scripts/release-key-check.sh`; it must
      pass. Delete the throwaway home and its files.
 - **The signing key in the environment is suspected leaked** - `MAVEN_GPG_KEY` or its
   passphrase was shown or read, or an export of the subkey is lost. The primary is not in it: the
@@ -386,13 +416,15 @@ next attempt is a new version - the next release candidate number, or the next p
 
   2. Make the new subkey, `gpg --quick-add-key <primary fingerprint> ed25519 sign 2y`. The
      passphrase may have gone with the key: change it with `gpg --change-passphrase <primary
-     fingerprint>`, and in the vault entry.
+     fingerprint>`, and in the vault entry. Until the new secret is in place, the publish job
+     refuses a release, naming the revoked subkey: nothing is signed with it.
   3. Upload the public key, with the revocation and the new subkey, to both keyservers, as in
      "The signing key", step 2. Central then refuses a signature by the old subkey.
   4. `gpg --armor --export-secret-subkeys '<new subkey fingerprint>!'` (the `!` exports that one
      subkey alone, not the revoked one) is the new `MAVEN_GPG_KEY`; replace it, and
-     `MAVEN_GPG_PASSPHRASE` if it changed. Put the new date in the line "Signing subkey expires"
-     above and move the reminder, and replace the key file in the vault entry, as in the renewal.
+     `MAVEN_GPG_PASSPHRASE` if it changed. Put the new subkey's expiry in the line "Signing subkey
+     expires" above and move the reminder, and replace the key file in the vault entry, as in the
+     renewal.
   5. Delete the throwaway home and its files.
 
   Versions already on Central stay as they are. A signature the revoked subkey made still
