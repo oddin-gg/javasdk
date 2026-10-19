@@ -343,6 +343,9 @@ class OddsFeedWatchdogTest {
                         .as("logged once")
                         .containsExactly(stalled);
                 assertThat(feed.getHealth().components()).containsEntry(HealthComponent.RECOVERY, HealthState.STALLED);
+                assertThat(heard.fatal)
+                        .as("no fatal error event: the feed is stalled, not ended")
+                        .isEmpty();
             } finally {
                 feed.close();
             }
@@ -609,6 +612,7 @@ class OddsFeedWatchdogTest {
     /** Hears the health events. */
     private static class Heard implements GlobalEventsListener {
         private final BlockingQueue<HealthEvent> health = new LinkedBlockingQueue<>();
+        private final List<String> fatal = new CopyOnWriteArrayList<>();
 
         HealthEvent next(HealthComponent component) throws InterruptedException {
             long until = System.nanoTime() + WAIT.toNanos();
@@ -624,6 +628,11 @@ class OddsFeedWatchdogTest {
         @Override
         public void onHealthEvent(HealthEvent event) {
             health.add(event);
+        }
+
+        @Override
+        public void onFatalError(String reason, @Nullable Throwable cause) {
+            fatal.add(reason);
         }
 
         @Override
