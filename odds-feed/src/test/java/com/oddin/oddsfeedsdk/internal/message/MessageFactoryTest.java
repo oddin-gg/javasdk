@@ -46,6 +46,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * The messages the factory builds from the feed's XML: the rules 0.0.x kept and the ones 1.0 fixes,
@@ -367,6 +369,28 @@ class MessageFactoryTest {
         assertThat(change.getMarkets().getFirst().getOutcomeOdds())
                 .extracting(Outcome::getName)
                 .containsExactly("Listed Player", "Player One");
+    }
+
+    /** Go's #65 asked for it: the description of such a market lists none, as the API sends it. */
+    @ParameterizedTest
+    @ValueSource(strings = {"<outcomes/>", ""})
+    void aDynamicOutcomeMarketOfPlayersThatListsNoOutcomesIsServedAndItsOutcomesAreNamedAsThePlayers(
+            String outcomesBlock) throws Exception {
+        var described = """
+                <market id="768" name="Player to Score" variant="od:dynamic_outcomes:770" \
+                includes_outcomes_of_type="od:player" outcome_type="player">%s</market>""".formatted(outcomesBlock);
+        world.api.respond("/v1/descriptions/en/markets/768/variants/od:dynamic_outcomes:770", 200, markets(described));
+        var description = requireNonNull(world.catalog.market(768, "od:dynamic_outcomes:770", Locale.ENGLISH));
+        assertThat(description.outcomes()).isEmpty();
+        assertThat(description.outcomeType()).isEqualTo("player");
+
+        var change = (OddsChange<?>) world.build(oddsChange("""
+                <market id="768" specifiers="variant=od:dynamic_outcomes:770" status="1">
+                <outcome id="od:player:9001" odds="3"/></market>
+                """));
+        var market = change.getMarkets().getFirst();
+        assertThat(market.getName()).isEqualTo("Player to Score");
+        assertThat(market.getOutcomeOdds()).extracting(Outcome::getName).containsExactly("Player One");
     }
 
     @Test
