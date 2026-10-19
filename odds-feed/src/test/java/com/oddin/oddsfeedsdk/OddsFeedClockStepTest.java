@@ -6,8 +6,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.oddin.oddsfeed.fakes.FakeFeed;
 import com.oddin.oddsfeed.fakes.FakeRestServer;
 import com.oddin.oddsfeed.fakes.FeedMessages;
+import com.oddin.oddsfeed.fakes.Fixtures;
 import com.oddin.oddsfeed.fakes.TestTls;
 import com.oddin.oddsfeedsdk.api.entities.sportevent.SportEvent;
+import com.oddin.oddsfeedsdk.internal.cache.LiveState;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.feed.HealthMonitor;
 import com.oddin.oddsfeedsdk.internal.feed.OpenFeeds;
@@ -21,6 +23,7 @@ import com.oddin.oddsfeedsdk.mq.entities.OddsChange;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetCancel;
 import com.oddin.oddsfeedsdk.mq.entities.RollbackBetSettlement;
+import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.OddsFeedListener;
@@ -31,6 +34,7 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
@@ -39,6 +43,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -53,10 +58,18 @@ import org.junit.jupiter.params.provider.ValueSource;
 class OddsFeedClockStepTest {
 
     private static final Duration WAIT = Duration.ofSeconds(20);
-    /** The maximum inactivity, as configured by default: a step of 30 seconds is more than it. */
-    private static final int INACTIVITY_SECONDS = 20;
+    /**
+     * The maximum inactivity, as configured: more than the default, for the real seconds the steps take
+     * to run while a producer is still quiet to stay well inside it, and a step of 45 seconds is more
+     * than it.
+     */
+    private static final int INACTIVITY_SECONDS = 30;
 
     private static final long PRODUCER = 1;
+    private static final URN MATCH = URN.parse("od:match:198314");
+    private static final String SUMMARY = "/v1/sports/en/sport_events/od:match:198314/summary";
+    private static final String MATCH_SUMMARY = "rest/match_summary/match_summary.xml";
+    private static final String ODDS_CHANGE_CLOSED = "feed/odds_change/odds_change_closed_with_winner.xml";
     private static final String INITIATE = "/v1/pre/recovery/initiate_request";
 
     private static @Nullable FakeFeed broker;
@@ -72,7 +85,7 @@ class OddsFeedClockStepTest {
     }
 
     @ParameterizedTest
-    @ValueSource(longs = {30, -30})
+    @ValueSource(longs = {45, -45})
     @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void
             aStepOfTheWallClockMovesNoProducerDownAsksForNoRecoveryAndLeavesTheHealthAndAProducerThatGoesSilentStillGoesDown(
@@ -120,7 +133,8 @@ class OddsFeedClockStepTest {
                 heard.forget();
                 for (long step : new long[] {seconds, -2 * seconds, seconds}) {
                     shift.addAndGet(Duration.ofSeconds(step).toMillis());
-                    awaitTicks(ticks, 3);
+                    // the first tick begun after the step ends before the second begins
+                    awaitTicks(ticks, 2);
 
                     assertThat(heard.statuses)
                             .as("status changes after a step of " + step + " s")
@@ -161,7 +175,7 @@ class OddsFeedClockStepTest {
      * the step it would be as old as the step. It must not be.
      */
     @ParameterizedTest
-    @ValueSource(longs = {30, -30})
+    @ValueSource(longs = {45, -45})
     @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void anAliveAfterAStepOfTheWallClockIsNotTakenForAProcessingDelay(long seconds) throws Exception {
         var broker = requireNonNull(OddsFeedClockStepTest.broker);
@@ -216,12 +230,81 @@ class OddsFeedClockStepTest {
         }
     }
 
+    /**
+     * The feed hands its own clock to the caches it starts: the status a live message wrote is the
+     * feed's until the feed has been quiet for the status age by the monotonic clock, and a step of the
+     * wall clock of more than that age moves nothing. Read the other way round, a feed that handed
+     * them the system's clock would not go quiet by the clock the test shifts.
+     */
+    @Test
+    @Timeout(value = 120, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void theLiveStatusOfAMatchIsTheFeedsUntilTheFeedClocksMonotonicSideSaysItIsQuiet() throws Exception {
+        var broker = requireNonNull(OddsFeedClockStepTest.broker);
+        var shift = new AtomicLong();
+        var elapsed = new AtomicLong();
+        InstantSource wall = () -> Instant.now().plusMillis(shift.get());
+        var clock = FeedClock.of(wall, () -> System.nanoTime() + elapsed.get());
+        var heard = new Heard();
+        var told = new CompletableFuture<Void>();
+        var summary = Fixtures.read(MATCH_SUMMARY)
+                .replace("home_score=\"3\" away_score=\"2\"", "home_score=\"7\" away_score=\"6\"");
+        try (var api = FakeRestServer.start()) {
+            api.respond(SUMMARY, 200, summary);
+            var feed = newFeed(broker, api, heard, clock);
+            try {
+                feed.getSessionBuilder()
+                        .setListener(new Silent() {
+                            @Override
+                            public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {
+                                told.complete(null);
+                            }
+                        })
+                        .setMessageInterest(MessageInterest.ALL)
+                        .build();
+                feed.open();
+                assertThat(broker.publishFixture(ODDS_CHANGE_CLOSED)).isTrue();
+                told.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+
+                var match = requireNonNull(feed.getSportsInfoManager().getMatch(MATCH));
+                var status = requireNonNull(match.getStatus());
+                assertThat(status.getHomeScore())
+                        .as("the feed's, as the message sent it")
+                        .isEqualTo(3.0);
+                int summaries = api.requests("GET", SUMMARY).size();
+
+                // a step of the wall clock of a day each way: the feed is no quieter for it
+                for (long step : new long[] {24 * 3600, -48 * 3600}) {
+                    shift.addAndGet(Duration.ofSeconds(step).toMillis());
+                    assertThat(status.getHomeScore())
+                            .as("after a step of " + step + " s")
+                            .isEqualTo(3.0);
+                    assertThat(api.requests("GET", SUMMARY))
+                            .as("no summary fetched for it")
+                            .hasSize(summaries);
+                }
+
+                // the monotonic clock past the status age: the feed is quiet, and the summary's status is read
+                elapsed.addAndGet(LiveState.STATUS_AGE.plusMinutes(1).toNanos());
+                assertThat(status.getHomeScore()).as("the summary's").isEqualTo(7.0);
+                assertThat(api.requests("GET", SUMMARY)).hasSize(summaries + 1);
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
     /** A feed over the fake broker and API, its clock's wall side the given source; not yet opened. */
     private static OddsFeed newFeed(FakeFeed broker, FakeRestServer api, InstantSource wall, Heard heard) {
+        return newFeed(broker, api, heard, FeedClock.of(wall, System::nanoTime));
+    }
+
+    /** A feed over the fake broker and API on the given clock; not yet opened. */
+    private static OddsFeed newFeed(FakeFeed broker, FakeRestServer api, Heard heard, FeedClock clock) {
         var configuration = OddsFeed.getOddsFeedConfigurationBuilder()
                 .selectEnvironment(broker.host(), api.apiHost(), broker.port())
                 .setMessagingSslContext(TestTls.clientContext())
                 .setAccessToken("token")
+                .setMaxInactivitySeconds(INACTIVITY_SECONDS)
                 .build();
         return new OddsFeed(
                 heard,
@@ -231,7 +314,7 @@ class OddsFeedClockStepTest {
                 HealthMonitor.Log.SLF4J,
                 configuration.getCatalogStaleLimit(),
                 System::nanoTime,
-                FeedClock.of(wall, System::nanoTime));
+                clock);
     }
 
     /** The health without what a step could legitimately move: when it was read, and the queues' and the alives' counts. */
@@ -316,7 +399,7 @@ class OddsFeedClockStepTest {
     }
 
     /** A session's listener for a feed that is sent no data. */
-    private static final class Silent implements OddsFeedListener {
+    private static class Silent implements OddsFeedListener {
         @Override
         public void onOddsChange(OddsFeedSession session, OddsChange<SportEvent> message) {}
 
