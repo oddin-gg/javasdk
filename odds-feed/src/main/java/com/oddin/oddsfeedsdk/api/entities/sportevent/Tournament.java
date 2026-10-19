@@ -1,6 +1,7 @@
 package com.oddin.oddsfeedsdk.api.entities.sportevent;
 
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
@@ -15,13 +16,14 @@ public interface Tournament extends LongTermEvent {
      * tournament's info lists none. Loads what {@link #getCompetitors()} loads of the tournament,
      * its info in every locale, but starts no loading of the competitors' own profiles, and fails
      * as it does by the exception strategy. New in 1.0, as the Go SDK has it; an implementation of
-     * the interface that does not override it lists the ids of its competitors.
+     * the interface that does not override it lists the ids of its competitors, in a list of the
+     * caller's own, as the SDK's tournaments do.
      */
     default @Nullable List<URN> getCompetitorIds() {
         var competitors = getCompetitors();
         return competitors == null
                 ? null
-                : competitors.stream().map(Competitor::getId).toList();
+                : new ArrayList<>(competitors.stream().map(Competitor::getId).toList());
     }
 
     @Nullable
