@@ -12,10 +12,13 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.BooleanSupplier;
+import java.util.stream.Stream;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
 /**
@@ -221,6 +224,22 @@ class RecoveryClockTest {
                 .isEqualTo(Instant.ofEpochMilli(producerNow - window));
     }
 
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void theInitialSnapshotIntervalCountsBackFromTheWallClockWhateverTheMonotonicOneSays(long minutes) {
+        var feed = new Harness(Harness.withInitialSnapshotInterval(Duration.ofMinutes(10)), true);
+        feed.open(1, MessageInterest.ALL);
+        feed.stepWall(Duration.ofMinutes(minutes));
+        feed.start();
+        long boundary = feed.now() - Duration.ofMinutes(10).toMillis();
+
+        feed.alive(PRE);
+
+        assertThat(feed.lastSnapshot(PRE).after())
+                .as("the interval before the start, by the wall clock")
+                .isEqualTo(Instant.ofEpochMilli(boundary));
+    }
+
     // ---- the deadlines of a recovery
 
     @ParameterizedTest
@@ -398,6 +417,158 @@ class RecoveryClockTest {
                 .isZero();
         feed.advanceMono(Duration.ofMinutes(4));
         assertThat(feed.counters.eventExpired()).as("five minutes after it").isEqualTo(2);
+    }
+
+    // ---- what is heard against a request
+
+    /** What a request is, for the message that is heard against it. */
+    enum Request {
+        /** A recovery of the producer, asked for again after its backoff. */
+        SNAPSHOT,
+        EVENT
+    }
+
+    private static Stream<Arguments> everyRequestStepAndMessage() {
+        return Stream.of(Request.values())
+                .flatMap(request -> Stream.of(30L, -30L)
+                        .flatMap(step -> Stream.of(true, false)
+                                .flatMap(before -> Stream.of(true, false)
+                                        .map(live -> Arguments.of(request, step, before, live)))));
+    }
+
+    @ParameterizedTest
+    @MethodSource("everyRequestStepAndMessage")
+    void aMessageGeneratedBeforeARequestPutsOffItsDeadlineAndOneGeneratedWithItDoesNotWhateverTheWallClockStepped(
+            Request request, long step, boolean before, boolean live) {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        // asked for after the step, with no alive since to measure the offset anew
+        long requestedAt = ask(request, step);
+        BooleanSupplier expired =
+                () -> (request == Request.SNAPSHOT ? feed.counters.timedOut() : feed.counters.eventExpired()) > 0;
+
+        monoSeconds(10);
+        long generatedAt = before ? requestedAt - 1 : requestedAt;
+        if (live) {
+            feed.machine.processed(1, PRE, generatedAt, feed.feedClock.stamp(), 0);
+        } else {
+            feed.machine.sessionAlive(1, PRE, generatedAt, feed.feedClock.stamp(), true);
+        }
+        monoSeconds(290);
+        assertThat(expired.getAsBoolean()).as("at the deadline of its request").isFalse();
+        monoSeconds(5);
+        assertThat(expired.getAsBoolean())
+                .as("five seconds past it: put off by a message generated before the request, not by one with it")
+                .isEqualTo(!before);
+        if (before) {
+            monoSeconds(6);
+            assertThat(expired.getAsBoolean()).as("past the put-off deadline").isTrue();
+        }
+    }
+
+    /**
+     * The request, accepted, after a step of the wall clock by {@code step} seconds, with nothing
+     * to measure the producer's offset since the step.
+     *
+     * @return the producer's now by its clock, as the request is stamped with
+     */
+    private long ask(Request request, long step) {
+        switch (request) {
+            case SNAPSHOT -> {
+                var first = feed.lastSnapshot(PRE);
+                feed.refuse(first);
+                feed.stepWall(Duration.ofSeconds(step));
+                feed.advance(Duration.ofSeconds(5));
+                var again = feed.lastSnapshot(PRE);
+                assertThat(again.requestId()).as("asked for again").isNotEqualTo(first.requestId());
+                feed.accept(again);
+            }
+            case EVENT -> {
+                feed.stepWall(Duration.ofSeconds(step));
+                assertThat(feed.recoverEvent(PRE)).isNotDone();
+                feed.accept(feed.calls.getLast());
+            }
+        }
+        return feed.now() - Duration.ofSeconds(step).toMillis();
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aRecoveryAskedForAfterAStepOfTheWallClockMovesTheCheckpointToTheProducersNowAtTheRequest(long step) {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        long requestedAt = ask(Request.SNAPSHOT, step);
+        assertThat(feed.machine.checkpoint(1, PRE)).as("before").isLessThan(requestedAt);
+
+        feed.complete(feed.lastSnapshot(PRE), 1);
+
+        assertThat(feed.machine.checkpoint(1, PRE))
+                .as("the snapshot is as of the request, by the producer's clock")
+                .isEqualTo(requestedAt);
+    }
+
+    @ParameterizedTest
+    @CsvSource({"30, true", "30, false", "-30, true", "-30, false"})
+    void beforeTheFirstAliveTheProducersNowIsTheSdksWallClockWhateverItStepped(long step, boolean before) {
+        var feed = new Harness(Harness.settings(Duration.ofHours(6), Duration.ofSeconds(10)), true);
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.stepWall(Duration.ofSeconds(step));
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        feed.accept(feed.calls.getLast());
+        // no alive has measured an offset, so there is none to correct: the producer's clock reads as the SDK's
+        long requestedAt = feed.now();
+
+        feed.advance(Duration.ofSeconds(4));
+        feed.machine.processed(1, PRE, before ? requestedAt - 1 : requestedAt, feed.feedClock.stamp(), 0);
+        feed.advance(Duration.ofSeconds(6));
+        assertThat(feed.counters.eventExpired()).as("at the deadline").isZero();
+        feed.advance(Duration.ofSeconds(2));
+        assertThat(feed.counters.eventExpired())
+                .as("two seconds past it: put off by a message generated before the request, not by one with it")
+                .isEqualTo(before ? 0 : 1);
+        feed.advance(Duration.ofSeconds(3));
+        assertThat(feed.counters.eventExpired()).as("past the put-off deadline").isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void aRecoveryAndAnEventRecoveryAreOrderedByWhenTheyWereAskedForOnTheMonotonicClockWhateverTheWallClockStepped(
+            boolean recoveryFirst) {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        long earlier;
+        if (recoveryFirst) {
+            feed.alive(PRE);
+            earlier = feed.lastSnapshot(PRE).requestId();
+            feed.accept(feed.lastSnapshot(PRE));
+        } else {
+            assertThat(feed.recoverEvent(PRE)).isNotDone();
+            earlier = feed.calls.getLast().requestId();
+            feed.accept(feed.calls.getLast());
+        }
+        monoSecond();
+        // the wall clock stepped back between the two: the later one is stamped earlier on it
+        feed.stepWall(Duration.ofSeconds(-30));
+        if (recoveryFirst) {
+            assertThat(feed.recoverEvent(PRE)).isNotDone();
+            feed.accept(feed.calls.getLast());
+        } else {
+            feed.alive(PRE);
+            feed.accept(feed.lastSnapshot(PRE));
+        }
+        BooleanSupplier later = () -> (recoveryFirst ? feed.counters.eventExpired() : feed.counters.timedOut()) > 0;
+
+        monoSeconds(239);
+        feed.machine.processed(1, PRE, feed.now(), feed.feedClock.stamp(), earlier);
+        monoSeconds(65);
+        assertThat(later.getAsBoolean())
+                .as("five minutes after the later one was asked for: it is behind the snapshot that came")
+                .isFalse();
+        monoSeconds(240);
+        assertThat(later.getAsBoolean()).as("five minutes after that snapshot").isTrue();
     }
 
     // ---- the safety net
