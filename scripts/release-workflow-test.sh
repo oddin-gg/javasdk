@@ -15,6 +15,8 @@
 #   does before the release, which runs whenever publish succeeded;
 # - publish keeps the bundle after the upload, also when the upload failed or the run was cancelled,
 #   once per attempt, and github-release downloads the one whose publish succeeded;
+# - publish checks, before the upload and unconditionally, that MAVEN_GPG_KEY is the checked key's
+#   subkeys (scripts/release-signing-key-check.sh), the only step besides two that reads secrets;
 # - each job has the permissions it needs and no more, next.yml read only; the version comes
 #   from the check job; the two secret steps run exactly their commands;
 # - next.yml, which runs pull requests' code, forks' included, holds contents: read and nothing
@@ -212,9 +214,9 @@ for name, job_def in jobs.items():
     isolated(name, job_def, "maven-central" if name == "publish" else None)
     called(name, job_def)
 
-# publish: the token and the key only on the two steps that need them, named by id - the secrets
-# check and the upload - each there once, and not on the job
-SECRET_STEPS = ("secrets", "upload")
+# publish: the token and the key only on the three steps that need them, named by id - the secrets
+# check, the signing key check and the upload - each there once, and not on the job
+SECRET_STEPS = ("secrets", "signing-key", "upload")
 publish_level = {k: v for k, v in jobs["publish"].items() if k != "steps"}
 check(not secret_reads(publish_level), "publish must read secrets on its steps only, not as a job")
 for step_id in SECRET_STEPS:
@@ -222,7 +224,22 @@ for step_id in SECRET_STEPS:
     check(count == 1, "publish must have one step with id %s, found %d" % (step_id, count))
 for step in steps("publish"):
     if secret_reads(step) and step.get("id") not in SECRET_STEPS:
-        problems.append("publish: only the steps with id secrets and upload may read secrets, not %r" % step.get("name"))
+        problems.append("publish: only the steps with id secrets, signing-key and upload may read secrets, not %r" % step.get("name"))
+# the signing key check: the one step that looks at what MAVEN_GPG_KEY is, always, before the upload,
+# with the key from the secret and the fingerprint from the variable the check job looked up
+SIGNING_KEY_CHECK = "./scripts/release-signing-key-check.sh"
+signing = [step for step in steps("publish") if step.get("id") == "signing-key"]
+if len(signing) == 1:
+    check(str(signing[0].get("run", "")).strip() == SIGNING_KEY_CHECK,
+          "publish: the signing key step must run %s and nothing else, not %r" % (SIGNING_KEY_CHECK, signing[0].get("run")))
+    unconditional("publish", signing[0], "the signing key check")
+    check(signing[0].get("env") == {"MAVEN_GPG_KEY": "${{ secrets.MAVEN_GPG_KEY }}",
+                                    "RELEASE_KEY_FINGERPRINT": "${{ vars.RELEASE_KEY_FINGERPRINT }}"},
+          "publish: the signing key check must read MAVEN_GPG_KEY from the secret and RELEASE_KEY_FINGERPRINT from the repository variable, not %r"
+          % signing[0].get("env"))
+    signing_index = [i for i, step in enumerate(steps("publish")) if step.get("id") == "signing-key"][0]
+    upload_at = [i for i, step in enumerate(steps("publish")) if step.get("id") == "upload"]
+    check(upload_at and signing_index < upload_at[0], "publish must check the signing key before it deploys")
 upload = [step for step in steps("publish") if step.get("id") == "upload"]
 if upload:
     check(re.match(r"\./mvnw .*-Prelease .*\bdeploy$", " ".join(str(upload[0].get("run", "")).split())) is not None,
@@ -701,8 +718,12 @@ breaks release.yml replace "$key_step" "        if: false
 $key_step" "check: the signing key check must not be conditional"
 breaks release.yml replace "$key_step" "        continue-on-error: true
 $key_step" "check: the signing key check must not continue on error"
-breaks release.yml replace '          RELEASE_KEY_FINGERPRINT: ${{ vars.RELEASE_KEY_FINGERPRINT }}' \
-  '          RELEASE_KEY_FINGERPRINT: 0000000000000000000000000000000000000000' \
+breaks release.yml replace '          RELEASE_KEY_FINGERPRINT: ${{ vars.RELEASE_KEY_FINGERPRINT }}
+
+  build:' \
+  '          RELEASE_KEY_FINGERPRINT: 0000000000000000000000000000000000000000
+
+  build:' \
   "the signing key check must read RELEASE_KEY_FINGERPRINT from the repository variable"
 
 # build
@@ -767,8 +788,38 @@ for read in 'secrets.MAVEN_GPG_KEY' "Secrets['MAVEN_GPG_KEY']"; do
   breaks release.yml replace "$publish_tag_step" "${publish_tag_step%
 }          KEY: \${{ $read }}
 
-" "publish: only the steps with id secrets and upload may read secrets"
+" "publish: only the steps with id secrets, signing-key and upload may read secrets"
 done
+signing_key_step='      - name: Check the signing key is the one that was checked
+        id: signing-key
+        # The check job looked at the public key of RELEASE_KEY_FINGERPRINT; what signs is this
+        # secret, which nothing else ties to it. It must be the export of that key'"'"'s subkeys, its
+        # primary a stub, with a signing subkey that is neither revoked nor expired. Before the
+        # build, so that a wrong secret fails here and signs nothing. release-signing-key-check-test.sh,
+        # run by next.yml on every push, holds it to its cases.
+        run: ./scripts/release-signing-key-check.sh
+        env:
+          MAVEN_GPG_KEY: ${{ secrets.MAVEN_GPG_KEY }}
+          RELEASE_KEY_FINGERPRINT: ${{ vars.RELEASE_KEY_FINGERPRINT }}
+
+'
+signing_key_run='        run: ./scripts/release-signing-key-check.sh'
+breaks release.yml replace "$signing_key_run" '        run: echo "the key is fine"' \
+  "publish: the signing key step must run ./scripts/release-signing-key-check.sh and nothing else"
+breaks release.yml replace "$signing_key_run" "        if: false
+$signing_key_run" "publish: the signing key check must not be conditional"
+breaks release.yml replace "$signing_key_run" "        continue-on-error: true
+$signing_key_run" "publish: the signing key check must not continue on error"
+breaks release.yml replace '          RELEASE_KEY_FINGERPRINT: ${{ vars.RELEASE_KEY_FINGERPRINT }}
+
+      - name: Set up JDK 25' '          RELEASE_KEY_FINGERPRINT: 0000000000000000000000000000000000000000
+
+      - name: Set up JDK 25' "publish: the signing key check must read MAVEN_GPG_KEY from the secret"
+breaks release.yml replace '        id: signing-key
+' '        id: key-check
+' "publish must have one step with id signing-key, found 0"
+breaks release.yml move "$signing_key_step" '          if-no-files-found: warn
+' "publish must check the signing key before it deploys"
 breaks release.yml replace "$publish_tag" "${publish_tag%%        # *}        if: false
 ${publish_tag#*
 }" "publish: the tag check must not be conditional"
@@ -795,7 +846,7 @@ breaks release.yml replace '      - name: Keep the published bundle
           KEY: ${{ secrets.MAVEN_GPG_KEY }}
 
       - name: Keep the published bundle
-' "publish: only the steps with id secrets and upload may read secrets, not 'Stray'"
+' "publish: only the steps with id secrets, signing-key and upload may read secrets, not 'Stray'"
 breaks release.yml replace '          -DskipTests -pl odds-feed -am deploy
 ' '          -DskipTests -pl odds-feed -am deploy
           && curl -d @"$HOME/.m2/settings.xml" https://example.invalid

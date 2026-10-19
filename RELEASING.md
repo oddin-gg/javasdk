@@ -10,7 +10,8 @@ cut from `main` only, after ticket 44 of NEXT.md makes it the 1.0 line; never fr
    version: unit and system tests, the compatibility checks, the coverage floor, the signed
    release bundle against a stand-in portal.
 3. **publish** - waits until a reviewer of the `maven-central` environment approves it, for a
-   release candidate as for a final. Then it builds `odds-feed` and the parent POM with the
+   release candidate as for a final. Then it checks that `MAVEN_GPG_KEY` is the checked key's
+   subkeys (see "Pre-release checks"), builds `odds-feed` and the parent POM with the
    `release` profile, signs them, uploads them to the Central Portal and waits until Central
    has published them.
 4. **github-release** - a GitHub Release for the tag, with `release-notes/<version>.md` as
@@ -137,8 +138,9 @@ can receive mail, for the verification below. Then:
    environment, after its reviewers and deployment rule, as above. Set the repository variable
    `RELEASE_KEY_FINGERPRINT` to the primary's fingerprint, 40 hex digits without spaces.
    `RELEASE_KEY_FINGERPRINT=<fingerprint> scripts/release-key-check.sh`, run in any checkout,
-   says whether a release would pass its key check. It does not read the secrets: nothing checks
-   that `MAVEN_GPG_KEY` is the subkey the variable's key lists, so replace them together.
+   says whether a release would pass its key check on the public key. That check reads no
+   secret; the publish job checks the secret itself, once approved, and refuses a
+   `MAVEN_GPG_KEY` that is not the export of this key's subkeys.
 4. **The expiry date, here.** Change the line below to the subkey's expiry (`YYYY-MM-DD`) by a PR:
 
    Signing subkey expires: **not created yet**
@@ -243,6 +245,14 @@ release, before anything is built, when:
   names the server, the subkey and the date.
   "The signing subkey nears its expiry" below says what to do.
 
+The check job cannot see the secrets, which only the approved publish job reads. So that job,
+before it builds, runs `scripts/release-signing-key-check.sh`: it imports `MAVEN_GPG_KEY` into a
+throwaway home and refuses unless the secret has a stub primary (a full export, with the primary's
+secret, is refused: that is a leak of the primary), the primary's fingerprint is
+`RELEASE_KEY_FINGERPRINT`, and it holds the secret of a signing subkey that is neither revoked nor
+expired. It names the reason and prints nothing of the key; the passphrase is not needed for it.
+A secret that was replaced with another key, or exported wrongly, fails here and signs nothing.
+
 Right before the upload, and again before the GitHub Release, the run asks GitHub whether the
 tag still names the commit it checked and built (`scripts/release-tag-check.sh`), and stops if
 it was moved or deleted - a release may have waited days for its approval.
@@ -251,8 +261,9 @@ The portal also refuses a version it already has, which covers the minutes befor
 version appears in the repository. On every push to `next`, `scripts/release-check-test.sh`
 runs each of these cases against a scratch repository and a stub Central,
 `scripts/release-key-check-test.sh` runs the key check's against stub keyservers and keys it
+makes, `scripts/release-signing-key-check-test.sh` runs the secret's check against keys it
 makes, and `scripts/release-workflow-test.sh` holds `release.yml` and the workflows it calls to its policy:
-the release and key checks always run, the upload only after check and build and only in the approved
+the release and key checks always run, the secret's key check before the upload, the upload only after check and build and only in the approved
 environment, no secrets or environment anywhere else, no cache there, the tag checked
 again first, and the bundle kept after a failed or cancelled upload too. It also compares `release.yml` with its pinned form in
 `scripts/release-workflow.json`: a change to the release workflow updates that file too
