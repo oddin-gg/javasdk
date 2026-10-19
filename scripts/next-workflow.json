@@ -226,12 +226,14 @@
   "on": {
     "pull_request": {
       "branches": [
-        "next"
+        "next",
+        "main"
       ]
     },
     "push": {
       "branches": [
-        "next"
+        "next",
+        "main"
       ]
     },
     "workflow_call": {

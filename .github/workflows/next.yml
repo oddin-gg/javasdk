@@ -1,12 +1,16 @@
 name: Java SDK 1.0 CI
 
 on:
+  # `next` becomes `main` when 1.0 is ready; both are listed so that CI works before the rename
+  # and after it. `next` can go once nothing targets it any more.
   pull_request:
     branches:
       - 'next'
+      - 'main'
   push:
     branches:
       - 'next'
+      - 'main'
   # release.yml runs this same build on the tagged commit, as the tag's version
   workflow_call:
     inputs:
