@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -141,6 +142,10 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     private final Set<Fact.SnapshotComplete> completesQueued = ConcurrentHashMap.newKeySet();
     /** How many ended ids {@link #issued} keeps. */
     private final int issuedKept;
+    /** The node id the feed's requests carry, which says in the log what a stray completion means. */
+    private final @Nullable Integer nodeId;
+    /** Whether the first stray snapshot complete has been told at INFO; any session's thread may be first. */
+    private final AtomicBoolean strayTold = new AtomicBoolean();
 
     private final Thread thread;
     /**
@@ -314,6 +319,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
             int issuedKept) {
         this.counters = new RecoveryCounters();
         this.issuedKept = issuedKept;
+        this.nodeId = settings.nodeId();
         this.producers = producers;
         this.control = new ArrayBlockingQueue<>(controlCapacity);
         this.samples = new ArrayBlockingQueue<>(sampleCapacity);
@@ -353,13 +359,7 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
                 // request this feed never asked for completes nothing, and one queued already is
                 // all the actor needs of it
                 if (!issued.contains(requestId)) {
-                    long stray = counters.unknownCompletions.incrementAndGet();
-                    if (stray == 1 || stray % 1_000 == 0) {
-                        LOG.warn(
-                                "A snapshot complete of request {}, which this feed did not ask for, is dropped, {} so far",
-                                requestId,
-                                stray);
-                    }
+                    strayComplete(requestId, counters.unknownCompletions.incrementAndGet());
                     return;
                 }
                 var complete = new Fact.SnapshotComplete(id, producerId, requestId);
@@ -909,6 +909,41 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
     /** How many request ids the actor remembers, for a test. */
     int issuedSize() {
         return issued.size();
+    }
+
+    /**
+     * A snapshot complete of a request this feed did not ask for. Another instance of the bookmaker
+     * asked for it, and the broker routes it here too: a feed with no node id binds the completions
+     * of every node, and one with a node id those of its node and, with message interest ALL, of
+     * the instances without one. There can be thousands, and each is expected, not a loss. It is
+     * counted and logged at DEBUG; the first is told at INFO, once, with the way to see fewer.
+     *
+     * @param stray how many there are, this one included
+     */
+    private void strayComplete(long requestId, long stray) {
+        LOG.debug(
+                "A snapshot complete of request {}, which this feed did not ask for, is dropped, {} so far",
+                requestId,
+                stray);
+        if (strayTold.compareAndSet(false, true)) {
+            if (nodeId == null) {
+                LOG.info(
+                        "A snapshot complete of request {} arrived which this feed did not ask for: another instance "
+                                + "of this bookmaker asked for it. A feed without a node id takes the completions of "
+                                + "the others: set a distinct node id on every instance (setSDKNodeId). They are "
+                                + "dropped and counted (recovery.unknown_completions), and logged at DEBUG",
+                        requestId);
+            } else {
+                LOG.info(
+                        "A snapshot complete of request {} arrived which this feed did not ask for: another instance "
+                                + "of this bookmaker asked for it, one with this feed's node id {} or, for a session "
+                                + "of message interest ALL, one without a node id. Set a distinct node id on every "
+                                + "instance (setSDKNodeId). They are dropped and counted "
+                                + "(recovery.unknown_completions), and logged at DEBUG",
+                        requestId,
+                        nodeId);
+            }
+        }
     }
 
     /** The machine's work, handed to the workers. Called on the actor's thread. */
