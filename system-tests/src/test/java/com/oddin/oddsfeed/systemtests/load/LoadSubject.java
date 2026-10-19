@@ -27,6 +27,7 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.lang.management.ManagementFactory;
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -126,12 +127,16 @@ public final class LoadSubject {
             throws ReflectiveOperationException {
         if (preload) {
             var type = builder.getClass();
+            Method eager;
             try {
-                type.getMethod("setEagerEntityPreload", boolean.class).invoke(builder, true);
-                type.getMethod("setPreloadLocales", List.class).invoke(builder, List.of(EN));
+                eager = type.getMethod("setEagerEntityPreload", boolean.class);
             } catch (NoSuchMethodException legacy) {
                 // 0.0.x has no preload to switch on
+                return builder.build();
             }
+            eager.invoke(builder, true);
+            // a builder that has the one has the other: without it the preload would be silently off
+            type.getMethod("setPreloadLocales", List.class).invoke(builder, List.of(EN));
         }
         return builder.build();
     }
@@ -351,8 +356,9 @@ public final class LoadSubject {
                         + System.currentTimeMillis();
             }
             at.add(entered - run.measureFrom);
-            // the producers' stamp is this machine's clock too: the publisher is another JVM on it
-            age.add(stamps.getCreated() > 0 ? Math.max(0, System.currentTimeMillis() - stamps.getCreated()) : -1);
+            // the producers' stamp is this machine's clock too: the publisher is another JVM on it; the age is
+            // read at the callback's first line, as the receipt's wait is, not after what the callback read
+            age.add(stamps.getCreated() > 0 ? Math.max(0, enteredMillis - stamps.getCreated()) : -1);
             wait.add(
                     stamps.getReceived() > 0 && stamps.getPublished() >= stamps.getReceived()
                             ? stamps.getPublished() - stamps.getReceived()
