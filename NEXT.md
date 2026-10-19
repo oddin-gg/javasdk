@@ -160,6 +160,12 @@ types in packages whose name contains `internal`.
   thread - hand the message to the client's own workers, which may fetch several variants at a
   time - instead of reading every name in the callback. Nothing in the SDK reads a name the client
   does not ask for.
+- A match's tournament comes only from its summary, as in 0.0.x and the Go SDK (`internal/cache/match.go`
+  takes it from the summary alone), and 1.0 keeps it so (decided 2026-10-19). When the summary cannot be
+  loaded, `getTournament()` returns null under `CATCH` and throws under `THROW`, even where the fixture
+  names the tournament; the .NET SDK reads the tournament id from the fixture then (its #63). The fallback
+  is a few lines and one more request on that failure path, and would be added, with a known-difference
+  entry, if a client needs it.
 - `ExceptionHandlingStrategy` keeps its meaning, getter by getter as 0.0.57 has it.
   Default stays `THROW`.
   - Under `THROW` a failure reaches the caller as the exception 0.0.x threw there. An
@@ -2021,3 +2027,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   reads it as of the dispatcher's own reading of the message, the way those do, which changes the
   signature of an internal method only: the sample of the safety net (processing delay) is not
   changed, it read the offset that way already. No public API changes.
+- 2026-10-19, the Go and .NET sweep since 2026-10-04: Go `a9d29d9` to `d626983` (a version bump and lint
+  tooling), .NET `66fcfca` (develop `9d9fe60`), nothing to port; the next sweep starts there. Two things
+  came out of it. A market description with `outcome_type="player"` and an empty `<outcomes/>`, or no
+  `<outcomes>` block, which Go's closed #65 asked about, was handled and is now pinned: the market is
+  served, its description lists no outcomes and an outcome the feed sends is named as the player or
+  competitor (`MessageFactoryTest`). And the .NET fallback of a match's tournament to the fixture when the
+  summary fails is not taken, by the owner's decision: 1.0 keeps what 0.0.x and the Go SDK do (section 3,
+  behaviour that stays). No code and no public API changes.
