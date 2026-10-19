@@ -189,6 +189,37 @@ jobs:
             **/target/failsafe-reports/*.xml
           if-no-files-found: ignore
 
+  codeowners:
+    # GitHub drops what it cannot read from CODEOWNERS - a team it cannot find, a pattern it cannot
+    # parse - and the path is then owned by nobody while the file looks right. The release's
+    # protection rests on it (RELEASING.md), so GitHub itself is asked whether it accepts the file.
+    # No checkout and no repository code in this job: it is the only one the job token reaches
+    # (contents: read is what the endpoint needs), and release-workflow-test.sh holds it to that.
+    name: CODEOWNERS accepted by GitHub
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Ask GitHub for the errors in CODEOWNERS
+        # the pull request's own head, which the merge commit of the event may not be a ref for
+        run: |
+          response=$(gh api "repos/$REPOSITORY/codeowners/errors?ref=$REF")
+          count=$(jq -e '.errors | arrays | length' <<<"$response") || {
+            echo "GitHub's answer holds no list of CODEOWNERS errors: $response" >&2
+            exit 1
+          }
+          if [ "$count" -ne 0 ]; then
+            jq -r '.errors[] | "\(.path):\(.line): \(.kind): \(.message)"' <<<"$response" >&2
+            echo "GitHub rejects $count line(s) of CODEOWNERS" >&2
+            exit 1
+          fi
+          echo "GitHub reads every line of CODEOWNERS"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+
   system-tests-next:
     # The system tests against the 1.0 SDK this build makes, where the build job runs them against
     # the published 0.0.x. The scenarios 1.0 does not pass yet are listed in

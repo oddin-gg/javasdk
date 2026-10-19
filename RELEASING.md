@@ -61,6 +61,8 @@ GitHub Packages.
       and the pinned `scripts/next-workflow.json`, besides the schema drift job's files. Nothing
       else is owned: the sources under `src/` are only compiled by the publish job, with the tests
       skipped, and run nothing there.
+      GitHub drops what it cannot read from a CODEOWNERS file, so `next.yml` asks it on every
+      run (the `codeowners` job, `gh api repos/<repo>/codeowners/errors`) and fails on any error.
 - [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
       creator included - may update or delete one. A published version keeps its tag for good.
       Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in

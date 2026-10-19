@@ -464,11 +464,34 @@ for path in sorted(seen):
     # property other than token by name: github['token'], github[format(...)], toJSON(github) and
     # bare github hand the token on as surely as github.token. Expressions ignore case, so this
     # does too.
-    tokens = [e.strip() for e in expressions(next_workflow)
-              if re.search(r"\bsecrets\b", e, re.I)
-              or any(not re.match(r"\s*\.\s*(?!token\b)[a-z_][\w-]*", e[m.end():], re.I)
-                     for m in re.finditer(r"(?<![\w.-])github(?![\w-])", e, re.I))]
+    def token_reads(value):
+        return [e.strip() for e in expressions(value)
+                if re.search(r"\bsecrets\b", e, re.I)
+                or any(not re.match(r"\s*\.\s*(?!token\b)[a-z_][\w-]*", e[m.end():], re.I)
+                       for m in re.finditer(r"(?<![\w.-])github(?![\w-])", e, re.I))]
+    # One job is the exception: codeowners, which asks GitHub whether it accepts CODEOWNERS and
+    # needs the token for that call alone. It checks nothing out and runs nothing of the
+    # repository's, a single script step, so there is no code of a pull request in its reach.
+    others = dict(next_workflow, jobs={n: j for n, j in next_workflow.get("jobs", {}).items() if n != "codeowners"})
+    tokens = token_reads(others)
     check(not tokens, "%s must not hand its steps the job token: %s" % (where, "; ".join(tokens)))
+    ask = next_workflow.get("jobs", {}).get("codeowners")
+    check(ask is not None, "%s must have the job codeowners" % where)
+    if ask is not None:
+        check("if" not in ask, "%s > codeowners must not be conditional" % where)
+        check(not ask.get("continue-on-error"), "%s > codeowners must not continue on error" % where)
+        check(ask.get("permissions") == {"contents": "read"},
+              "%s > codeowners must hold contents: read and nothing else, not %r" % (where, ask.get("permissions")))
+        ask_steps = ask.get("steps", [])
+        check(len(ask_steps) == 1 and "uses" not in ask_steps[0] and "codeowners/errors" in str(ask_steps[0].get("run", "")),
+              "%s > codeowners must be one script step that asks GitHub for the CODEOWNERS errors, nothing checked out" % where)
+        for step in ask_steps:
+            unconditional("codeowners", step, "the CODEOWNERS check")
+            check((step.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}",
+                  "%s > codeowners must call GitHub with GH_TOKEN: ${{ github.token }}" % where)
+            without_token = dict(step, env={k: v for k, v in (step.get("env") or {}).items() if k != "GH_TOKEN"})
+            ask_tokens = token_reads(dict(ask, steps=[without_token]))
+            check(not ask_tokens, "%s > codeowners must hand the job token to GH_TOKEN only: %s" % (where, "; ".join(ask_tokens)))
     # and the whole of next.yml against its pinned form, as release.yml below
     actual_next = json.dumps(load(path), indent=2, sort_keys=True) + "\n"
     pinned_next = open(pinned_next_path).read()
@@ -1355,6 +1378,85 @@ breaks next.yml replace '      - name: Check the checkout left no credentials be
         # persist-credentials: false is only a setting until something notices it stopped' '      - name: Check the checkout
         # persist-credentials: false is only a setting until something notices it stopped' \
   "./.github/workflows/next.yml > build must check once that its checkout left no credentials behind"
+
+# next.yml's codeowners job: there, on every run, with only the one script step, which holds the
+# job token for its one call
+breaks next.yml replace '  codeowners:
+' '  codeowners-legacy:
+' "./.github/workflows/next.yml must have the job codeowners"
+breaks next.yml replace '    name: CODEOWNERS accepted by GitHub
+' '    name: CODEOWNERS accepted by GitHub
+    if: false
+' "./.github/workflows/next.yml > codeowners must not be conditional"
+breaks next.yml replace '    name: CODEOWNERS accepted by GitHub
+' '    name: CODEOWNERS accepted by GitHub
+    continue-on-error: true
+' "./.github/workflows/next.yml > codeowners must not continue on error"
+breaks next.yml replace '    timeout-minutes: 5
+    permissions:
+      contents: read
+' '    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+' "./.github/workflows/next.yml > codeowners must hold contents: read and nothing else"
+breaks next.yml replace '      - name: Ask GitHub for the errors in CODEOWNERS
+' '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Ask GitHub for the errors in CODEOWNERS
+' "./.github/workflows/next.yml > codeowners must be one script step that asks GitHub for the CODEOWNERS errors"
+breaks next.yml replace '      - name: Ask GitHub for the errors in CODEOWNERS
+' '      - name: Ask GitHub for the errors in CODEOWNERS
+        if: false
+' "codeowners: the CODEOWNERS check must not be conditional"
+breaks next.yml replace '          REPOSITORY: ${{ github.repository }}
+' '          REPOSITORY: ${{ github.repository }}
+          LEAK: ${{ github.token }}
+' "./.github/workflows/next.yml > codeowners must hand the job token to GH_TOKEN only: github.token"
+breaks next.yml replace '          GH_TOKEN: ${{ github.token }}
+          REPOSITORY' '          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY' "./.github/workflows/next.yml > codeowners must call GitHub with GH_TOKEN: \${{ github.token }}"
+
+# That job's script, run as it is written (bash -e, GitHub's shell for a step that names none)
+# against a gh that gives the answers GitHub gives: no errors, errors, no list, and a failed call.
+ask_run=$(yq '.jobs.codeowners.steps[0].run' "$root/.github/workflows/next.yml")
+printf '%s\n' "$ask_run" > "$work/codeowners.sh"
+mkdir -p "$work/ask-bin"
+cat > "$work/ask-bin/gh" <<'STUB'
+#!/usr/bin/env bash
+echo "$*" > "$GH_ARGS"
+if [ -n "${GH_FAIL:-}" ]; then
+  echo "gh: HTTP 502" >&2
+  exit 1
+fi
+printf '%s' "$GH_ANSWER"
+STUB
+chmod +x "$work/ask-bin/gh"
+ask() {  # ask <expect: pass|fail> <what> <gh's answer> [<what a refusal must print>] [failing call: 1]
+  local expect=$1 what=$2 answer=$3 says=${4:-} got=pass
+  PATH=$work/ask-bin:$PATH GH_ARGS=$work/ask-args GH_ANSWER=$answer GH_FAIL=${5:-} \
+    REPOSITORY=oddin-gg/javasdk REF=0123abc bash -e "$work/codeowners.sh" > "$work/ask-out" 2> "$work/ask-err" || got=fail
+  if [ "$got" != "$expect" ]; then
+    echo "FAIL the CODEOWNERS check ($what): expected $expect, got $got: $(cat "$work/ask-out" "$work/ask-err")" >&2
+    failures=$((failures + 1))
+  elif [ "$expect" = fail ] && [ -n "$says" ] && ! grep -qF -- "$says" "$work/ask-err"; then
+    echo "FAIL the CODEOWNERS check ($what) failed, but did not say \"$says\": $(cat "$work/ask-err")" >&2
+    failures=$((failures + 1))
+  elif [ "$(cat "$work/ask-args")" != "api repos/oddin-gg/javasdk/codeowners/errors?ref=0123abc" ]; then
+    echo "FAIL the CODEOWNERS check ($what) asked GitHub for: $(cat "$work/ask-args")" >&2
+    failures=$((failures + 1))
+  else
+    echo "ok   the CODEOWNERS check ($what) -> $got"
+  fi
+}
+ask pass "no errors" '{"errors":[]}'
+ask fail "an owner GitHub does not know" '{"errors":[{"line":13,"column":36,"kind":"Unknown owner","source":"/mvnw @oddin-gg/nobody","suggestion":"Make sure @oddin-gg/nobody exists","message":"Unknown owner on line 13: make sure @oddin-gg/nobody exists and has write access to the repository","path":".github/CODEOWNERS"}]}' \
+  ".github/CODEOWNERS:13: Unknown owner: Unknown owner on line 13"
+ask fail "a line it cannot parse" '{"errors":[{"line":2,"column":1,"kind":"Invalid pattern","source":"[","suggestion":null,"message":"Invalid pattern on line 2","path":".github/CODEOWNERS"}]}' \
+  "GitHub rejects 1 line(s) of CODEOWNERS"
+ask fail "an answer without a list" '{}' "holds no list of CODEOWNERS errors"
+ask fail "a null list" '{"errors":null}' "holds no list of CODEOWNERS errors"
+ask fail "an answer that is no JSON" 'Not Found' "holds no list of CODEOWNERS errors"
+ask fail "a call that fails" '' '' 1
 
 # The 1.0 job's check of its reports, run as it is written (with bash -e, GitHub's shell for a step
 # that names none),

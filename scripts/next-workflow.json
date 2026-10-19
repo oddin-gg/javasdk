@@ -88,6 +88,25 @@
         }
       ]
     },
+    "codeowners": {
+      "name": "CODEOWNERS accepted by GitHub",
+      "permissions": {
+        "contents": "read"
+      },
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "env": {
+            "GH_TOKEN": "${{ github.token }}",
+            "REF": "${{ github.event.pull_request.head.sha || github.sha }}",
+            "REPOSITORY": "${{ github.repository }}"
+          },
+          "name": "Ask GitHub for the errors in CODEOWNERS",
+          "run": "response=$(gh api \"repos/$REPOSITORY/codeowners/errors?ref=$REF\")\ncount=$(jq -e '.errors | arrays | length' <<<\"$response\") || {\n  echo \"GitHub's answer holds no list of CODEOWNERS errors: $response\" >&2\n  exit 1\n}\nif [ \"$count\" -ne 0 ]; then\n  jq -r '.errors[] | \"\\(.path):\\(.line): \\(.kind): \\(.message)\"' <<<\"$response\" >&2\n  echo \"GitHub rejects $count line(s) of CODEOWNERS\" >&2\n  exit 1\nfi\necho \"GitHub reads every line of CODEOWNERS\"\n"
+        }
+      ],
+      "timeout-minutes": 5
+    },
     "stress": {
       "name": "Stress",
       "permissions": {
