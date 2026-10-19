@@ -509,6 +509,17 @@ echo "GitHub reads every line of CODEOWNERS"
             without_token = dict(step, env={k: v for k, v in (step.get("env") or {}).items() if k != "GH_TOKEN"})
             ask_tokens = token_reads(dict(ask, steps=[without_token]))
             check(not ask_tokens, "%s > codeowners must hand the job token to GH_TOKEN only: %s" % (where, "; ".join(ask_tokens)))
+    # CI runs for both branches while `next` is renamed to `main`, and for the one that is left
+    # after it: each trigger lists both, said here apart from the pinned form, which is regenerated
+    for event in ("pull_request", "push"):
+        branches = ((next_workflow.get("on") or {}).get(event) or {}).get("branches") or []
+        check(sorted(branches) == ["main", "next"],
+              "%s > on %s must run for next and main, not %r" % (where, event, branches))
+    # the head of the pull request, which the merge commit of the event may not be a ref for
+    ask_env = ((next_workflow.get("jobs", {}).get("codeowners") or {}).get("steps") or [{}])[0].get("env") or {}
+    check(ask_env.get("REF") == "${{ github.event.pull_request.head.sha || github.sha }}",
+          "%s > codeowners must ask about REF: ${{ github.event.pull_request.head.sha || github.sha }}, not %r"
+          % (where, ask_env.get("REF")))
     # the build job resolves CODEOWNERS the way GitHub does, once, on every run
     owners_steps = [step for step in (next_workflow.get("jobs", {}).get("build") or {}).get("steps", [])
                     if str(step.get("run", "")).strip() == "./scripts/release-codeowners-test.sh"]
@@ -523,6 +534,16 @@ echo "GitHub reads every line of CODEOWNERS"
                                              "scripts/next-workflow.json", "next.yml"))
         problems.append("next.yml differs from its pinned form in scripts/next-workflow.json; if the "
                         "change is meant, update it with scripts/release-workflow-test.sh --update:\n" + diff)
+
+# the schema drift workflow judges the 0.x line and the 1.0 line by their names after the rename
+drift_path = os.path.join(root, ".github/workflows/schema-drift.yml")
+drift_runs = []
+if os.path.exists(drift_path):
+    drift_runs = [str(step.get("run", "")).strip()
+                  for step in ((load(drift_path).get("jobs", {}).get("drift") or {}).get("steps") or [])
+                  if "schema-drift.sh" in str(step.get("run", ""))]
+check(drift_runs == ["scripts/schema-drift.sh release/0.x main"],
+      "schema-drift.yml > drift must compare the pins with: scripts/schema-drift.sh release/0.x main, not %r" % drift_runs)
 
 # and every job there that checks out checks, once, unconditionally and right after the checkout,
 # that the checkout left no credential behind
@@ -1401,6 +1422,27 @@ breaks next.yml replace '      - name: Check the checkout left no credentials be
         # persist-credentials: false is only a setting until something notices it stopped' '      - name: Check the checkout
         # persist-credentials: false is only a setting until something notices it stopped' \
   "./.github/workflows/next.yml > build must check once that its checkout left no credentials behind"
+
+# next.yml runs for pushes and pull requests to next and to main, whatever the pinned form says
+breaks next.yml replace "      - 'next'
+      - 'main'
+  push:" "      - 'next'
+  push:" "./.github/workflows/next.yml > on pull_request must run for next and main"
+breaks next.yml replace "  push:
+    branches:
+      - 'next'
+      - 'main'
+" "  push:
+    branches:
+      - 'next'
+" "./.github/workflows/next.yml > on push must run for next and main"
+breaks next.yml replace "          REF: \${{ github.event.pull_request.head.sha || github.sha }}
+" "          REF: \${{ github.sha }}
+" "./.github/workflows/next.yml > codeowners must ask about REF"
+# the drift workflow's call names the lines as they are called after the rename
+breaks schema-drift.yml replace "        run: scripts/schema-drift.sh release/0.x main
+" "        run: scripts/schema-drift.sh release/0.x next
+" "schema-drift.yml > drift must compare the pins with: scripts/schema-drift.sh release/0.x main"
 
 # next.yml's codeowners job: there, on every run, with only the one script step, which holds the
 # job token for its one call
