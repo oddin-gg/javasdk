@@ -523,10 +523,16 @@ class LoadHarnessIT {
         @Override
         public void close() {
             try {
+                // the JVM leaves its loop on "stop" or on the end of its input: closed here, a run that
+                // failed before its stop does not wait out the limit below for an exit nothing asks for
+                process.getOutputStream().close();
                 // the JVM writes its flight recording as it exits, after it has said it is done
                 if (!process.waitFor(60, TimeUnit.SECONDS)) {
                     process.destroyForcibly();
                 }
+            } catch (IOException gone) {
+                // the process is gone
+                process.destroyForcibly();
             } catch (InterruptedException e) {
                 process.destroyForcibly();
                 Thread.currentThread().interrupt();
