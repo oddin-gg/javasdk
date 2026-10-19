@@ -1197,8 +1197,8 @@ check of the first release candidate (section 7).
 ## 5. New in 1.0
 
 Additive only, and every addition is on the differences list (section 3). All of it
-exists in the Go SDK already. The release candidate has what this section does not mark
-as planned; the planned items come with tickets 27 and 28, before 1.0.0.
+exists in the Go SDK already. Everything listed here is on `next` (tickets 27 and 28 are
+done); what stays out on purpose is named where it stays out.
 
 - Entities: the ids of a tournament's competitors and of a sport's tournaments
   (`Tournament.getCompetitorIds`, `Sport.getTournamentIds`), read from what the views
@@ -1211,7 +1211,13 @@ as planned; the planned items come with tickets 27 and 28, before 1.0.0.
   `category` is an empty placeholder, the void reason id and parameters are sent on a
   bet cancel's markets only, where 1.0 reads them (`MarketCancel`), and statistics and
   reference ids are not there at all. Should the producer start sending one, the schema
-  declares it and it comes as a 1.x addition.
+  declares it and it comes as a 1.x addition. Also left out, by decision of 2026-10-19: the Go
+  SDK's name and abbreviation maps (the names of a match or other sport event, and the
+  abbreviations of a tournament and of a sport, each as a map by locale) and the per-locale extra
+  info of a match. 0.0.x has `getName(Locale)`, `getAbbreviation(Locale)` and one extra-info map
+  (`Match.getExtraInfo`) and nothing more, so no client's code depends on them, and a map would
+  have to say "the locales loaded so far", which changes with traffic. If clients ask for them
+  they can come in a 1.x minor, as `default` methods.
 - Getters: recovery status by request id, `getHealth()` (its transport counts the channel
   refusals, the broker's refusals to open a channel again on a live connection), a single sport, tournament and
   player by id on `SportsInfoManager` (`getSport`, `getTournament`, and `getPlayer` without
