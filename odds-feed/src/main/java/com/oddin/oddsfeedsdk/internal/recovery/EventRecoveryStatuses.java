@@ -50,12 +50,12 @@ final class EventRecoveryStatuses {
     /**
      * A status and the monotonic reading of when it ended, which retention counts from; unused while it is pending.
      */
-    private record Kept(EventRecoveryStatus status, long endedMono) {}
+    record Kept(EventRecoveryStatus status, long endedMono) {}
 
     /** When the feed's close gave up waiting for the actor, on both sides of the clock. */
     private record Abandoned(Instant at, long mono) {}
 
-    private final Map<Long, Kept> statuses = new ConcurrentHashMap<>();
+    private final Map<Long, Kept> statuses;
     /** The ended statuses, in the order they ended; the actor's thread's only. */
     private final ArrayDeque<Kept> ended = new ArrayDeque<>();
     /** Orders {@link #abandon} and {@link #ended}: nothing ends well after it, or a read sees it undone. */
@@ -73,9 +73,15 @@ final class EventRecoveryStatuses {
 
     /** With a bound a test sets. */
     EventRecoveryStatuses(FeedClock clock, RecoveryCounters counters, int endedKept) {
+        this(clock, counters, endedKept, new ConcurrentHashMap<>());
+    }
+
+    /** With the map a test reads through, to act between a read of it and the next. */
+    EventRecoveryStatuses(FeedClock clock, RecoveryCounters counters, int endedKept, Map<Long, Kept> statuses) {
         this.clock = clock;
         this.counters = counters;
         this.endedKept = endedKept;
+        this.statuses = statuses;
     }
 
     /**
@@ -84,13 +90,15 @@ final class EventRecoveryStatuses {
      */
     @Nullable
     EventRecoveryStatus get(long requestId) {
+        // abandoned before the map: the other way round, a status read pending, then completed and
+        // abandoned before the next line, would read failed, and the read after it completed
+        var gone = abandoned;
         Kept kept = statuses.get(requestId);
         if (kept == null) {
             return null;
         }
         var status = kept.status();
         var endedMono = kept.endedMono();
-        var gone = abandoned;
         if (gone != null && status.state() == EventRecoveryStatus.State.PENDING) {
             status = status.ended(EventRecoveryStatus.State.FAILED, gone.at(), FEED_CLOSED);
             endedMono = gone.mono();

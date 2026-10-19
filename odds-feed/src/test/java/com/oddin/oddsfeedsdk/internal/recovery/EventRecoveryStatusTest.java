@@ -16,6 +16,7 @@ import com.oddin.oddsfeedsdk.schema.utils.URN;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -336,6 +337,82 @@ class EventRecoveryStatusTest {
 
         split.advanceMono(Duration.ofMillis(1));
         assertThat(split.recoveryStatuses.get(id)).isNull();
+    }
+
+    @ParameterizedTest
+    @ValueSource(longs = {30, -30})
+    void aRecoveryTheActorEndsAfterTheCloseAbandonedItReadsFailedFromTheAbandonAndIsKeptFromIt(long minutes) {
+        var split = new Harness(Harness.settings(), true);
+        split.open(1, MessageInterest.ALL);
+        split.start();
+        assertThat(split.recoverEvent(PRE)).isNotDone();
+        Outbox.Call call = split.calls.getLast();
+        long id = call.requestId();
+        split.stepWall(Duration.ofMinutes(1));
+        long abandonedWall = split.now();
+        split.recoveryStatuses.abandon();
+
+        // the actor reaches its end later, by the clocks of both sides: it completes
+        split.advanceMono(Duration.ofMinutes(2));
+        split.stepWall(Duration.ofMinutes(minutes));
+        split.complete(call, 1);
+        assertThat(split.now()).as("the completion's own wall reading").isNotEqualTo(abandonedWall);
+        EventRecoveryStatus failed = requireNonNull(split.recoveryStatuses.get(id));
+        assertThat(failed.state()).as("not the end the actor reached").isEqualTo(FAILED);
+        assertThat(failed.reason()).isEqualTo(EventRecoveryStatuses.FEED_CLOSED);
+        assertThat(failed.endedAt()).as("when the close gave up").isEqualTo(Instant.ofEpochMilli(abandonedWall));
+        assertThat(failed.startedAt()).isEqualTo(START);
+
+        split.advanceMono(Duration.ofMinutes(3));
+        assertThat(split.recoveryStatuses.get(id))
+                .as("five minutes of the monotonic clock after the abandon")
+                .isNotNull();
+        split.advanceMono(Duration.ofMillis(1));
+        assertThat(split.recoveryStatuses.get(id))
+                .as("past five minutes from the abandon, not from the completion")
+                .isNull();
+        assertThat(split.recoveryStatuses.size()).as("forgotten at the tick").isZero();
+    }
+
+    @Test
+    void aReadThatSawThePendingStatusDoesNotShowItFailedForACloseThatGaveUpAfterItCompleted() {
+        var statuses = new ReadHook();
+        var recoveries = new EventRecoveryStatuses(feed.feedClock, new RecoveryCounters(), 10, statuses);
+        recoveries.pending(1, PRE, MATCH, feed.clock.instant());
+
+        // between the read's look at the map and its look at the close: the actor completes the
+        // recovery, then the close gives up waiting for the actor
+        statuses.afterNextGet = () -> {
+            recoveries.ended(1, COMPLETED, feed.clock.instant(), null, feed.feedClock.monoMillis());
+            recoveries.abandon();
+        };
+        EventRecoveryStatus first = requireNonNull(recoveries.get(1));
+        assertThat(statuses.afterNextGet).as("the interleaving happened").isNull();
+        EventRecoveryStatus next = requireNonNull(recoveries.get(1));
+
+        assertThat(next.state()).as("the next read").isEqualTo(COMPLETED);
+        assertThat(first.state())
+                .as("a read that is failed is never followed by one that is completed")
+                .isEqualTo(PENDING);
+    }
+
+    /** The statuses' map, running a test's step once, right after the next read of it. */
+    @SuppressWarnings("serial")
+    private static final class ReadHook extends ConcurrentHashMap<Long, EventRecoveryStatuses.Kept> {
+
+        @Nullable
+        Runnable afterNextGet;
+
+        @Override
+        public EventRecoveryStatuses.@Nullable Kept get(Object key) {
+            var kept = super.get(key);
+            var step = afterNextGet;
+            if (step != null) {
+                afterNextGet = null;
+                step.run();
+            }
+            return kept;
+        }
     }
 
     @Test
