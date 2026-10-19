@@ -56,16 +56,19 @@ GitHub Packages.
       `.github/CODEOWNERS` names the release managers' team as owner of what the publish job
       runs with the key and the token, or what decides that it runs: `.github/` (the workflows
       and the policy that holds them), this file and `release-notes/`, `scripts/release-*`,
-      the Maven wrapper (`mvnw`, `mvnw.cmd`, `.mvn/`), every `pom.xml` of the reactor, not only
-      the root one, and, for the build job that tests the commit first, `scripts/fetch-sdk.sh`
-      and the pinned `scripts/next-workflow.json`, besides the schema drift job's files. Nothing
-      else is owned: the sources under `src/` are only compiled by the publish job, with the tests
-      skipped, and run nothing there.
+      the Maven wrapper (`mvnw`, `mvnw.cmd`, `.mvn/`) and every `pom.xml` of the reactor, not
+      only the root one. For the build job, which tests the commit first, also
+      `scripts/fetch-sdk*`, the checksums `fetch-sdk.sh` reads
+      (`system-tests/src/test/resources/sdk-jar-checksums.properties`) and the pinned
+      `scripts/next-workflow.json`; and the schema drift job's files. Nothing else is owned: the
+      publish job only compiles the other sources, with the tests skipped. That list is not kept
+      by hand alone: `scripts/release-codeowners-test.sh` derives every script a workflow runs
+      and every file those scripts name by a literal path from the repository root, and
+      requires the team to own them, so a new one cannot be missed.
       GitHub drops what it cannot read from a CODEOWNERS file, so `next.yml` asks it on every
       run (the `codeowners` job, `gh api repos/<repo>/codeowners/errors`) and fails on any error.
-      It does not notice a line that was removed, so `scripts/release-codeowners-test.sh` resolves
-      the owner of the workflows, the wrapper, the release scripts and every POM of the reactor
-      (from the root POM's `<modules>`) and requires the team.
+      It does not notice a line that was removed, which is why that test resolves the owners the
+      way GitHub does, for the paths above and the reactor's POMs (from the root POM's `<modules>`).
 - [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
       creator included - may update or delete one. A published version keeps its tag for good.
       Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in

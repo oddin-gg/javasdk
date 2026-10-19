@@ -4,7 +4,9 @@
 # release build runs with the signing key and the Central token. GitHub reports a file it cannot
 # read (next.yml asks it), but not an ownership line that was removed or no longer matches: the
 # file stays valid and the path is simply owned by nobody. So the owner of each path is resolved
-# here, the way GitHub does, and must be the team. next.yml runs it on every push. Needs python3.
+# here, the way GitHub does, and must be the team: a list of paths kept here, and the scripts the
+# workflows run and the files those scripts read, derived, so that none added later is missed.
+# next.yml runs it on every push. Needs python3 and yq.
 #
 #   scripts/release-codeowners-test.sh
 #
@@ -17,7 +19,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 -I - "$root" <<'PY'
-import os, re, sys
+import json, os, re, subprocess, sys
 import xml.etree.ElementTree as ET
 
 root = sys.argv[1]
@@ -71,6 +73,46 @@ reactor = modules(".")
 if not reactor:
     sys.exit("FAIL the root pom.xml names no modules, so the POMs of the reactor were not checked")
 owned += [os.path.join(module, "pom.xml") for module in reactor]
+
+# What the workflows run and what those scripts read is derived, so that a script or a file added
+# to the build cannot be missed by a list kept by hand: every scripts/ path in a run: of a
+# workflow, and every file such a script names by a literal path from the repository root
+# ($root/..., or $here/... in the scripts that set it to their own directory).
+def workflow_scripts():
+    found = {}
+    directory = os.path.join(root, ".github/workflows")
+    for name in sorted(os.listdir(directory)):
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        runs = subprocess.run(["yq", "-o=json", '[.. | select(tag == "!!map" and has("run")) | .run]',
+                               os.path.join(directory, name)], check=True, capture_output=True, text=True).stdout
+        for run in json.loads(runs):
+            for path in re.findall(r"(?<![\w/.-])(?:\./)?(scripts/[A-Za-z0-9_.-]+)", str(run)):
+                found.setdefault(path, name)
+    return found
+
+def script_reads(script):
+    found = set()
+    for variable, path in re.findall(r"(\$\{?root\}?|\$\{?here\}?)/(\.?[A-Za-z0-9_][A-Za-z0-9_./-]*)", open(os.path.join(root, script)).read()):
+        found.add(("scripts/" if "here" in variable else "") + path.rstrip("./"))
+    return found
+
+derived = workflow_scripts()
+reads = {}
+for script in derived:
+    if not os.path.isfile(os.path.join(root, script)):
+        sys.exit("FAIL %s, run by %s, is not a file" % (script, derived[script]))
+    for path in script_reads(script):
+        reads.setdefault(path, script)
+# the derivation must have found what it is for, or an empty one would pass
+expected_derived = ["scripts/fetch-sdk.sh", "scripts/fetch-sdk-test.sh", "scripts/release-check.sh", "scripts/schema-drift.sh"]
+expected_reads = ["system-tests/src/test/resources/sdk-jar-checksums.properties", "pom.xml", "mvnw"]
+if [p for p in expected_derived if p not in derived] or [p for p in expected_reads if p not in reads]:
+    sys.exit("FAIL the workflows' scripts were not derived: %s; their reads: %s" % (sorted(derived), sorted(reads)))
+for path in reads:
+    if not os.path.exists(os.path.join(root, path)):
+        sys.exit("FAIL %s, read by %s, does not exist: the derivation read a path wrong" % (path, reads[path]))
+owned += [p for p in derived if p not in owned] + [p for p in reads if p not in owned]
 # what the release only compiles belongs to nobody in particular: owning everything would make
 # the release managers review every change
 unowned = ["odds-feed/src/main/java/X.java", "README.md"]
@@ -92,8 +134,9 @@ failed = problems(lines)
 for problem in failed:
     print("FAIL " + problem, file=sys.stderr)
 if not failed:
-    print("ok   %d paths owned by %s, %d unowned, %d modules of the reactor: %s"
-          % (len(owned), TEAM[0], len(unowned), len(reactor), ", ".join(reactor)))
+    print("ok   %d paths owned by %s, %d unowned; %d modules of the reactor: %s; %d scripts run by workflows, "
+          "%d files they read" % (len(owned), TEAM[0], len(unowned), len(reactor), ", ".join(reactor),
+                                  len(derived), len(reads)))
 
 # the check must see what it is for: a line removed, a line another owner overrides, a line
 # that matches nothing, and an owner it does not know all have to be found
@@ -101,6 +144,8 @@ cases = {
     "a removed line": [l for l in lines if not l.startswith("/mvnw ")],
     "the POM line removed": [l for l in lines if not l.startswith("**/pom.xml")],
     "a later line for another owner": lines + ["/RELEASING.md @someone-else"],
+    "the fetch-sdk line removed": [l for l in lines if not l.startswith("/scripts/fetch-sdk")],
+    "the checksums line removed": [l for l in lines if not l.startswith("/system-tests/src/test/resources/sdk-jar")],
     "a line that no longer matches": [l.replace("/.mvn/ ", "/.mvm/ ") for l in lines],
     "everything owned": lines + ["* @oddin-gg/ragnar-admin"],
 }
