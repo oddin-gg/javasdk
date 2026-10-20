@@ -674,6 +674,58 @@ class MatchCachesTest {
     }
 
     @Test
+    void aLoadThatWroteSinceAReadLookedIsNotRepeated() {
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        // the read has looked and found nothing; a load of the key then runs to its end, as the eager preload's does
+        time.onNextInstant(() -> caches.match(MATCH, Locale.ENGLISH));
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
+                .as("the match the load wrote")
+                .isEqualTo("Team Alpha vs Team Beta");
+        assertThat(api.requests("GET", SUMMARY_EN)).as("one load, not two").hasSize(1);
+
+        time.onNextInstant(() -> caches.fixture(MATCH));
+        assertThat(caches.fixture(MATCH).get(TV_CHANNELS, null)).hasSize(1);
+        assertThat(api.requests("GET", FIXTURE_EN)).hasSize(1);
+    }
+
+    @Test
+    void aLiveStateLoadedSinceAReadLookedIsNotLoadedAgain() {
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        assertThat(caches.live(MATCH)).isNotNull();
+        // the state is old now: the read finds it so, and a load of the summary runs to its end before it asks. The
+        // first reading of the time is the state's own, inside its lock, so the hook waits for the second
+        time.advance(LiveState.STATUS_AGE.plusMinutes(1));
+        time.onNextInstant(() -> time.onNextInstant(() -> caches.live(MATCH)));
+        assertThat(caches.live(MATCH)).as("the state the other load wrote").isNotNull();
+        assertThat(api.requests("GET", SUMMARY_EN))
+                .as("one load for each time it was old")
+                .hasSize(2);
+    }
+
+    @Test
+    void anInvalidationAfterTheLoadThatWroteSinceAReadLookedStillLoadsAgain() {
+        api.respond(SUMMARY_EN, 200, SUMMARY);
+        api.respond(FIXTURE_EN, 200, Fixtures.read("rest/fixtures_fixture/fixtures_fixture.xml"));
+        // the load wrote and was invalidated by a fixture change before the read asks: nothing fresh is left
+        time.onNextInstant(() -> {
+            caches.match(MATCH, Locale.ENGLISH);
+            caches.fixtureChange(MATCH);
+        });
+        assertThat(caches.match(MATCH, Locale.ENGLISH).get(NAME, Locale.ENGLISH))
+                .as("loaded again, not the tombstone")
+                .isEqualTo("Team Alpha vs Team Beta");
+        assertThat(api.requests("GET", SUMMARY_EN)).hasSize(2);
+
+        time.onNextInstant(() -> {
+            caches.fixture(MATCH);
+            caches.clear();
+        });
+        assertThat(caches.fixture(MATCH).get(TV_CHANNELS, null)).hasSize(1);
+        assertThat(api.requests("GET", FIXTURE_EN)).hasSize(2);
+    }
+
+    @Test
     void aSummaryFillsTheProfilesAndSideLoadsItsCompetitorsInItsLocale() throws Exception {
         api.respond(SUMMARY_EN, 200, SUMMARY);
         String home = "/v1/sports/en/competitors/od:competitor:47214/profile";

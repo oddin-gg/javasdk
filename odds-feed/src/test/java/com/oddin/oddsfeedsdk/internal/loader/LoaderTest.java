@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -74,6 +75,115 @@ class LoaderTest {
 
         assertThat(loader.load("m1")).isEqualTo("value of m1");
         assertThat(fetches).as("a later miss fetches afresh").hasValue(2);
+    }
+
+    @Test
+    void aCallerWhoseNeedAFetchMetSinceItLookedStartsNone() {
+        var fetches = new AtomicInteger();
+        var written = new ConcurrentHashMap<String, String>();
+        var loader = writing(fetches, written);
+        var joins = countJoins(loader);
+
+        assertThat(loader.load("m1")).isEqualTo("value of m1");
+        assertThat(loader.load("m1", null, () -> written.get("m1")))
+                .as("what the first fetch wrote")
+                .isEqualTo("value of m1");
+        assertThat(fetches).as("no other fetch").hasValue(1);
+        assertThat(joins)
+                .as("the second caller neither joined nor started a flight")
+                .hasValue(1);
+        assertThat(loader.inFlight()).isZero();
+    }
+
+    @Test
+    void aCallerWhoseNeedIsStillOpenStartsItsOwnFetch() {
+        var fetches = new AtomicInteger();
+        var loader = writing(fetches, new ConcurrentHashMap<>());
+
+        assertThat(loader.load("m1")).isEqualTo("value of m1");
+        // a fetch that wrote nothing, or an invalidation since, leaves the cache as the caller needs it
+        assertThat(loader.load("m1", null, () -> null)).isEqualTo("value of m1");
+        assertThat(fetches).hasValue(2);
+    }
+
+    @Test
+    void aFetchUnderWayIsJoinedWithoutLookingAgain() throws Exception {
+        var fetches = new AtomicInteger();
+        var written = new ConcurrentHashMap<String, String>();
+        var release = new CountDownLatch(1);
+        var loader = new Loader<String, String>(
+                "match",
+                (key, _, _) -> {
+                    fetches.incrementAndGet();
+                    await(release);
+                    written.put(key, "value of " + key);
+                    return "value of " + key;
+                },
+                Duration.ofSeconds(5),
+                MARGIN,
+                virtualThreads,
+                FeedClock.system());
+        var joins = countJoins(loader);
+        var asked = new AtomicInteger();
+
+        Future<String> first = virtualThreads.submit(() -> loader.load("m1"));
+        try {
+            waitUntil(() -> joins.get() == 1);
+            Future<String> second = virtualThreads.submit(() -> loader.load("m1", null, () -> {
+                asked.incrementAndGet();
+                return "a value of its own";
+            }));
+            waitUntil(() -> joins.get() == 2);
+            release.countDown();
+            assertThat(second.get(5, TimeUnit.SECONDS))
+                    .as("the fetch's, not its own")
+                    .isEqualTo("value of m1");
+            assertThat(first.get(5, TimeUnit.SECONDS)).isEqualTo("value of m1");
+        } finally {
+            release.countDown();
+        }
+        assertThat(asked).as("a fetch under way has written nothing yet").hasValue(0);
+        assertThat(fetches).hasValue(1);
+        assertThat(written).containsOnlyKeys("m1");
+    }
+
+    @Test
+    void theCallersNeedIsLookedAtAgainInTheStepThatFindsNoFetchToJoin() throws Exception {
+        var fetches = new AtomicInteger();
+        var written = new ConcurrentHashMap<String, String>();
+        var loader = writing(fetches, written);
+        var looked = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var secondCaller = new AtomicReference<Thread>();
+        var callers = Executors.newFixedThreadPool(2);
+        try {
+            // the first caller found nothing written, and the answer it gives is that one however long it is held
+            Future<String> first = callers.submit(() -> loader.load("m1", null, () -> {
+                var seen = written.get("m1");
+                looked.countDown();
+                await(release);
+                return seen;
+            }));
+            assertThat(looked.await(5, TimeUnit.SECONDS)).isTrue();
+            Future<String> second = callers.submit(() -> {
+                secondCaller.set(Thread.currentThread());
+                // late to the flight, if the first caller's fetch has ended by the time it is let in: it looks too
+                return loader.load("m1", null, () -> written.get("m1"));
+            });
+            // the loader decides the key's flight in one step: a second caller either waits for it, or - were the
+            // first caller still deciding outside it - fetches and writes before the first caller is let go
+            waitUntil(() -> written.containsKey("m1")
+                    || (secondCaller.get() != null && secondCaller.get().getState() == Thread.State.BLOCKED));
+            release.countDown();
+            assertThat(first.get(5, TimeUnit.SECONDS)).isEqualTo("value of m1");
+            assertThat(second.get(5, TimeUnit.SECONDS)).isEqualTo("value of m1");
+            assertThat(fetches)
+                    .as("the second caller joined the flight the first started, or took what it wrote")
+                    .hasValue(1);
+        } finally {
+            release.countDown();
+            callers.shutdownNow();
+        }
     }
 
     @Test
@@ -694,6 +804,21 @@ class LoaderTest {
         } catch (java.util.concurrent.ExecutionException timedOut) {
             assertThat(timedOut.getCause()).isInstanceOf(ApiException.class);
         }
+    }
+
+    /** A loader whose fetch writes what it returns to {@code written}, as a cache's loader does before it leaves. */
+    private Loader<String, String> writing(AtomicInteger fetches, ConcurrentHashMap<String, String> written) {
+        return new Loader<>(
+                "match",
+                (key, _, _) -> {
+                    fetches.incrementAndGet();
+                    written.put(key, "value of " + key);
+                    return "value of " + key;
+                },
+                Duration.ofSeconds(5),
+                MARGIN,
+                virtualThreads,
+                FeedClock.system());
     }
 
     /** Counts the callers that join or start a flight. */
