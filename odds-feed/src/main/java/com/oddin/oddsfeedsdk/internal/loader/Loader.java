@@ -1,5 +1,7 @@
 package com.oddin.oddsfeedsdk.internal.loader;
 
+import static java.util.Objects.requireNonNull;
+
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.internal.clock.FeedClock;
 import com.oddin.oddsfeedsdk.internal.rest.Deadline;
@@ -14,8 +16,10 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -26,6 +30,11 @@ import org.jspecify.annotations.Nullable;
  * own. A fetch that fails fails every caller waiting for it, and the next miss starts afresh: a
  * fetch leaves before it tells anyone how it went. One still running past its callers' time is
  * abandoned, writes nothing from then on, and is replaced by the next miss.
+ *
+ * <p>A caller that looked at the cache before it asked can be late: the fetch it would have joined
+ * may have written and left in between. It hands the loader a way to look again, and the loader
+ * does, in the step that finds no fetch to join - a fetch writes before it leaves, so a caller that
+ * finds none, and finds what it needs, has missed one and starts none.
  *
  * <p>The fetch writes what it gets into the caches itself, and returns what the callers need. Since
  * nothing waits without a deadline, loads that wait for each other - a match for its competitors, a
@@ -95,11 +104,36 @@ public final class Loader<K, V> {
      * @throws ApiException when the fetch fails, or does not finish in time
      */
     public V load(K key, @Nullable Deadline within) {
+        return load(key, within, () -> null);
+    }
+
+    /**
+     * The same, for a caller that found it needed a fetch from what the cache held when it looked:
+     * when no fetch is running, {@code held} is asked once more, and what it returns, if anything,
+     * is the answer, with no fetch started. A fetch that wrote and left since the caller looked is
+     * thus not repeated, while one that wrote nothing - invalidated, abandoned, failed - leaves the
+     * cache as the caller needs it still, and the caller's own fetch starts. A running fetch is
+     * joined without asking: it has not written yet.
+     *
+     * @param held what the caller needs of the cache now, or null when it still needs a fetch; asked
+     *     while the key's flight is being decided, so it must be quick and call neither the loader
+     *     nor anything that waits
+     * @throws ApiException when the fetch fails, or does not finish in time
+     */
+    public V load(K key, @Nullable Deadline within, Supplier<@Nullable V> held) {
         var mine = new Flight<V>(Deadline.in(deadline, clock::monoNanos), margin);
+        var found = new AtomicReference<@Nullable V>();
         // a flight past its callers' time is abandoned and replaced, in the same step as callers join
+        @Nullable
         Flight<V> flight = inFlight.compute(key, (k, running) -> {
             if (running == null) {
-                return mine;
+                // a fetch writes before it leaves the map, so one that ended since the caller looked has written
+                V answer = held.get();
+                if (answer == null) {
+                    return mine;
+                }
+                found.set(answer);
+                return null;
             }
             if (running.expired(clock)) {
                 running.abandoned().set(true);
@@ -107,6 +141,9 @@ public final class Loader<K, V> {
             }
             return running;
         });
+        if (flight == null) {
+            return requireNonNull(found.get());
+        }
         joined.accept(key);
         if (flight.equals(mine)) {
             try {

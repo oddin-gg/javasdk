@@ -31,6 +31,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -140,12 +142,12 @@ public final class MatchCaches {
     /** The same, from inside another load, waiting no longer than its deadline. */
     public Entry match(URN id, Locale locale, @Nullable Deadline within) {
         var key = new MatchKey(id, locale);
-        return read(matches, id, SUMMARY, locale, () -> summaries.load(key, within));
+        return read(matches, id, SUMMARY, locale, fresh -> summaries.load(key, within, fresh));
     }
 
     /** The match's fixture, loaded in the default locale when it is missing or out of date. */
     public Entry fixture(URN id) {
-        return read(fixtures, id, FIXTURE, defaultLocale, () -> fixtureLoads.load(id));
+        return read(fixtures, id, FIXTURE, defaultLocale, fresh -> fixtureLoads.load(id, null, fresh));
     }
 
     /**
@@ -162,8 +164,13 @@ public final class MatchCaches {
             return values;
         }
         var key = new MatchKey(id, defaultLocale);
+        // a summary loaded since the check above is not loaded again
+        Supplier<@Nullable Boolean> fresh = () -> {
+            LiveValues now = live.get(id);
+            return (now != null && now.isFresh(clock.monoMillis())) ? Boolean.TRUE : null;
+        };
         for (int tries = 0; tries < 2 && (values == null || !values.isFresh(clock.monoMillis())); tries++) {
-            summaries.load(key);
+            summaries.load(key, null, fresh);
             values = live.get(id);
         }
         return values;
@@ -405,12 +412,21 @@ public final class MatchCaches {
      * The entry once {@code endpoint} is fresh for it in {@code locale}, loaded twice at most: a read
      * just after a fixture change can join a load from before it, which then writes nothing.
      * Freshness is told from the entry returned, so an invalidation after the check cannot leave the
-     * read with a tombstone.
+     * read with a tombstone. The load is handed the freshness check to make again as it finds no
+     * load to join: a load that wrote since the read looked is not repeated, and one that an
+     * invalidation made stale is, since the entry is then not fresh.
      */
-    private Entry read(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Runnable load) {
+    private Entry read(
+            EntityCache<URN> cache,
+            URN id,
+            Endpoint endpoint,
+            Locale locale,
+            Consumer<Supplier<@Nullable Boolean>> load) {
+        Supplier<@Nullable Boolean> fresh = () ->
+                entryOf(cache, id).isFresh(endpoint, locale, clock.monoNanos(), cache.age()) ? Boolean.TRUE : null;
         Entry entry = entryOf(cache, id);
         for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.monoNanos(), cache.age()); tries++) {
-            load.run();
+            load.accept(fresh);
             entry = entryOf(cache, id);
         }
         return entry;

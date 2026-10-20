@@ -30,6 +30,8 @@ import java.util.Locale;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.jspecify.annotations.Nullable;
 
 /**
@@ -107,12 +109,16 @@ public final class ProfileCaches {
     /** The competitor as its profile in {@code locale} describes it, loaded when missing or out of date. */
     public Entry competitor(URN id, Locale locale, @Nullable Deadline within) {
         return read(
-                competitors, id, COMPETITOR_PROFILE, locale, () -> competitorLoads.load(new Key(id, locale), within));
+                competitors,
+                id,
+                COMPETITOR_PROFILE,
+                locale,
+                fresh -> competitorLoads.load(new Key(id, locale), within, fresh));
     }
 
     /** The player as its profile in {@code locale} describes it, loaded when missing or out of date. */
     public Entry player(URN id, Locale locale, @Nullable Deadline within) {
-        return read(players, id, PLAYER_PROFILE, locale, () -> playerLoads.load(new Key(id, locale), within));
+        return read(players, id, PLAYER_PROFILE, locale, fresh -> playerLoads.load(new Key(id, locale), within, fresh));
     }
 
     /** Whether the competitor's profile in {@code locale} needs no load: fresh, or a load of it under way. */
@@ -127,7 +133,12 @@ public final class ProfileCaches {
 
     /** The tournament as its info in {@code locale} describes it, loaded when missing or out of date. */
     public Entry tournament(URN id, Locale locale, @Nullable Deadline within) {
-        return read(tournaments, id, TOURNAMENT_INFO, locale, () -> tournamentLoads.load(new Key(id, locale), within));
+        return read(
+                tournaments,
+                id,
+                TOURNAMENT_INFO,
+                locale,
+                fresh -> tournamentLoads.load(new Key(id, locale), within, fresh));
     }
 
     /**
@@ -139,7 +150,8 @@ public final class ProfileCaches {
         Entry entry = entryOf(sports, id);
         // twice at most: a read just after a clear can join a load from before it, which writes nothing
         for (int tries = 0; tries < 2 && !sportFresh(id, entry, locale); tries++) {
-            sportListLoads.load(locale, within);
+            sportListLoads.load(
+                    locale, within, () -> sportFresh(id, entryOf(sports, id), locale) ? Boolean.TRUE : null);
             entry = entryOf(sports, id);
         }
         return entry;
@@ -149,7 +161,7 @@ public final class ProfileCaches {
     public List<URN> sports(Locale locale, @Nullable Deadline within) {
         SportList list = freshList(locale);
         for (int tries = 0; tries < 2 && list == null; tries++) {
-            sportListLoads.load(locale, within);
+            sportListLoads.load(locale, within, () -> freshList(locale) != null ? Boolean.TRUE : null);
             list = freshList(locale);
         }
         return list == null ? List.of() : list.ids();
@@ -162,7 +174,7 @@ public final class ProfileCaches {
                 sportId,
                 SPORT_TOURNAMENT_LIST,
                 locale,
-                () -> sportTournamentLoads.load(new Key(sportId, locale), within));
+                fresh -> sportTournamentLoads.load(new Key(sportId, locale), within, fresh));
     }
 
     /** What a fetch of a match, a schedule or a list takes before it starts, to hand to the fills. */
@@ -281,12 +293,22 @@ public final class ProfileCaches {
     /**
      * The entry once {@code endpoint} is fresh for it in {@code locale}, loaded twice at most: a read
      * just after a clear can join a load from before it, which writes nothing. Freshness is told from
-     * the entry returned, so a clear after the check cannot leave the read with a tombstone.
+     * the entry returned, so a clear after the check cannot leave the read with a tombstone. The
+     * load is handed the freshness check to make again as it finds no load to join: a load that
+     * wrote since the read looked is not repeated, and one that a clear made stale is, since the
+     * entry is then not fresh.
      */
-    private Entry read(EntityCache<URN> cache, URN id, Endpoint endpoint, Locale locale, Runnable load) {
+    private Entry read(
+            EntityCache<URN> cache,
+            URN id,
+            Endpoint endpoint,
+            Locale locale,
+            Consumer<Supplier<@Nullable Boolean>> load) {
+        Supplier<@Nullable Boolean> fresh = () ->
+                entryOf(cache, id).isFresh(endpoint, locale, clock.monoNanos(), cache.age()) ? Boolean.TRUE : null;
         Entry entry = entryOf(cache, id);
         for (int tries = 0; tries < 2 && !entry.isFresh(endpoint, locale, clock.monoNanos(), cache.age()); tries++) {
-            load.run();
+            load.accept(fresh);
             entry = entryOf(cache, id);
         }
         return entry;
