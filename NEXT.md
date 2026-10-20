@@ -2307,7 +2307,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   upload failed has no release and is passed over, so the pull requests before it are asked about again; before the
   first release, after the commit in `scripts/release-approval-baseline`, which is still the placeholder and must be
   set to the commit `main` pointed to at the rename of `next`), and refuses the tag unless each was
-  approved on its final commit by someone other than its author; a commit no pull request merged into `main`
-  left, a direct push, fails as well. Its own test, `scripts/release-approval-check-test.sh`, runs in `next.yml`
+  approved on its final commit by a release manager who wrote none of it: the approver must be a login in
+  `scripts/release-managers` (the repository is public, so a read-only account can leave an approval, and the check
+  job has no secret to read the team with; the list is kept equal to the team and owned by it), and neither the
+  pull request's author nor the author or committer of any of its commits; a commit whose author or committer
+  GitHub links to no account fails the pull request, since who pushed it cannot be told. A commit no pull request
+  merged into `main` left, a direct push, fails as well. Its own test, `scripts/release-approval-check-test.sh`, runs in `next.yml`
   against a stub `gh`, and the pinned workflow forms and the workflow policy test hold the new step. No public
   API changes.

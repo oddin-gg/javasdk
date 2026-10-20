@@ -5,7 +5,8 @@
 # dismisses an approval when the pull request changes nor asks for the approval of its latest
 # push, so a pull request can merge on the approval of an earlier version of itself. This check
 # closes that gap at the release: every pull request merged into main since the previous release
-# must have been approved on GitHub for its final commit, by someone other than its author.
+# must have been approved on GitHub for its final commit by a release manager who did not write
+# any of it.
 # scripts/release-approval-check-test.sh runs it against a stub gh on every push.
 #
 #   scripts/release-approval-check.sh <commit>
@@ -17,10 +18,14 @@
 # release, those after the commit in scripts/release-approval-baseline, read from the tagged
 # commit. Each commit is looked up for the pull request merged into main that left it; none, a
 # direct push, fails as well. Of each such pull request, its final head is asked, and its reviews:
-# one APPROVED, for that head, by a user other than its author. Every pull request that fails is
-# named, with the approvals it had. The calls to GitHub are one per commit, two per pull request
-# and one per tag looked at until a release is found, plus the further pages of a long list. A
-# call that fails, or does not answer within APPROVAL_TIMEOUT seconds (default 60), stops the
+# one APPROVED, for that head, by a release manager (a login in scripts/release-managers, read from
+# the tagged commit like the baseline, compared without regard to case: this job has no secret to
+# read the team with, and the repository is public, so anyone with a read-only account can leave an
+# approval) who is neither the pull request's author nor the author or committer of any of its
+# commits (pulls/{n}/commits), so whoever pushed to it cannot approve it. Every pull request that
+# fails is named, with the approvals it had. The calls to GitHub are one per commit, two per pull
+# request (a third, for its commits, when a release manager approved its final commit), and one per
+# tag looked at until a release is found, plus the further pages of a long list. A call that fails, or does not answer within APPROVAL_TIMEOUT seconds (default 60), stops the
 # release: no answer is never a pass.
 set -euo pipefail
 
@@ -28,6 +33,7 @@ label=${1:?usage: release-approval-check.sh <commit>}
 repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY names the repository whose pull requests count}
 timeout=${APPROVAL_TIMEOUT:-60}
 baseline_file=scripts/release-approval-baseline
+managers_file=scripts/release-managers
 
 fail() {
   echo "$label: $*" >&2
@@ -44,6 +50,10 @@ ask() {
 # one line of text from GitHub, which anyone may write, without a character that moves a log line
 plain() {
   printf '%s' "$1" | tr -d '[:cntrl:]'
+}
+
+lower() {
+  printf '%s' "$1" | LC_ALL=C tr 'A-Z' 'a-z'
 }
 
 # git may only see part of the history in a shallow clone, and would then check fewer commits
@@ -101,6 +111,19 @@ if [ -z "$start" ]; then
 fi
 [ "$start" != "$commit" ] || fail "nothing was merged since $since"
 
+# The release managers, from the tagged commit: one login a line, comments and blank lines aside.
+# An empty or unreadable list would leave nobody who can approve, so it stops the release here.
+raw=$(git show "$commit:$managers_file" 2> /dev/null) || fail "$managers_file is missing: it lists the release managers, whose approval counts"
+managers=$(printf '%s\n' "$raw" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' | grep -v '^\(#\|$\)' || true)
+managers=$(lower "$managers")
+[ -n "$managers" ] || fail "$managers_file lists no release manager"
+while IFS= read -r login; do
+  [[ "$login" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || fail "$managers_file has a line that is no GitHub login: $login"
+done <<< "$managers"
+manager() {
+  printf '%s\n' "$managers" | grep -qxF -- "$(lower "$1")"
+}
+
 commits=$(git rev-list "$start..$commit")
 total=$(printf '%s\n' "$commits" | wc -l)
 
@@ -136,7 +159,6 @@ for number in $(printf '%s\n' ${numbers[@]+"${numbers[@]}"} | sort -un); do
   author=$(printf '%s\n' "$info" | sed -n 2p)
   title=$(plain "$(printf '%s\n' "$info" | sed -n 3p)")
   [[ "$head" =~ ^[0-9a-f]{40}$ ]] || fail "GitHub gave no final commit for pull request #$number: $head"
-  [ -n "$author" ] || fail "GitHub gave no author for pull request #$number"
   # a login or "-" for none; every APPROVED review, whatever it was for: the ones that do not count
   # are reported
   approvals=$(ask --paginate "repos/$repository/pulls/$number/reviews?per_page=100" \
@@ -144,24 +166,54 @@ for number in $(printf '%s\n' ${numbers[@]+"${numbers[@]}"} | sort -un); do
     || fail "could not ask GitHub for the reviews of pull request #$number"
   approved=false
   report=
+  pushers=
+  pushers_unknown=
   while read -r reviewed login; do
     [ -n "$reviewed" ] || continue
-    if [ "$login" = "$author" ]; then
+    if [ "$login" = "-" ]; then
+      report+=$'\n'"    approved on ${reviewed:0:12} by a user GitHub does not name: does not count"
+    elif [ -z "$author" ]; then
+      report+=$'\n'"    approved by $login on ${reviewed:0:12}: GitHub names no author of the pull request, so who may approve it is unknown"
+    elif [ "$(lower "$login")" = "$(lower "$author")" ]; then
       report+=$'\n'"    approved by $login on ${reviewed:0:12}: its author does not count"
+    elif ! manager "$login"; then
+      report+=$'\n'"    approved by $login on ${reviewed:0:12}: not a release manager"
     elif [ "$reviewed" != "$head" ]; then
       report+=$'\n'"    approved by $login on ${reviewed:0:12}: not the final commit"
-    elif [ "$login" = "-" ]; then
-      report+=$'\n'"    approved on the final commit by a user GitHub does not name: does not count"
     else
-      approved=true
+      # a release manager's approval of the final commit: unless they pushed to the pull request.
+      # Asked once, and only now; the commits of a pull request are at most 250 to the API.
+      if [ -z "$pushers" ] && [ -z "$pushers_unknown" ]; then
+        listed=$(ask --paginate "repos/$repository/pulls/$number/commits?per_page=100" \
+          --jq '.[] | "\(.sha[0:12]) \(.author.login // "-") \(.committer.login // "-")"') \
+          || fail "could not ask GitHub for the commits of pull request #$number"
+        count=$(printf '%s\n' "$listed" | grep -c . || true)
+        if [ "$count" -eq 0 ]; then
+          pushers_unknown="GitHub lists no commit of it"
+        elif [ "$count" -ge 250 ]; then
+          pushers_unknown="it has $count commits, as many as GitHub lists at most"
+        elif unlinked=$(printf '%s\n' "$listed" | awk '$2 == "-" || $3 == "-" { print $1; exit }') && [ -n "$unlinked" ]; then
+          pushers_unknown="commit $unlinked has an author or committer GitHub links to no account"
+        else
+          pushers=$(printf '%s\n' "$listed" | awk '{ print $2; print $3 }')
+          pushers=$(lower "$pushers")
+        fi
+      fi
+      if [ -n "$pushers_unknown" ]; then
+        report+=$'\n'"    approved by $login on ${reviewed:0:12}: who pushed to the pull request cannot be told ($pushers_unknown)"
+      elif printf '%s\n' "$pushers" | grep -qxF -- "$(lower "$login")"; then
+        report+=$'\n'"    approved by $login on ${reviewed:0:12}: $login wrote or committed a commit of the pull request"
+      else
+        approved=true
+      fi
     fi
   done <<< "$approvals"
   if [ "$approved" = false ]; then
     [ -n "$report" ] || report=$'\n'"    no approval at all"
-    echo "$label: pull request #$number ($title) by $author has no approval of its final commit ${head:0:12} by someone else:$report" >&2
+    echo "$label: pull request #$number ($title) by ${author:-nobody GitHub names} has no approval of its final commit ${head:0:12} by a release manager who did not write it:$report" >&2
     failures=$((failures + 1))
   fi
 done
 
-[ "$failures" -eq 0 ] || fail "$failures of the pull requests and direct pushes since $since were not approved on their final commit by someone other than the author; the ruleset of main does not require that, so this release does"
-echo "$label: $total commit(s) since $since came from $pulls pull request(s), each approved on its final commit by someone other than its author" >&2
+[ "$failures" -eq 0 ] || fail "$failures of the pull requests and direct pushes since $since were not approved on their final commit by a release manager who did not write it; the ruleset of main does not require that, so this release does"
+echo "$label: $total commit(s) since $since came from $pulls pull request(s), each approved on its final commit by a release manager who did not write it" >&2

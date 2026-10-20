@@ -23,7 +23,7 @@ repo=$work/repo
 
 # Stub gh. A call is answered from the file of its endpoint in $GH_STUB_API, the path after
 # repos/example/repo/ without its query: commits/<sha>/pulls.json, pulls/<n>.json,
-# pulls/<n>/reviews.json and releases/tags/<tag>.json. A .fail file next to it makes the call fail, a .stall one makes it
+# pulls/<n>/reviews.json, pulls/<n>/commits.json and releases/tags/<tag>.json. A .fail file next to it makes the call fail, a .stall one makes it
 # answer only after 10 seconds, no file at all is a 404. Like gh, it returns a list in pages of
 # per_page (30 without one) and all of them only with --paginate, running the --jq filter on each
 # page. Every call is recorded.
@@ -77,6 +77,15 @@ chmod +x "$work/bin/gh"
 
 declare -A sha
 
+# the release managers file at c3: comments, blanks, a mixed-case login and padding, which count as
+# they are; a case sets $managers_text to say otherwise
+default_managers='# release managers
+
+Bob
+  dave
+erin
+'
+
 # new_repo <baseline>: the commits root, c1, c2 and c3, c3 the tagged one, and the baseline file
 # at c3 as the line given: unset, the commit of this name, or the text as it is
 new_repo() {
@@ -97,6 +106,7 @@ new_repo() {
   line=${sha[${1}]:-$1}
   mkdir -p "$repo/scripts"
   printf '# the commit main pointed to when the rule began\n%s\n' "$line" > "$repo/scripts/release-approval-baseline"
+  printf '%s' "${managers_text-$default_managers}" > "$repo/scripts/release-managers"
   git -C "$repo" add -A
   git -C "$repo" commit -q -m c3
   sha[c3]=$(git -C "$repo" rev-parse HEAD)
@@ -119,8 +129,21 @@ reviews() {
   mkdir -p "$api/pulls/$number"
   for entry in "$@"; do
     IFS=: read -r state commit login <<< "$entry"
-    jq -n --arg s "$state" --arg c "$commit" --arg l "$login" '{state: $s, commit_id: $c, user: {login: $l}}'
+    jq -n --arg s "$state" --arg c "$commit" --arg l "$login" \
+      '{state: $s, commit_id: $c, user: (if $l == "-" then null else {login: $l} end)}'
   done | jq -s . > "$api/pulls/$number/reviews.json"
+}
+
+# pr_commits <number> <author:committer>...: the commits of the pull request, - for a login
+# GitHub does not give (an e-mail linked to no account)
+pr_commits() {
+  local number=$1
+  shift
+  mkdir -p "$api/pulls/$number"
+  jq -n '[$ARGS.positional | to_entries[] | (.value | split(":")) as $p
+    | {sha: ("c\(.key)aaaaaaaaaaaaaaaaaaaaaaaa"),
+       author: (if $p[0] == "-" then null else {login: $p[0]} end),
+       committer: (if $p[1] == "-" then null else {login: $p[1]} end)}]' --args "$@" > "$api/pulls/$number/commits.json"
 }
 
 # left <commit> <number>...: the pull requests merged into main that left the commit, beside one
@@ -150,6 +173,9 @@ standard() {
   pull 2 carol "$(head_of 2)"
   reviews 1 "APPROVED:$(head_of 1):bob"
   reviews 2 "APPROVED:$(head_of 2):bob"
+  # alice wrote hers, one of them committed through GitHub's web editor
+  pr_commits 1 alice:alice alice:web-flow
+  pr_commits 2 carol:carol
 }
 
 failures=0
@@ -205,8 +231,10 @@ case_all_approved() {
 --paginate commits/${sha[c1]}/pulls?per_page=100
 pulls/1
 --paginate pulls/1/reviews?per_page=100
+--paginate pulls/1/commits?per_page=100
 pulls/2
---paginate pulls/2/reviews?per_page=100"
+--paginate pulls/2/reviews?per_page=100
+--paginate pulls/2/commits?per_page=100"
   if [ "$(asked)" != "$want" ]; then
     reason="asked
 $(asked)
@@ -227,8 +255,10 @@ case_earlier_commit() {
 case_author_only() {
   new_repo root
   standard
-  reviews 2 "APPROVED:$(head_of 2):carol"
-  expect fail "pull request #2 (Pull request 2) by carol" "approved by carol on $(head_of 2 | cut -c1-12): its author does not count" \
+  # a release manager, writing as another case than GitHub gives the login in
+  pull 2 Erin "$(head_of 2)"
+  reviews 2 "APPROVED:$(head_of 2):erin"
+  expect fail "pull request #2 (Pull request 2) by Erin" "approved by erin on $(head_of 2 | cut -c1-12): its author does not count" \
     "!pull request #1" || return 1
 }
 
@@ -237,6 +267,141 @@ case_other_reviews() {
   standard
   reviews 2 "COMMENTED:$(head_of 2):bob" "CHANGES_REQUESTED:$(head_of 2):dave" "DISMISSED:$(head_of 2):erin"
   expect fail "pull request #2 (Pull request 2) by carol" "no approval at all" || return 1
+}
+
+case_not_release_manager() {
+  new_repo root
+  standard
+  reviews 2 "APPROVED:$(head_of 2):mallory"
+  expect fail "pull request #2 (Pull request 2) by carol" "approved by mallory on $(head_of 2 | cut -c1-12): not a release manager" || return 1
+  if asked | grep -q "pulls/2/commits"; then
+    reason="asked for the commits of a pull request nobody who counts approved: $(asked)"
+    return 1
+  fi
+}
+
+# bob, a release manager, wrote a commit of the pull request, or committed one: his approval is no
+# other person's review; erin's, another release manager's, is
+case_pusher_author() {
+  new_repo root
+  standard
+  pr_commits 2 carol:carol BOB:carol
+  expect fail "pull request #2 (Pull request 2) by carol" "approved by bob on $(head_of 2 | cut -c1-12): bob wrote or committed a commit of the pull request" || return 1
+}
+
+case_pusher_committer() {
+  new_repo root
+  standard
+  pr_commits 2 carol:carol carol:bob
+  expect fail "approved by bob on $(head_of 2 | cut -c1-12): bob wrote or committed a commit of the pull request" || return 1
+}
+
+case_other_manager_approves() {
+  new_repo root
+  standard
+  pr_commits 2 carol:carol bob:bob
+  reviews 2 "APPROVED:$(head_of 2):bob" "APPROVED:$(head_of 2):erin"
+  expect pass "came from 2 pull request(s)" || return 1
+}
+
+# a commit whose author or committer GitHub links to no account: who pushed cannot be told
+case_unlinked_author() {
+  new_repo root
+  standard
+  pr_commits 2 carol:carol -:carol
+  expect fail "pull request #2 (Pull request 2) by carol" "who pushed to the pull request cannot be told (commit c1aaaaaaaaaa has an author or committer GitHub links to no account)" || return 1
+}
+
+case_unlinked_committer() {
+  new_repo root
+  standard
+  pr_commits 2 carol:carol carol:-
+  expect fail "who pushed to the pull request cannot be told" || return 1
+}
+
+# the committer of an edit made on github.com is web-flow, GitHub's own account, with the editor as
+# author: it can approve nothing, so it names nobody who could, and the commit is no reason to fail
+case_web_edit() {
+  new_repo root
+  standard
+  pr_commits 2 carol:web-flow
+  expect pass "came from 2 pull request(s)" || return 1
+}
+
+# more than a page of commits: the last one, the 101st, is bob's
+case_many_commits() {
+  new_repo root
+  standard
+  local entries=() i
+  for i in $(seq 100); do
+    entries+=(carol:carol)
+  done
+  pr_commits 2 "${entries[@]}" bob:bob
+  expect fail "approved by bob on $(head_of 2 | cut -c1-12): bob wrote or committed a commit of the pull request" || return 1
+}
+
+# GitHub lists 250 commits of a pull request at most; a pull request that has that many may have more
+case_commit_limit() {
+  new_repo root
+  standard
+  local entries=() i
+  for i in $(seq 250); do
+    entries+=(carol:carol)
+  done
+  pr_commits 2 "${entries[@]}"
+  expect fail "who pushed to the pull request cannot be told (it has 250 commits, as many as GitHub lists at most)" || return 1
+}
+
+case_no_commits() {
+  new_repo root
+  standard
+  pr_commits 2
+  expect fail "who pushed to the pull request cannot be told (GitHub lists no commit of it)" || return 1
+}
+
+case_managers_empty() {
+  managers_text='# nobody yet
+'
+  new_repo root
+  unset managers_text
+  standard
+  expect fail "scripts/release-managers lists no release manager" || return 1
+}
+
+case_managers_missing() {
+  new_repo root
+  standard
+  git -C "$repo" rm -q scripts/release-managers
+  git -C "$repo" commit -q -m "no managers"
+  sha[c3]=$(git -C "$repo" rev-parse HEAD)
+  left c3 2
+  expect fail "scripts/release-managers is missing" || return 1
+}
+
+case_managers_bad_line() {
+  managers_text='bob
+bob smith
+'
+  new_repo root
+  unset managers_text
+  standard
+  expect fail "scripts/release-managers has a line that is no GitHub login: bob smith" || return 1
+}
+
+# a pull request GitHub gives no author for (a deleted account), approved by a release manager
+case_no_author() {
+  new_repo root
+  standard
+  jq 'del(.user)' "$api/pulls/2.json" > "$work/pull" && mv "$work/pull" "$api/pulls/2.json"
+  expect fail "pull request #2 (Pull request 2) by nobody GitHub names" "GitHub names no author of the pull request" "!pull request #1" || return 1
+}
+
+# an approval of the final commit by a user GitHub does not name (a deleted account)
+case_approval_no_login() {
+  new_repo root
+  standard
+  reviews 2 "APPROVED:$(head_of 2):-"
+  expect fail "pull request #2 (Pull request 2) by carol" "by a user GitHub does not name: does not count" || return 1
 }
 
 case_no_review() {
@@ -476,7 +641,10 @@ case_shallow() {
 }
 
 reason=
-all_cases="case_all_approved case_earlier_commit case_author_only case_other_reviews case_no_review
+all_cases="case_all_approved case_earlier_commit case_author_only case_other_reviews case_not_release_manager
+case_pusher_author case_pusher_committer case_other_manager_approves case_unlinked_author case_unlinked_committer
+case_web_edit case_many_commits case_commit_limit case_no_commits case_managers_empty case_managers_missing
+case_managers_bad_line case_no_author case_approval_no_login case_no_review
 case_direct_push case_only_other_base case_every_failure_named case_previous_tag case_latest_tag
 case_refused_tag case_draft_release case_no_release_at_all case_api_error_release case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
 case_api_error_commit case_api_error_pull case_api_error_reviews case_api_stall case_no_head
@@ -518,8 +686,38 @@ PY
 
 breaks earlier_commit 'elif [ "$reviewed" != "$head" ]; then' 'elif false; then' \
   "takes an approval of any commit"
-breaks author_only 'if [ "$login" = "$author" ]; then' 'if false; then' \
+breaks author_only 'elif [ "$(lower "$login")" = "$(lower "$author")" ]; then' 'elif false; then' \
   "takes the author's own approval"
+breaks author_only 'elif [ "$(lower "$login")" = "$(lower "$author")" ]; then' 'elif [ "$login" = "$author" ]; then' \
+  "compares the author's login with the case it is written in"
+breaks not_release_manager 'elif ! manager "$login"; then' 'elif false; then' \
+  "takes an approval of anyone, not of a release manager"
+breaks not_release_manager 'managers=$(lower "$managers")' 'managers=$managers' \
+  "compares the release managers' logins with the case they are written in"
+breaks pusher_author "pushers=\$(printf '%s\\n' \"\$listed\" | awk '{ print \$2; print \$3 }')" "pushers=\$(printf '%s\\n' \"\$listed\" | awk '{ print \$3 }')" \
+  "does not count the author of a commit as one who pushed"
+breaks pusher_committer "pushers=\$(printf '%s\\n' \"\$listed\" | awk '{ print \$2; print \$3 }')" "pushers=\$(printf '%s\\n' \"\$listed\" | awk '{ print \$2 }')" \
+  "does not count the committer of a commit as one who pushed"
+breaks pusher_author '          pushers=$(lower "$pushers")' '          :' \
+  "compares the logins of those who pushed with the case they are written in"
+breaks unlinked_author '$2 == "-" || $3 == "-" { print $1; exit }' '$2 == "-" && $3 == "-" { print $1; exit }' \
+  "goes on when only one of author and committer is unlinked"
+breaks unlinked_committer '$2 == "-" || $3 == "-" { print $1; exit }' '$2 == "-" { print $1; exit }' \
+  "goes on when the committer is unlinked"
+breaks many_commits 'ask --paginate "repos/$repository/pulls/$number/commits?per_page=100"' 'ask "repos/$repository/pulls/$number/commits?per_page=100"' \
+  "reads the first page of the commits only"
+breaks commit_limit '[ "$count" -ge 250 ]' '[ "$count" -ge 251 ]' \
+  "trusts a list of 250 commits to be the whole"
+breaks no_commits '[ "$count" -eq 0 ]' '[ "$count" -eq 99999 ]' \
+  "takes an empty list of commits for one nobody pushed"
+breaks managers_empty '[ -n "$managers" ] || fail' 'true || fail' \
+  "goes on with no release manager listed"
+breaks managers_bad_line '[[ "$login" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] ||' 'true ||' \
+  "takes any line of the list for a login"
+breaks no_author 'elif [ -z "$author" ]; then' 'elif false; then' \
+  "approves a pull request GitHub names no author of"
+breaks approval_no_login '    if [ "$login" = "-" ]; then' '    if false; then' \
+  "takes an approval by a user GitHub does not name"
 breaks direct_push 'direct+=("$sha")' ':' \
   "lets a direct push pass"
 breaks previous_tag "'refs/tags/v1.*'" "'refs/tags/v1.nothing*'" \

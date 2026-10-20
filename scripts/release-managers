@@ -1,0 +1,15 @@
+# The release managers: the members of the release managers' team, one GitHub login per line.
+# release-approval-check.sh counts an approval of a pull request only from one of them, and only
+# when they wrote none of it. The release check job has no secret to read the team with, and the
+# repository is public (anyone with a read-only account can leave an approval), so the list is kept
+# here, where CODEOWNERS gives it to the release managers: a change to it is reviewed by them.
+# Keep it equal to the team. Logins are compared without regard to case. Comments and blank lines
+# are ignored; a line that is not a login stops the release.
+hrubymar10
+dsaiko
+trbolat
+padysmike
+jamm3e3333
+stetinatomas-oddin
+yung-madamm
+lukassenfeld-oddin
