@@ -500,6 +500,39 @@ class ApiClientTest {
     }
 
     @Test
+    void aCallThatNeedsNoBodyIsDoneWhenTheApiAcceptedItWhateverTheSizeOfItsBody() {
+        // a body well over the limit of 50 bytes, as a success's body that is not wanted
+        String big = "<accepted>" + " ".repeat(5_000) + "</accepted>";
+        ApiClient client = limited(50, 50);
+        api.respond("/v1/replay/stop", Reply.of(202, big));
+        client.postReplayStop();
+        api.respond("/v1/replay/events/od:match:1", Reply.of(200, big));
+        client.putReplayEvent(MATCH);
+        api.respond(PRODUCER_RECOVERY, Reply.of(202, big));
+        client.postRecovery("pre", 1, null);
+        assertThat(api.requests("POST", "/v1/replay/stop")).as("not sent again").hasSize(1);
+        assertThat(api.requests("POST", PRODUCER_RECOVERY)).as("not sent again").hasSize(1);
+        assertThat(events.calls)
+                .extracting(ApiCall::failure)
+                .as("none is reported as failed")
+                .containsOnlyNulls();
+
+        // a call that needs its body still fails on one over the limit, and is not read again
+        api.respond(WHOAMI, Reply.of(200, big));
+        assertThatThrownBy(client::fetchWhoAmI)
+                .isInstanceOf(ApiException.class)
+                .hasMessageContaining("the answer is over 50 bytes");
+        assertThat(api.requests("GET", WHOAMI)).hasSize(1);
+
+        // and an error's body over its limit is cut short, the call failing by its status as ever
+        api.respond("/v1/replay/clear", Reply.of(500, big));
+        assertThatThrownBy(client::postReplayClear)
+                .isInstanceOf(ApiException.class)
+                .hasMessageEndingWith("answered 500");
+        assertThat(api.requests("POST", "/v1/replay/clear")).hasSize(1);
+    }
+
+    @Test
     void nothingIsSentOnceTheDeadlineHasPassed() {
         ApiClient client = client(b -> b);
         assertThatThrownBy(() -> client.fetchProducers(Deadline.in(Duration.ZERO)))

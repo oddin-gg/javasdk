@@ -2282,3 +2282,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   its revocation certificate are held by one release manager with an offline encrypted backup, not yet in
   storage all release managers can read, and the document says so and keeps that as the rule. The scripts
   read no algorithm, so none changed. No public API changes.
+- 2026-10-20, a check of the CI scripts and the REST transport from a review of the whole tree. The whole-repository
+  ownership check took a file at the root, one path under each top-level directory, `scripts/` and the paths
+  CODEOWNERS names, so a later rule giving a file deeper down (a source file of `odds-feed`, say) to another
+  owner matched no sample and passed. It now resolves the owner of every file git tracks (every file of the tree
+  where it is not a git checkout), and a later rule for such a file is a refused case of the test. A call that
+  needs no body (a recovery request, replay control) was done by its status when its body broke off or stalled,
+  but not when the body was over the size limit: a 2xx answer that long was reported as a failure although the API
+  had accepted the request, and the caller could then send a recovery again. It is done by its status in that case
+  too; a call that needs its body, and an error answer, fail as before. No public API changes.
