@@ -771,6 +771,46 @@ class LiveStateTest {
         assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 120_000 + TEN_MINUTES);
     }
 
+    /**
+     * Two sessions take the lock in another order than they received: U, received at 50 s, writes;
+     * then F, stamped a millisecond after it and received at 0, writes in order. A timely C, stamped
+     * before U and received a millisecond after it, is 1 ms behind the latest receipt, not 50 s: it is
+     * a swap, not a takeover.
+     */
+    @Test
+    void aMessageIsLateByTheLatestReceiptOfAWriteNotByTheWatermarksOwn() {
+        assertThat(message("m1", BASE + 50_000, 50_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 50_001, 0, Duration.ofMillis(-50_001)))
+                .as("F: a millisecond newer, received before U, handled after it")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 49_990, 50_001, Duration.ofMillis(11)))
+                .as("C: timely, received a millisecond after U, 11 ms older than it")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 50_001);
+    }
+
+    /**
+     * U, received at 1000, writes; then A, stamped after it and received at 500, writes in order; then
+     * F, stamped 30.5 s after A and received 100 ms after U, is a jump: by the latest receipt only 100
+     * ms went by, by A's own 600. C, timely, stamped before U, is refused by the stamp A left behind.
+     */
+    @Test
+    void aJumpIsMeasuredFromTheLatestReceiptOfAWriteNotTheWatermarksOwn() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 2_000, 500, Duration.ofMillis(-1_500)))
+                .as("A: newer, received before U, handled after it")
+                .isTrue();
+        assertThat(message("m1", BASE + 32_500, 1_100, Duration.ofMillis(-31_400)))
+                .as("F: 30.5 s after A, 100 ms after U: the jump")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 950, 1_200, Duration.ofMillis(250)))
+                .as("C: timely, received after all, older than U and A")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 32_500);
+    }
+
     /** Stamps ahead, none of them timely, never replace the stamp before the first jump. */
     @Test
     void aChainOfStampsAheadKeepsTheStampBeforeTheFirstOne() {

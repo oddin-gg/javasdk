@@ -161,7 +161,6 @@ public final class LiveState<K> {
                 if (correctedAge == null
                         || !takeover.allows(
                                 last.timestamp(),
-                                last.receivedAt(),
                                 last.newestReceivedAt(),
                                 floor,
                                 timestamp,
@@ -178,7 +177,7 @@ public final class LiveState<K> {
                     // takeover can pass it
                     floor = NO_FLOOR;
                 } else if (floor == NO_FLOOR
-                        && takeover.jumped(last.timestamp(), last.receivedAt(), timestamp, receivedAt)) {
+                        && takeover.jumped(last.timestamp(), last.newestReceivedAt(), timestamp, receivedAt)) {
                     // the stamp before the jump: what an older message that is yet to come must not go below
                     floor = last.timestamp();
                 }
@@ -436,9 +435,11 @@ public final class LiveState<K> {
      * believed over it when the watermark's timestamp is more likely a bad one than the message a
      * late one.
      *
-     * <p>A message received {@code R} after the watermark's message, yet generated {@code G} before
-     * it, had a delivery {@code R + G} slower than the other's, or the watermark's timestamp is ahead
-     * of the true time. It replaces the watermark, and takes it down to its own timestamp, when all
+     * <p>A message received {@code R} after the latest receipt of a write for the producer - the
+     * watermark's own, or a later one, when a message with a newer stamp received earlier was
+     * handled after the one that now is the latest - yet generated {@code G} before the watermark's
+     * message, had a delivery {@code R + G} slower than the other's, or the watermark's timestamp is
+     * ahead of the true time. It replaces the watermark, and takes it down to its own timestamp, when all
      * of these hold; the producer's clock is never compared with the SDK's but in the corrected age
      * the caller computes:
      *
@@ -446,7 +447,9 @@ public final class LiveState<K> {
      *   <li>it was received strictly after every message that wrote for the producer - not only
      *       the watermark's, which a message with a newer stamp received earlier may have written
      *       last - by the monotonic clock: two sessions that handle messages in another order than
-     *       they received them leave the order of receipt right;
+     *       they received them leave the order of receipt right. {@code R} is counted from that
+     *       latest receipt, not from the watermark's own, which would make a swap of two messages
+     *       a millisecond apart look as slow as the time between the watermark's receipt and theirs;
      *   <li>{@code R + G} is more than the {@code margin}: two deliveries that differ by more than
      *       that are no jitter;
      *   <li>its corrected age is at most {@code timelyAge}: it is a timely message, not one that
@@ -456,8 +459,8 @@ public final class LiveState<K> {
      *   <li>its timestamp is after the epoch: it is the producer's, and nothing else of it is
      *       trusted; the age of one far before it wraps around;
      *   <li>its timestamp is not below the one the watermark had before it jumped: a write that
-     *       raises the watermark by more than the margin more than the time between the two receipts
-     *       leaves the stamp it raised it from behind, and a message older than that one is older
+     *       raises the watermark by more than the margin more than the time since the latest receipt
+     *       of a write for the producer leaves the stamp it raised it from behind, and a message older than that one is older
      *       than a write that was correct, whichever session took the lock first. That stamp is kept
      *       through further raises, which are stamps ahead of the producer's now, and forgotten when a
      *       message takes the watermark over, since the next jump is then judged from that message,
@@ -495,21 +498,23 @@ public final class LiveState<K> {
 
         /**
          * Whether a message that is not older than the watermark raises it by more than the margin
-         * more than the time since the watermark's message was received: a stamp ahead of the stream
-         * it follows, where a quiet match's next message raises it by as much as the quiet lasted.
+         * more than the time since the latest receipt of a write for the producer: a stamp ahead of
+         * the stream it follows, where a quiet match's next message raises it by as much as the quiet
+         * lasted.
          *
          * @param watermark the watermark's timestamp, at most {@code timestamp}
-         * @param watermarkReceivedAt when its message was received, on the monotonic clock
+         * @param newestReceivedAt the latest receipt of any message that wrote for the producer, on
+         *     the monotonic clock
          */
-        boolean jumped(long watermark, long watermarkReceivedAt, long timestamp, long receivedAt) {
+        boolean jumped(long watermark, long newestReceivedAt, long timestamp, long receivedAt) {
             long raised = timestamp - watermark;
             if (raised < 0) {
                 // both are the producer's, any long: the difference of two that overflowed
                 raised = Long.MAX_VALUE;
             }
-            // a message received before the watermark's, by a session that took the lock later, is
-            // no time passed
-            long elapsed = Math.max(0, receivedAt - watermarkReceivedAt);
+            // a message received before the latest, by a session that took the lock later, is no time
+            // passed
+            long elapsed = Math.max(0, receivedAt - newestReceivedAt);
             return raised > margin.toMillis() + elapsed;
         }
 
@@ -529,9 +534,8 @@ public final class LiveState<K> {
          * Whether a message older than the watermark replaces it.
          *
          * @param watermark the watermark's timestamp, greater than {@code timestamp}
-         * @param watermarkReceivedAt when its message was received, on the monotonic clock
-         * @param newestReceivedAt the latest receipt of any message that wrote for the producer, at
-         *     least {@code watermarkReceivedAt}
+         * @param newestReceivedAt the latest receipt of any message that wrote for the producer, on
+         *     the monotonic clock: what {@code R} is counted from
          * @param floor the stamp the watermark had before it jumped, or none
          * @param timestamp the message's timestamp
          * @param receivedAt when it was received
@@ -539,7 +543,6 @@ public final class LiveState<K> {
          */
         boolean allows(
                 long watermark,
-                long watermarkReceivedAt,
                 long newestReceivedAt,
                 long floor,
                 long timestamp,
@@ -558,7 +561,7 @@ public final class LiveState<K> {
             if (correctedAge.compareTo(timelyAge) > 0) {
                 return false;
             }
-            long receivedAfter = receivedAt - watermarkReceivedAt;
+            long receivedAfter = receivedAt - newestReceivedAt;
             long generatedBefore = watermark - timestamp;
             // R + G > margin, as R > margin - G: with G positive, neither side can overflow
             return receivedAfter > margin.toMillis() - generatedBefore;
