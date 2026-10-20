@@ -2,8 +2,12 @@
 # everything that decides whether it may run. A tag runs release.yml as its commit has it, and
 # `./mvnw -Prelease ... deploy` then runs the wrapper, every POM of the reactor and the plugins
 # they name, so a change to any of these paths must be reviewed by the release managers.
-# Everything else is reviewed as usual: nothing here makes anyone the owner of the code.
 # Branch protection on main requires a code owners' review (RELEASING.md).
+
+# the whole repository: every change needs a release manager's review, whatever path a release
+# script reaches. The lines below stay, and say what the release depends on; the test holds the
+# derivation of that to them, without this line and the scripts/ one
+*                               @oddin-gg/ragnar-admin
 
 # the workflows, this file and the PR template; the actions the release uses are named there
 /.github/                       @oddin-gg/ragnar-admin

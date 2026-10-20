@@ -6,6 +6,8 @@
 # file stays valid and the path is simply owned by nobody. So the owner of each path is resolved
 # here, the way GitHub does, and must be the team: a list of paths kept here, and the scripts the
 # workflows run and the files those scripts read, derived, so that none added later is missed.
+# The whole repository is owned by the team too (the first rule, *, and scripts/ again after it):
+# those two are backstops, kept out of what the derivation is judged by and checked apart.
 # next.yml runs it on every push. Needs python3 and yq.
 #
 #   scripts/release-codeowners-test.sh
@@ -208,8 +210,8 @@ def survey(tree):
         owned += [p for p in sorted(chain(tree, path)) if p not in owned]
     return owned, reactor, derived, reads
 
-# what the release only compiles belongs to nobody in particular: owning everything would make
-# the release managers review every change
+# what the release only compiles is named by no line: it is owned by the backstop alone (below),
+# and these must stay so, or the specific lines would say nothing about what the release depends on
 unowned = ["odds-feed/src/main/java/X.java", "README.md"]
 
 def problems(lines, owned):
@@ -224,25 +226,35 @@ def problems(lines, owned):
             found.append("%s must stay unowned, but %s own it" % (path, " ".join(got)))
     return found
 
-# The whole of scripts/ is owned too, as a backstop for what the derivation does not see (it is
-# lexical: only the forms named above). It is left out of the lines the derivation is judged by,
-# or it would own every script it finds, and the test could never see a pattern that misses one.
-BACKSTOP = "/scripts/"
+# The whole repository is owned by the team (*), and scripts/ again after it, as backstops for what
+# the derivation does not see (it is lexical: only the forms named above). They are left out of the
+# lines the derivation is judged by, or they would own everything it finds, and the test could never
+# see a pattern that misses one. They are checked apart, below, under the whole file.
+BACKSTOPS = ["*", "/scripts/"]
 full = open(os.path.join(root, ".github/CODEOWNERS")).read().splitlines()
-lines = [l for l in full if l.split("#", 1)[0].split()[:1] != [BACKSTOP]]
+
+def pattern_of(line):
+    text = line.split("#", 1)[0].split()
+    return text[0] if text else None
+
+lines = [l for l in full if pattern_of(l) not in BACKSTOPS]
 
 def backstop_problems(all_lines):
-    """Everything under scripts/ must be owned by the team under the whole file, the last matching
-    line winning: a script of any depth that no other line names, every file there is, and every
-    path under scripts/ that a line of the file names itself, so that a later line giving one of
-    them to another owner is found."""
+    """Every file of the repository must be owned by the team under the whole file, the last matching
+    line winning: a file at the root, one under each directory there is (and a new one under it),
+    a script of any depth that no other line names, every file in scripts/, and every path under
+    scripts/ that a line of the file names itself, so that a later line giving any of them, by
+    a directory or a wildcard too, to another owner is found."""
     found = []
     here = os.path.join(root, "scripts")
     present = [os.path.relpath(os.path.join(directory, name), root)
                for directory, _, names in os.walk(here) for name in names]
-    named = [text[0][1:] for text in (line.split("#", 1)[0].split() for line in all_lines)
-             if text and text[0].startswith("/scripts/") and not text[0].endswith("/") and "*" not in text[0]]
-    for path in sorted({"scripts/brand-new.sh", "scripts/brand-new/deeper/tool.py", *present, *named}):
+    named = [pattern_of(line)[1:] for line in all_lines
+             if (pattern_of(line) or "").startswith("/scripts/") and not pattern_of(line).endswith("/") and "*" not in pattern_of(line)]
+    top = [entry if os.path.isfile(os.path.join(root, entry)) else entry + "/new-file.txt"
+           for entry in sorted(os.listdir(root)) if entry != ".git"]
+    for path in sorted({"README.md", "new-file-at-the-root.txt", "odds-feed/src/main/java/X.java", "scripts/gh-new.sh",
+                        "scripts/brand-new.sh", "scripts/brand-new/deeper/tool.py", *top, *present, *named}):
         got = owners(all_lines, path)
         if got != TEAM:
             found.append("%s is owned by %s, not by %s" % (path, " ".join(got) or "nobody", " ".join(TEAM)))
@@ -268,12 +280,28 @@ cases = {
     "a line that no longer matches": [l.replace("/.mvn/ ", "/.mvm/ ") for l in lines],
     "everything owned": lines + ["* @oddin-gg/ragnar-admin"],
 }
+def without(pattern):
+    return [l for l in full if pattern_of(l) != pattern]
+
+def given_away(pattern):
+    return [pattern + " @someone-else" if pattern_of(l) == pattern else l for l in full]
+
+def matching_nothing(pattern):
+    return ["/no-such-path-at-all/ " + " ".join(TEAM) if pattern_of(l) == pattern else l for l in full]
+
+# (the scripts/ line removed, or matching nothing, changes no owner while * is there: it is a second
+# backstop, and what overrides it is what is refused)
 for what, changed in {
-    "the backstop removed": [l for l in full if l.split("#", 1)[0].split()[:1] != [BACKSTOP]],
-    "the backstop given to another owner": [l.replace(BACKSTOP + " ", BACKSTOP + "x ").replace(BACKSTOP + "x", BACKSTOP + " @someone-else #") for l in full],
+    "the * line removed": without("*"),
+    "the * line given to another owner": given_away("*"),
+    "the * line that matches nothing": matching_nothing("*"),
+    "a later rule giving a directory to another owner": full + ["/odds-feed/ @someone-else"],
+    "a later rule giving a wildcard of scripts/ to another owner": full + ["/scripts/gh-*.sh @someone-else"],
+    "a later rule giving a kind of file to another owner": full + ["*.md @someone-else"],
+    "a later rule giving a file at the root to another owner": full + ["/README.md @someone-else"],
+    "the scripts/ backstop given to another owner": given_away("/scripts/"),
     "a later line giving a script under scripts/ to another owner": full + ["/scripts/gh-other.sh @someone-else"],
     "a later line giving a script that exists to another owner": full + ["/scripts/refresh-schema.sh @someone-else"],
-    "the backstop that no longer matches": [l.replace(BACKSTOP + " ", "/script/ ") for l in full],
 }.items():
     if changed == full:
         failed.append("the case %r changed nothing" % what)
