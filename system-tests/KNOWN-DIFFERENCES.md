@@ -216,7 +216,7 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   it, was generated before it by an amount that, with the time since the latest receipt of a write before it, is more than
   30 seconds, is itself timely (its age by
   the producer's alives at most 10 seconds), and is not older than the update the status had
-  before the bad stamp jumped it, writes, and the watermark goes down to its stamp. A
+  before the bad stamp raised it, writes, and the watermark goes down to its stamp. A
   stamp ahead by less than those 30 seconds still holds the following updates back until the
   stamps catch up, at most that long, and they are still delivered; of two stamps ahead, the one
   received last writes when the same rule holds for it, and with the stamps closer than

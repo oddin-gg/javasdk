@@ -585,28 +585,34 @@ Ownership and ordering:
   **timely message age**, 10 s by default, which tells the first reading from the second:
   a message that sat in a backlog looks the same by (2) and is old by (3); (4) its
   timestamp is after the epoch, since the age of one far before it wraps around; (5) its
-  timestamp is not below the one the watermark had before it jumped (below). A write that
-  raises the watermark by more than the margin more than the time since the latest receipt of a
-  write for the producer - a stamp ahead of the stream it follows; a quiet match's next
-  message raises it by as much as the quiet lasted, which is no jump - leaves behind the
-  stamp it raised it from, per entity and producer. That stamp is kept through every
-  later write that raises the watermark again - those are stamps ahead - until a message
-  takes the watermark over, which forgets it, since the next jump is judged from that
-  message, or a message at the producer's now raises it (its age by the producer's
-  alives within the timely age, on either side), which forgets it too: the watermark is
-  then no further ahead than a timely message, and the stamp left behind is as stale as the
-  quiet since it was written - a later jump would be judged by it and not by the correct
-  write that came between. A write with no corrected age, a replayed message or a recovery's
-  answer, leaves it where it was. Without it, a correct update U written first and a
+  timestamp is not below the one the watermark had before the first write ahead of the
+  producer's now (below). A write whose corrected age is below the timely age negated -
+  a stamp ahead of the producer, however little it raises the watermark - leaves behind the
+  stamp it raised it from, per entity and producer, if none is left already. That stamp is
+  kept through the stamps ahead that follow until a message takes the watermark over, which
+  forgets it, since the next stamp ahead is judged from that message, or a message at the
+  producer's now raises it (its age by the producer's alives within the timely age, on either
+  side), which forgets it too: the watermark is then no further ahead than a timely message,
+  and the stamp left behind is as stale as the quiet since it was written - a later stamp
+  ahead would be judged by it and not by the correct write that came between. A late write,
+  older than the timely age, leaves it as it is. An entity whose first stamp is itself ahead
+  has no update before it: nothing is recorded, and the stamps ahead that follow record
+  nothing either, so a correct message after them takes over. A write with no corrected age, a replayed
+  message or a recovery's answer, says nothing of the producer's now: the stamp is left behind
+  by a jump there, a raise of more than the margin more than the time since the latest
+  receipt of a write for the producer (a quiet match's next message raises it by as much as
+  the quiet lasted, which is no jump). Without it, a correct update U written first and a
   bad F handled by another session after it leave a watermark that has forgotten U, and
   an ordinary older message that follows U by a moment would take over and put U's
   score back. The limit: of two bad stamps in a row, the second older than the first,
-  the second takes over and the stamp before the first jump is forgotten with it. The
+  the second takes over and the stamp before the first is forgotten with it. The
   arithmetic is overflow-free on any long. A wrong takeover needs a delivery
   more than the margin slower than another's and a producer's alive late by more than
-  margin less timely age, 20 s by default, which is already an inactivity violation; so
-  the timely age is at most the margin, and the setters are checked together in `build()`
-  (the timely age defaults to the margin if that is shorter). Both are settings of the
+  margin less timely age, 20 s by default, which is already an inactivity violation; and
+  a watermark at the producer's now is no more than the timely age ahead of or behind a
+  timely message, so the two cannot pass the margin by R + G if the timely age is at most
+  half of it: that is the limit, and the setters are checked together in `build()` (the
+  timely age defaults to half the margin if that is shorter). Both are settings of the
   configuration builder, `setFutureStampMargin` and `setTimelyMessageAge`; the margin is
   at most a day, a day being as good as off. A stamp ahead by less than the margin cannot
   be told from a delay and holds the following writes back until the stamps catch up,
@@ -2219,3 +2225,18 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   newer), and a jump was missed by the same gap, so no stamp was left behind for an older message to
   be refused by. Both now count from the latest receipt of a write for the producer, which only grows
   and which a takeover already had to be after. No public API changes.
+- 2026-10-20, the stamp before a stamp ahead was recorded only by a jump: a stamp ahead of the
+  producer by less than the margin plus the delay between two receipts - 25 s ahead, 100 ms
+  after the update - raised the watermark by less than the jump's threshold, left nothing behind,
+  and a timely message older than the update took over and rolled it back. A write whose corrected
+  age is below the timely age negated now records it, jump or not, and keeps it through the
+  stamps ahead that follow; a write at the producer's now still forgets it, a late one leaves it.
+  The first stamp of an entity being itself ahead records none, so two bad stamps in a row at the
+  start do not make the first the floor. The jump is asked only of a write with no corrected age,
+  a replayed message or a recovery's answer: with one, every jump is a stamp ahead, a message at
+  the producer's now, or a late message that no timely one can be older than. The timely message
+  age is now at most half the margin (the builder refuses more, and defaults to half the margin
+  under 20 s): a watermark at the producer's now is no more than the timely age from a timely
+  message, so R + G of the two cannot pass the margin; before, a timely age over half could
+  still let a takeover pass. The two settings are new in 1.0 and not released: no public API
+  changes.

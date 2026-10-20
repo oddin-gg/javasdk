@@ -49,7 +49,7 @@ minutes after the feed or the API last wrote it.
 | `setExchangeName(String)` | `oddinfeed` | Not blank, at most 255 bytes in UTF-8. |
 | `setReplayExchangeName(String)` | `oddinreplay` | Not blank, at most 255 bytes in UTF-8. |
 | `setFutureStampMargin(Duration)` | 30 s | Positive, at most 1 day (a day is as good as off). How far ahead of its producer a message's timestamp may be and still hold back the status of the messages that follow it. See [the status order](#the-order-of-the-live-status) below. |
-| `setTimelyMessageAge(Duration)` | 10 s, or the margin if that is shorter | Positive, at most the margin (checked in `build()`). How old, by the producer's alives, a message may be to write the status in place of one with a later timestamp. |
+| `setTimelyMessageAge(Duration)` | 10 s, or half the margin if that is shorter | Positive, at most half the margin (checked in `build()`). How old, by the producer's alives, a message may be to write the status in place of one with a later timestamp. |
 | `setApiCallLogging(boolean)` | off | Each attempt of an API call at INFO. `onApiCall` hears them either way. |
 | `setDefaultLocale(Locale)` | English | Must name a language (not `Locale.ROOT`). The locale a getter without one reads in, and the one messages are built in. |
 | `setPreloadLocales(List<Locale>)` | none | Each must name a language. See below. |
@@ -76,11 +76,12 @@ watermark, when all of these hold:
   differ so much;
 - it is timely: its age by its producer's alives is at most the **timely message age** (10 s), so a
   message that sat in a backlog never counts;
-- it is not older than the update the status had before the jump: a bad timestamp that came after
-  a correct update leaves that update's timestamp as the floor, so an ordinary delayed message
-  cannot put an older status back. A message at the producer's now (its age within the timely age,
-  on either side) that raises the status's timestamp forgets the floor: it is then as stale as the
-  quiet since;
+- it is not older than the update the status had before a timestamp ahead of its producer wrote
+  it: a message stamped ahead of the producer's now by more than the timely age, however little it
+  raises the status's timestamp, leaves the timestamp it raised as the floor, so an ordinary delayed
+  message cannot put an older status back. A message at the producer's now (its age within the timely
+  age, on either side) that raises the status's timestamp forgets the floor: it is then as stale as
+  the quiet since;
 - it is not an answer to a recovery request: a recovery never moves the live state back, and the
   next live message repairs a bad timestamp.
 
@@ -90,7 +91,8 @@ ahead, the one received last writes when the same rule holds for it; with the st
 margin the first stays in charge until they catch up. A margin of a few seconds lets the ordinary jitter of the
 deliveries pass for a bad timestamp and writes an older status over a newer one; the margin less the
 timely age is how late a producer's alives may be before a delayed message passes for a timely one,
-which is why the timely age is at most the margin.
+and the timely age is at most half the margin so that a timely message is never taken for a delayed
+one against a status written at its producer's now.
 
 ### Recovery behaviour you do not configure
 
