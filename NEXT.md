@@ -2291,3 +2291,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   but not when the body was over the size limit: a 2xx answer that long was reported as a failure although the API
   had accepted the request, and the caller could then send a recovery again. It is done by its status in that case
   too; a call that needs its body, and an error answer, fail as before. No public API changes.
+- 2026-10-21, the 0.0.x example sources moved from `examples/src` to `examples/odds-feed-0.0/src`, next to the 1.0
+  examples in `examples/odds-feed-1.0`; the package path inside is the same and no source changed. The
+  `examples.sources` property of `odds-feed/pom.xml` points to the new place, so `ApiUsageTest` still compiles
+  them against the 0.0.x baseline and against 1.0. The run steps for them moved from the examples' README into
+  `examples/odds-feed-0.0/README.md`, which also says they have no build here and that `release/0.x` has them
+  with theirs. The 2026-10-20 entry that names `examples/src` is left as it was written. No public API changes.
