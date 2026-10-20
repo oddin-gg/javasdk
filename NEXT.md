@@ -2276,3 +2276,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   exception, and 1.0 has no Fuel, so no entry changed; only the release the 0.0.x side is named for
   did. The "Old dependencies" line in section 1 is the finding as it was written, and stays. No public
   API changes.
+- 2026-10-20, the release key exists (made by the owner following `RELEASING.md`): RSA 4096 for the primary
+  and the signing subkey, since Central's documentation names no accepted algorithms and shows only RSA;
+  the subkey expires 2028-10-19, and that date is now in `RELEASING.md`. The primary, its passphrase and
+  its revocation certificate are held by one release manager with an offline encrypted backup, not yet in
+  storage all release managers can read, and the document says so and keeps that as the rule. The scripts
+  read no algorithm, so none changed. No public API changes.
