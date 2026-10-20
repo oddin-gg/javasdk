@@ -172,12 +172,16 @@ public final class LiveState<K> {
                 older = true;
                 // the message is believed over the watermark: the next jump is judged from it
                 floor = NO_FLOOR;
-            } else if (inOrder
-                    && last != null
-                    && floor == NO_FLOOR
-                    && takeover.jumped(last.timestamp(), last.receivedAt(), timestamp, receivedAt)) {
-                // the stamp before the jump: what an older message that is yet to come must not go below
-                floor = last.timestamp();
+            } else if (inOrder && last != null) {
+                if (correctedAge != null && takeover.atProducersNow(correctedAge)) {
+                    // the watermark is the producer's now: a stamp from before it is stale, and no
+                    // takeover can pass it
+                    floor = NO_FLOOR;
+                } else if (floor == NO_FLOOR
+                        && takeover.jumped(last.timestamp(), last.receivedAt(), timestamp, receivedAt)) {
+                    // the stamp before the jump: what an older message that is yet to come must not go below
+                    floor = last.timestamp();
+                }
             }
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
             // a message that took the watermark over lowers it: the next one is judged by this one
@@ -455,8 +459,12 @@ public final class LiveState<K> {
      *       raises the watermark by more than the margin more than the time between the two receipts
      *       leaves the stamp it raised it from behind, and a message older than that one is older
      *       than a write that was correct, whichever session took the lock first. That stamp is kept
-     *       through further raises, and forgotten when a message takes the watermark over, since the
-     *       next jump is then judged from that message.
+     *       through further raises, which are stamps ahead of the producer's now, and forgotten when a
+     *       message takes the watermark over, since the next jump is then judged from that message,
+     *       or when a message at the producer's now (see {@link #atProducersNow}) raises it: the
+     *       watermark is then no further ahead than a timely message, and the stamp left behind is
+     *       as stale as the quiet since it was written - kept, it would let a later jump judge by
+     *       it instead of by the correct write that came between.
      * </ol>
      *
      * A watermark ahead of the true time by less than the margin holds the messages that follow it
@@ -503,6 +511,18 @@ public final class LiveState<K> {
             // no time passed
             long elapsed = Math.max(0, receivedAt - watermarkReceivedAt);
             return raised > margin.toMillis() + elapsed;
+        }
+
+        /**
+         * Whether a message's stamp is at the producer's now: its corrected age is within the timely
+         * age on either side. A stamp ahead of the producer's clock has a negative age, so the age at
+         * most {@code timelyAge} is not enough.
+         *
+         * @param correctedAge the message's age by the producer's clock, less the producer's offset
+         */
+        boolean atProducersNow(Duration correctedAge) {
+            // compared, not negated or taken absolute: the age is any duration
+            return correctedAge.compareTo(timelyAge) <= 0 && correctedAge.compareTo(timelyAge.negated()) >= 0;
         }
 
         /**

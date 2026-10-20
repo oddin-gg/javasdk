@@ -530,6 +530,8 @@ class LiveStateTest {
 
     private static final long BASE = 1_000_000;
     private static final long TEN_MINUTES = Duration.ofMinutes(10).toMillis();
+    /** The age of a message stamped ten minutes ahead of its producer: negative. */
+    private static final Duration AHEAD = Duration.ofMinutes(-10);
 
     /** A message with its timestamp as its value, received {@code at} after the test's start. */
     private boolean message(String key, long timestamp, long at, Duration age) {
@@ -630,7 +632,7 @@ class LiveStateTest {
     @Test
     void aMessageReceivedBeforeAnUpdateThatWroteDoesNotTakeOverWhateverTheWatermarksReceiptIs() {
         assertThat(message("m1", BASE + 800, 1_000, FRESH)).as("U").isTrue();
-        assertThat(message("m1", BASE + TEN_MINUTES, 900, FRESH))
+        assertThat(message("m1", BASE + TEN_MINUTES, 900, AHEAD))
                 .as("F: newer by its stamp, received before U")
                 .isTrue();
         assertThat(message("m1", BASE + 850, 950, FRESH))
@@ -657,7 +659,7 @@ class LiveStateTest {
     @Test
     void aMessageOlderThanTheUpdateBeforeTheJumpIsRefusedWhateverItsReceipt() {
         assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
-        assertThat(message("m1", BASE + TEN_MINUTES, 900, FRESH))
+        assertThat(message("m1", BASE + TEN_MINUTES, 900, AHEAD))
                 .as("F: newer by its stamp, handled after U, received before it")
                 .isTrue();
         assertThat(message("m1", BASE + 950, 1_001, FRESH))
@@ -676,13 +678,13 @@ class LiveStateTest {
     @Test
     void theStampBeforeTheJumpIsKeptThroughFurtherRaisesAndForgottenWhenAMessageTakesOver() {
         assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).isTrue();
-        assertThat(message("m1", BASE + TEN_MINUTES, 1_100, FRESH))
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_100, AHEAD))
                 .as("the jump")
                 .isTrue();
-        assertThat(message("m1", BASE + TEN_MINUTES + 500, 1_200, FRESH))
+        assertThat(message("m1", BASE + TEN_MINUTES + 500, 1_200, AHEAD))
                 .as("a small raise")
                 .isTrue();
-        assertThat(message("m1", BASE + 3 * TEN_MINUTES, 1_300, FRESH))
+        assertThat(message("m1", BASE + 3 * TEN_MINUTES, 1_300, AHEAD.multipliedBy(3)))
                 .as("a second jump, which does not take the bad stamp before it")
                 .isTrue();
         assertThat(message("m1", BASE + 950, 1_400, FRESH))
@@ -692,13 +694,128 @@ class LiveStateTest {
                 .as("C1 takes over")
                 .isTrue();
 
-        assertThat(message("m1", BASE + TEN_MINUTES, 1_600, FRESH))
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_600, AHEAD))
                 .as("a new jump, from C1")
                 .isTrue();
         assertThat(message("m1", BASE + 1_010, 1_700, FRESH))
                 .as("between U and C1: older than the write the jump left behind")
                 .isFalse();
         assertThat(message("m1", BASE + 1_030, 1_800, FRESH)).as("after C1").isTrue();
+    }
+
+    /**
+     * A stamp ahead jumps, the match goes quiet, and a correct message at the producer's now raises
+     * the watermark past it: the stamp the first jump left behind is stale, and the next jump leaves
+     * the correct message's. An older correct message that comes after it is refused by that stamp.
+     */
+    @Test
+    void aMessageAtTheProducersNowThatRaisesTheWatermarkReplacesTheStampBeforeAnEarlierJump() {
+        long quiet = TEN_MINUTES;
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 1_000 + TEN_MINUTES, 1_100, AHEAD))
+                .as("F1: ten minutes ahead, the jump")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 1_500 + TEN_MINUTES, 1_100 + quiet, FRESH))
+                .as("V: ten quiet minutes on, at the producer's now, a little past F1's stamp")
+                .isTrue();
+        assertThat(message("m1", BASE + 1_500 + 2 * TEN_MINUTES, 1_200 + quiet, AHEAD))
+                .as("F2: ten minutes ahead again, the jump")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 1_000 + TEN_MINUTES, 1_300 + quiet, FRESH))
+                .as("C: timely, received after all, older than V")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F2's value stays").isEqualTo(BASE + 1_500 + 2 * TEN_MINUTES);
+        assertThat(message("m1", BASE + 1_600 + TEN_MINUTES, 1_400 + quiet, FRESH))
+                .as("a message stamped after V takes over")
+                .isTrue();
+    }
+
+    /** A late message, then a normal one: a jump by the late stamp, which the normal message is past. */
+    @Test
+    void aJumpFromALateMessageToATimelyOneLeavesNoStampBehind() {
+        assertThat(message("m1", BASE, 0, Duration.ofMinutes(2)))
+                .as("A: a late message, two minutes old")
+                .isTrue();
+        assertThat(message("m1", BASE + 120_000, 1_000, FRESH))
+                .as("B: a timely one, the jump from A's stamp")
+                .isTrue();
+        assertThat(message("m1", BASE + 130_000, 11_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 130_000 + TEN_MINUTES, 11_100, AHEAD))
+                .as("F: ten minutes ahead, the jump from U")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 129_500, 11_200, FRESH))
+                .as("C: timely, received after all, newer than A, older than U")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 130_000 + TEN_MINUTES);
+    }
+
+    /** Stamps ahead, none of them timely, never replace the stamp before the first jump. */
+    @Test
+    void aChainOfStampsAheadKeepsTheStampBeforeTheFirstOne() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 1_000 + TEN_MINUTES, 1_100, AHEAD))
+                .as("F1")
+                .isTrue();
+        assertThat(message("m1", BASE + 1_000 + TEN_MINUTES + 20_000, 1_200, Duration.ofSeconds(-620)))
+                .as("F2: a little later, still ahead by a minute less than ten")
+                .isTrue();
+        assertThat(message("m1", BASE + 1_000 + 2 * TEN_MINUTES, 1_300, Duration.ofMinutes(-20)))
+                .as("F3: further ahead")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 950, 1_400, FRESH))
+                .as("C: timely, received after all, older than U")
+                .isFalse();
+    }
+
+    /** A message at the producer's now, on either side: the timely age exactly, and no more. */
+    @Test
+    void aMessageIsAtTheProducersNowWithinTheTimelyAgeOnEitherSide() {
+        var takeover = Takeover.DEFAULTS;
+        var timely = takeover.timelyAge();
+        assertThat(takeover.atProducersNow(Duration.ZERO)).isTrue();
+        assertThat(takeover.atProducersNow(timely)).isTrue();
+        assertThat(takeover.atProducersNow(timely.negated())).isTrue();
+        assertThat(takeover.atProducersNow(timely.plusMillis(1))).isFalse();
+        assertThat(takeover.atProducersNow(timely.negated().minusMillis(1))).isFalse();
+        assertThat(takeover.atProducersNow(Duration.ofSeconds(Long.MIN_VALUE))).isFalse();
+        assertThat(takeover.atProducersNow(Duration.ofSeconds(Long.MAX_VALUE))).isFalse();
+    }
+
+    /**
+     * A replayed message, and a recovery's answer, carry no corrected age: they say nothing of where
+     * the producer's now is, and leave the stamp before the jump where it was.
+     */
+    @Test
+    void aWriteWithNoCorrectedAgeDoesNotReplaceTheStampBeforeTheJump() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 1_000 + TEN_MINUTES, 1_100, AHEAD))
+                .as("F, the jump")
+                .isTrue();
+
+        assertThat(live.feedWriteIfNewer(
+                        "m1",
+                        LIVE,
+                        BASE + 1_000 + TEN_MINUTES + 500,
+                        FRESH,
+                        start + 1_200,
+                        false,
+                        LiveWrite.of().put(TIMESTAMP, 1L)))
+                .as("a recovery's answer, in order, young")
+                .isTrue();
+        live.feedWriteReplayed(
+                "m1",
+                LIVE,
+                BASE + 1_000 + TEN_MINUTES + 1_000,
+                start + 1_300,
+                LiveWrite.of().put(TIMESTAMP, 2L));
+
+        assertThat(message("m1", BASE + 950, 1_400, FRESH))
+                .as("C: timely, received after all, older than U")
+                .isFalse();
     }
 
     /** A quiet match's next message raises the stamp by as much as the quiet lasted: no jump. */
@@ -708,7 +825,7 @@ class LiveStateTest {
         assertThat(message("m1", BASE + 301_000, 301_000, FRESH))
                 .as("five minutes on, by the stamp and by the receipt")
                 .isTrue();
-        assertThat(message("m1", BASE + 900_000, 302_000, FRESH))
+        assertThat(message("m1", BASE + 900_000, 302_000, Duration.ofMinutes(-10)))
                 .as("F, the jump")
                 .isTrue();
         assertThat(message("m1", BASE + 150_000, 303_000, FRESH))
@@ -721,10 +838,10 @@ class LiveStateTest {
     @Test
     void aBadStampInsideTheMarginBeforeAJumpHoldsBackNoLongerThanTheMargin() {
         assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
-        assertThat(message("m1", BASE + 21_000, 1_100, FRESH))
+        assertThat(message("m1", BASE + 21_000, 1_100, Duration.ofSeconds(-20)))
                 .as("F0, 20 s ahead")
                 .isTrue();
-        assertThat(message("m1", BASE + TEN_MINUTES, 1_200, FRESH))
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_200, AHEAD))
                 .as("F1, the jump")
                 .isTrue();
         assertThat(message("m1", BASE + 2_000, 1_300, FRESH))
@@ -739,7 +856,7 @@ class LiveStateTest {
     @Test
     void ofTwoBadStampsTheSecondOlderOneTheStampBeforeTheFirstJumpIsForgotten() {
         assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
-        assertThat(message("m1", BASE + TEN_MINUTES, 1_100, FRESH)).as("F1").isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_100, AHEAD)).as("F1").isTrue();
         assertThat(message("m1", BASE + TEN_MINUTES - 60_000, 1_200, FRESH))
                 .as("F2, older than F1, received after it: takes over")
                 .isTrue();
@@ -909,7 +1026,7 @@ class LiveStateTest {
                 long correct = BASE + 1_000;
                 Future<Boolean> badWrite = threads.submit(() -> {
                     go.await();
-                    return message(entity, bad, 0, FRESH);
+                    return message(entity, bad, 0, AHEAD);
                 });
                 Future<Boolean> correctWrite = threads.submit(() -> {
                     go.await();
