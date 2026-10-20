@@ -99,6 +99,33 @@ def inside(tree, base, path, trim=False):
         resolved = resolved.rstrip(".")
     return resolved if resolved and contained(tree, resolved) else None
 
+def chain(tree, path, seen=None):
+    """What a path really is: every symlink on the way to it, and each file such a link leads to, as
+    paths from the repository root (the path itself too, when nothing on the way is a link).
+    A link owned by the release managers that leads to a file nobody owns runs that file."""
+    seen = set() if seen is None else seen
+    found = set()
+    if path in seen:
+        return found
+    seen.add(path)
+    parts = path.split("/")
+    for index in range(1, len(parts) + 1):
+        prefix = "/".join(parts[:index])
+        if os.path.islink(os.path.join(tree, prefix)):
+            found.add(prefix)
+            target = os.readlink(os.path.join(tree, prefix))
+            if os.path.isabs(target):
+                target = os.path.relpath(target, os.path.realpath(tree))
+            else:
+                target = os.path.join(os.path.dirname(prefix), target)
+            hop = os.path.normpath(os.path.join(target, *parts[index:]))
+            if hop != "." and hop != ".." and not hop.startswith("../"):
+                found |= chain(tree, hop, seen)
+    real = os.path.relpath(os.path.realpath(os.path.join(tree, path)), os.path.realpath(tree))
+    if real != "." and real != ".." and not real.startswith("../"):
+        found.add(real)
+    return found
+
 def script_reads(tree, script):
     found = set()
     if not contained(tree, script):
@@ -156,6 +183,16 @@ def survey(tree):
         if not os.path.exists(os.path.join(tree, path)):
             sys.exit("FAIL %s, read by %s, does not exist: the derivation read a path wrong" % (path, reads[path]))
     owned += [p for p in derived if p not in owned] + [p for p in reads if p not in owned]
+    # everything the workflows hold is owned by the pattern for .github/, and a link in it is no
+    # exception: what it leads to runs or is read in its place
+    for directory, directories, names in os.walk(os.path.join(tree, ".github")):
+        for name in names + [d for d in directories if os.path.islink(os.path.join(directory, d))]:
+            path = os.path.relpath(os.path.join(directory, name), tree)
+            if path not in owned:
+                owned.append(path)
+    # a path that is, or passes through, a symlink is the file it leads to as well: both must be owned
+    for path in list(owned):
+        owned += [p for p in sorted(chain(tree, path)) if p not in owned]
     return owned, reactor, derived, reads
 
 # what the release only compiles belongs to nobody in particular: owning everything would make
@@ -316,6 +353,37 @@ def new_python_helper(tree):
     append(tree, "scripts/gh-x.py", '# runs "$' + 'root/scripts/gh-from-py.sh"\n')
     append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/gh-x.py"\n')
 
+def link_to_unowned(tree):
+    # a link the release managers own (release-*), to a helper nobody owns, in the repository root
+    append(tree, "gh-linked-target.sh", "#!/usr/bin/env bash\n")
+    os.symlink("../gh-linked-target.sh", os.path.join(tree, "scripts/release-linked.sh"))
+    append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/release-linked.sh"\n')
+
+def link_directory_to_unowned(tree):
+    # a directory of release-* that is a link to one nobody owns, with a helper beneath it
+    os.makedirs(os.path.join(tree, "gh-dir"))
+    append(tree, "gh-dir/tool.sh", "#!/usr/bin/env bash\n")
+    os.symlink("../gh-dir", os.path.join(tree, "scripts/release-linkdir"))
+    append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/release-linkdir/tool.sh"\n')
+
+def link_chain(tree):
+    # a link to a link: the one in the middle can be pointed anywhere, so it is owned as well
+    append(tree, "gh-chain-end.sh", "#!/usr/bin/env bash\n")
+    os.symlink("../gh-chain-end.sh", os.path.join(tree, "scripts/gh-hop.sh"))
+    os.symlink("gh-hop.sh", os.path.join(tree, "scripts/release-hop.sh"))
+    append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/release-hop.sh"\n')
+
+def link_in_workflows(tree):
+    # a workflow file that is a link to a file nobody owns
+    append(tree, "gh-wf-target.yml", "name: x\n")
+    os.symlink("../../gh-wf-target.yml", os.path.join(tree, ".github/workflows/gh-link.yml"))
+
+def link_module_pom(tree):
+    # the POM of a module of the reactor that is a link to a file under another name
+    pom = os.path.join(tree, "examples/odds-feed-1.0/pom.xml")
+    os.rename(pom, os.path.join(tree, "gh-module.xml"))
+    os.symlink("../../gh-module.xml", pom)
+
 def nested_module(tree):
     # a module listed in a child POM's <modules>, not in the root POM's, as a nested reactor has it
     pom = os.path.join(tree, "test-fakes/pom.xml")
@@ -342,6 +410,12 @@ cases = [
     ("a nested helper whose $here reaches an unowned file in the repository root", new_nested_helper, "gh-evil.sh", lines),
     ("a Python helper called through dirname", new_python_helper, "scripts/gh-x.py", lines),
     ("a script a Python helper names", new_python_helper, "scripts/gh-from-py.sh", lines),
+    ("an owned link to a helper nobody owns", link_to_unowned, "gh-linked-target.sh", lines),
+    ("an owned link to a directory nobody owns", link_directory_to_unowned, "gh-dir/tool.sh", lines),
+    ("a link to a link, the one in the middle", link_chain, "scripts/gh-hop.sh", lines),
+    ("a link to a link, the end of it", link_chain, "gh-chain-end.sh", lines),
+    ("a workflow file that is a link to a file nobody owns", link_in_workflows, "gh-wf-target.yml", lines),
+    ("a POM of the reactor that is a link to a file nobody owns", link_module_pom, "gh-module.xml", lines),
     ("a nested module whose POM CODEOWNERS gives to another owner", nested_module, "test-fakes/nested/pom.xml",
      lines + ["/test-fakes/nested/pom.xml @someone-else"]),
 ]
@@ -355,6 +429,19 @@ for what, change, path, judged_by in cases:
             print("FAIL the test did not name %s for %s: %s" % (path, what, found), file=sys.stderr)
         else:
             print("ok   refused %s: %s" % (what, [line for line in found if line.startswith(path)][0]))
+
+# and a link to a file that is owned changes nothing: the check does not refuse what it should accept
+with tempfile.TemporaryDirectory() as tree:
+    copy_of_tree(tree)
+    os.symlink("release-github.sh", os.path.join(tree, "scripts/release-linked-ok.sh"))
+    append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/release-linked-ok.sh"\n')
+    owned_now, _, _, reads_now = survey(tree)
+    found = problems(lines, owned_now)
+    if "scripts/release-linked-ok.sh" not in reads_now or found:
+        failed.append("a link to an owned helper")
+        print("FAIL a link to a helper that is owned was refused, or not derived: %s" % found, file=sys.stderr)
+    else:
+        print("ok   accepted a link to a helper that is owned")
 
 # a path that is no file of the repository must be dropped, not derived: it would be joined to the
 # tree, and to its copy, and read or written there. Each is written into a script a workflow runs,
