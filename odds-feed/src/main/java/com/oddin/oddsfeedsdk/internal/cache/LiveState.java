@@ -219,7 +219,7 @@ public final class LiveState<K> {
             long quietSince = now - STATUS_AGE.toMillis();
             Live current = current(entity, now);
             boolean quiet = current == null
-                    || current.marks().values().stream().allMatch(mark -> mark.receivedAt() < quietSince);
+                    || current.marks().values().stream().allMatch(mark -> mark.newestReceivedAt() < quietSince);
             if (!quiet || abandoned.getAsBoolean()) {
                 return false;
             }
@@ -288,8 +288,10 @@ public final class LiveState<K> {
         if (live == null) {
             return null;
         }
-        long lastFeed =
-                live.marks().values().stream().mapToLong(Mark::receivedAt).max().orElse(NEVER);
+        long lastFeed = live.marks().values().stream()
+                .mapToLong(Mark::newestReceivedAt)
+                .max()
+                .orElse(NEVER);
         return new LiveValues(live.values(), lastFeed, live.restAt());
     }
 

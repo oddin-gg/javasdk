@@ -280,6 +280,51 @@ class LiveStateTest {
                 .isFalse();
     }
 
+    /**
+     * Two sessions take the lock in another order than they received: A, received at minute 5,
+     * writes first; then B, stamped after A and received at minute 0, writes by its newer stamp and
+     * the receipt of the last write moves back to minute 0. The feed wrote what it received at
+     * minute 5, and is quiet from then on.
+     */
+    @Test
+    void restDoesNotWriteWhileTheLatestReceiptOfTheFeedIsWithinTheStatusAgeWhateverTheLastWriteReceived() {
+        assertThat(message("m1", BASE, Duration.ofMinutes(5).toMillis(), FRESH))
+                .as("A")
+                .isTrue();
+        assertThat(message("m1", BASE + 1, 0, FRESH))
+                .as("B: newer by its stamp, received before A")
+                .isTrue();
+
+        time.advance(Duration.ofMinutes(22));
+        assertThat(restWrite("m1"))
+                .as("the feed received a message 17 minutes ago, B 22")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("the feed's value stays").isEqualTo(BASE + 1);
+
+        time.advance(Duration.ofMinutes(4));
+        assertThat(restWrite("m1")).as("both over the status age").isTrue();
+    }
+
+    @Test
+    void liveValuesAreFreshForTheStatusAgeAfterTheLatestReceiptOfTheFeedWhateverTheLastWriteReceived() {
+        assertThat(message("m1", BASE, Duration.ofMinutes(5).toMillis(), FRESH))
+                .as("A")
+                .isTrue();
+        assertThat(message("m1", BASE + 1, 0, FRESH))
+                .as("B: newer by its stamp, received before A")
+                .isTrue();
+
+        time.advance(Duration.ofMinutes(22));
+        assertThat(requireNonNull(live.get("m1")).isFresh(now()))
+                .as("the feed received a message 17 minutes ago, B 22")
+                .isTrue();
+
+        time.advance(Duration.ofMinutes(4));
+        assertThat(requireNonNull(live.get("m1")).isFresh(now()))
+                .as("both over the status age")
+                .isFalse();
+    }
+
     @Test
     void aRecordOutlivesTheStatusByADayAndIsBounded() {
         feedWrite("m1", LIVE, 5_000, FRESH);

@@ -2186,3 +2186,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   stamp would otherwise take the watermark to the bottom. The wall-step caveat of the age (a step
   of the wall clock reads as an age error until the next alive) is a separate change and is not
   made here. Public API additions only: the two getters and setters.
+- 2026-10-20, the live state's quiet and fresh checks after a write received out of order: a message
+  stamped after the watermark but received before the write that held it takes the lock later, and
+  moves the receipt of the last write back. REST's check that the feed has been quiet and the
+  freshness of a record's values read that receipt, so after such a write the feed was reported
+  quiet, and the values aged, by the gap between the two receipts: REST could overwrite what the
+  feed wrote moments before. Both now read the latest receipt of any write for the producer, which
+  never moves back; the takeover rule keeps reading the watermark's own receipt. No public API
+  changes.
