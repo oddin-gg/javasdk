@@ -27,7 +27,7 @@ import org.jspecify.annotations.Nullable;
  * correct messages that follow back, so a message older than it writes, and takes the watermark down
  * to its own timestamp, when it was received after every message that wrote, was generated so much
  * before the watermark's that the two deliveries' delays cannot account for the gap (see {@link Takeover}), is itself timely,
- * and is not older than the timestamp the watermark jumped from. A replayed message writes in the order it comes. The feed's and the API's
+ * and is not older than the timestamp the watermark had before a write ahead of its producer's clock raised it. A replayed message writes in the order it comes. The feed's and the API's
  * clocks are never compared: REST writes only when the entity has no watermark younger than {@link
  * #STATUS_AGE} by the SDK's own clock, and a message whose corrected age is over the same limit
  * writes nothing either, being a delayed backlog message REST has since taken over from. That
@@ -172,14 +172,22 @@ public final class LiveState<K> {
                 // the message is believed over the watermark: the next jump is judged from it
                 floor = NO_FLOOR;
             } else if (inOrder && last != null) {
-                if (correctedAge != null && takeover.atProducersNow(correctedAge)) {
+                if (correctedAge == null) {
+                    // a replayed message or a recovery's answer says nothing of the producer's now: by the jump
+                    if (floor == NO_FLOOR
+                            && takeover.jumped(last.timestamp(), last.newestReceivedAt(), timestamp, receivedAt)) {
+                        floor = last.timestamp();
+                    }
+                } else if (takeover.ahead(correctedAge)) {
+                    // the stamp before the first one ahead: what an older message that is yet to come
+                    // must not go below, kept through the stamps ahead that follow
+                    if (floor == NO_FLOOR) {
+                        floor = last.timestamp();
+                    }
+                } else if (takeover.atProducersNow(correctedAge)) {
                     // the watermark is the producer's now: a stamp from before it is stale, and no
                     // takeover can pass it
                     floor = NO_FLOOR;
-                } else if (floor == NO_FLOOR
-                        && takeover.jumped(last.timestamp(), last.newestReceivedAt(), timestamp, receivedAt)) {
-                    // the stamp before the jump: what an older message that is yet to come must not go below
-                    floor = last.timestamp();
                 }
             }
             var marks = current == null ? new HashMap<Long, Mark>() : new HashMap<>(current.marks());
@@ -453,21 +461,24 @@ public final class LiveState<K> {
      *   <li>{@code R + G} is more than the {@code margin}: two deliveries that differ by more than
      *       that are no jitter;
      *   <li>its corrected age is at most {@code timelyAge}: it is a timely message, not one that
-     *       sat in a backlog, which would look the same by {@code R + G}. The bound on a wrong
-     *       takeover is then an alive later than {@code margin - timelyAge}, which is why the
-     *       timely age is at most the margin;
+     *       sat in a backlog, which would look the same by {@code R + G}. The timely age is at most
+     *       half the margin: a watermark at the producer's now is no more than the timely age ahead
+     *       of a timely message and no more than that behind it, so {@code R + G} of the two cannot
+     *       pass the margin, and a wrong takeover needs a watermark ahead by more than that;
      *   <li>its timestamp is after the epoch: it is the producer's, and nothing else of it is
      *       trusted; the age of one far before it wraps around;
-     *   <li>its timestamp is not below the one the watermark had before it jumped: a write that
-     *       raises the watermark by more than the margin more than the time since the latest receipt
-     *       of a write for the producer leaves the stamp it raised it from behind, and a message older than that one is older
-     *       than a write that was correct, whichever session took the lock first. That stamp is kept
-     *       through further raises, which are stamps ahead of the producer's now, and forgotten when a
-     *       message takes the watermark over, since the next jump is then judged from that message,
-     *       or when a message at the producer's now (see {@link #atProducersNow}) raises it: the
-     *       watermark is then no further ahead than a timely message, and the stamp left behind is
-     *       as stale as the quiet since it was written - kept, it would let a later jump judge by
-     *       it instead of by the correct write that came between.
+     *   <li>its timestamp is not below the one the watermark had before the first write ahead of the
+     *       producer's now (see {@link #ahead}): such a write, however little it raises the watermark,
+     *       leaves the stamp it raised it from behind, and a message older than that one is older than
+     *       a write that was correct, whichever session took the lock first. That stamp is kept
+     *       through the stamps ahead that follow, and forgotten when a message takes the watermark
+     *       over, since the next write ahead is then judged from that message, or when a message at
+     *       the producer's now (see {@link #atProducersNow}) raises it: the watermark is then no
+     *       further ahead than a timely message, and the stamp left behind is as stale as the quiet
+     *       since it was written. A late message, older than the timely age, leaves it as it is. A
+     *       write with no corrected age, a replayed message or a recovery's answer, says nothing of
+     *       the producer's now: the stamp is left behind by a jump, a raise of more than the margin
+     *       more than the time since the latest receipt of a write for the producer.
      * </ol>
      *
      * A watermark ahead of the true time by less than the margin holds the messages that follow it
@@ -476,7 +487,7 @@ public final class LiveState<K> {
      * until they catch up.
      *
      * @param margin the least {@code R + G} that makes the watermark a bad one
-     * @param timelyAge the most a message's corrected age may be to take over
+     * @param timelyAge the most a message's corrected age may be to take over, at most half the margin
      */
     public record Takeover(Duration margin, Duration timelyAge) {
 
@@ -484,9 +495,9 @@ public final class LiveState<K> {
         public static final Takeover DEFAULTS = new Takeover(Duration.ofSeconds(30), Duration.ofSeconds(10));
 
         public Takeover {
-            if (!margin.isPositive() || !timelyAge.isPositive() || timelyAge.compareTo(margin) > 0) {
+            if (!margin.isPositive() || !timelyAge.isPositive() || timelyAge.compareTo(margin.dividedBy(2)) > 0) {
                 throw new IllegalArgumentException(
-                        "a takeover needs a positive margin and a positive timely age of at most the margin, was "
+                        "a takeover needs a positive margin and a positive timely age of at most half the margin, was "
                                 + margin + " and " + timelyAge);
             }
         }
@@ -500,7 +511,8 @@ public final class LiveState<K> {
          * Whether a message that is not older than the watermark raises it by more than the margin
          * more than the time since the latest receipt of a write for the producer: a stamp ahead of
          * the stream it follows, where a quiet match's next message raises it by as much as the quiet
-         * lasted.
+         * lasted. For a write with no corrected age: with one, the stamp is left behind by {@link
+         * #ahead}.
          *
          * @param watermark the watermark's timestamp, at most {@code timestamp}
          * @param newestReceivedAt the latest receipt of any message that wrote for the producer, on
@@ -531,12 +543,23 @@ public final class LiveState<K> {
         }
 
         /**
+         * Whether a message's stamp is ahead of the producer's now by more than the timely age: its
+         * corrected age is below the timely age negated. Such a write raises the watermark past what
+         * the producer's clock has reached, however little it raises it.
+         *
+         * @param correctedAge the message's age by the producer's clock, less the producer's offset
+         */
+        boolean ahead(Duration correctedAge) {
+            return correctedAge.compareTo(timelyAge.negated()) < 0;
+        }
+
+        /**
          * Whether a message older than the watermark replaces it.
          *
          * @param watermark the watermark's timestamp, greater than {@code timestamp}
          * @param newestReceivedAt the latest receipt of any message that wrote for the producer, on
          *     the monotonic clock: what {@code R} is counted from
-         * @param floor the stamp the watermark had before it jumped, or none
+         * @param floor the stamp the watermark had before the first write ahead of the producer's now, or none
          * @param timestamp the message's timestamp
          * @param receivedAt when it was received
          * @param correctedAge the message's age by the producer's clock, less the producer's offset
@@ -571,8 +594,8 @@ public final class LiveState<K> {
     /**
      * A producer's last live message on an entity: its timestamp, the producer's clock, and when the
      * SDK received it, on the feed's monotonic clock; and the latest receipt of any message that wrote
-     * for the producer, which only grows; and the stamp the watermark had before it last jumped,
-     * {@link #NO_FLOOR} if it did not.
+     * for the producer, which only grows; and the stamp the watermark had before the first write ahead
+     * of the producer's now, or before a jump, {@link #NO_FLOOR} if there is none.
      */
     private record Mark(long timestamp, long receivedAt, long newestReceivedAt, long floor) {}
 

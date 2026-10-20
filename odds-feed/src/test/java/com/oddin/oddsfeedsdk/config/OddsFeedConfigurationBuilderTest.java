@@ -651,17 +651,17 @@ class OddsFeedConfigurationBuilderTest {
                 .selectProduction()
                 .setAccessToken("token")
                 .setFutureStampMargin(Duration.ofDays(1))
-                .setTimelyMessageAge(Duration.ofDays(1))
+                .setTimelyMessageAge(Duration.ofHours(12))
                 .build();
         assertThat(set.getFutureStampMargin()).isEqualTo(Duration.ofDays(1));
-        assertThat(set.getTimelyMessageAge()).isEqualTo(Duration.ofDays(1));
+        assertThat(set.getTimelyMessageAge()).isEqualTo(Duration.ofHours(12));
         OddsFeedConfiguration smallest = builder()
                 .selectProduction()
                 .setAccessToken("token")
-                .setFutureStampMargin(Duration.ofMillis(1))
+                .setFutureStampMargin(Duration.ofMillis(2))
                 .setTimelyMessageAge(Duration.ofMillis(1))
                 .build();
-        assertThat(smallest.getFutureStampMargin()).isEqualTo(Duration.ofMillis(1));
+        assertThat(smallest.getFutureStampMargin()).isEqualTo(Duration.ofMillis(2));
         assertThat(smallest.getTimelyMessageAge()).isEqualTo(Duration.ofMillis(1));
     }
 
@@ -686,30 +686,39 @@ class OddsFeedConfigurationBuilderTest {
 
         var builder = builder().selectProduction().setAccessToken("token");
         assertThatThrownBy(() ->
-                        builder.setTimelyMessageAge(Duration.ofSeconds(31)).build())
-                .as("the timely age over the default margin")
+                        builder.setTimelyMessageAge(Duration.ofSeconds(16)).build())
+                .as("the timely age over half the default margin")
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("timely message age must be at most the future stamp margin");
-        assertThat(builder.setFutureStampMargin(Duration.ofSeconds(31)).build().getTimelyMessageAge())
+                .hasMessageContaining("timely message age must be at most half the future stamp margin");
+        assertThat(builder.setFutureStampMargin(Duration.ofSeconds(32)).build().getTimelyMessageAge())
                 .as("in either order of the two setters")
-                .isEqualTo(Duration.ofSeconds(31));
+                .isEqualTo(Duration.ofSeconds(16));
         assertThat(builder()
                         .selectProduction()
                         .setAccessToken("token")
-                        .setFutureStampMargin(Duration.ofSeconds(5))
+                        .setFutureStampMargin(Duration.ofSeconds(10))
                         .setTimelyMessageAge(Duration.ofSeconds(5))
                         .build()
-                        .getFutureStampMargin())
-                .as("the timely age may equal the margin")
+                        .getTimelyMessageAge())
+                .as("the timely age may be half the margin exactly")
                 .isEqualTo(Duration.ofSeconds(5));
+        assertThatThrownBy(() -> builder()
+                        .selectProduction()
+                        .setAccessToken("token")
+                        .setFutureStampMargin(Duration.ofSeconds(10))
+                        .setTimelyMessageAge(Duration.ofSeconds(5).plusMillis(1))
+                        .build())
+                .as("and not a millisecond more")
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("at most half the future stamp margin");
         assertThat(builder()
                         .selectProduction()
                         .setAccessToken("token")
                         .setFutureStampMargin(Duration.ofSeconds(5))
                         .build()
                         .getTimelyMessageAge())
-                .as("a margin under the default timely age, with that unset: the margin")
-                .isEqualTo(Duration.ofSeconds(5));
+                .as("a margin under twice the default timely age, with that unset: half the margin")
+                .isEqualTo(Duration.ofMillis(2_500));
     }
 
     @Test
