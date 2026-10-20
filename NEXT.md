@@ -590,8 +590,14 @@ Ownership and ordering:
   message was received - a stamp ahead of the stream it follows; a quiet match's next
   message raises it by as much as the quiet lasted, which is no jump - leaves behind the
   stamp it raised it from, per entity and producer. That stamp is kept through every
-  later write until a message takes the watermark over, which forgets it, since the next
-  jump is judged from that message. Without it, a correct update U written first and a
+  later write that raises the watermark again - those are stamps ahead - until a message
+  takes the watermark over, which forgets it, since the next jump is judged from that
+  message, or a message at the producer's now raises it (its age by the producer's
+  alives within the timely age, on either side), which forgets it too: the watermark is
+  then no further ahead than a timely message, and the stamp left behind is as stale as the
+  quiet since it was written - a later jump would be judged by it and not by the correct
+  write that came between. A write with no corrected age, a replayed message or a recovery's
+  answer, leaves it where it was. Without it, a correct update U written first and a
   bad F handled by another session after it leave a watermark that has forgotten U, and
   an ordinary older message that follows U by a moment would take over and put U's
   score back. The limit: of two bad stamps in a row, the second older than the first,
@@ -2194,3 +2200,15 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   feed wrote moments before. Both now read the latest receipt of any write for the producer, which
   never moves back; the takeover rule keeps reading the watermark's own receipt. No public API
   changes.
+- 2026-10-20, the stamp before a jump went stale: the live state kept the stamp a jump left behind
+  (the floor a takeover must not go below) through every later write, so after a stamp ahead, a quiet
+  match, a correct update and a second stamp ahead, the floor was still the first update's, and a
+  timely message older than the correct update took the watermark over and put its older score
+  back; a late message followed by a normal one left the same stale floor. A write that is in order
+  and at the producer's now - its age by the producer's alives within the timely age on either
+  side, which a stamp ahead is not - now forgets the floor, even when it is itself a jump, since no
+  takeover can pass the watermark of a timely message; a replayed message and a recovery's answer
+  carry no age and leave it. The end-to-end test of a stamp ahead followed by a correct message
+  published them back to back, so a same-millisecond receipt or a stall made the correct message
+  fail the takeover's rule; it now waits for the first to reach the listener, lets the clock move
+  on, and stamps the second as it is published. No public API changes.

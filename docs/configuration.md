@@ -77,7 +77,9 @@ watermark, when all of these hold:
   message that sat in a backlog never counts;
 - it is not older than the update the status had before the jump: a bad timestamp that came after
   a correct update leaves that update's timestamp as the floor, so an ordinary delayed message
-  cannot put an older status back;
+  cannot put an older status back. A message at the producer's now (its age within the timely age,
+  on either side) that raises the status's timestamp forgets the floor: it is then as stale as the
+  quiet since;
 - it is not an answer to a recovery request: a recovery never moves the live state back, and the
   next live message repairs a bad timestamp.
 
