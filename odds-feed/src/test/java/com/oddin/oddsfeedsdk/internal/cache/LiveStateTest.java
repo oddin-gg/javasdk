@@ -874,6 +874,26 @@ class LiveStateTest {
                 .isTrue();
     }
 
+    /**
+     * A fast component's stamps are the first the entity sees, one after another: there is no update
+     * before the first to hold the correct messages above, and the first is not one: a correct message
+     * after them takes over, as it does after one.
+     */
+    @Test
+    void aSecondStampAheadAsTheFirstAtTheStartDoesNotMakeTheFirstTheFloor() {
+        assertThat(message("m1", BASE + TEN_MINUTES, 1_000, AHEAD))
+                .as("F1: the first")
+                .isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES + 5_000, 1_100, AHEAD))
+                .as("F2: a little further ahead")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 1_000, 1_200, FRESH))
+                .as("C: correct, timely, received after both")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 1_000);
+    }
+
     /** Stamps ahead, none of them timely, never replace the stamp before the first jump. */
     @Test
     void aChainOfStampsAheadKeepsTheStampBeforeTheFirstOne() {
