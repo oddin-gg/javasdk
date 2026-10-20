@@ -2,7 +2,6 @@ package com.oddin.oddsfeedsdk.api
 
 import com.github.kittinunf.fuel.core.Client
 import com.github.kittinunf.fuel.core.FuelManager
-import com.github.kittinunf.fuel.httpGet
 import com.github.kittinunf.result.Result
 import com.oddin.oddsfeedsdk.DispatchManager
 import com.oddin.oddsfeedsdk.config.Environment
@@ -29,6 +28,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Executors
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
@@ -47,13 +47,15 @@ class ApiClientFuelIsolationTest {
     // every request the test server got, in order
     private val received = CopyOnWriteArrayList<Received>()
 
-    // set by a test that holds the request for who am I at the server: it counts down when the
-    // request has arrived and answers it once the other latch is released
-    @Volatile
-    private var heldArrived: CountDownLatch? = null
+    // a request the server holds: it counts down when the request has arrived and answers it once
+    // the other latch is released
+    private class Held(val method: String, val path: String) {
+        val arrived = CountDownLatch(1)
+        val release = CountDownLatch(1)
+    }
 
     @Volatile
-    private var heldRelease: CountDownLatch? = null
+    private var held: Held? = null
 
     // Fuel's defaults are filled in lazily on first use, so each test gets an application
     // manager of its own, as an application that configures Fuel before anything else would have
@@ -81,9 +83,9 @@ class ApiClientFuelIsolationTest {
                 it.requestURI.path,
                 it.requestHeaders.entries.associate { (name, values) -> name.lowercase() to values.joinToString() }
             )
-            if (it.requestURI.path.endsWith("/users/whoami")) {
-                heldArrived?.countDown()
-                heldRelease?.await(30, TimeUnit.SECONDS)
+            held?.takeIf { h -> h.method == it.requestMethod && h.path == it.requestURI.path }?.let { h ->
+                h.arrived.countDown()
+                h.release.await(30, TimeUnit.SECONDS)
             }
             val bytes = (if (it.requestURI.path.endsWith("/users/whoami")) whoAmI else "<ok/>").toByteArray()
             it.responseHeaders.add("Content-Type", "application/xml")
@@ -95,7 +97,7 @@ class ApiClientFuelIsolationTest {
 
     @After
     fun tearDown() {
-        heldRelease?.countDown()
+        held?.release?.countDown()
         server.stop(0)
         (server.executor as ExecutorService).shutdownNow()
         FuelManager.instance = originalInstance
@@ -116,7 +118,9 @@ class ApiClientFuelIsolationTest {
     // a request the application makes with Fuel's defaults, through FuelManager.instance; it
     // must have succeeded for what the server recorded of it to tell anything
     private fun applicationRequest(path: String): Received {
-        val (_, response, result) = url(path).httpGet().response()
+        // through FuelManager.instance itself: Fuel's convenience object and httpGet() keep the
+        // manager that was the instance when they were first used
+        val (_, response, result) = FuelManager.instance.get(url(path)).response()
         assertTrue("the application's request failed: ${result.component2()}", result is Result.Success)
         assertEquals(200, response.statusCode)
         return requestOf("GET", path)
@@ -169,18 +173,23 @@ class ApiClientFuelIsolationTest {
         }
     }
 
-    @Test(timeout = 60_000)
-    fun theApplicationsManagerIsLeftAloneWhileAnSdkRequestIsInFlight() {
-        val arrived = CountDownLatch(1)
-        val release = CountDownLatch(1)
-        heldArrived = arrived
-        heldRelease = release
+    // The SDK sends a request with every method its client uses, each through its own call of the
+    // SDK's manager. While one is held at the server, the application's manager must be as it was
+    // and a plain request through it must carry nothing of the SDK's; the held one then ends
+    // with the token.
+    private fun applicationIsLeftAloneWhileInFlight(
+        method: String,
+        path: String,
+        request: suspend (ApiClientImpl) -> Unit
+    ) {
+        val held = Held(method, path)
+        this.held = held
         val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
         val sdkRequest = Executors.newSingleThreadExecutor()
         try {
             client.fuel.basePath = "http://127.0.0.1:${server.address.port}/v1"
-            val inFlight = sdkRequest.submit<Any> { runBlocking { client.fetchWhoAmI() } }
-            assertTrue("the SDK's request did not reach the server", arrived.await(10, TimeUnit.SECONDS))
+            val inFlight = sdkRequest.submit<Any> { runBlocking { request(client) }; true }
+            assertTrue("the SDK's $method request did not reach the server", held.arrived.await(10, TimeUnit.SECONDS))
 
             // the SDK's request is at the server and waits for its answer
             assertNull(FuelManager.instance.baseHeaders)
@@ -188,12 +197,64 @@ class ApiClientFuelIsolationTest {
             assertNull(applicationRequest("/application").headers["x-access-token"])
             assertTrue("the SDK's request ended before it was released", !inFlight.isDone)
 
-            release.countDown()
+            held.release.countDown()
             inFlight.get(10, TimeUnit.SECONDS)
-            assertEquals("secret-token", tokenOf("GET", "/v1/users/whoami"))
+            assertEquals("secret-token", tokenOf(method, path))
         } finally {
-            release.countDown()
+            held.release.countDown()
             sdkRequest.shutdownNow()
+            client.close()
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun theApplicationsManagerIsLeftAloneWhileAnSdkGetIsInFlight() =
+        applicationIsLeftAloneWhileInFlight("GET", "/v1/users/whoami") { it.fetchWhoAmI() }
+
+    @Test(timeout = 60_000)
+    fun theApplicationsManagerIsLeftAloneWhileAnSdkPutIsInFlight() =
+        applicationIsLeftAloneWhileInFlight("PUT", "/v1/replay/events/od:match:1") {
+            it.putReplayEvent(URN.parse("od:match:1"), null)
+        }
+
+    @Test(timeout = 60_000)
+    fun theApplicationsManagerIsLeftAloneWhileAnSdkDeleteIsInFlight() =
+        applicationIsLeftAloneWhileInFlight("DELETE", "/v1/replay/events/od:match:1") {
+            it.deleteReplayEvent(URN.parse("od:match:1"), null)
+        }
+
+    @Test(timeout = 60_000)
+    fun theApplicationsManagerIsLeftAloneWhileAnSdkPostIsInFlight() =
+        applicationIsLeftAloneWhileInFlight("POST", "/v1/replay/play") { it.postReplayStart(null) }
+
+    @Test(timeout = 60_000)
+    fun theApplicationsInterceptorsAreNotCalledForTheSdkRequests() {
+        val requestsSeen = AtomicInteger()
+        val responsesSeen = AtomicInteger()
+        applicationFuel.addRequestInterceptor { next -> { request -> requestsSeen.incrementAndGet(); next(request) } }
+        applicationFuel.addResponseInterceptor { next -> { request, response ->
+            responsesSeen.incrementAndGet()
+            next(request, response)
+        } }
+        val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
+        try {
+            client.fuel.basePath = "http://127.0.0.1:${server.address.port}/v1"
+
+            runBlocking {
+                client.fetchWhoAmI()
+                client.putReplayEvent(URN.parse("od:match:1"), null)
+                client.deleteReplayEvent(URN.parse("od:match:1"), null)
+                client.postReplayStart(null)
+            }
+            assertEquals(4, received.size)
+            assertEquals(0, requestsSeen.get())
+            assertEquals(0, responsesSeen.get())
+
+            // the interceptors do work, for the application's own request: the zeros above mean something
+            applicationRequest("/application")
+            assertEquals(1, requestsSeen.get())
+            assertEquals(1, responsesSeen.get())
+        } finally {
             client.close()
         }
     }
