@@ -240,36 +240,37 @@ def pattern_of(line):
 
 lines = [l for l in full if pattern_of(l) not in BACKSTOPS]
 
-def repository_files():
-    """Every file of the repository: what git tracks, or, where this is not a git checkout (an
-    unpacked archive), every file in the tree but .git, a symlink as the path it is."""
-    listed = subprocess.run(["git", "-C", root, "ls-files", "-z"], capture_output=True, text=True)
-    if listed.returncode == 0 and listed.stdout:
-        return [path for path in listed.stdout.split("\0") if path]
-    return [os.path.relpath(os.path.join(directory, name), root)
-            for directory, directories, names in os.walk(root)
-            if ".git" not in os.path.relpath(directory, root).split(os.sep)
-            for name in names + [d for d in directories if os.path.islink(os.path.join(directory, d))]
-            if name != ".git"]
+def repository_files(tree):
+    """Every file of the repository: what git tracks. The test runs in a git checkout (the workflow's,
+    or a developer's), and a tree git does not list is refused, not walked: a walk would take in
+    what git ignores, and nothing would say that the checkout was not what the test judges."""
+    # no parent directory is searched for a repository: the tree itself must be one
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": os.path.dirname(os.path.realpath(tree))}
+    listed = subprocess.run(["git", "-C", tree, "ls-files", "-z"], capture_output=True, text=True, env=env)
+    files = [path for path in listed.stdout.split("\0") if path] if listed.returncode == 0 else []
+    if not files:
+        sys.exit("FAIL not a git checkout: git ls-files lists no file in %s" % tree)
+    return files
 
-def backstop_problems(all_lines):
+def backstop_problems(all_lines, tree=root):
     """Every file of the repository must be owned by the team under the whole file, the last matching
     line winning: each file there is (so that a later line for a path deep in a directory, by a
     name or a wildcard, is found wherever it is), and a new one at the root, under each directory
     and in scripts/ (a script of any depth that no other line names too), and every path under
     scripts/ that a line of the file names itself, so that a later line giving any of them, by
     a directory or a wildcard too, to another owner is found."""
+    files = repository_files(tree)
     found = []
-    here = os.path.join(root, "scripts")
-    present = [os.path.relpath(os.path.join(directory, name), root)
+    here = os.path.join(tree, "scripts")
+    present = [os.path.relpath(os.path.join(directory, name), tree)
                for directory, _, names in os.walk(here) for name in names]
     named = [pattern_of(line)[1:] for line in all_lines
              if (pattern_of(line) or "").startswith("/scripts/") and not pattern_of(line).endswith("/") and "*" not in pattern_of(line)]
-    top = [entry if os.path.isfile(os.path.join(root, entry)) else entry + "/new-file.txt"
-           for entry in sorted(os.listdir(root)) if entry != ".git"]
+    top = [entry if os.path.isfile(os.path.join(tree, entry)) else entry + "/new-file.txt"
+           for entry in sorted(os.listdir(tree)) if entry != ".git"]
     for path in sorted({"README.md", "new-file-at-the-root.txt", "odds-feed/src/main/java/X.java", "scripts/gh-new.sh",
                         "scripts/brand-new.sh", "scripts/brand-new/deeper/tool.py", *top, *present, *named,
-                        *repository_files()}):
+                        *files}):
         got = owners(all_lines, path)
         if got != TEAM:
             found.append("%s is owned by %s, not by %s" % (path, " ".join(got) or "nobody", " ".join(TEAM)))
@@ -519,6 +520,21 @@ for what, change, path, judged_by in cases:
             print("FAIL the test did not name %s for %s: %s" % (path, what, found), file=sys.stderr)
         else:
             print("ok   refused %s: %s" % (what, [line for line in found if line.startswith(path)][0]))
+
+# the backstop reads the files from git, and a tree that is no git checkout is refused with
+# that said, not walked: the check would otherwise judge what git does not hold
+with tempfile.TemporaryDirectory() as tree:
+    append(tree, "README.md", "x\n")
+    try:
+        backstop_problems(full, tree)
+        failed.append("a directory that is not a git checkout")
+        print("FAIL the backstop accepted a directory that is not a git checkout", file=sys.stderr)
+    except SystemExit as refusal:
+        if "not a git checkout" not in str(refusal.code):
+            failed.append("a directory that is not a git checkout")
+            print("FAIL the backstop refused a directory that is not a git checkout, but said %r" % refusal.code, file=sys.stderr)
+        else:
+            print("ok   refused a directory that is not a git checkout: %s" % refusal.code)
 
 # and a link to a file that is owned changes nothing: the check does not refuse what it should accept
 with tempfile.TemporaryDirectory() as tree:
