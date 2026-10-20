@@ -71,8 +71,9 @@ message older than the one that wrote last writes anyway, and its timestamp beco
 watermark, when all of these hold:
 
 - it was received after every message that wrote the status before it, by the SDK's own clock;
-- the time between the two receipts plus the gap between their timestamps is more than the
-  **future stamp margin** (30 s): two ordinary deliveries do not differ so much;
+- the time since the latest receipt of a message that wrote the status, plus the gap between
+  their timestamps, is more than the **future stamp margin** (30 s): two ordinary deliveries do not
+  differ so much;
 - it is timely: its age by its producer's alives is at most the **timely message age** (10 s), so a
   message that sat in a backlog never counts;
 - it is not older than the update the status had before the jump: a bad timestamp that came after
