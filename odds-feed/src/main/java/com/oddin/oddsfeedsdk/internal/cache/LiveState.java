@@ -57,8 +57,15 @@ public final class LiveState<K> {
     /** A reading that was never taken: the feed's monotonic clock reads 1 or more. */
     private static final long NEVER = 0;
 
-    /** A mark with no stamp before a jump to keep: no takeover is bound below any. */
+    /** A mark with no stamp before a stamp ahead to keep: no takeover is bound below any. */
     private static final long NO_FLOOR = Long.MIN_VALUE;
+
+    /**
+     * A mark whose first stamp was ahead of its producer's now: there is no stamp before it to keep
+     * a takeover above, and a stamp ahead that follows it must not make that one the floor, so it
+     * records none either. It holds no takeover back: every stamp of one is above it.
+     */
+    private static final long AHEAD_FROM_START = Long.MIN_VALUE + 1;
 
     private final FeedClock clock;
     private final Takeover takeover;
@@ -171,10 +178,11 @@ public final class LiveState<K> {
                 older = true;
                 // the message is believed over the watermark: the next jump is judged from it
                 floor = NO_FLOOR;
-            } else if (inOrder && last != null) {
+            } else if (inOrder) {
                 if (correctedAge == null) {
                     // a replayed message or a recovery's answer says nothing of the producer's now: by the jump
-                    if (floor == NO_FLOOR
+                    if (last != null
+                            && floor == NO_FLOOR
                             && takeover.jumped(last.timestamp(), last.newestReceivedAt(), timestamp, receivedAt)) {
                         floor = last.timestamp();
                     }
@@ -182,7 +190,7 @@ public final class LiveState<K> {
                     // the stamp before the first one ahead: what an older message that is yet to come
                     // must not go below, kept through the stamps ahead that follow
                     if (floor == NO_FLOOR) {
-                        floor = last.timestamp();
+                        floor = last == null ? AHEAD_FROM_START : last.timestamp();
                     }
                 } else if (takeover.atProducersNow(correctedAge)) {
                     // the watermark is the producer's now: a stamp from before it is stale, and no
@@ -475,7 +483,9 @@ public final class LiveState<K> {
      *       over, since the next write ahead is then judged from that message, or when a message at
      *       the producer's now (see {@link #atProducersNow}) raises it: the watermark is then no
      *       further ahead than a timely message, and the stamp left behind is as stale as the quiet
-     *       since it was written. A late message, older than the timely age, leaves it as it is. A
+     *       since it was written. A late message, older than the timely age, leaves it as it is. An
+     *       entity whose first stamp is itself ahead has no update behind it to keep, and the stamps
+     *       ahead that follow do not make that one the floor. A
      *       write with no corrected age, a replayed message or a recovery's answer, says nothing of
      *       the producer's now: the stamp is left behind by a jump, a raise of more than the margin
      *       more than the time since the latest receipt of a write for the producer.
