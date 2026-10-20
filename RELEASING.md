@@ -38,16 +38,12 @@ GitHub Packages.
       it; its primary's fingerprint is the repository variable `RELEASE_KEY_FINGERPRINT`; the
       subkey's expiry date is in this file and a reminder is set.
 - [ ] **Branch protection on `main`:** every change through a PR with a required approval and
-      code owners' review, linear history, no bypass, no force push, and - all three required
-      for the release's security:
-      - "Dismiss stale pull request approvals when new commits are pushed";
-      - "Require approval of the most recent reviewable push";
-      - "Require branches to be up to date before merging", so a rebase merge cannot produce
-        a final state nobody saw.
+      code owners' review, linear history, no bypass for anyone, admins included. The rest of
+      the protection is under "Before 1.0.0" below.
 
       The approver approves a PR's merge commit as reviewed, and trusts all of it - `mvnw`,
       the POMs, the plugins, the code - since the approved job builds and signs from it with
-      the secrets at hand. Without these settings an approval can outlive the code it was for.
+      the secrets at hand.
 
       `next` is deliberately not protected this way: its PRs merge without a required
       approval. That is why releases never come from it - the check refuses a commit that is on
@@ -83,14 +79,6 @@ GitHub Packages.
       run (the `codeowners` job, `gh api repos/<repo>/codeowners/errors`) and fails on any error.
       It does not notice a line that was removed, which is why that test resolves the owners the
       way GitHub does, for the paths above and the reactor's POMs (from the root POM's `<modules>`).
-- [ ] **Tag ruleset.** The release managers may create `v*` tags; nobody - admins and the tag's
-      creator included - may update or delete one. A published version keeps its tag for good.
-      Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in
-      it cannot stop a tag put on an unreviewed commit whose `release.yml` skips them. The
-      environment's reviewers are the control.
-- [ ] **Immutable releases** (Settings - General - Releases), before the first release: a
-      published GitHub Release and its files cannot change afterwards. The release workflow
-      attaches the files to a draft and publishes it only then.
 - [ ] **Only `release.yml` reacts to tags.** No other workflow on `main` may run on a
       `v1.*` tag: it would publish as well, unchecked. The check job refuses a tagged commit
       where another workflow would: a push trigger with tags or without a branch filter, or a
@@ -114,6 +102,35 @@ GitHub Packages.
       No job gets them before a second person approves it. GitHub enforces that outside the
       workflow, which matters because the workflow is whatever the tagged commit says it is.
       No other environment is needed.
+
+## Before 1.0.0
+
+A release candidate may go out without these. The publish waits for a second release manager's
+approval in `maven-central`, the control that unlocks the key and the token, and the release
+check accepts only the merge commit of a reviewed PR into `main`. What follows closes narrower
+gaps: an approval that outlives later commits, a deleted `main`, a moved or deleted tag, an
+edited GitHub Release. Set them up before the first final release.
+
+- [ ] **Stricter branch protection on `main`**, all together:
+      - "Dismiss stale pull request approvals when new commits are pushed";
+      - "Require approval of the most recent reviewable push";
+      - "Require branches to be up to date before merging", so a rebase merge cannot produce
+        a final state nobody saw;
+      - the branch cannot be deleted, and force pushes are refused by a rule of their own
+        (non-fast-forward), not only by the pull request requirement.
+
+      Without these settings an approval can outlive the code it was for: the approver
+      approves a PR's merge commit as reviewed, and trusts all of it, but a commit pushed after
+      the approval, or a base that moved on, is not what was approved.
+- [ ] **Tag ruleset.** The release managers may create `v0.*` and `v1.*` tags (the 0.x line
+      tags on `release/0.x`, the 1.0 line on `main`); nobody - admins and the tag's creator
+      included - may update or delete one. A published version keeps its tag for good.
+      Defence in depth: a tag runs `release.yml` as the tagged commit has it, so the checks in
+      it cannot stop a tag put on an unreviewed commit whose `release.yml` skips them. The
+      environment's reviewers are the control.
+- [ ] **Immutable releases** (Settings - General - Releases): a published GitHub Release and its
+      files cannot change afterwards. The release workflow attaches the files to a draft and
+      publishes it only then.
 
 ## The signing key
 
@@ -237,8 +254,8 @@ subkey alone, as in "The signing key in the environment is suspected leaked".
    ```
 
    must print `main` (`next` does not count: its PRs need no approval). That proves the commit
-   was reviewed only with `main`'s branch protection settings above on. If it prints nothing,
-   ask the other way round; it must print a PR number:
+   was reviewed only with `main`'s ruleset on (a PR with an approval, as "Once, before the first
+   release" says). If it prints nothing, ask the other way round; it must print a PR number:
 
    ```
    gh api --paginate 'repos/oddin-gg/javasdk/pulls?state=closed&base=main&per_page=100' --jq '.[] | select(.merge_commit_sha == "<sha>" and .merged_at) | .number'
@@ -262,8 +279,8 @@ release, before anything is built, when:
 
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
 - the tag, as origin has it, no longer names the commit the run was started for (moved after
-  the push, by someone who may bypass the tag ruleset: tags cannot be moved back, so release a
-  new version) - the same is asked again right before the upload;
+  the push: a tag is never moved back, so release a new version) - the same is asked again
+  right before the upload;
 - the tagged commit is not on `main` (on `next` only, the message says so: `next` has no
   required review), or is not the merge commit of a PR merged into `main` (an intermediate
   commit of a rebase-merged PR is on `main`, but was never reviewed as a state of its own; a
@@ -323,7 +340,7 @@ key against a stand-in portal and checks the bundle.
 
 ## When something fails
 
-Tags cannot be moved or deleted, so a failed release is never retried under the same tag: the
+A tag is never moved or deleted, so a failed release is never retried under the same tag: the
 next attempt is a new version - the next release candidate number, or the next patch.
 
 - **Before publish:** nothing left the repository, but the tag stays. Fix what failed, write
@@ -386,11 +403,12 @@ next attempt is a new version - the next release candidate number, or the next p
 - **A published version is defective.** Central is immutable: a version cannot be deleted or
   replaced, and nothing is retried under its number. The fix is the next version, released as
   above with its notes saying what it fixes. Mark the defective one in its GitHub Release:
-  GitHub's immutable releases lock the files and the tag, not the text - the title and the
-  notes of a published release can still be edited, so say there which version fixes it - and
-  the same goes in the next version's `release-notes/<version>.md`. Tell the clients through
-  the usual channel. The release managers named as the reviewers of the `maven-central`
-  environment decide that a version is defective and that the next one goes out.
+  GitHub's immutable releases (once set up, see "Before 1.0.0") lock the files and the tag,
+  not the text - the title and the notes of a published release can still be edited, so say
+  there which version fixes it - and the same goes in the next version's
+  `release-notes/<version>.md`. Tell the clients through the usual channel. The release
+  managers named as the reviewers of the `maven-central` environment decide that a version is
+  defective and that the next one goes out.
 - **The signing subkey nears its expiry** - the reminder, or the check job refusing a release
   whose subkey expires within 30 days or has expired. Do not extend it: make a new signing
   subkey, put that one into `MAVEN_GPG_KEY`, and revoke the old one, so that a subkey that leaked
