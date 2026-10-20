@@ -63,8 +63,10 @@ GitHub Packages.
       `scripts/next-workflow.json`; and the schema drift job's files. Nothing else is owned: the
       publish job only compiles the other sources, with the tests skipped. That list is not kept
       by hand alone: `scripts/release-codeowners-test.sh` derives every script a workflow runs
-      and every file those scripts name by a literal path from the repository root, and
-      requires the team to own them, so a new one cannot be missed.
+      and every file those scripts name by a literal path from the repository root (`$root/...`,
+      `$here/...`) or from their own directory (a helper called through `dirname "$0"`), follows
+      the scripts among those files the same way, and requires the team to own them all, so a
+      new one cannot be missed. A path built any other way is not seen.
       GitHub drops what it cannot read from a CODEOWNERS file, so `next.yml` asks it on every
       run (the `codeowners` job, `gh api repos/<repo>/codeowners/errors`) and fails on any error.
       It does not notice a line that was removed, which is why that test resolves the owners the

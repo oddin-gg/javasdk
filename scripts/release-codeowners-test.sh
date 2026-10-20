@@ -66,7 +66,9 @@ def modules(tree, directory):
 # What the workflows run and what those scripts read is derived, so that a script or a file added
 # to the build cannot be missed by a list kept by hand: every scripts/ path in a run: of a
 # workflow, and every file such a script names by a literal path from the repository root
-# ($root/..., or $here/... in the scripts that set it to their own directory).
+# ($root/..., or $here/... in the scripts that set it to their own directory) or from its own
+# directory (a helper called through dirname of $0). A script or helper among those files is
+# read in turn, to the end, so a helper's helper is owned too.
 def workflow_scripts(tree):
     found = {}
     directory = os.path.join(tree, ".github/workflows")
@@ -82,9 +84,30 @@ def workflow_scripts(tree):
 
 def script_reads(tree, script):
     found = set()
-    for variable, path in re.findall(r"(\$\{?root\}?|\$\{?here\}?)/(\.?[A-Za-z0-9_][A-Za-z0-9_./-]*)", open(os.path.join(tree, script)).read()):
+    text = open(os.path.join(tree, script)).read()
+    for variable, path in re.findall(r"(\$\{?root\}?|\$\{?here\}?)/(\.?[A-Za-z0-9_][A-Za-z0-9_./-]*)", text):
         found.add(("scripts/" if "here" in variable else "") + path.rstrip("./"))
-    return found
+    # a helper called through the script's own directory (dirname of $0), quoted or not
+    for path in re.findall(r"\$\(dirname \"?\$0\"?\)/([A-Za-z0-9_./-]+)", text):
+        found.add(os.path.normpath(os.path.join(os.path.dirname(script), path)))
+    # what the script names above the repository, or as the repository itself, is no file in it
+    return {path for path in found if path != "." and not path.startswith("..")}
+
+def reads_of(tree, scripts):
+    """What the scripts read, and what the scripts among those read in turn, to the end. Returns the
+    paths with the first script that names each; a script seen once is not read again (a cycle)."""
+    reads = {}
+    queue = list(scripts)
+    seen = set(queue)
+    while queue:
+        script = queue.pop(0)
+        for path in sorted(script_reads(tree, script)):
+            reads.setdefault(path, script)
+            helper = path.startswith("scripts/") and path.endswith((".sh", ".py"))
+            if helper and os.path.isfile(os.path.join(tree, path)) and path not in seen:
+                seen.add(path)
+                queue.append(path)
+    return reads
 
 def survey(tree):
     """The paths that must be owned in a tree: the list kept here, the reactor's POMs, and what is
@@ -100,12 +123,10 @@ def survey(tree):
         sys.exit("FAIL the root pom.xml names no modules, so the POMs of the reactor were not checked")
     owned += [os.path.join(module, "pom.xml") for module in reactor]
     derived = workflow_scripts(tree)
-    reads = {}
     for script in derived:
         if not os.path.isfile(os.path.join(tree, script)):
             sys.exit("FAIL %s, run by %s, is not a file" % (script, derived[script]))
-        for path in script_reads(tree, script):
-            reads.setdefault(path, script)
+    reads = reads_of(tree, derived)
     # the derivation must have found what it is for, or an empty one would pass
     expected_derived = ["scripts/fetch-sdk.sh", "scripts/fetch-sdk-test.sh", "scripts/release-check.sh", "scripts/schema-drift.sh"]
     expected_reads = ["system-tests/src/test/resources/sdk-jar-checksums.properties", "pom.xml", "mvnw"]
@@ -196,6 +217,19 @@ def new_here_read(tree):
     append(tree, "scripts/brand-new-helper.py", "print()\n")
     append(tree, "scripts/schema-drift.sh", '\n: "$' + 'here/brand-new-helper.py"\n')
 
+def new_dirname_helper(tree):
+    # a release script calling a helper by its own directory, which no release-* pattern names
+    append(tree, "scripts/gh-helpers.sh", "#!/usr/bin/env bash\n")
+    append(tree, "scripts/release-check.sh", '\n"$(dirname "$' + '0")/gh-helpers.sh"\n')
+
+def new_helper_chain(tree):
+    # that helper calling another one, and a third calling the first again: followed to the end,
+    # and the cycle left
+    new_dirname_helper(tree)
+    append(tree, "scripts/gh-helpers.sh", '\n$(dirname "$' + '0")/gh-more.sh\n')
+    append(tree, "scripts/gh-more.sh", '\n"$' + 'here/gh-helpers.sh" "$' + 'root/scripts/gh-last.sh"\n')
+    append(tree, "scripts/gh-last.sh", "#!/usr/bin/env bash\n")
+
 def nested_module(tree):
     # a module listed in a child POM's <modules>, not in the root POM's, as a nested reactor has it
     pom = os.path.join(tree, "test-fakes/pom.xml")
@@ -210,6 +244,10 @@ cases = [
     ("a workflow running a new script", new_script, "scripts/brand-new.sh", lines),
     ("a workflow script reading a new file", new_read, "odds-feed/src/main/resources/brand-new.properties", lines),
     ("a workflow script reading a new file through $here", new_here_read, "scripts/brand-new-helper.py", lines),
+    ("a release script calling a new helper through its own directory", new_dirname_helper,
+     "scripts/gh-helpers.sh", lines),
+    ("a helper calling another, and that one the first again", new_helper_chain, "scripts/gh-more.sh", lines),
+    ("the end of a chain of helpers", new_helper_chain, "scripts/gh-last.sh", lines),
     ("a nested module whose POM CODEOWNERS gives to another owner", nested_module, "test-fakes/nested/pom.xml",
      lines + ["/test-fakes/nested/pom.xml @someone-else"]),
 ]
