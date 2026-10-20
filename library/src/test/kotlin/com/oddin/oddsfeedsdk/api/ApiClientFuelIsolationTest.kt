@@ -26,6 +26,9 @@ import java.net.URI
 import java.security.KeyStore
 import java.util.concurrent.Executor
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
@@ -43,6 +46,14 @@ class ApiClientFuelIsolationTest {
 
     // every request the test server got, in order
     private val received = CopyOnWriteArrayList<Received>()
+
+    // set by a test that holds the request for who am I at the server: it counts down when the
+    // request has arrived and answers it once the other latch is released
+    @Volatile
+    private var heldArrived: CountDownLatch? = null
+
+    @Volatile
+    private var heldRelease: CountDownLatch? = null
 
     // Fuel's defaults are filled in lazily on first use, so each test gets an application
     // manager of its own, as an application that configures Fuel before anything else would have
@@ -62,12 +73,18 @@ class ApiClientFuelIsolationTest {
         originalInstance = FuelManager.instance
         FuelManager.instance = applicationFuel
         server = HttpServer.create(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 0)
+        // a held request must not keep the others from being answered
+        server.executor = Executors.newCachedThreadPool()
         server.createContext("/") {
             received += Received(
                 it.requestMethod,
                 it.requestURI.path,
                 it.requestHeaders.entries.associate { (name, values) -> name.lowercase() to values.joinToString() }
             )
+            if (it.requestURI.path.endsWith("/users/whoami")) {
+                heldArrived?.countDown()
+                heldRelease?.await(30, TimeUnit.SECONDS)
+            }
             val bytes = (if (it.requestURI.path.endsWith("/users/whoami")) whoAmI else "<ok/>").toByteArray()
             it.responseHeaders.add("Content-Type", "application/xml")
             it.sendResponseHeaders(200, bytes.size.toLong())
@@ -78,7 +95,9 @@ class ApiClientFuelIsolationTest {
 
     @After
     fun tearDown() {
+        heldRelease?.countDown()
         server.stop(0)
+        (server.executor as ExecutorService).shutdownNow()
         FuelManager.instance = originalInstance
     }
 
@@ -146,6 +165,35 @@ class ApiClientFuelIsolationTest {
             assertNull(FuelManager.instance.basePath)
             assertNull(applicationRequest("/application").headers["x-access-token"])
         } finally {
+            client.close()
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun theApplicationsManagerIsLeftAloneWhileAnSdkRequestIsInFlight() {
+        val arrived = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        heldArrived = arrived
+        heldRelease = release
+        val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
+        val sdkRequest = Executors.newSingleThreadExecutor()
+        try {
+            client.fuel.basePath = "http://127.0.0.1:${server.address.port}/v1"
+            val inFlight = sdkRequest.submit<Any> { runBlocking { client.fetchWhoAmI() } }
+            assertTrue("the SDK's request did not reach the server", arrived.await(10, TimeUnit.SECONDS))
+
+            // the SDK's request is at the server and waits for its answer
+            assertNull(FuelManager.instance.baseHeaders)
+            assertNull(FuelManager.instance.basePath)
+            assertNull(applicationRequest("/application").headers["x-access-token"])
+            assertTrue("the SDK's request ended before it was released", !inFlight.isDone)
+
+            release.countDown()
+            inFlight.get(10, TimeUnit.SECONDS)
+            assertEquals("secret-token", tokenOf("GET", "/v1/users/whoami"))
+        } finally {
+            release.countDown()
+            sdkRequest.shutdownNow()
             client.close()
         }
     }

@@ -97,6 +97,25 @@ class TaskManagerTest {
     }
 
     @Test(timeout = 60_000)
+    fun anInterruptedTaskReturnsKeepsTheInterruptAndIsNotLoggedAsAFailure() {
+        val guarded = manager.guarded(task("interrupted", { throw InterruptedException("stop") }))
+
+        try {
+            // close() interrupts a running task: the run ends quietly, with the flag left for the executor
+            guarded.run()
+
+            assertTrue("the interrupt was not kept", Thread.currentThread().isInterrupted)
+            assertTrue(
+                "an interrupt was logged as a failure: ${appender.list.map { it.formattedMessage }}",
+                appender.list.none { it.level == Level.ERROR && it.formattedMessage.contains("interrupted") }
+            )
+        } finally {
+            // the test thread's flag, so that nothing after it is interrupted
+            Thread.interrupted()
+        }
+    }
+
+    @Test(timeout = 60_000)
     fun aTaskThatFailedWithAnErrorIsNotRunAgain() {
         val failingRuns = AtomicInteger()
         manager.startTaskPeriodically(task("fatal", {
