@@ -12,7 +12,7 @@ entity caches (tickets 17 to 19) are built from, with what 0.0.x did, and the qu
 
 Schema: the vendored oddsfeedschema (`vendor/oddsfeedschema/SOURCE`); XSD paths are relative to
 `vendor/oddsfeedschema/schema/`. The 0.0.x code is `library/src/main/kotlin/com/oddin/oddsfeedsdk/cache/entity/*.kt`
-on the `release/0.x` line. The 1.0 getters are in `odds-feed/src/main/java/com/oddin/oddsfeedsdk/api/entities/sportevent/`.
+on the `release/0.x` branch (the directory is no longer in this tree). The 1.0 getters are in `odds-feed/src/main/java/com/oddin/oddsfeedsdk/api/entities/sportevent/`.
 
 ## Endpoint key
 

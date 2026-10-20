@@ -17,7 +17,7 @@
   <name>Oddin Odds Feed SDK 1.0 examples</name>
   <description>
     Small runnable examples of the 1.0 SDK. The build only compiles them: running one needs a token.
-    The examples of 0.0.x are in the Gradle project one directory up.
+    The sources of the 0.0.x examples are one directory up, in `src`; a test of odds-feed compiles them.
   </description>
 
   <properties>
