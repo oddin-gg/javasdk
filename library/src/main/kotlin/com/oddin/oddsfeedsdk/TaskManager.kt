@@ -69,7 +69,25 @@ class TaskManagerImpl @Inject constructor(whoAmIManager: WhoAmIManager) : TaskMa
 
     override fun startTaskPeriodically(task: PeriodicTask) {
         logger.info { "starting periodic task ${task.name}" }
-        scheduler.scheduleAtFixedRate(task.command, task.initialDelay, task.period, task.timeUnit)
+        scheduler.scheduleAtFixedRate(guarded(task), task.initialDelay, task.period, task.timeUnit)
+    }
+
+    // scheduleAtFixedRate suppresses every later run of a task whose run throws, and reports
+    // nothing: the recovery timer and the cache refreshes would stop without a trace.
+    private fun guarded(task: PeriodicTask) = Runnable {
+        try {
+            task.command()
+        } catch (e: InterruptedException) {
+            // close() interrupts a running task; leave the flag for the executor
+            Thread.currentThread().interrupt()
+        } catch (e: Exception) {
+            logger.error(e) { "periodic task ${task.name} failed, it will run again" }
+        } catch (e: Error) {
+            // a failure of the JVM itself (out of memory, a broken class) is not one the task
+            // can carry on from: log it, so it is not silent, and let it end the task
+            logger.error(e) { "periodic task ${task.name} failed with an error, it will not run again" }
+            throw e
+        }
     }
 
 }
