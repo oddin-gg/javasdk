@@ -182,12 +182,20 @@ full = open(os.path.join(root, ".github/CODEOWNERS")).read().splitlines()
 lines = [l for l in full if l.split("#", 1)[0].split()[:1] != [BACKSTOP]]
 
 def backstop_problems(all_lines):
-    """The backstop must own a script of any depth that no other line names."""
+    """Everything under scripts/ must be owned by the team under the whole file, the last matching
+    line winning: a script of any depth that no other line names, every file there is, and every
+    path under scripts/ that a line of the file names itself, so that a later line giving one of
+    them to another owner is found."""
     found = []
-    for path in ["scripts/brand-new.sh", "scripts/brand-new/deeper/tool.py"]:
+    here = os.path.join(root, "scripts")
+    present = [os.path.relpath(os.path.join(directory, name), root)
+               for directory, _, names in os.walk(here) for name in names]
+    named = [text[0][1:] for text in (line.split("#", 1)[0].split() for line in all_lines)
+             if text and text[0].startswith("/scripts/") and not text[0].endswith("/") and "*" not in text[0]]
+    for path in sorted({"scripts/brand-new.sh", "scripts/brand-new/deeper/tool.py", *present, *named}):
         got = owners(all_lines, path)
         if got != TEAM:
-            found.append("%s, which no line names, is owned by %s, not by %s" % (path, " ".join(got) or "nobody", " ".join(TEAM)))
+            found.append("%s is owned by %s, not by %s" % (path, " ".join(got) or "nobody", " ".join(TEAM)))
     return found
 
 owned, reactor, derived, reads = survey(root)
@@ -213,6 +221,8 @@ cases = {
 for what, changed in {
     "the backstop removed": [l for l in full if l.split("#", 1)[0].split()[:1] != [BACKSTOP]],
     "the backstop given to another owner": [l.replace(BACKSTOP + " ", BACKSTOP + "x ").replace(BACKSTOP + "x", BACKSTOP + " @someone-else #") for l in full],
+    "a later line giving a script under scripts/ to another owner": full + ["/scripts/gh-other.sh @someone-else"],
+    "a later line giving a script that exists to another owner": full + ["/scripts/refresh-schema.sh @someone-else"],
     "the backstop that no longer matches": [l.replace(BACKSTOP + " ", "/script/ ") for l in full],
 }.items():
     if changed == full:
@@ -383,12 +393,22 @@ def symlink_out_of_the_tree(tree, outside):
     append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/gh-link.sh"\n')
     return [], ["scripts/gh-link.sh", "scripts/gh-behind-link.sh"]
 
+def symlinked_directory(tree, outside):
+    # a directory of scripts/ that is a symlink to one elsewhere, holding a helper that names a
+    # script of the tree: nothing beneath the link is followed, and what it names is not derived
+    append(tree, "scripts/gh-behind-dir.sh", "#!/usr/bin/env bash\n")
+    open(outside, "w").write(': "$' + 'root/scripts/gh-behind-dir.sh"\n')
+    os.symlink(os.path.dirname(outside), os.path.join(tree, "scripts/gh-linkdir"))
+    append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/gh-linkdir/outside.txt"\n')
+    return [], ["scripts/gh-linkdir/outside.txt", "scripts/gh-behind-dir.sh"]
+
 for what, change in [
     ("an absolute-looking path through dirname", absolute_looking_by_dirname),
     ("a .. traversal through $here", traversal_by_here),
     ("a .. traversal through $root", traversal_by_root),
     ("a .. traversal through dirname", traversal_by_dirname),
     ("a symlink out of the tree", symlink_out_of_the_tree),
+    ("a symlinked directory out of the tree", symlinked_directory),
 ]:
     with tempfile.TemporaryDirectory() as tree, tempfile.TemporaryDirectory() as elsewhere:
         copy_of_tree(tree)
