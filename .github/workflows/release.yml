@@ -3,8 +3,9 @@ name: Java SDK 1.0 release
 # A v1.* tag publishes that version to Maven Central - a release candidate (v1.0.0-rc.1) or a
 # final (v1.0.0) - once a second person approves the upload. RELEASING.md has the checklist,
 # the secrets, the repository variable (RELEASE_KEY_FINGERPRINT) and the environment this needs.
-# The check job refuses a tag whose commit, notes or version are wrong, and a signing key that is
-# not fit to sign, before anything is built.
+# The check job refuses a tag whose commit, notes or version are wrong, a pull request that was
+# not approved on its final commit, and a signing key that is not fit to sign, before anything
+# is built.
 on:
   push:
     tags:
@@ -43,6 +44,18 @@ jobs:
         # to its cases. The signing key is checked by the step after this one.
         run: ./scripts/release-check.sh "$GITHUB_REF_NAME"
         env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Check the pull requests were approved
+        # Every pull request merged into main since the previous release was approved on GitHub for
+        # its final commit, by someone other than its author: the ruleset of main neither dismisses
+        # an approval that a later push made stale nor asks for one of the latest push, so a pull
+        # request can merge on an approval of an earlier version of itself. Read-only, like the
+        # step before; the first release starts from scripts/release-approval-baseline.
+        # release-approval-check-test.sh, run by next.yml on every push, holds it to its cases.
+        run: ./scripts/release-approval-check.sh "$COMMIT"
+        env:
+          COMMIT: ${{ steps.tag.outputs.commit }}
           GH_TOKEN: ${{ github.token }}
 
       - name: Check the signing key

@@ -21,6 +21,10 @@
           "run": "./scripts/release-check-test.sh"
         },
         {
+          "name": "Check the release refuses a pull request that was not approved on its final commit",
+          "run": "./scripts/release-approval-check-test.sh"
+        },
+        {
           "name": "Check the release refuses a signing key that is not fit to sign",
           "run": "./scripts/release-key-check-test.sh"
         },

@@ -43,6 +43,14 @@
         },
         {
           "env": {
+            "COMMIT": "${{ steps.tag.outputs.commit }}",
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "name": "Check the pull requests were approved",
+          "run": "./scripts/release-approval-check.sh \"$COMMIT\""
+        },
+        {
+          "env": {
             "RELEASE_KEY_FINGERPRINT": "${{ vars.RELEASE_KEY_FINGERPRINT }}"
           },
           "name": "Check the signing key",

@@ -56,6 +56,11 @@ jobs:
         # maven-central reviewer; it runs on tags alone, so its cases run here, on a scratch repository
         run: ./scripts/release-check-test.sh
 
+      - name: Check the release refuses a pull request that was not approved on its final commit
+        # release.yml's approval check, against a stub gh and a scratch repository: an approval of an
+        # earlier commit or of the author only, a direct push, a baseline not set, a call that fails
+        run: ./scripts/release-approval-check-test.sh
+
       - name: Check the release refuses a signing key that is not fit to sign
         # release.yml's key check, against stub keyservers and keys made on this runner: a subkey
         # about to expire, expired or revoked, a copy gone stale on one server, a server without it

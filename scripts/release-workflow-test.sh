@@ -6,8 +6,9 @@
 # no run can show before a release:
 #
 # - the check job runs scripts/release-check.sh, unconditionally, and its outputs are that step's;
-#   it also runs scripts/release-key-check.sh, unconditionally, with the key's fingerprint from the
-#   repository variable RELEASE_KEY_FINGERPRINT;
+#   it then runs scripts/release-approval-check.sh, unconditionally, for the commit that check
+#   accepted, and scripts/release-key-check.sh, unconditionally, with the key's fingerprint from
+#   the repository variable RELEASE_KEY_FINGERPRINT;
 # - publish runs only after check and build succeeded, in the maven-central environment, whose
 #   reviewers approve every upload; no other job, here or in a called workflow, uses an
 #   environment or reads a secret other than the job token;
@@ -115,6 +116,21 @@ if len(found) == 1:
     for name in ("version", "final", "commit"):
         check(outputs.get(name) == "${{ steps.%s.outputs.%s }}" % (step.get("id"), name),
               "check's %s must be the release check's own output, not %r" % (name, outputs.get(name)))
+
+# check: every pull request since the previous release was approved on its final commit, always,
+# for the commit the release check accepted and after it: that check is what proves the commit is on
+# main and what the tag names. The job has no secrets (below), so this runs before anything has one.
+APPROVAL_CHECK = './scripts/release-approval-check.sh "$COMMIT"'
+approval = [i for i, s in enumerate(steps("check")) if str(s.get("run", "")).strip() == APPROVAL_CHECK]
+check(len(approval) == 1, "check must run %s as a step of its own, once" % APPROVAL_CHECK)
+if len(approval) == 1 and len(found) == 1:
+    step = steps("check")[approval[0]]
+    unconditional("check", step, "the approval check")
+    check(steps("check").index(found[0]) < approval[0], "check must run the approval check after the release check")
+    check((step.get("env") or {}).get("COMMIT") == "${{ steps.%s.outputs.commit }}" % found[0].get("id"),
+          "the approval check must take COMMIT from the release check's own output, not %r" % (step.get("env") or {}).get("COMMIT"))
+    check((step.get("env") or {}).get("GH_TOKEN") == "${{ github.token }}",
+          "the approval check must ask GitHub with the job token, not %r" % (step.get("env") or {}).get("GH_TOKEN"))
 
 # check: the signing key is checked, always, with the fingerprint of the repository variable
 KEY_CHECK = './scripts/release-key-check.sh'
@@ -776,6 +792,40 @@ breaks release.yml replace '      contents: read
 ' '      contents: read
       pull-requests: write
 ' "check's permissions must be"
+
+# the approval check
+approval_step='        run: ./scripts/release-approval-check.sh "$COMMIT"'
+approval_env='          COMMIT: ${{ steps.tag.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+'
+breaks release.yml replace "$approval_step" '        run: echo "approved"' \
+  'check must run ./scripts/release-approval-check.sh "$COMMIT" as a step of its own'
+breaks release.yml replace "$approval_step" "        if: false
+$approval_step" "check: the approval check must not be conditional"
+breaks release.yml replace "$approval_step" "        continue-on-error: true
+$approval_step" "check: the approval check must not continue on error"
+breaks release.yml replace "$approval_env" '          COMMIT: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+' "the approval check must take COMMIT from the release check's own output"
+breaks release.yml replace "$approval_env" '          COMMIT: ${{ steps.tag.outputs.commit }}
+          GH_TOKEN: ${{ secrets.OTHER_TOKEN }}
+' "the approval check must ask GitHub with the job token"
+approval_whole='      - name: Check the pull requests were approved
+        # Every pull request merged into main since the previous release was approved on GitHub for
+        # its final commit, by someone other than its author: the ruleset of main neither dismisses
+        # an approval that a later push made stale nor asks for one of the latest push, so a pull
+        # request can merge on an approval of an earlier version of itself. Read-only, like the
+        # step before; the first release starts from scripts/release-approval-baseline.
+        # release-approval-check-test.sh, run by next.yml on every push, holds it to its cases.
+        run: ./scripts/release-approval-check.sh "$COMMIT"
+        env:
+          COMMIT: ${{ steps.tag.outputs.commit }}
+          GH_TOKEN: ${{ github.token }}
+
+'
+breaks release.yml move "$approval_whole" '          fetch-depth: 0
+          persist-credentials: false
+' "check must run the approval check after the release check"
 
 # the signing key check
 key_step='        run: ./scripts/release-key-check.sh'

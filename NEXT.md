@@ -2297,3 +2297,15 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   them against the 0.0.x baseline and against 1.0. The run steps for them moved from the examples' README into
   `examples/odds-feed-0.0/README.md`, which also says they have no build here and that `release/0.x` has them
   with theirs. The 2026-10-20 entry that names `examples/src` is left as it was written. No public API changes.
+- 2026-10-21, the release checks that every pull request merged into `main` since the previous release was
+  approved for its final commit. The branch ruleset of `main` requires one approval and a code owners' review,
+  but dismisses no approval that a later push made stale and does not ask for the approval of the latest push,
+  so a pull request could merge on an approval of an earlier version of itself, and that ruleset is managed
+  outside this repository. The check job of `release.yml` now runs `scripts/release-approval-check.sh`, which asks
+  GitHub for the pull request that left each commit after the previous `v1.*` tag (a release candidate's included;
+  before the first one, after the commit in `scripts/release-approval-baseline`, which is still the placeholder
+  and must be set to the commit `main` pointed to at the rename of `next`), and refuses the tag unless each was
+  approved on its final commit by someone other than its author; a commit no pull request merged into `main`
+  left, a direct push, fails as well. Its own test, `scripts/release-approval-check-test.sh`, runs in `next.yml`
+  against a stub `gh`, and the pinned workflow forms and the workflow policy test hold the new step. No public
+  API changes.
