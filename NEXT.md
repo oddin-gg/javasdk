@@ -2302,9 +2302,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   but dismisses no approval that a later push made stale and does not ask for the approval of the latest push,
   so a pull request could merge on an approval of an earlier version of itself, and that ruleset is managed
   outside this repository. The check job of `release.yml` now runs `scripts/release-approval-check.sh`, which asks
-  GitHub for the pull request that left each commit after the previous `v1.*` tag (a release candidate's included;
-  before the first one, after the commit in `scripts/release-approval-baseline`, which is still the placeholder
-  and must be set to the commit `main` pointed to at the rename of `next`), and refuses the tag unless each was
+  GitHub for the pull request that left each commit after the previous published release (the nearest `v1.*` tag
+  whose GitHub Release is published and no draft, a release candidate's included; a tag that was refused or whose
+  upload failed has no release and is passed over, so the pull requests before it are asked about again; before the
+  first release, after the commit in `scripts/release-approval-baseline`, which is still the placeholder and must be
+  set to the commit `main` pointed to at the rename of `next`), and refuses the tag unless each was
   approved on its final commit by someone other than its author; a commit no pull request merged into `main`
   left, a direct push, fails as well. Its own test, `scripts/release-approval-check-test.sh`, runs in `next.yml`
   against a stub `gh`, and the pinned workflow forms and the workflow policy test hold the new step. No public

@@ -11,15 +11,17 @@
 #   scripts/release-approval-check.sh <commit>
 #
 # Run in a clone with every branch and tag (fetch-depth: 0), for the tagged commit, with gh (with
-# GH_TOKEN and GITHUB_REPOSITORY). The commits checked are those after the previous v1.* tag
-# reachable from it, a release candidate's included. Before the first one, those after the commit
-# in scripts/release-approval-baseline, read from the tagged commit. Each commit is looked up for
-# the pull request merged into main that left it; none, a direct push, fails as well. Of each such
-# pull request, its final head is asked, and its reviews: one APPROVED, for that head, by a user
-# other than its author. Every pull request that fails is named, with the approvals it had; the
-# calls to GitHub are one per commit and two per pull request, plus the further pages of a long
-# list. A call that fails, or does not answer within APPROVAL_TIMEOUT seconds (default 60), stops
-# the release: no answer is never a pass.
+# GH_TOKEN and GITHUB_REPOSITORY). The commits checked are those after the previous release: the
+# nearest v1.* tag reachable from it whose GitHub Release is published and no draft, a release
+# candidate's included; a tag whose release never came out is passed over. Before the first
+# release, those after the commit in scripts/release-approval-baseline, read from the tagged
+# commit. Each commit is looked up for the pull request merged into main that left it; none, a
+# direct push, fails as well. Of each such pull request, its final head is asked, and its reviews:
+# one APPROVED, for that head, by a user other than its author. Every pull request that fails is
+# named, with the approvals it had. The calls to GitHub are one per commit, two per pull request
+# and one per tag looked at until a release is found, plus the further pages of a long list. A
+# call that fails, or does not answer within APPROVAL_TIMEOUT seconds (default 60), stops the
+# release: no answer is never a pass.
 set -euo pipefail
 
 label=${1:?usage: release-approval-check.sh <commit>}
@@ -50,16 +52,39 @@ commit=$(git rev-parse --verify -q "$label^{commit}") || fail "no such commit he
 label=${commit:0:12}
 parent=$(git rev-parse --verify -q "$commit^") || fail "the commit has no parent, so there is nothing before it to start from"
 
-# The start: the nearest v1.* tag among those the commit descends from, itself left out.
+# Whether the tag's release was published: GitHub has a release for it that is no draft. A tag stays
+# for good once pushed, also one whose check refused it or whose upload failed; such a tag is no
+# release, and the pull requests before it still have to be asked about. 404 is the one answer that
+# means "no release"; anything else, a timeout included, stops the release.
+published() {
+  local answer
+  if answer=$(ask "repos/$repository/releases/tags/$1" --jq '.draft' 2>&1); then
+    case "$answer" in
+      false) return 0 ;;
+      true) return 1 ;;
+      *) fail "GitHub gave \"$answer\" for whether the release of $1 is a draft" ;;
+    esac
+  fi
+  case "$answer" in
+    *"HTTP 404"*) return 1 ;;
+    *) fail "could not ask GitHub whether $1 has a published release: $answer" ;;
+  esac
+}
+
+# The start: the nearest v1.* tag among those the commit descends from, itself left out, whose
+# release was published, found by walking back from the nearest.
 start= since=
-nearest=
-for tag in $(git for-each-ref --merged="$parent" --format='%(refname:strip=2)' 'refs/tags/v1.*'); do
-  count=$(git rev-list --count "refs/tags/$tag..$commit")
-  if [ -z "$nearest" ] || [ "$count" -lt "$nearest" ]; then
-    nearest=$count
+candidates=$(for tag in $(git for-each-ref --merged="$parent" --format='%(refname:strip=2)' 'refs/tags/v1.*'); do
+  echo "$(git rev-list --count "refs/tags/$tag..$commit"):$tag"
+done | sort -n)
+for entry in $candidates; do
+  tag=${entry#*:}
+  if published "$tag"; then
     start=$(git rev-parse --verify -q "refs/tags/$tag^{commit}") || fail "$tag does not name a commit"
     since=$tag
+    break
   fi
+  echo "$label: $tag has no published release, so it is no start" >&2
 done
 if [ -z "$start" ]; then
   # no release before this one; the baseline, from the tagged commit, which a clone of that commit has too

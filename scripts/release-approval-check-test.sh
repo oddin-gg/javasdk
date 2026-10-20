@@ -22,8 +22,8 @@ api=$work/api
 repo=$work/repo
 
 # Stub gh. A call is answered from the file of its endpoint in $GH_STUB_API, the path after
-# repos/example/repo/ without its query: commits/<sha>/pulls.json, pulls/<n>.json and
-# pulls/<n>/reviews.json. A .fail file next to it makes the call fail, a .stall one makes it
+# repos/example/repo/ without its query: commits/<sha>/pulls.json, pulls/<n>.json,
+# pulls/<n>/reviews.json and releases/tags/<tag>.json. A .fail file next to it makes the call fail, a .stall one makes it
 # answer only after 10 seconds, no file at all is a 404. Like gh, it returns a list in pages of
 # per_page (30 without one) and all of them only with --paginate, running the --jq filter on each
 # page. Every call is recorded.
@@ -132,6 +132,12 @@ left() {
   jq -n '[$ARGS.positional[] | tonumber | {number: ., merged_at: "2026-10-01T00:00:00Z", base: {ref: "main"}}]
     + [{number: 999, merged_at: null, base: {ref: "main"}}, {number: 998, merged_at: "2026-10-01T00:00:00Z", base: {ref: "next"}}]' \
     --args "$@" > "$api/commits/$commit/pulls.json"
+}
+
+# release <tag> [draft]: GitHub has a release for the tag, published unless it is a draft
+release() {
+  mkdir -p "$api/releases/tags"
+  jq -n --argjson draft "$([ "${2:-}" = draft ] && echo true || echo false)" '{draft: $draft}' > "$api/releases/tags/$1.json"
 }
 
 # the two pull requests every passing case starts from: #1 left c1 and c2 (a rebase merge puts
@@ -277,10 +283,15 @@ case_previous_tag() {
   git -C "$repo" tag -a -m old v0.0.60 "${sha[c2]}"
   git -C "$repo" tag -a -m other vtest "${sha[c2]}"
   standard
+  release v1.0.0-rc.1
   rm "$api/commits/${sha[c1]}/pulls.json"
   expect pass "2 commit(s) since v1.0.0-rc.1" "came from 2 pull request(s)" || return 1
-  if asked | grep -q "${sha[c1]}\|${sha[root]}"; then
-    reason="asked for a commit the previous release had: $(asked)"
+  if asked | grep -q "${sha[c1]}\|${sha[root]}\|v1.0.0-rc.2\|v0.0.60\|vtest"; then
+    reason="asked for a commit the previous release had, or a tag that is no start: $(asked)"
+    return 1
+  fi
+  if [ "$(asked | grep -c '^releases/')" -ne 1 ]; then
+    reason="asked for more than the one release: $(asked)"
     return 1
   fi
 }
@@ -290,8 +301,59 @@ case_latest_tag() {
   git -C "$repo" tag -a -m rc1 v1.0.0-rc.1 "${sha[c1]}"
   git -C "$repo" tag -a -m rc2 v1.0.0-rc.2 "${sha[c2]}"
   standard
+  release v1.0.0-rc.1
+  release v1.0.0-rc.2
   rm "$api/commits/${sha[c1]}/pulls.json" "$api/commits/${sha[c2]}/pulls.json"
   expect pass "1 commit(s) since v1.0.0-rc.2" "came from 1 pull request(s)" || return 1
+}
+
+# rc.2 was refused by its checks, or its upload failed: it has no release, and stays as a tag. The
+# pull requests since rc.1, the last release, are still asked about, those before rc.2 included.
+case_refused_tag() {
+  new_repo unset
+  git -C "$repo" tag -a -m rc1 v1.0.0-rc.1 "${sha[c1]}"
+  git -C "$repo" tag -a -m rc2 v1.0.0-rc.2 "${sha[c2]}"
+  standard
+  release v1.0.0-rc.1
+  pull 1 alice "$(head_of 1)"
+  reviews 1 "APPROVED:$(head_of 100):bob"
+  rm "$api/commits/${sha[c1]}/pulls.json"
+  expect fail "v1.0.0-rc.2 has no published release, so it is no start" "pull request #1 (Pull request 1) by alice" \
+    "!pull request #2" || return 1
+}
+
+# a release that is still a draft is no release either
+case_draft_release() {
+  new_repo unset
+  git -C "$repo" tag -a -m rc1 v1.0.0-rc.1 "${sha[c1]}"
+  git -C "$repo" tag -a -m rc2 v1.0.0-rc.2 "${sha[c2]}"
+  standard
+  release v1.0.0-rc.1
+  release v1.0.0-rc.2 draft
+  reviews 1 "APPROVED:$(head_of 100):bob"
+  rm "$api/commits/${sha[c1]}/pulls.json"
+  expect fail "v1.0.0-rc.2 has no published release" "pull request #1 (Pull request 1) by alice" || return 1
+}
+
+# tags, but no release of any: the baseline decides
+case_no_release_at_all() {
+  new_repo c1
+  git -C "$repo" tag -a -m rc1 v1.0.0-rc.1 "${sha[c1]}"
+  git -C "$repo" tag -a -m rc2 v1.0.0-rc.2 "${sha[c2]}"
+  standard
+  rm "$api/commits/${sha[c1]}/pulls.json"
+  expect pass "v1.0.0-rc.2 has no published release" "v1.0.0-rc.1 has no published release" \
+    "2 commit(s) since the baseline ${sha[c1]:0:12}" || return 1
+}
+
+case_api_error_release() {
+  new_repo root
+  git -C "$repo" tag -a -m rc1 v1.0.0-rc.1 "${sha[c1]}"
+  git -C "$repo" tag -a -m rc2 v1.0.0-rc.2 "${sha[c2]}"
+  standard
+  release v1.0.0-rc.1
+  : > "$api/releases/tags/v1.0.0-rc.2.fail"
+  expect fail "could not ask GitHub whether v1.0.0-rc.2 has a published release" "!since v1.0.0-rc.1" || return 1
 }
 
 case_baseline() {
@@ -416,7 +478,7 @@ case_shallow() {
 reason=
 all_cases="case_all_approved case_earlier_commit case_author_only case_other_reviews case_no_review
 case_direct_push case_only_other_base case_every_failure_named case_previous_tag case_latest_tag
-case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
+case_refused_tag case_draft_release case_no_release_at_all case_api_error_release case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
 case_api_error_commit case_api_error_pull case_api_error_reviews case_api_stall case_no_head
 case_many_pulls case_many_reviews case_shallow"
 for name in $all_cases; do
@@ -462,8 +524,16 @@ breaks direct_push 'direct+=("$sha")' ':' \
   "lets a direct push pass"
 breaks previous_tag "'refs/tags/v1.*'" "'refs/tags/v1.nothing*'" \
   "ignores the previous release tag"
-breaks latest_tag 'if [ -z "$nearest" ] || [ "$count" -lt "$nearest" ]; then' 'if [ -z "$nearest" ] || [ "$count" -gt "$nearest" ]; then' \
+breaks latest_tag 'done | sort -n)' 'done | sort -rn)' \
   "starts from the oldest release tag, not the nearest"
+breaks refused_tag '  if published "$tag"; then' '  if true; then' \
+  "takes the nearest tag for a release without asking whether it was published"
+breaks draft_release '      true) return 1 ;;' '      true) return 0 ;;' \
+  "takes a draft release for a published one"
+breaks api_error_release '    *) fail "could not ask GitHub whether $1 has a published release: $answer" ;;' '    *) return 1 ;;' \
+  "takes any failed question about a release for no release"
+breaks no_release_at_all '    *"HTTP 404"*) return 1 ;;' '    *"HTTP 404"*) return 0 ;;' \
+  "takes a missing release for a published one"
 breaks baseline 'start=$(git rev-parse --verify -q "$lines^{commit}") ||' 'start=$(git rev-list --max-parents=0 "$commit") ||' \
   "ignores the baseline"
 breaks placeholder '    unset) fail "$baseline_file still holds the placeholder: set the baseline to the commit main pointed to when the rule began (the rename of next to main)" ;;' \
