@@ -554,6 +554,67 @@ class ProfileCachesTest {
     }
 
     @Test
+    void aLoadThatWroteSinceAReadLookedIsNotRepeated() {
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        api.respond(PLAYER_PROFILE_EN, 200, Fixtures.read("rest/player/player_profile.xml"));
+        api.respond(TOURNAMENT_INFO_EN, 200, Fixtures.read("rest/tournament_info/tournament_info.xml"));
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        api.respond(LOL_TOURNAMENTS_EN, 200, Fixtures.read("rest/sport_tournaments/sport_tournaments.xml"));
+
+        // each read has looked and found nothing when a load of the same key runs to its end, as a preload's does
+        time.onNextInstant(() -> caches.competitor(COMPETITOR, EN, null));
+        assertThat(caches.competitor(COMPETITOR, EN, null).get(COMPETITOR_NAME, EN))
+                .isEqualTo("Team Alpha");
+        time.onNextInstant(() -> caches.player(PLAYER, EN, null));
+        assertThat(caches.player(PLAYER, EN, null).get(PLAYER_NAME, EN)).isEqualTo("Player One");
+        time.onNextInstant(() -> caches.tournament(TOURNAMENT, EN, null));
+        assertThat(caches.tournament(TOURNAMENT, EN, null).get(TOURNAMENT_NAME, EN))
+                .isEqualTo("Test Tournament");
+        time.onNextInstant(() -> caches.sportTournaments(LOL, EN, null));
+        assertThat(caches.sportTournaments(LOL, EN, null).get(SPORT_TOURNAMENTS, null))
+                .hasSize(2);
+        time.onNextInstant(() -> caches.sports(EN, null));
+        assertThat(caches.sports(EN, null)).containsExactly(LOL, CS2);
+
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(1);
+        assertThat(api.requests("GET", PLAYER_PROFILE_EN)).hasSize(1);
+        assertThat(api.requests("GET", TOURNAMENT_INFO_EN)).hasSize(1);
+        assertThat(api.requests("GET", LOL_TOURNAMENTS_EN)).hasSize(1);
+        assertThat(api.requests("GET", SPORTS_EN))
+                .as("the list, read by the sport too")
+                .hasSize(1);
+    }
+
+    @Test
+    void aSportWhoseListLoadedSinceTheReadLookedIsNotLoadedAgain() {
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        time.onNextInstant(() -> caches.sports(EN, null));
+        assertThat(caches.sport(CS2, EN, null).get(SPORT_NAME, EN)).isEqualTo("Counter-Strike 2");
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(1);
+    }
+
+    @Test
+    void aClearAfterTheLoadThatWroteSinceAReadLookedStillLoadsAgain() {
+        api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
+        api.respond(SPORTS_EN, 200, Fixtures.read("rest/sports/sports.xml"));
+        time.onNextInstant(() -> {
+            caches.competitor(COMPETITOR, EN, null);
+            caches.clear();
+        });
+        assertThat(caches.competitor(COMPETITOR, EN, null).get(COMPETITOR_NAME, EN))
+                .as("loaded again, not the tombstone")
+                .isEqualTo("Team Alpha");
+        assertThat(api.requests("GET", COMPETITOR_PROFILE_EN)).hasSize(2);
+
+        time.onNextInstant(() -> {
+            caches.sports(EN, null);
+            caches.clear();
+        });
+        assertThat(caches.sports(EN, null)).containsExactly(LOL, CS2);
+        assertThat(api.requests("GET", SPORTS_EN)).hasSize(2);
+    }
+
+    @Test
     void clearingOneCompetitorOrTournamentDropsOnlyIt() {
         api.respond(COMPETITOR_PROFILE_EN, 200, Fixtures.read("rest/competitor/competitor_profile.xml"));
         api.respond(TOURNAMENT_INFO_EN, 200, Fixtures.read("rest/tournament_info/tournament_info.xml"));

@@ -504,6 +504,77 @@ class CatalogTest {
         assertThat(fetches).hasValue(1);
     }
 
+    @Test
+    void aColdReadThatComesLateToAFetchThatWroteStartsNoOther() {
+        // before it asks the loader, another read's fetch writes and leaves it
+        catalog.insideColdRead = () -> {
+            catalog.insideColdRead = () -> {};
+            assertThat(catalog.get("k")).isEqualTo("v1");
+        };
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        assertThat(fetches).hasValue(1);
+    }
+
+    @Test
+    void aColdReadThatComesLateToAFetchThatWroteBeforeAClearStartsItsOwn() {
+        catalog.insideColdRead = () -> {
+            catalog.insideColdRead = () -> {};
+            catalog.get("k");
+            catalog.clear();
+            answer = () -> "v2";
+        };
+        assertThat(catalog.get("k")).as("not the cleared value").isEqualTo("v2");
+        assertThat(fetches).hasValue(2);
+    }
+
+    @Test
+    void aMissingItemIsFoundInWhatAFetchWroteBetweenTheReadsLookAndItsFetch() {
+        answer = () -> "a,b";
+        assertThat(find("c")).as("missed while the value is young").isNull();
+        time.advance(Catalog.MISS_INTERVAL.plus(TICK));
+        answer = () -> "a,b,c";
+        // the read has decided to fetch the key again; a reload of it ends first
+        catalog.insideColdRead = () -> {
+            catalog.insideColdRead = () -> {};
+            catalog.reload("k");
+        };
+        assertThat(find("c")).isEqualTo("c");
+        assertThat(fetches).as("the reload's fetch, no other").hasValue(2);
+    }
+
+    @Test
+    void aRefreshThatComesLateToAFetchThatWroteSinceStartsNoOther() {
+        catalog.get("k");
+        answer = () -> "v2";
+        time.advance(REFRESH_AGE.plus(TICK));
+        // the read found v1 stale; a reload writes v2 before the refresh it started runs
+        catalog.insideStaleRead = () -> catalog.reload("k");
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        catalog.insideStaleRead = () -> {};
+        runRefreshes();
+        assertThat(fetches)
+                .as("the first, and the reload; the refresh found v2 held")
+                .hasValue(2);
+        assertThat(catalog.get("k")).isEqualTo("v2");
+    }
+
+    @Test
+    void aRefreshAfterAClearStartsItsOwnFetch() {
+        catalog.get("k");
+        answer = () -> "v2";
+        time.advance(REFRESH_AGE.plus(TICK));
+        catalog.insideStaleRead = () -> {
+            catalog.reload("k");
+            catalog.clear();
+        };
+        assertThat(catalog.get("k")).isEqualTo("v1");
+        catalog.insideStaleRead = () -> {};
+        runRefreshes();
+        assertThat(fetches)
+                .as("the first, the reload, and the refresh: nothing is held")
+                .hasValue(3);
+    }
+
     @ParameterizedTest
     @EnumSource(Clear.class)
     void aReadAfterAClearDoesNotJoinAFetchFromBeforeIt(Clear clear) throws Exception {
