@@ -1,0 +1,6 @@
+# The commit main pointed to when the approval rule began, that is at the rename of next to main:
+# release-approval-check.sh checks the pull requests merged after it, for the first release, which
+# has no v1.* tag before it to start from. One full SHA (40 hex digits) on the line below; it must
+# be an ancestor of every commit that is released. Until it is set the line holds the placeholder,
+# and the check refuses the release: set the baseline.
+unset
