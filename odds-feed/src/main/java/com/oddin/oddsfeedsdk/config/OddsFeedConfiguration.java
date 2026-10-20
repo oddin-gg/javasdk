@@ -499,7 +499,7 @@ public final class OddsFeedConfiguration {
 
     /**
      * How old a live message may be, by its timestamp corrected by the producer's alives, to write
-     * the status in place of one with a later timestamp: 10 seconds unless set, or the {@linkplain
+     * the status in place of one with a later timestamp: 10 seconds unless set, or half the {@linkplain
      * #getFutureStampMargin margin} if that is shorter. An older message is
      * taken for a delayed one, which writes nothing over a newer one. New in 1.0.
      */

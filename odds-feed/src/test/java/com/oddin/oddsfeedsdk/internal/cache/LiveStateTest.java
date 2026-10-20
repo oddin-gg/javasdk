@@ -773,27 +773,34 @@ class LiveStateTest {
 
     /**
      * Two sessions take the lock in another order than they received: U, received at 50 s, writes;
-     * then F, stamped a millisecond after it and received at 0, writes in order. A timely C, stamped
-     * before U and received a millisecond after it, is 1 ms behind the latest receipt, not 50 s: it is
-     * a swap, not a takeover.
+     * then F, stamped 10 ms after it and received at 0, writes in order. A timely C, stamped as U and
+     * received a millisecond after it - at or above the floor F's stamp ahead leaves, below F - is 1
+     * ms behind the latest receipt, not 50 s: it is a swap, not a takeover.
      */
     @Test
     void aMessageIsLateByTheLatestReceiptOfAWriteNotByTheWatermarksOwn() {
         assertThat(message("m1", BASE + 50_000, 50_000, FRESH)).as("U").isTrue();
-        assertThat(message("m1", BASE + 50_001, 0, Duration.ofMillis(-50_001)))
-                .as("F: a millisecond newer, received before U, handled after it")
+        assertThat(message("m1", BASE + 50_010, 0, Duration.ofMillis(-50_010)))
+                .as("F: 10 ms newer, received before U, handled after it")
                 .isTrue();
 
-        assertThat(message("m1", BASE + 49_990, 50_001, Duration.ofMillis(11)))
-                .as("C: timely, received a millisecond after U, 11 ms older than it")
+        assertThat(message("m1", BASE + 50_000, 50_001, Duration.ofMillis(1)))
+                .as("C: timely, received a millisecond after U, as old as U, 10 ms before F")
                 .isFalse();
-        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 50_001);
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 50_010);
+    }
+
+    /** A recovery's answer: it may not take over, and says nothing of the producer's now. */
+    private boolean recovery(String key, long timestamp, long at) {
+        return live.feedWriteIfNewer(
+                key, LIVE, timestamp, FRESH, start + at, false, LiveWrite.of().put(TIMESTAMP, timestamp));
     }
 
     /**
      * U, received at 1000, writes; then A, stamped after it and received at 500, writes in order; then
-     * F, stamped 30.5 s after A and received 100 ms after U, is a jump: by the latest receipt only 100
-     * ms went by, by A's own 600. C, timely, stamped before U, is refused by the stamp A left behind.
+     * F, a recovery's answer stamped 30.5 s after A and received 100 ms after U, is a jump: by the
+     * latest receipt only 100 ms went by, by A's own 600. C, timely, stamped before U, is refused by
+     * the stamp A left behind.
      */
     @Test
     void aJumpIsMeasuredFromTheLatestReceiptOfAWriteNotTheWatermarksOwn() {
@@ -801,14 +808,81 @@ class LiveStateTest {
         assertThat(message("m1", BASE + 2_000, 500, Duration.ofMillis(-1_500)))
                 .as("A: newer, received before U, handled after it")
                 .isTrue();
-        assertThat(message("m1", BASE + 32_500, 1_100, Duration.ofMillis(-31_400)))
-                .as("F: 30.5 s after A, 100 ms after U: the jump")
+        assertThat(recovery("m1", BASE + 32_500, 1_100))
+                .as("F: a recovery's answer, 30.5 s after A, 100 ms after U: the jump")
                 .isTrue();
 
         assertThat(message("m1", BASE + 950, 1_200, Duration.ofMillis(250)))
                 .as("C: timely, received after all, older than U and A")
                 .isFalse();
         assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 32_500);
+    }
+
+    /** A recovery's answer far ahead, a moment after U: the jump leaves U's stamp as the floor. */
+    @Test
+    void aRecoveryAnswerFarAheadOfTheUpdateBeforeItLeavesThatUpdatesStampBehind() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(recovery("m1", BASE + 1_000 + TEN_MINUTES, 1_100))
+                .as("R: ten minutes ahead, received 100 ms after U")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 950, 1_200, Duration.ofMillis(250)))
+                .as("C: timely, received after all, older than U")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("R's value stays").isEqualTo(BASE + 1_000 + TEN_MINUTES);
+    }
+
+    /** After a quiet match a recovery's answer is as far ahead as the quiet lasted: no jump, no floor. */
+    @Test
+    void aRecoveryAnswerAfterAQuietMatchIsNoJumpAndLeavesNoStampBehind() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(recovery("m1", BASE + 301_000, 301_000))
+                .as("Q: five minutes on, by the stamp and by the receipt")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 950, 302_000, FRESH))
+                .as("C: older than U, nothing was left behind: takes over")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 950);
+    }
+
+    /**
+     * A write received before the latest one, by a session that took the lock later, is no time
+     * passed: a recovery's answer 29.8 s ahead, received at 500 after U at 1000, is no jump, though
+     * the receipts read as 500 ms backwards.
+     */
+    @Test
+    void aRecoveryAnswerReceivedBeforeTheLatestWriteHasNoTimePassedSinceIt() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(recovery("m1", BASE + 1_000 + 29_800, 500))
+                .as("R: 29.8 s ahead, received before U, handled after it")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 950, 1_200, FRESH))
+                .as("C: timely, received after all, older than U: no jump, no floor")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 950);
+    }
+
+    /** The raise of two stamps that are any long, overflowed, is as large as a raise can be. */
+    @Test
+    void aRaiseThatOverflowsIsAJump() {
+        var takeover = Takeover.DEFAULTS;
+        assertThat(takeover.jumped(-1, 1_000, Long.MAX_VALUE, 1_000))
+                .as("overflowed")
+                .isTrue();
+        assertThat(takeover.jumped(Long.MIN_VALUE, 1_000, Long.MAX_VALUE, 1_000))
+                .as("the widest")
+                .isTrue();
+        assertThat(takeover.jumped(1, 1_000, Long.MAX_VALUE, 1_000))
+                .as("not overflowed")
+                .isTrue();
+        assertThat(takeover.jumped(1, 1_000, 30_002, 1_000))
+                .as("a millisecond over the margin")
+                .isTrue();
+        assertThat(takeover.jumped(1, 1_000, 30_000, 1_000))
+                .as("the margin exactly")
+                .isFalse();
     }
 
     /**
