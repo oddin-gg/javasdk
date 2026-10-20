@@ -12,6 +12,11 @@
 /RELEASING.md                   @oddin-gg/ragnar-admin
 /release-notes/                 @oddin-gg/ragnar-admin
 
+# the whole scripts/ directory, as a backstop: release-codeowners-test.sh derives the scripts and
+# files the release runs, but only from the forms of path it knows; the lines below stay, and are
+# what that test holds the derivation to
+/scripts/                       @oddin-gg/ragnar-admin
+
 # the scripts the release job runs: the checks, the tag check, the GitHub Release
 /scripts/release-*              @oddin-gg/ragnar-admin
 # the legacy SDK installer and its test, which the release's build job runs on the commit it

@@ -2254,7 +2254,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   calls through its own directory (`dirname "$0"`) was owned only by the `release-*` pattern: one
   outside it would have run with the signing key at hand, owned by nobody, and the test passed. It
   now derives those paths too and follows the scripts among them to the end, a cycle left; the
-  files it finds today were all owned already. The schema drift check took a rename for XML when
+  files it finds today were all owned already. It resolves each path against the directory the script
+  sets `here` to, reads a doubled slash as the shell does, and follows no symlink out of the tree; the
+  whole of `scripts/` is also owned, as a backstop for what a lexical scan cannot see. The schema drift check took a rename for XML when
   either name held `.xsd` anywhere, so `a.xsd -> b.txt` compared the text file as a schema, and
   `a.txt -> b.xsd` compared the old file with the new; it now compares only the side that ends in
   `.xsd` and takes the other as absent (the file left the schema, or entered it), and skips a
