@@ -74,7 +74,7 @@ class TaskManagerImpl @Inject constructor(whoAmIManager: WhoAmIManager) : TaskMa
 
     // scheduleAtFixedRate suppresses every later run of a task whose run throws, and reports
     // nothing: the recovery timer and the cache refreshes would stop without a trace.
-    private fun guarded(task: PeriodicTask) = Runnable {
+    internal fun guarded(task: PeriodicTask) = Runnable {
         try {
             task.command()
         } catch (e: InterruptedException) {
