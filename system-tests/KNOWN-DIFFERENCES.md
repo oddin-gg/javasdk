@@ -26,7 +26,7 @@ code.
 
 Each entry says what 0.0.x does, what 1.0 does and where NEXT.md says so, why it matters, which
 test pins it, and whether it was found by a test against 0.0.56 or by reading the 0.0.56 source.
-The 0.0.x side is that of 0.0.59, the release the system tests run against; where an older 0.0.x
+The 0.0.x side is that of 0.0.60, the release the system tests run against; where an older 0.0.x
 release behaved otherwise, the entry says so.
 
 ## Scenarios only 1.0 has

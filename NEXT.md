@@ -2268,3 +2268,11 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   followed; the helpers a symlink target outside `scripts/` names are not followed; hard links are
   not seen; a script a workflow runs by a path that does not start with `scripts/`, or a path built
   any other way, is not derived. No public API changes.
+- 2026-10-20, the baseline moves to 0.0.60, with no API change: the system tests and the API check run
+  against it. It gives the 0.0.x `ApiClient` a Fuel manager of its own (the token and the base path are
+  no longer set on `FuelManager.instance`, the transport settings are copied from it), keeps a periodic
+  task running after an exception, and fixes `RELEASING.md` on `release/0.x`. Checked against the
+  known differences: none describes the global Fuel manager or a periodic task that ends on an
+  exception, and 1.0 has no Fuel, so no entry changed; only the release the 0.0.x side is named for
+  did. The "Old dependencies" line in section 1 is the finding as it was written, and stays. No public
+  API changes.
