@@ -87,44 +87,58 @@ def contained(tree, path):
     full = os.path.join(tree, path)
     return not os.path.lexists(full) or (os.path.realpath(full) + os.sep).startswith(os.path.realpath(tree) + os.sep)
 
-def inside(tree, base, path, trim=False):
-    """The path from the repository root of what a script names from a base directory, or None when
-    it is not a file inside the repository: the repository itself, or a path that leaves it, written
-    as it may be - with a .. in the middle of it too - or by a symlink. A doubled slash is none of
-    these: the shell reads a//b as a/b."""
-    resolved = os.path.normpath(os.path.join(base, path.lstrip("/")))
-    if os.path.isabs(resolved) or resolved == "." or resolved == ".." or resolved.startswith("../"):
-        return None
-    if trim:
-        resolved = resolved.rstrip(".")
-    return resolved if resolved and contained(tree, resolved) else None
+def resolve(tree, path):
+    """Where a path leads, the way the file system takes it: component by component, a symlink
+    replaced by what it holds where it stands, so that a .. after a link is a step up from the
+    link's target and not from the link. Returns the real path from the repository root, or None
+    when it is the repository itself or leaves it (by .., or by a link to elsewhere), with every
+    symlink passed on the way, as paths from the repository root. A component that does not exist
+    (yet) is taken as it is. A doubled slash is none of these: the shell reads a//b as a/b."""
+    real = os.path.realpath(tree)
+    current, links, steps = [], set(), 0
+    pending = path.split("/")[::-1]
+    while pending:
+        part = pending.pop()
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if not current:
+                return None, links
+            current.pop()
+            continue
+        at = os.path.join(real, *current, part)
+        if not os.path.islink(at):
+            current.append(part)
+            continue
+        steps += 1
+        if steps > 40:
+            return None, links # a loop of links, or as good as one
+        links.add("/".join(current + [part]))
+        target = os.readlink(at)
+        if os.path.isabs(target):
+            if not (target + os.sep).startswith(real + os.sep):
+                return None, links
+            current = []
+            target = os.path.relpath(target, real) if target != real else ""
+        pending.extend(target.split("/")[::-1])
+    return "/".join(current) or None, links
 
-def chain(tree, path, seen=None):
-    """What a path really is: every symlink on the way to it, and each file such a link leads to, as
-    paths from the repository root (the path itself too, when nothing on the way is a link).
-    A link owned by the release managers that leads to a file nobody owns runs that file."""
-    seen = set() if seen is None else seen
-    found = set()
-    if path in seen:
-        return found
-    seen.add(path)
-    parts = path.split("/")
-    for index in range(1, len(parts) + 1):
-        prefix = "/".join(parts[:index])
-        if os.path.islink(os.path.join(tree, prefix)):
-            found.add(prefix)
-            target = os.readlink(os.path.join(tree, prefix))
-            if os.path.isabs(target):
-                target = os.path.relpath(target, os.path.realpath(tree))
-            else:
-                target = os.path.join(os.path.dirname(prefix), target)
-            hop = os.path.normpath(os.path.join(target, *parts[index:]))
-            if hop != "." and hop != ".." and not hop.startswith("../"):
-                found |= chain(tree, hop, seen)
-    real = os.path.relpath(os.path.realpath(os.path.join(tree, path)), os.path.realpath(tree))
-    if real != "." and real != ".." and not real.startswith("../"):
-        found.add(real)
-    return found
+def inside(tree, base, path, trim=False):
+    """What a script names from a base directory, as paths from the repository root: the file it
+    really is, and every symlink passed on the way to it - none when it is not a file inside the
+    repository."""
+    if trim:
+        # a full stop that ends a sentence is no part of the name
+        head, _, last = path.rpartition("/")
+        path = head + "/" + (last if last in (".", "..") else last.rstrip("."))
+    final, links = resolve(tree, os.path.join(base, path.lstrip("/")))
+    return links | {final} if final else set()
+
+def chain(tree, path):
+    """What a path really is: every symlink on the way to it, and the file it leads to (the path
+    itself, when nothing on the way is a link). A link owned by the release managers that leads to a
+    file nobody owns runs that file."""
+    return inside(tree, "", path)
 
 def script_reads(tree, script):
     found = set()
@@ -133,12 +147,11 @@ def script_reads(tree, script):
     text = open(os.path.join(tree, script)).read()
     # $root is the repository, and $here the directory the script sets it to: its own
     for variable, path in re.findall(r"(\$\{?root\}?|\$\{?here\}?)/+(\.?[A-Za-z0-9_][A-Za-z0-9_./-]*)", text):
-        # (a full stop that ends a sentence is no part of the name)
-        found.add(inside(tree, os.path.dirname(script) if "here" in variable else "", path, trim=True))
+        found |= inside(tree, os.path.dirname(script) if "here" in variable else "", path, trim=True)
     # a helper called through the script's own directory (dirname of $0), quoted or not
     for path in re.findall(r"\$\(dirname \"?\$0\"?\)/+([A-Za-z0-9_./-]+)", text):
-        found.add(inside(tree, os.path.dirname(script), path))
-    return found - {None}
+        found |= inside(tree, os.path.dirname(script), path)
+    return found
 
 def reads_of(tree, scripts):
     """What the scripts read, and what the scripts among those read in turn, to the end. Returns the
@@ -359,6 +372,12 @@ def link_to_unowned(tree):
     os.symlink("../gh-linked-target.sh", os.path.join(tree, "scripts/release-linked.sh"))
     append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/release-linked.sh"\n')
 
+def link_by_absolute_path(tree):
+    # the same by a link that holds the absolute path of its target, inside the tree
+    append(tree, "gh-abs-target.sh", "#!/usr/bin/env bash\n")
+    os.symlink(os.path.join(os.path.realpath(tree), "gh-abs-target.sh"), os.path.join(tree, "scripts/release-abs.sh"))
+    append(tree, "scripts/release-check.sh", '\n: "$(dirname "$' + '0")/release-abs.sh"\n')
+
 def link_directory_to_unowned(tree):
     # a directory of release-* that is a link to one nobody owns, with a helper beneath it
     os.makedirs(os.path.join(tree, "gh-dir"))
@@ -383,6 +402,28 @@ def link_module_pom(tree):
     pom = os.path.join(tree, "examples/odds-feed-1.0/pom.xml")
     os.rename(pom, os.path.join(tree, "gh-module.xml"))
     os.symlink("../../gh-module.xml", pom)
+
+def link_then_up(tree, variable):
+    # scripts/release-link is a link to a directory at the root: a .. after it is a step up from
+    # that directory, so the file is the one at the root, not the owned decoy beside the link
+    os.makedirs(os.path.join(tree, "gh-dir"))
+    append(tree, "release-evil.sh", "#!/usr/bin/env bash\n")
+    append(tree, "scripts/release-evil.sh", "#!/usr/bin/env bash\n")
+    os.symlink("../gh-dir", os.path.join(tree, "scripts/release-link"))
+    return {
+        "dirname": ("scripts/release-check.sh", '\n: "$(dirname "$' + '0")/release-link/../release-evil.sh"\n'),
+        "here": ("scripts/schema-drift.sh", '\n: "$' + 'here/release-link/../release-evil.sh"\n'),
+        "root": ("scripts/fetch-sdk.sh", '\n: "$' + 'root/scripts/release-link/../release-evil.sh"\n'),
+    }[variable]
+
+def link_then_up_dirname(tree):
+    append(tree, *link_then_up(tree, "dirname"))
+
+def link_then_up_here(tree):
+    append(tree, *link_then_up(tree, "here"))
+
+def link_then_up_root(tree):
+    append(tree, *link_then_up(tree, "root"))
 
 def nested_module(tree):
     # a module listed in a child POM's <modules>, not in the root POM's, as a nested reactor has it
@@ -411,11 +452,15 @@ cases = [
     ("a Python helper called through dirname", new_python_helper, "scripts/gh-x.py", lines),
     ("a script a Python helper names", new_python_helper, "scripts/gh-from-py.sh", lines),
     ("an owned link to a helper nobody owns", link_to_unowned, "gh-linked-target.sh", lines),
+    ("an owned link that holds an absolute path to a helper nobody owns", link_by_absolute_path, "gh-abs-target.sh", lines),
     ("an owned link to a directory nobody owns", link_directory_to_unowned, "gh-dir/tool.sh", lines),
     ("a link to a link, the one in the middle", link_chain, "scripts/gh-hop.sh", lines),
     ("a link to a link, the end of it", link_chain, "gh-chain-end.sh", lines),
     ("a workflow file that is a link to a file nobody owns", link_in_workflows, "gh-wf-target.yml", lines),
     ("a POM of the reactor that is a link to a file nobody owns", link_module_pom, "gh-module.xml", lines),
+    ("a .. after a link to a directory, through dirname", link_then_up_dirname, "release-evil.sh", lines),
+    ("a .. after a link to a directory, through $here", link_then_up_here, "release-evil.sh", lines),
+    ("a .. after a link to a directory, through $root", link_then_up_root, "release-evil.sh", lines),
     ("a nested module whose POM CODEOWNERS gives to another owner", nested_module, "test-fakes/nested/pom.xml",
      lines + ["/test-fakes/nested/pom.xml @someone-else"]),
 ]
