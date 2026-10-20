@@ -470,6 +470,14 @@ Structure:
   out fail with the exception strategy; they do not start their own fetch. A fetch
   still running past its waiters' time is abandoned and replaced by the next miss,
   and writes nothing from then on.
+  A reader checks freshness before it asks the loader, and a fetch can write and leave in
+  between: so the reader hands the loader the same check, and the loader makes it once more in
+  the step that finds no fetch to join. A fetch writes before it leaves, so a reader that finds
+  none and finds its entry fresh has missed one, and starts none; a fetch that wrote nothing, or
+  an invalidation or clear after it (the entry is then a tombstone, not fresh), leaves the check
+  failing, and the reader's own fetch starts. A fetch under way is joined without the check:
+  it has written nothing yet. No second flag or generation: the check is the reader's own
+  freshness test, so the generations and tombstones of the write rule stay what decides.
 - Side-loading queues never block the producer. When full, they drop and count. Each
   side-load has one deadline too, from when a worker starts it. The eager preload's loads
   go to the main queue, one per match and locale at a time: a match already queued or
@@ -2096,3 +2104,20 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   sections 3 and 10 are 0.0.59. The logging, replay, event recovery and resume examples handle an
   unparsable message, a refused replay call, a recovery still pending after five minutes and a
   start that fails. No SDK code and no public API changes.
+- 2026-10-20, a read overtaken by a load that wrote loaded the key again: the cold start made 201 summary
+  requests where it expects 200, about one run in sixty on CI. A read checks the entry's freshness and then
+  asks the loader; the eager preload's load of the same match could write and leave between the two, and the
+  loader, finding no flight to join, started a second fetch. Section 4's single-flight stays, and the reader
+  now hands the loader its own freshness check, which the loader makes once more in the step that finds no
+  flight (a fetch writes before it leaves the map): fresh, it returns and starts nothing; not fresh - the
+  fetch wrote nothing, or an invalidation, a fixture change or a clear came after it, which leaves a
+  tombstone - the reader's own fetch starts as before. No new flag or generation, so the write rule's
+  generations and tombstones decide as they did. The same shape was in the match, fixture, live-state,
+  competitor, player, tournament, sport and sport-list reads, and in the catalogs' cold read, background
+  refresh and missing-item fetch (which compares the value held with the one it looked at), and is fixed in
+  each. Not changed: a client's reload, which asks for a fetch whatever is held, and a catalog's preload and
+  read, which never share a flight by design. Deterministic tests put a load of the key between a read's
+  look and its load, and an invalidation after that load; the interleaving the loader's one step rules out
+  is held by two threads. The 100 cold runs pinned to two cores made the expected requests every time, but
+  the same 100 with the fix switched off did too, so they do not show the repair; the tests do. No public API
+  changes.
