@@ -752,6 +752,25 @@ class LiveStateTest {
         assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 130_000 + TEN_MINUTES);
     }
 
+    /** The bad stamp follows the benign jump directly: the floor is the timely message's, not the late one's. */
+    @Test
+    void aStampAheadRightAfterAJumpFromALateMessageLeavesTheTimelyMessagesStampBehind() {
+        assertThat(message("m1", BASE, 0, Duration.ofMinutes(2)))
+                .as("A: a late message, two minutes old")
+                .isTrue();
+        assertThat(message("m1", BASE + 120_000, 1_000, FRESH))
+                .as("B: a timely one, the jump from A's stamp")
+                .isTrue();
+        assertThat(message("m1", BASE + 120_000 + TEN_MINUTES, 1_100, AHEAD))
+                .as("F: ten minutes ahead, the jump from B")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 60_000, 1_200, FRESH))
+                .as("C: timely, received after all, newer than A, older than B")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 120_000 + TEN_MINUTES);
+    }
+
     /** Stamps ahead, none of them timely, never replace the stamp before the first jump. */
     @Test
     void aChainOfStampsAheadKeepsTheStampBeforeTheFirstOne() {
