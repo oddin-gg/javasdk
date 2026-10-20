@@ -227,7 +227,7 @@ public final class RestTransport implements AutoCloseable {
                 report(method, uri, status, started, attempt, broken);
                 throw last.set(broken, null).failure(method, uri, late(deadline, "waiting for the answer"));
             }
-            if (broken instanceof TooLarge) {
+            if (broken instanceof TooLarge && !done) {
                 report(method, uri, answer.status(), started, attempt, broken);
                 throw last.set(broken, null).failure(method, uri, String.valueOf(broken.getMessage()));
             }
@@ -467,7 +467,10 @@ public final class RestTransport implements AutoCloseable {
         }
     }
 
-    /** A success's body is over the limit the decoder would refuse anyway: final, not retried. */
+    /**
+     * A success's body is over the limit the decoder would refuse anyway: final, not retried. A call
+     * that needs no body is done by its status, and this does not fail it.
+     */
     static final class TooLarge extends IOException {
         @Serial
         private static final long serialVersionUID = 1L;
