@@ -2261,4 +2261,10 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   either name held `.xsd` anywhere, so `a.xsd -> b.txt` compared the text file as a schema, and
   `a.txt -> b.xsd` compared the old file with the new; it now compares only the side that ends in
   `.xsd` and takes the other as absent (the file left the schema, or entered it), and skips a rename
-  between two files that are none. No public API changes.
+  between two files that are none. The whole repository is now owned by the release managers (`*`),
+  the scripts/ line after it kept; the test judges the derivation without the two and checks them
+  apart, a later rule for a directory, a wildcard or a file refused. Known limits of the scan,
+  covered by that review: a symlink that leaves the tree and comes back into it is dropped, not
+  followed; the helpers a symlink target outside `scripts/` names are not followed; hard links are
+  not seen; a script a workflow runs by a path that does not start with `scripts/`, or a path built
+  any other way, is not derived. No public API changes.
