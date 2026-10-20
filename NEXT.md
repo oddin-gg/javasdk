@@ -578,16 +578,16 @@ Ownership and ordering:
   and never moved back, since a message with a newer stamp received earlier than one
   before it may have written last - so two sessions handling messages in another order
   than they received them leave the order of receipt right; (2) the time between the
-  two receipts plus the gap between their timestamps is more than the **future stamp
-  margin**, 30 s by default: two deliveries that differ by more than that are not
+  latest of those receipts and its own, plus the gap between its timestamp and the
+  watermark's, is more than the **future stamp margin**, 30 s by default: two deliveries that differ by more than that are not
   jitter, so either the older was delayed or the watermark is ahead of the producer;
   (3) its corrected age (the 20-minute rule's, by the producer's alives) is at most the
   **timely message age**, 10 s by default, which tells the first reading from the second:
   a message that sat in a backlog looks the same by (2) and is old by (3); (4) its
   timestamp is after the epoch, since the age of one far before it wraps around; (5) its
   timestamp is not below the one the watermark had before it jumped (below). A write that
-  raises the watermark by more than the margin more than the time since the watermark's
-  message was received - a stamp ahead of the stream it follows; a quiet match's next
+  raises the watermark by more than the margin more than the time since the latest receipt of a
+  write for the producer - a stamp ahead of the stream it follows; a quiet match's next
   message raises it by as much as the quiet lasted, which is no jump - leaves behind the
   stamp it raised it from, per entity and producer. That stamp is kept through every
   later write that raises the watermark again - those are stamps ahead - until a message
@@ -2212,3 +2212,10 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   published them back to back, so a same-millisecond receipt or a stall made the correct message
   fail the takeover's rule; it now waits for the first to reach the listener, lets the clock move
   on, and stamps the second as it is published. No public API changes.
+- 2026-10-20, the takeover and the jump counted time from the watermark's own receipt: after a write
+  received out of order - a newer stamp received earlier, handled later by another session - that
+  receipt is older than the latest one, so a message a millisecond behind the latest write looked as
+  slow as the gap to the watermark's receipt and took over (a swap of two messages rolled back the
+  newer), and a jump was missed by the same gap, so no stamp was left behind for an older message to
+  be refused by. Both now count from the latest receipt of a write for the producer, which only grows
+  and which a takeover already had to be after. No public API changes.

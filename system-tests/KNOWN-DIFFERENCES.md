@@ -213,7 +213,8 @@ answered an outage with, under either strategy (NEXT.md section 3, Behaviour tha
   played again repeats the timestamps of its last run. A stamp in the producer's
   future - a component's fast clock - does not hold the correct messages that follow back for
   long: one that is older than the watermark, was received after every message that wrote before
-  it, was generated more than 30 seconds before it counting the time between their receipts, is itself timely (its age by
+  it, was generated before it by an amount that, with the time since the latest receipt of a write before it, is more than
+  30 seconds, is itself timely (its age by
   the producer's alives at most 10 seconds), and is not older than the update the status had
   before the bad stamp jumped it, writes, and the watermark goes down to its stamp. A
   stamp ahead by less than those 30 seconds still holds the following updates back until the
