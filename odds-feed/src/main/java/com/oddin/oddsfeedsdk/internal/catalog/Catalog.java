@@ -200,7 +200,7 @@ final class Catalog<K, V> {
      */
     V get(K key) {
         Held<V> current = held.getIfPresent(key);
-        return current == null ? fetchNow(key) : served(key, current);
+        return current == null ? fetchNow(key, null) : served(key, current);
     }
 
     /**
@@ -222,7 +222,7 @@ final class Catalog<K, V> {
             // on the value served, so a value replaced, cleared or evicted since takes its mark along
             current.staleSince().compareAndSet(NEVER, now);
             current.lastStaleRead().set(now);
-            refreshInBackground(key, now);
+            refreshInBackground(key, now, current);
         }
         return current.value();
     }
@@ -262,11 +262,11 @@ final class Catalog<K, V> {
         if (failures.getIfPresent(key) != null) {
             // the API failed the last time: a reader waiting on it would wait a timeout each time the
             // backoff ends, for as long as an outage lasts
-            refreshInBackground(key, now);
+            refreshInBackground(key, now, current);
             return null;
         }
         try {
-            return finder.find(fetchNow(key), item);
+            return finder.find(fetchNow(key, current), item);
         } catch (ApiException failed) {
             // counted where it failed; the item is as unknown as it was
             return null;
@@ -293,7 +293,7 @@ final class Catalog<K, V> {
      */
     void preload(K key) {
         if (held.getIfPresent(key) == null) {
-            loader.load(new Flight<>(key, generationOf(key), false, true));
+            loader.load(new Flight<>(key, generationOf(key), false, true), null, () -> writtenSince(key, null));
         }
     }
 
@@ -373,20 +373,36 @@ final class Catalog<K, V> {
                 evictedForRoom.get());
     }
 
-    /** A fetch the reader waits for; one that would start while the key backs off fails at once. */
-    private V fetchNow(K key) {
+    /**
+     * A fetch the reader waits for; one that would start while the key backs off fails at once. A
+     * fetch of the key that wrote since the reader looked, and found {@code seen} held, is not
+     * repeated: the reader takes what it wrote.
+     */
+    private V fetchNow(K key, @Nullable Held<V> seen) {
         insideColdRead.run();
-        return loader.load(new Flight<>(key, generationOf(key), false, false));
+        return loader.load(new Flight<>(key, generationOf(key), false, false), null, () -> writtenSince(key, seen));
     }
 
-    private void refreshInBackground(K key, long now) {
+    /**
+     * The value held for the key when a fetch newer than {@code seen}, or any when {@code seen} is
+     * null, has written it since the caller looked: what the loader asks as it finds no fetch to
+     * join, so that one that wrote and left in between is not repeated. Null when none has - a clear
+     * or a failure leaves the key as the caller found it - and the caller's own fetch starts.
+     */
+    private @Nullable V writtenSince(K key, @Nullable Held<V> seen) {
+        Held<V> now = held.getIfPresent(key);
+        return (now != null && (seen == null || now.startedAs() > seen.startedAs())) ? now.value() : null;
+    }
+
+    private void refreshInBackground(K key, long now, Held<V> seen) {
         if (backingOff(key, now) != null || !refreshing.add(key)) {
             return;
         }
         try {
             refreshes.execute(() -> {
                 try {
-                    loader.load(new Flight<>(key, generationOf(key), false, false));
+                    loader.load(
+                            new Flight<>(key, generationOf(key), false, false), null, () -> writtenSince(key, seen));
                 } catch (RuntimeException failed) {
                     // counted where it failed; the stale value is served until the next try
                 } finally {
