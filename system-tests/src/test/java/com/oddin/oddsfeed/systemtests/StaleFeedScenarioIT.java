@@ -117,6 +117,10 @@ class StaleFeedScenarioIT {
      * score. 0.0.x writes every message, so the second's score is read; 1.0 does not let the bad
      * stamp hold the correct message back, as it would if it kept the watermark in the future.
      * Both are delivered, as they were stamped.
+     *
+     * <p>The correct message takes the status over only when it is received strictly after the bad
+     * one by the SDK's millisecond clock and is timely, so it is published once the first reached
+     * the listener and some milliseconds on, and stamped when it is published.
      */
     @Test
     void aMessageStampedAheadOfItsProducerDoesNotHoldBackTheCorrectOneThatFollows() throws InterruptedException {
@@ -125,14 +129,16 @@ class StaleFeedScenarioIT {
                 Sdk sdk = Sdk.against(rest, feed)) {
             Received received = sdk.open(MessageInterest.ALL);
             feed.publish(alive(2, true));
-            long now = System.currentTimeMillis();
-            long ahead = now + Duration.ofMinutes(10).toMillis();
+            long ahead = System.currentTimeMillis() + Duration.ofMinutes(10).toMillis();
             feed.publishAsIs(stampedAt(withHomeScore(7), ahead));
-            feed.publishAsIs(stampedAt(withHomeScore(2), now));
-
             assertThat(received.next(OddsChange.class).getTimestamp().getCreated())
                     .as("first")
                     .isEqualTo(ahead);
+            // the first is received: let the millisecond clock move past its receipt
+            Thread.sleep(5);
+            long now = System.currentTimeMillis();
+            feed.publishAsIs(stampedAt(withHomeScore(2), now));
+
             OddsChange<?> second = received.next(OddsChange.class);
             assertThat(second.getTimestamp().getCreated()).as("second").isEqualTo(now);
             var match = (Match) second.getEvent();
