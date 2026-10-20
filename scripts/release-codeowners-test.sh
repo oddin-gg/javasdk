@@ -21,12 +21,13 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 python3 -I - "$root" <<'PY'
-import json, os, re, shutil, subprocess, sys, tempfile
+import functools, json, os, re, shutil, subprocess, sys, tempfile
 import xml.etree.ElementTree as ET
 
 root = sys.argv[1]
 TEAM = ["@oddin-gg/ragnar-admin"]
 
+@functools.cache
 def regex(pattern):
     """The regular expression for one CODEOWNERS pattern, or a refusal for what is not unambiguous."""
     if re.search(r"[^A-Za-z0-9._*/@+-]", pattern) or "***" in pattern or "[" in pattern:
@@ -239,10 +240,23 @@ def pattern_of(line):
 
 lines = [l for l in full if pattern_of(l) not in BACKSTOPS]
 
+def repository_files():
+    """Every file of the repository: what git tracks, or, where this is not a git checkout (an
+    unpacked archive), every file in the tree but .git, a symlink as the path it is."""
+    listed = subprocess.run(["git", "-C", root, "ls-files", "-z"], capture_output=True, text=True)
+    if listed.returncode == 0 and listed.stdout:
+        return [path for path in listed.stdout.split("\0") if path]
+    return [os.path.relpath(os.path.join(directory, name), root)
+            for directory, directories, names in os.walk(root)
+            if ".git" not in os.path.relpath(directory, root).split(os.sep)
+            for name in names + [d for d in directories if os.path.islink(os.path.join(directory, d))]
+            if name != ".git"]
+
 def backstop_problems(all_lines):
     """Every file of the repository must be owned by the team under the whole file, the last matching
-    line winning: a file at the root, one under each directory there is (and a new one under it),
-    a script of any depth that no other line names, every file in scripts/, and every path under
+    line winning: each file there is (so that a later line for a path deep in a directory, by a
+    name or a wildcard, is found wherever it is), and a new one at the root, under each directory
+    and in scripts/ (a script of any depth that no other line names too), and every path under
     scripts/ that a line of the file names itself, so that a later line giving any of them, by
     a directory or a wildcard too, to another owner is found."""
     found = []
@@ -254,7 +268,8 @@ def backstop_problems(all_lines):
     top = [entry if os.path.isfile(os.path.join(root, entry)) else entry + "/new-file.txt"
            for entry in sorted(os.listdir(root)) if entry != ".git"]
     for path in sorted({"README.md", "new-file-at-the-root.txt", "odds-feed/src/main/java/X.java", "scripts/gh-new.sh",
-                        "scripts/brand-new.sh", "scripts/brand-new/deeper/tool.py", *top, *present, *named}):
+                        "scripts/brand-new.sh", "scripts/brand-new/deeper/tool.py", *top, *present, *named,
+                        *repository_files()}):
         got = owners(all_lines, path)
         if got != TEAM:
             found.append("%s is owned by %s, not by %s" % (path, " ".join(got) or "nobody", " ".join(TEAM)))
@@ -299,6 +314,8 @@ for what, changed in {
     "a later rule giving a wildcard of scripts/ to another owner": full + ["/scripts/gh-*.sh @someone-else"],
     "a later rule giving a kind of file to another owner": full + ["*.md @someone-else"],
     "a later rule giving a file at the root to another owner": full + ["/README.md @someone-else"],
+    "a later rule giving a source file deep in a directory to another owner":
+        full + ["/odds-feed/src/main/java/com/oddin/oddsfeedsdk/OddsFeed.java @someone-else"],
     "the scripts/ backstop given to another owner": given_away("/scripts/"),
     "a later line giving a script under scripts/ to another owner": full + ["/scripts/gh-other.sh @someone-else"],
     "a later line giving a script that exists to another owner": full + ["/scripts/refresh-schema.sh @someone-else"],
