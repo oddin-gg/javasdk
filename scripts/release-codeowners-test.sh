@@ -522,19 +522,30 @@ for what, change, path, judged_by in cases:
             print("ok   refused %s: %s" % (what, [line for line in found if line.startswith(path)][0]))
 
 # the backstop reads the files from git, and a tree that is no git checkout is refused with
-# that said, not walked: the check would otherwise judge what git does not hold
-with tempfile.TemporaryDirectory() as tree:
+# that said, not walked: the check would otherwise judge what git does not hold. Two ways to be
+# none: git fails (no repository), and git succeeds and lists nothing (a repository, empty index)
+def no_repository(tree):
     append(tree, "README.md", "x\n")
-    try:
-        backstop_problems(full, tree)
-        failed.append("a directory that is not a git checkout")
-        print("FAIL the backstop accepted a directory that is not a git checkout", file=sys.stderr)
-    except SystemExit as refusal:
-        if "not a git checkout" not in str(refusal.code):
-            failed.append("a directory that is not a git checkout")
-            print("FAIL the backstop refused a directory that is not a git checkout, but said %r" % refusal.code, file=sys.stderr)
-        else:
-            print("ok   refused a directory that is not a git checkout: %s" % refusal.code)
+
+def empty_repository(tree):
+    # no parent directory is searched for a repository, as in repository_files
+    env = {**os.environ, "GIT_CEILING_DIRECTORIES": os.path.dirname(os.path.realpath(tree))}
+    subprocess.run(["git", "-C", tree, "init", "-q"], check=True, env=env)
+
+for what, make in [("a directory that is not a git repository", no_repository),
+                   ("a git repository that tracks no file", empty_repository)]:
+    with tempfile.TemporaryDirectory() as tree:
+        make(tree)
+        try:
+            backstop_problems(full, tree)
+            failed.append(what)
+            print("FAIL the backstop accepted %s" % what, file=sys.stderr)
+        except SystemExit as refusal:
+            if "not a git checkout" not in str(refusal.code):
+                failed.append(what)
+                print("FAIL the backstop refused %s, but said %r" % (what, refusal.code), file=sys.stderr)
+            else:
+                print("ok   refused %s: %s" % (what, refusal.code))
 
 # and a link to a file that is owned changes nothing: the check does not refuse what it should accept
 with tempfile.TemporaryDirectory() as tree:
