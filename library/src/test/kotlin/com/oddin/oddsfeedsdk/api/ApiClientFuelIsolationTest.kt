@@ -42,7 +42,7 @@ class ApiClientFuelIsolationTest {
 
     private lateinit var server: HttpServer
 
-    private class Received(val method: String, val path: String, val headers: Map<String, String>)
+    private class Received(val method: String, val path: String, val query: String?, val headers: Map<String, String>)
 
     // every request the test server got, in order
     private val received = CopyOnWriteArrayList<Received>()
@@ -81,6 +81,7 @@ class ApiClientFuelIsolationTest {
             received += Received(
                 it.requestMethod,
                 it.requestURI.path,
+                it.requestURI.rawQuery,
                 it.requestHeaders.entries.associate { (name, values) -> name.lowercase() to values.joinToString() }
             )
             held?.takeIf { h -> h.method == it.requestMethod && h.path == it.requestURI.path }?.let { h ->
@@ -226,6 +227,50 @@ class ApiClientFuelIsolationTest {
     @Test(timeout = 60_000)
     fun theApplicationsManagerIsLeftAloneWhileAnSdkPostIsInFlight() =
         applicationIsLeftAloneWhileInFlight("POST", "/v1/replay/play") { it.postReplayStart(null) }
+
+    @Test(timeout = 60_000)
+    fun whatTheApplicationAlreadyHasOnItsManagerSurvivesTheSdkClient() {
+        val appHeaders = mapOf("x-access-token" to "app-token", "x-application" to "yes")
+        val appBasePath = "http://127.0.0.1:${server.address.port}/app"
+        val appParams = listOf("app" to "1", "tenant" to "x")
+        applicationFuel.also {
+            it.baseHeaders = appHeaders
+            it.basePath = appBasePath
+            it.baseParams = appParams
+        }
+        val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
+        try {
+            client.fuel.basePath = "http://127.0.0.1:${server.address.port}/v1"
+
+            runBlocking {
+                client.fetchWhoAmI()
+                client.putReplayEvent(URN.parse("od:match:1"), null)
+                client.deleteReplayEvent(URN.parse("od:match:1"), null)
+                client.postReplayStart(null)
+            }
+            assertEquals(4, received.size)
+            assertEquals("secret-token", tokenOf("GET", "/v1/users/whoami"))
+            assertEquals("secret-token", tokenOf("PUT", "/v1/replay/events/od:match:1"))
+            assertEquals("secret-token", tokenOf("DELETE", "/v1/replay/events/od:match:1"))
+            assertEquals("secret-token", tokenOf("POST", "/v1/replay/play"))
+
+            // what the application had set is exactly what it set
+            assertEquals(appHeaders, FuelManager.instance.baseHeaders)
+            assertEquals(appBasePath, FuelManager.instance.basePath)
+            assertEquals(appParams, FuelManager.instance.baseParams)
+
+            // and its own request, with a relative path, still goes where and as the application meant
+            val (_, response, result) = FuelManager.instance.get("/relative").response()
+            assertTrue("the application's request failed: ${result.component2()}", result is Result.Success)
+            assertEquals(200, response.statusCode)
+            val own = requestOf("GET", "/app/relative")
+            assertEquals("app-token", own.headers["x-access-token"])
+            assertEquals("yes", own.headers["x-application"])
+            assertEquals("app=1&tenant=x", own.query)
+        } finally {
+            client.close()
+        }
+    }
 
     @Test(timeout = 60_000)
     fun theApplicationsInterceptorsAreNotCalledForTheSdkRequests() {
