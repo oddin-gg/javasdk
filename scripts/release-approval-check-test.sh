@@ -24,7 +24,8 @@ repo=$work/repo
 # Stub gh. A call is answered from the file of its endpoint in $GH_STUB_API, the path after
 # repos/example/repo/ without its query: commits/<sha>/pulls.json, pulls/<n>.json,
 # pulls/<n>/reviews.json, pulls/<n>/commits.json and releases/tags/<tag>.json. A .fail file next to it makes the call fail, a .stall one makes it
-# answer only after 10 seconds, no file at all is a 404. Like gh, it returns a list in pages of
+# answer only after 10 seconds, a .partial one makes a paginated call answer its first page and then
+# fail, no file at all is a 404. Like gh, it returns a list in pages of
 # per_page (30 without one) and all of them only with --paginate, running the --jq filter on each
 # page. Every call is recorded.
 mkdir -p "$work/bin"
@@ -49,6 +50,12 @@ case "$endpoint" in
   *per_page=*) per=${endpoint#*per_page=}; per=${per%%&*} ;;
 esac
 if [ -e "$api/$path.fail" ]; then
+  echo "gh: HTTP 502" >&2
+  exit 1
+fi
+if [ -e "$api/$path.partial" ] && [ "$paginate" = true ]; then
+  # the first page, and then the next one fails
+  jq --argjson n "$per" '.[:$n]' "$api/$path.json" | jq -r "$filter"
   echo "gh: HTTP 502" >&2
   exit 1
 fi
@@ -404,6 +411,65 @@ case_approval_no_login() {
   expect fail "pull request #2 (Pull request 2) by carol" "by a user GitHub does not name: does not count" || return 1
 }
 
+# a title is text anyone may write: control characters, an escape sequence and a line break are
+# not carried to the log, which would let it forge a line or a workflow command
+case_title_controls() {
+  new_repo root
+  standard
+  pull 2 carol "$(head_of 2)" $'Fix\r\x1b[31mred\x1b[0m\tend\n::error::forged'
+  reviews 2 "APPROVED:$(head_of 200):bob"
+  expect fail "pull request #2 (Fix[31mred[0mend::error::forged) by carol" || return 1
+  if [ -n "$(LC_ALL=C tr -d '[:print:]\n' < "$work/err")" ]; then
+    reason="the refusal carries a control character: $(cat "$work/err" | od -c | head -5)"
+    return 1
+  fi
+}
+
+# the commits of the pull request: the call fails, stalls, or fails after a clean first page
+case_api_error_commits() {
+  new_repo root
+  standard
+  : > "$api/pulls/2/commits.fail"
+  expect fail "could not ask GitHub for the commits of pull request #2" || return 1
+}
+
+case_api_stall_commits() {
+  new_repo root
+  standard
+  : > "$api/pulls/2/commits.stall"
+  timeout=1
+  local status=0
+  expect fail "could not ask GitHub for the commits of pull request #2" || status=1
+  timeout=5
+  return $status
+}
+
+# a full first page of carol's commits, which do not name bob, then the second page, with bob's
+# commit, fails: the commits seen are not all of them, and bob's approval must not pass
+case_commits_partial() {
+  new_repo root
+  standard
+  local entries=() i
+  for i in $(seq 100); do
+    entries+=(carol:carol)
+  done
+  pr_commits 2 "${entries[@]}" bob:bob
+  : > "$api/pulls/2/commits.partial"
+  expect fail "could not ask GitHub for the commits of pull request #2" || return 1
+}
+
+# one commit left by two pull requests merged into main: both are checked
+case_two_pulls_one_commit() {
+  new_repo root
+  standard
+  left c3 2 3
+  pull 3 frank "$(head_of 3)"
+  pr_commits 3 frank:frank
+  reviews 3 "APPROVED:$(head_of 300):bob"
+  expect fail "pull request #3 (Pull request 3) by frank" "approved by bob on $(head_of 300 | cut -c1-12): not the final commit" \
+    "!pull request #2" || return 1
+}
+
 case_no_review() {
   new_repo root
   standard
@@ -644,7 +710,8 @@ reason=
 all_cases="case_all_approved case_earlier_commit case_author_only case_other_reviews case_not_release_manager
 case_pusher_author case_pusher_committer case_other_manager_approves case_unlinked_author case_unlinked_committer
 case_web_edit case_many_commits case_commit_limit case_no_commits case_managers_empty case_managers_missing
-case_managers_bad_line case_no_author case_approval_no_login case_no_review
+case_managers_bad_line case_no_author case_approval_no_login case_title_controls case_api_error_commits
+case_api_stall_commits case_commits_partial case_two_pulls_one_commit case_no_review
 case_direct_push case_only_other_base case_every_failure_named case_previous_tag case_latest_tag
 case_refused_tag case_draft_release case_no_release_at_all case_api_error_release case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
 case_api_error_commit case_api_error_pull case_api_error_reviews case_api_stall case_no_head
@@ -704,6 +771,16 @@ breaks unlinked_author '$2 == "-" || $3 == "-" { print $1; exit }' '$2 == "-" &&
   "goes on when only one of author and committer is unlinked"
 breaks unlinked_committer '$2 == "-" || $3 == "-" { print $1; exit }' '$2 == "-" { print $1; exit }' \
   "goes on when the committer is unlinked"
+breaks title_controls "title=\$(plain \"\$(printf '%s\\n' \"\$info\" | sed -n '3,\$p')\")" "title=\$(printf '%s\\n' \"\$info\" | sed -n '3,\$p')" \
+  "prints a title as it is"
+breaks commits_partial '|| fail "could not ask GitHub for the commits of pull request #$number"' '|| true' \
+  "goes on after the question for the commits failed after its first page"
+breaks api_error_commits '|| fail "could not ask GitHub for the commits of pull request #$number"' '|| true' \
+  "goes on after the question for the commits failed"
+breaks api_stall_commits 'limit=(timeout "$timeout")' 'limit=()' \
+  "waits for the commits without a limit"
+breaks two_pulls_one_commit '  for number in $found; do' '  for number in ${found%%$'"'"'\n'"'"'*}; do' \
+  "takes the first of the pull requests that left a commit only"
 breaks many_commits 'ask --paginate "repos/$repository/pulls/$number/commits?per_page=100"' 'ask "repos/$repository/pulls/$number/commits?per_page=100"' \
   "reads the first page of the commits only"
 breaks commit_limit '[ "$count" -ge 250 ]' '[ "$count" -ge 251 ]' \

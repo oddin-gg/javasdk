@@ -2312,6 +2312,10 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   job has no secret to read the team with; the list is kept equal to the team and owned by it), and neither the
   pull request's author nor the author or committer of any of its commits; a commit whose author or committer
   GitHub links to no account fails the pull request, since who pushed it cannot be told. A commit no pull request
-  merged into `main` left, a direct push, fails as well. Its own test, `scripts/release-approval-check-test.sh`, runs in `next.yml`
+  merged into `main` left, a direct push, fails as well. The release managers are trusted (they approve the publish and
+  hold the key): the check is against a change by anyone else with write access that merged on an approval of an
+  earlier version of itself, not against a release manager pushing under another identity, which GitHub does not
+  expose, and it cannot protect itself, since the tag runs it from the tagged commit, so the approver of the publish
+  looks at the diff of the release controls since the previous release. Its own test, `scripts/release-approval-check-test.sh`, runs in `next.yml`
   against a stub `gh`, and the pinned workflow forms and the workflow policy test hold the new step. No public
   API changes.

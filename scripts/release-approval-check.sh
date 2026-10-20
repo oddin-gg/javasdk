@@ -6,8 +6,17 @@
 # push, so a pull request can merge on the approval of an earlier version of itself. This check
 # closes that gap at the release: every pull request merged into main since the previous release
 # must have been approved on GitHub for its final commit by a release manager who did not write
-# any of it.
-# scripts/release-approval-check-test.sh runs it against a stub gh on every push.
+# any of it. scripts/release-approval-check-test.sh runs it against a stub gh on every push.
+#
+# What it protects against, and what it does not. The release managers are trusted: they approve
+# the publish in the maven-central environment and hold the signing key. The check is against a
+# change by anyone else with write access that merged on an approval of an earlier version of
+# itself. It does not detect a release manager who pushes commits under another identity and
+# approves them: GitHub attributes a commit by its e-mail address and does not say who pushed it
+# into a pull request, so that is out of scope. Nor can it protect itself: a tag runs this script,
+# scripts/release-managers and release.yml from the tagged commit, so a change to the release
+# controls since the previous release is for the approver of the publish to look at, with
+# git diff <previous release> <tag> -- .github scripts/release-* RELEASING.md
 #
 #   scripts/release-approval-check.sh <commit>
 #
@@ -25,8 +34,9 @@
 # commits (pulls/{n}/commits), so whoever pushed to it cannot approve it. Every pull request that
 # fails is named, with the approvals it had. The calls to GitHub are one per commit, two per pull
 # request (a third, for its commits, when a release manager approved its final commit), and one per
-# tag looked at until a release is found, plus the further pages of a long list. A call that fails, or does not answer within APPROVAL_TIMEOUT seconds (default 60), stops the
-# release: no answer is never a pass.
+# tag looked at until a release is found, plus the further pages of a long list. A call that
+# fails, or does not answer within APPROVAL_TIMEOUT seconds (default 60), stops the release: no
+# answer is never a pass.
 set -euo pipefail
 
 label=${1:?usage: release-approval-check.sh <commit>}
@@ -157,7 +167,7 @@ for number in $(printf '%s\n' ${numbers[@]+"${numbers[@]}"} | sort -un); do
     || fail "could not ask GitHub for pull request #$number"
   head=$(printf '%s\n' "$info" | sed -n 1p)
   author=$(printf '%s\n' "$info" | sed -n 2p)
-  title=$(plain "$(printf '%s\n' "$info" | sed -n 3p)")
+  title=$(plain "$(printf '%s\n' "$info" | sed -n '3,$p')")
   [[ "$head" =~ ^[0-9a-f]{40}$ ]] || fail "GitHub gave no final commit for pull request #$number: $head"
   # a login or "-" for none; every APPROVED review, whatever it was for: the ones that do not count
   # are reported
