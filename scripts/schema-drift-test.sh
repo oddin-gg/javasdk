@@ -199,6 +199,10 @@ pair both2.xsd a c
 c30=$(commit 23 "an XSD renamed to another, an attribute dropped")
 git -C "$repo" mv schema/feed/notes.txt schema/feed/notes.md
 c31=$(commit 23 "a text file renamed to another")
+printf 'not XML <\nand\nnot a schema\nat all\n' >"$repo/schema/feed/draft.txt"
+c32=$(commit 23 "a text file that is no XML")
+git -C "$repo" mv schema/feed/draft.txt schema/feed/draft.xsd
+c33=$(commit 23 "that text file renamed to an XSD")
 
 # a commit that exists but not on main
 git -C "$repo" checkout -q -b side "$c1"
@@ -258,6 +262,8 @@ check "a new type's required attribute in an existing file is additive" 0 "refre
 check "a moved file is compared with itself" 0 "refresh due by" "line=$c25" "$(days 22)" "$c26"
 check "an XSD renamed to a text file left the schema" 0 "leave\.xsd: removed /" "line=$c27" "$(days 25)" "$c28"
 check "a text file renamed to an XSD is a new schema, not a changed one" 0 "refresh due by" "line=$c28" "$(days 25)" "$c29"
+# a skipped schema would also be additive: only a schema that is read can be found not to be XML
+check "a text file renamed to an XSD is read as the new schema" 1 "cannot compare schema/feed/draft\.xsd" "line=$c32" "$(days 25)" "$c33"
 check "an XSD renamed to another is compared with itself, under its new name" 0 "both2\.xsd: removed /" "line=$c29" "$(days 25)" "$c30"
 check "a rename between files that are no XSD is no concern" 0 "refresh due by" "line=$c30" "$(days 25)" "$c31"
 mkdir "$work/cwd"
