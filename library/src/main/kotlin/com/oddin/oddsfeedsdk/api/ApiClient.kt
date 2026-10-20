@@ -86,10 +86,33 @@ class ApiClientImpl @Inject constructor(
 
     // The SDK's own Fuel manager. The token and the base path stay on it: the process-wide
     // FuelManager.instance belongs to the application and sends nothing of the SDK's.
-    internal val fuel = FuelManager()
+    internal val fuel = FuelManager().also { copyTransportSettings(it) }
 
     companion object {
         private const val API_VERSION = "v1"
+
+        // The SDK's requests used to go through FuelManager.instance, so what the application set
+        // there for the connection (a proxy, TLS settings, timeouts, its own client) applied to them.
+        // They are copied from it when the client is built, a snapshot: a change made to the
+        // application's manager afterwards does not reach the SDK, where it used to be read with
+        // every request. Reading the settings makes the application's manager fix its defaults
+        // (its client and TLS factory) from then on, as its first request would have.
+        // Nothing the application sends with its own requests is copied: no headers, base path,
+        // parameters or interceptors.
+        private fun copyTransportSettings(manager: FuelManager) {
+            val application = FuelManager.instance
+            manager.proxy = application.proxy
+            manager.hook = application.hook
+            manager.keystore = application.keystore
+            manager.socketFactory = application.socketFactory
+            manager.hostnameVerifier = application.hostnameVerifier
+            manager.client = application.client
+            manager.executorService = application.executorService
+            manager.callbackExecutor = application.callbackExecutor
+            manager.timeoutInMillisecond = application.timeoutInMillisecond
+            manager.timeoutReadInMillisecond = application.timeoutReadInMillisecond
+            manager.forceMethods = application.forceMethods
+        }
 
         private val simpleDateFormat = SimpleDateFormat("yyyy-MM-dd")
     }
