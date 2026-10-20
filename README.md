@@ -27,8 +27,8 @@ Java SDK
 > is removed; against 0.0.x the list is ignored. The build fails on any compiler, Error Prone or
 > NullAway warning and on unformatted code; `./mvnw spotless:apply` formats it (Palantir Java
 > Format). `git blame --ignore-revs-file .git-blame-ignore-revs` skips the one-time reformat,
-> as GitHub already does. The old 0.0.x SDK lives in `library/` and still
-> builds with Gradle on JDK 8.
+> as GitHub already does. The old 0.0.x SDK (Kotlin, Gradle, JDK 8) is on the `release/0.x`
+> branch, in `library/`; it is no longer in this tree.
 
 Purpose of this SDK is to make integration process much smoother and easier. This SDK should take care of all connection, 
 data binding and other issues related to connection to API and Feed.

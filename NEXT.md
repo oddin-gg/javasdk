@@ -2240,3 +2240,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   message, so R + G of the two cannot pass the margin; before, a timely age over half could
   still let a takeover pass. The two settings are new in 1.0 and not released: no public API
   changes.
+- 2026-10-20, the old 0.0.x source left `next`: `library/`, the Kotlin copy of the 0.0.x SDK, was last changed
+  before 0.0.56 and differed from `release/0.x` in 42 files, so a review of the whole tree kept finding defects
+  there that are fixed on `release/0.x`, where the 0.0.x line lives and is maintained. It is removed, with the
+  Gradle build of the old examples (`build.gradle`, `settings.gradle`, the wrapper) and the examples' logging
+  file; that is the library part of ticket 44. The examples' Java sources stay in `examples/src`: a test of
+  `odds-feed` (`ApiUsageTest`) compiles them against the 1.0 jar, as the checks section says, and `release/0.x` has
+  the same sources with their build. The README, the examples' README and `odds-feed/CACHE-FIELDS.md` point
+  to `release/0.x` for the 0.0.x code; the references in the review log and in the tickets are left as they
+  were written. No public API changes.
