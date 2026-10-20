@@ -82,16 +82,27 @@ def workflow_scripts(tree):
                 found.setdefault(path, name)
     return found
 
+def inside(base, path, trim=False):
+    """The path from the repository root of what a script names from a base directory, or None when
+    it is not a file inside the repository: an absolute path, the repository itself, or a path that
+    leaves it, written as it may be - with a .. in the middle of it too."""
+    if os.path.isabs(path):
+        return None
+    resolved = os.path.normpath(os.path.join(base, path))
+    if os.path.isabs(resolved) or resolved == "." or resolved == ".." or resolved.startswith("../"):
+        return None
+    return (resolved.rstrip(".") or None) if trim else resolved
+
 def script_reads(tree, script):
     found = set()
     text = open(os.path.join(tree, script)).read()
     for variable, path in re.findall(r"(\$\{?root\}?|\$\{?here\}?)/(\.?[A-Za-z0-9_][A-Za-z0-9_./-]*)", text):
-        found.add(("scripts/" if "here" in variable else "") + path.rstrip("./"))
+        # (a full stop that ends a sentence is no part of the name)
+        found.add(inside("scripts" if "here" in variable else "", path, trim=True))
     # a helper called through the script's own directory (dirname of $0), quoted or not
     for path in re.findall(r"\$\(dirname \"?\$0\"?\)/([A-Za-z0-9_./-]+)", text):
-        found.add(os.path.normpath(os.path.join(os.path.dirname(script), path)))
-    # what the script names above the repository, or as the repository itself, is no file in it
-    return {path for path in found if path != "." and not path.startswith("..")}
+        found.add(inside(os.path.dirname(script), path))
+    return found - {None}
 
 def reads_of(tree, scripts):
     """What the scripts read, and what the scripts among those read in turn, to the end. Returns the
@@ -230,6 +241,12 @@ def new_helper_chain(tree):
     append(tree, "scripts/gh-more.sh", '\n"$' + 'here/gh-helpers.sh" "$' + 'root/scripts/gh-last.sh"\n')
     append(tree, "scripts/gh-last.sh", "#!/usr/bin/env bash\n")
 
+def new_bare_helper(tree):
+    # the same with the substitution not quoted, and with the argument of dirname not quoted
+    append(tree, "scripts/gh-plain.sh", "#!/usr/bin/env bash\n")
+    append(tree, "scripts/gh-bare.sh", "#!/usr/bin/env bash\n")
+    append(tree, "scripts/release-check.sh", '\n: $(dirname "$' + '0")/gh-plain.sh $(dirname $' + '0)/gh-bare.sh\n')
+
 def nested_module(tree):
     # a module listed in a child POM's <modules>, not in the root POM's, as a nested reactor has it
     pom = os.path.join(tree, "test-fakes/pom.xml")
@@ -248,6 +265,8 @@ cases = [
      "scripts/gh-helpers.sh", lines),
     ("a helper calling another, and that one the first again", new_helper_chain, "scripts/gh-more.sh", lines),
     ("the end of a chain of helpers", new_helper_chain, "scripts/gh-last.sh", lines),
+    ("a release script calling a helper through an unquoted dirname", new_bare_helper, "scripts/gh-plain.sh", lines),
+    ("a release script calling a helper through dirname of an unquoted $0", new_bare_helper, "scripts/gh-bare.sh", lines),
     ("a nested module whose POM CODEOWNERS gives to another owner", nested_module, "test-fakes/nested/pom.xml",
      lines + ["/test-fakes/nested/pom.xml @someone-else"]),
 ]
@@ -261,5 +280,44 @@ for what, change, path, judged_by in cases:
             print("FAIL the test did not name %s for %s: %s" % (path, what, found), file=sys.stderr)
         else:
             print("ok   refused %s: %s" % (what, [line for line in found if line.startswith(path)][0]))
+
+# a path that is no file of the repository must be dropped, not derived: it would be joined to the
+# tree, and to its copy, and read or written there. Each is written into a script a workflow runs,
+# for a file that exists outside the tree, and nothing derived may lead out of it
+def absolute_by_dirname(tree, outside):
+    append(tree, "scripts/release-check.sh", '\n"$(dirname "$' + '0")/' + outside + '"\n')
+
+def traversal_by_here(tree, outside):
+    os.makedirs(os.path.join(tree, "scripts/x"))
+    away = os.path.relpath(outside, os.path.join(tree, "scripts"))
+    append(tree, "scripts/schema-drift.sh", '\n: "$' + 'here/x/../' + away + '"\n')
+
+def traversal_by_root(tree, outside):
+    append(tree, "scripts/fetch-sdk.sh", '\n: "$' + 'root/scripts/../' + os.path.relpath(outside, tree) + '"\n')
+
+def traversal_by_dirname(tree, outside):
+    os.makedirs(os.path.join(tree, "scripts/x"))
+    away = os.path.relpath(outside, os.path.join(tree, "scripts"))
+    append(tree, "scripts/release-check.sh", '\n"$(dirname "$' + '0")/x/../' + away + '"\n')
+
+for what, change in [
+    ("an absolute path through dirname", absolute_by_dirname),
+    ("a .. traversal through $here", traversal_by_here),
+    ("a .. traversal through $root", traversal_by_root),
+    ("a .. traversal through dirname", traversal_by_dirname),
+]:
+    with tempfile.TemporaryDirectory() as tree, tempfile.TemporaryDirectory() as elsewhere:
+        copy_of_tree(tree)
+        outside = os.path.join(elsewhere, "outside.txt")
+        append(elsewhere, "outside.txt", "x\n")
+        change(tree, outside)
+        got = survey(tree)[3]
+        inner = os.path.realpath(tree) + os.sep
+        leaving = [p for p in got if os.path.isabs(p) or not os.path.realpath(os.path.join(tree, p)).startswith(inner)]
+        if leaving:
+            failed.append(what)
+            print("FAIL the test derived %s for %s" % (leaving, what), file=sys.stderr)
+        else:
+            print("ok   dropped %s: it leads out of the repository, so is not derived" % what)
 sys.exit(1 if failed else 0)
 PY
