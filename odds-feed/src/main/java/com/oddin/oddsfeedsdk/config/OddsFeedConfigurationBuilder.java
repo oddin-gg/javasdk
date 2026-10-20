@@ -500,8 +500,8 @@ public final class OddsFeedConfigurationBuilder {
      * writes an older status over a newer one, so a margin of a few seconds is not recommended.
      *
      * @throws IllegalArgumentException unless it is positive and at most a day, a day being as good
-     *     as off; {@link #build} also refuses it under the {@linkplain #setTimelyMessageAge timely
-     *     message age}
+     *     as off; {@link #build} also refuses it under twice the {@linkplain #setTimelyMessageAge
+     *     timely message age}
      */
     public OddsFeedConfigurationBuilder setFutureStampMargin(Duration margin) {
         this.futureStampMargin =
@@ -512,15 +512,17 @@ public final class OddsFeedConfigurationBuilder {
     /**
      * How old a live message may be, by its timestamp corrected by the producer's alives, to write
      * the status in place of a message with a later timestamp (see {@link #setFutureStampMargin}).
-     * 10 seconds unless set, or the margin if that is shorter. New in 1.0.
+     * 10 seconds unless set, or half the margin if that is shorter. New in 1.0.
      *
      * <p>A message that sat in a backlog is old by this measure and writes nothing over a newer
-     * status, whatever its timestamp. The margin less this age is also how late a producer's alives
-     * may be before a delayed message passes for a timely one, so this is at most the margin, and the
-     * smaller it is the later the alives may be.
+     * status, whatever its timestamp. A message at the producer's now is no more than this age
+     * ahead of it or behind it, so two of them are no more than twice this age apart, and this is at
+     * most half the margin: they can never pass for a late message and a bad timestamp. The margin
+     * less this age is also how late a producer's alives may be before a delayed message passes for
+     * a timely one, so the smaller it is the later the alives may be.
      *
      * @throws IllegalArgumentException unless it is positive; {@link #build} also refuses it over
-     *     the {@linkplain #setFutureStampMargin future stamp margin}
+     *     half the {@linkplain #setFutureStampMargin future stamp margin}
      */
     public OddsFeedConfigurationBuilder setTimelyMessageAge(Duration age) {
         this.timelyMessageAge = positive(age, "timely message age");
@@ -566,7 +568,7 @@ public final class OddsFeedConfigurationBuilder {
      * The configuration.
      *
      * @throws IllegalArgumentException without an access token or an environment, with a stall
-     *     limit set under {@code 2 × HTTP timeout + 5 s}, or with a timely message age over the
+     *     limit set under {@code 2 × HTTP timeout + 5 s}, or with a timely message age over half the
      *     future stamp margin
      */
     public OddsFeedConfiguration build() {
@@ -579,13 +581,18 @@ public final class OddsFeedConfigurationBuilder {
             throw new IllegalArgumentException("Missing environment. Please select environment.");
         }
         Duration timely = timelyMessageAge;
+        Duration half = futureStampMargin.dividedBy(2);
         if (timely == null) {
             timely = OddsFeedConfiguration.DEFAULT_TIMELY_MESSAGE_AGE;
-            if (timely.compareTo(futureStampMargin) > 0) {
-                timely = futureStampMargin;
+            if (timely.compareTo(half) > 0) {
+                timely = half;
             }
-        } else if (timely.compareTo(futureStampMargin) > 0) {
-            throw new IllegalArgumentException("timely message age must be at most the future stamp margin of "
+            if (!timely.isPositive()) {
+                throw new IllegalArgumentException(
+                        "the future stamp margin must be at least 2 ns, was " + futureStampMargin);
+            }
+        } else if (timely.compareTo(half) > 0) {
+            throw new IllegalArgumentException("timely message age must be at most half the future stamp margin of "
                     + futureStampMargin + ", was " + timely);
         }
         Duration startup = startupTimeout;

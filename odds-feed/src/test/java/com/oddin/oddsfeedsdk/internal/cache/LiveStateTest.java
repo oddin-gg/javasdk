@@ -811,6 +811,69 @@ class LiveStateTest {
         assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 32_500);
     }
 
+    /**
+     * A stamp ahead by less than the margin plus the delay of the receipts is no jump, yet it is
+     * ahead of the producer's now: a correct message older than the update before it, and timely, is
+     * as much a swap as one after a jump, and is refused by that update's stamp.
+     */
+    @Test
+    void aStampAheadByLessThanTheMarginLeavesTheStampBeforeItBehind() {
+        assertThat(message("m1", BASE, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 25_000, 1_100, Duration.ofSeconds(-25)))
+                .as("F: 25 s ahead, less than the margin and the 100 ms between the receipts")
+                .isTrue();
+
+        assertThat(message("m1", BASE - 5_100, 1_200, Duration.ofMillis(5_300)))
+                .as("C: timely, received after all, 30.1 s before F, older than U")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + 25_000);
+    }
+
+    /**
+     * Two stamps ahead, the second a little further, neither a jump: the stamp before the first is
+     * the floor, not the first one's, so a correct message after U still takes over.
+     */
+    @Test
+    void aChainOfStampsAheadByLessThanTheMarginKeepsTheStampBeforeTheFirstOne() {
+        assertThat(message("m1", BASE, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 20_000, 1_100, Duration.ofSeconds(-20)))
+                .as("F1")
+                .isTrue();
+        assertThat(message("m1", BASE + 25_000, 1_200, Duration.ofSeconds(-24)))
+                .as("F2, further ahead")
+                .isTrue();
+
+        assertThat(message("m1", BASE - 5_100, 1_300, Duration.ofSeconds(5)))
+                .as("C1: timely, received after all, older than U")
+                .isFalse();
+        assertThat(message("m1", BASE + 1_000, 8_200, Duration.ofSeconds(7)))
+                .as("C2: after U, received 7 s after F2: takes over")
+                .isTrue();
+        assertThat(timestampOf("m1")).as("C2's value").isEqualTo(BASE + 1_000);
+    }
+
+    /**
+     * A late message between U and a stamp ahead is the watermark the stamp ahead raised, and its
+     * stamp is the floor: it neither records nor forgets one itself, being behind the producer's now.
+     */
+    @Test
+    void aLateMessageBetweenAnUpdateAndAStampAheadIsTheStampBeforeIt() {
+        assertThat(message("m1", BASE, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + 500, 1_100, Duration.ofSeconds(12)))
+                .as("L: late, in order")
+                .isTrue();
+        assertThat(message("m1", BASE + 25_000, 1_200, Duration.ofSeconds(-24)))
+                .as("F: ahead of the producer's now")
+                .isTrue();
+
+        assertThat(message("m1", BASE + 300, 7_300, Duration.ofSeconds(5)))
+                .as("C: timely, received after all, after U, before L")
+                .isFalse();
+        assertThat(message("m1", BASE + 600, 8_300, Duration.ofSeconds(7)))
+                .as("a message after L takes over")
+                .isTrue();
+    }
+
     /** Stamps ahead, none of them timely, never replace the stamp before the first jump. */
     @Test
     void aChainOfStampsAheadKeepsTheStampBeforeTheFirstOne() {
@@ -842,6 +905,15 @@ class LiveStateTest {
         assertThat(takeover.atProducersNow(timely.negated().minusMillis(1))).isFalse();
         assertThat(takeover.atProducersNow(Duration.ofSeconds(Long.MIN_VALUE))).isFalse();
         assertThat(takeover.atProducersNow(Duration.ofSeconds(Long.MAX_VALUE))).isFalse();
+
+        assertThat(takeover.ahead(Duration.ZERO)).isFalse();
+        assertThat(takeover.ahead(timely)).as("late, not ahead").isFalse();
+        assertThat(takeover.ahead(timely.negated()))
+                .as("the timely age ahead exactly")
+                .isFalse();
+        assertThat(takeover.ahead(timely.negated().minusMillis(1))).isTrue();
+        assertThat(takeover.ahead(Duration.ofSeconds(Long.MIN_VALUE))).isTrue();
+        assertThat(takeover.ahead(Duration.ofSeconds(Long.MAX_VALUE))).isFalse();
     }
 
     /**
@@ -893,22 +965,27 @@ class LiveStateTest {
         assertThat(message("m1", BASE + 301_500, 304_000, FRESH)).isTrue();
     }
 
-    /** A bad stamp inside the margin still freezes: it is the watermark the next jump is judged from. */
+    /**
+     * A bad stamp inside the margin still holds the correct messages back, for as long as the margin
+     * says; one that follows it a long way ahead ends that, and the correct message after the update
+     * before them both takes over: the stamp inside the margin is not the floor.
+     */
     @Test
-    void aBadStampInsideTheMarginBeforeAJumpHoldsBackNoLongerThanTheMargin() {
+    void aBadStampInsideTheMarginHoldsBackUntilALaterOneAndIsNotTheFloor() {
         assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
         assertThat(message("m1", BASE + 21_000, 1_100, Duration.ofSeconds(-20)))
                 .as("F0, 20 s ahead")
                 .isTrue();
+        assertThat(message("m1", BASE + 2_000, 1_150, FRESH))
+                .as("a correct message, below F0's stamp: R + G is 20 s")
+                .isFalse();
         assertThat(message("m1", BASE + TEN_MINUTES, 1_200, AHEAD))
                 .as("F1, the jump")
                 .isTrue();
         assertThat(message("m1", BASE + 2_000, 1_300, FRESH))
-                .as("a correct message, below F0's stamp")
-                .isFalse();
-        assertThat(message("m1", BASE + 21_500, 1_400, FRESH))
-                .as("one that has caught up with F0 takes over")
+                .as("the correct message again: after U, below F0's stamp, takes over")
                 .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 2_000);
     }
 
     /** The stated limit: two bad stamps in a row, the second older, leave nothing of the first jump's stamp. */
@@ -1057,16 +1134,21 @@ class LiveStateTest {
     }
 
     @Test
-    void aTakeoverNeedsAPositiveMarginAndATimelyAgeOfAtMostIt() {
+    void aTakeoverNeedsAPositiveMarginAndATimelyAgeOfAtMostHalfIt() {
         var second = Duration.ofSeconds(1);
         assertThatThrownBy(() -> new Takeover(Duration.ZERO, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new Takeover(second, Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new Takeover(second.negated(), second.negated()))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new Takeover(second, second.plusMillis(1)))
+        assertThatThrownBy(() -> new Takeover(second, second)).isInstanceOf(IllegalArgumentException.class);
+        var margin = Duration.ofSeconds(2);
+        assertThatThrownBy(() -> new Takeover(margin, second.plusMillis(1)))
+                .as("a millisecond over half the margin")
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThat(new Takeover(second, second).timelyAge()).isEqualTo(second);
+        assertThat(new Takeover(margin, second).timelyAge())
+                .as("half the margin")
+                .isEqualTo(second);
     }
 
     /**
