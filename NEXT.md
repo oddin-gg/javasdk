@@ -2319,11 +2319,13 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   looks at the diff of the release controls since the previous release. Its own test, `scripts/release-approval-check-test.sh`, runs in `next.yml`
   against a stub `gh`, and the pinned workflow forms and the workflow policy test hold the new step. No public
   API changes.
-- 2026-10-21, the release checklist is split by what the first release candidate relies on. "Once,
-  before the first release" keeps the namespace, the portal token, the signing key, the environment
-  `maven-central`, "only `release.yml` reacts to tags" and `main`'s ruleset as it is (a PR with an
-  approval and code owners' review, linear history, no bypass); a new "Before 1.0.0" holds the
-  settings that close narrower gaps: the three pull request settings, the rule against deleting
-  `main` and an explicit non-fast-forward rule, the tag ruleset (now also for `v0.*` tags) and
-  immutable releases. The sentences that assumed them say so. Documentation only. No public API
-  changes.
+- 2026-10-21, the release checklist is split by what the first final release needs on top of what the
+  candidate relies on. "Once, before the first release" keeps the namespace, the portal token, the signing
+  key, the environment `maven-central`, the tag ruleset (now written for `v0.*` and `v1.*` tags),
+  immutable releases, "only `release.yml` reacts to tags" and `main`'s ruleset as it is (a PR with an
+  approval and code owners' review, linear history, no bypass). A new "Before 1.0.0" holds only the
+  stricter branch protection: the three pull request settings, the rule against deleting `main` and an
+  explicit non-fast-forward rule. Until they are on, an approval can outlive later commits, so step 5 of
+  "Every release" now has the approver of the publish check, with a `gh` command, that the PR whose merge
+  commit is tagged has an approval for its final commit and nothing pushed after it; the claim that the
+  ruleset alone made the final code reviewed is gone. Documentation only. No public API changes.
