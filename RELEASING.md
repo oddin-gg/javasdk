@@ -46,19 +46,26 @@ through a PR into `release/0.x`.
 5. **Check the registry:** the version is under the repository's Packages
    (`com.oddin.oddsfeed.odds-feed`), with its jar and POM. A lookup needs a token with
    `read:packages`.
-6. **Make the GitHub Release**, from the tag, with GitHub's generated notes plus the sweep list
-   from step 1, as a pre-release for a release candidate:
+6. **Make the GitHub Release**, from the tag, as a draft first: the notes are GitHub's generated
+   notes with the sweep list from step 1 put in front of them, and a release candidate is
+   marked a pre-release (`--prerelease`, added to the same command):
 
    ```
-   gh release create v0.0.59 --verify-tag --generate-notes --title v0.0.59
+   gh release create v0.0.59 --verify-tag --draft --generate-notes --title v0.0.59 \
+     --notes "<the sweep list from step 1>"
+   gh release create v0.0.59-rc1 --verify-tag --draft --prerelease --generate-notes \
+     --title v0.0.59-rc1 --notes "<the sweep list from step 1>"
    ```
 
    Then attach `odds-feed-<version>.jar`, `odds-feed-<version>.pom` and, when you have it,
    `odds-feed-<version>-sources.jar`, **copied from the registry, not rebuilt**: the Gradle
    build is not reproducible, and the 1.0 line's system tests pin the digests of exactly what
    the registry serves (see "After a release" below). Download the files with a token, check
-   they are the ones the run published, and `gh release upload v0.0.59 <files>`. 0.0.56 to
-   0.0.58 have these assets (0.0.58's were attached a day after the release); 0.0.54 has none.
+   they are the ones the run published, and `gh release upload v0.0.59 <files>`. Only when the
+   assets are on the draft, publish it: `gh release edit v0.0.59 --draft=false`. A release
+   that is published first cannot take its assets afterwards once releases are immutable.
+   0.0.56 to 0.0.58 have these assets (0.0.58's were attached a day after the release); 0.0.54
+   has none.
 7. **Move the 1.0 line's compatibility baseline**, as below.
 
 ## After a release: move the baseline on `next`
@@ -76,12 +83,13 @@ release. This is a PR into `next`, not `release/0.x`, and it is the same PR for 
   which are the registry's (`scripts/fetch-sdk.sh` downloads them from the GitHub Release and
   refuses anything that differs). Without the entry the build cannot fetch the new baseline;
 - anything the new release changes that the repository records about the 0.x side:
-  `system-tests/KNOWN-DIFFERENCES.md`, `NEXT.md`, and the version range in the header of
-  `scripts/fetch-sdk.sh` and of the checksums file;
+  `system-tests/KNOWN-DIFFERENCES.md`, `NEXT.md`, and the version range in the header of the
+  checksums file (the header of `scripts/fetch-sdk.sh` is open-ended and stays);
 - `odds-feed/src/test/resources/api/differences.txt`, when the API check says an accepted
   difference changed.
 
-Run the system tests (job `system-tests`) and the API check on the PR. When the release added
+Run the system tests (job `system-tests-next`) on the PR; the API check runs in the `build` job,
+in the unit tests of `odds-feed` (`ApiUsageTest`, `PublicShapeTest`). When the release added
 public API (as 0.0.58 added `Player.getUnderage()`), 1.0 must have it too, with the same
 shape, and the baseline moves in that PR: the API check compiles a class implementing each
 baseline interface, so it accepts a new abstract method only against the release that has it.
@@ -96,8 +104,9 @@ built, when:
 - the tag, as origin has it, no longer names the commit the run was started for (deleted or
   moved after the push) - asked again right before the upload;
 - any other tag names the same commit;
-- GitHub Packages already has `odds-feed` at that version, or does not answer clearly within a
-  minute (anything but 404 counts as "has it").
+- GitHub Packages already has `odds-feed` at that version (a 200, or a 302 to the file: the
+  version is burned), or does not answer clearly within a minute or answers anything else (the
+  check could not tell: run it again later). Only a 404 passes.
 
 The check does **not** verify that the commit is on `release/0.x` or that CI was green on it;
 that is steps 2 and 3. Tags on this line are not protected by a ruleset the check can see:
@@ -118,8 +127,8 @@ nobody should move or delete one.
   before either uploads. Publish runs for one version take turns, and each re-asks origin
   what the tag names; a run for a tag that has since moved fails. Do not move tags; make a new
   version.
-- **A registry that does not answer.** The check treats it as "published" and stops. Re-run the
-  failed run when GitHub Packages is back.
+- **A registry that does not answer.** The check cannot tell whether the version is there, so it
+  stops. Re-run the failed run when GitHub Packages is back.
 - **Assets rebuilt instead of copied.** A jar built again from the tag is not the published
   jar. The 1.0 line pins the digests of the registry's files.
 
