@@ -65,8 +65,9 @@ GitHub Packages.
       by hand alone: `scripts/release-codeowners-test.sh` derives every script a workflow runs
       and every file those scripts name by a literal path from the repository root (`$root/...`,
       `$here/...`) or from their own directory (a helper called through `dirname "$0"`), follows
-      the scripts among those files the same way, and requires the team to own them all, so a
-      new one cannot be missed. The scan is lexical and sees only
+      the scripts among those files the same way, resolves a symlink on the way to any of them and
+      requires the team to own the file it leads to as well, and requires the team to own them all,
+      so a new one cannot be missed. The scan is lexical and sees only
       the forms named, so the whole of `scripts/` is owned too, as a backstop; the test holds the
       derivation to the other lines, without it.
       GitHub drops what it cannot read from a CODEOWNERS file, so `next.yml` asks it on every
