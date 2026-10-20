@@ -3,6 +3,7 @@ package com.oddin.oddsfeedsdk.api
 import com.github.kittinunf.fuel.core.Client
 import com.github.kittinunf.fuel.core.FuelManager
 import com.github.kittinunf.fuel.httpGet
+import com.github.kittinunf.result.Result
 import com.oddin.oddsfeedsdk.DispatchManager
 import com.oddin.oddsfeedsdk.config.Environment
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration
@@ -24,7 +25,7 @@ import java.net.Proxy
 import java.net.URI
 import java.security.KeyStore
 import java.util.concurrent.Executor
-import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
 import javax.net.ssl.HostnameVerifier
 import javax.net.ssl.SSLContext
@@ -38,8 +39,10 @@ class ApiClientFuelIsolationTest {
 
     private lateinit var server: HttpServer
 
-    // the headers each request to the test server arrived with, by path
-    private val received = ConcurrentHashMap<String, Map<String, String>>()
+    private class Received(val method: String, val path: String, val headers: Map<String, String>)
+
+    // every request the test server got, in order
+    private val received = CopyOnWriteArrayList<Received>()
 
     // Fuel's defaults are filled in lazily on first use, so each test gets an application
     // manager of its own, as an application that configures Fuel before anything else would have
@@ -60,7 +63,11 @@ class ApiClientFuelIsolationTest {
         FuelManager.instance = applicationFuel
         server = HttpServer.create(InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 0)
         server.createContext("/") {
-            received[it.requestURI.path] = it.requestHeaders.entries.associate { (name, values) -> name.lowercase() to values.joinToString() }
+            received += Received(
+                it.requestMethod,
+                it.requestURI.path,
+                it.requestHeaders.entries.associate { (name, values) -> name.lowercase() to values.joinToString() }
+            )
             val bytes = (if (it.requestURI.path.endsWith("/users/whoami")) whoAmI else "<ok/>").toByteArray()
             it.responseHeaders.add("Content-Type", "application/xml")
             it.sendResponseHeaders(200, bytes.size.toLong())
@@ -77,7 +84,24 @@ class ApiClientFuelIsolationTest {
 
     private fun url(path: String) = "http://127.0.0.1:${server.address.port}$path"
 
-    private fun token(path: String) = received[path]?.get("x-access-token") ?: "none"
+    // the one request the server got for the method and path: a request that never arrived, or
+    // arrived twice, is not a request without a token
+    private fun requestOf(method: String, path: String): Received {
+        val requests = received.filter { it.method == method && it.path == path }
+        assertEquals("requests $method $path the server got, of ${received.map { it.method + " " + it.path }}", 1, requests.size)
+        return requests[0]
+    }
+
+    private fun tokenOf(method: String, path: String) = requestOf(method, path).headers["x-access-token"]
+
+    // a request the application makes with Fuel's defaults, through FuelManager.instance; it
+    // must have succeeded for what the server recorded of it to tell anything
+    private fun applicationRequest(path: String): Received {
+        val (_, response, result) = url(path).httpGet().response()
+        assertTrue("the application's request failed: ${result.component2()}", result is Result.Success)
+        assertEquals(200, response.statusCode)
+        return requestOf("GET", path)
+    }
 
     @Test(timeout = 60_000)
     fun theProcessWideFuelManagerIsLeftAloneAndSendsNoToken() {
@@ -89,10 +113,7 @@ class ApiClientFuelIsolationTest {
             assertEquals(basePathBefore, FuelManager.instance.basePath)
             assertNull(FuelManager.instance.baseHeaders?.get("x-access-token"))
 
-            // a request the application makes with Fuel's defaults
-            url("/application").httpGet().response()
-
-            assertEquals("none", token("/application"))
+            assertNull(applicationRequest("/application").headers["x-access-token"])
         } finally {
             client.close()
         }
@@ -109,23 +130,21 @@ class ApiClientFuelIsolationTest {
 
             runBlocking {
                 client.fetchWhoAmI()
+                assertEquals("secret-token", tokenOf("GET", "/v1/users/whoami"))
                 client.putReplayEvent(URN.parse("od:match:1"), null)
+                assertEquals("secret-token", tokenOf("PUT", "/v1/replay/events/od:match:1"))
                 client.deleteReplayEvent(URN.parse("od:match:1"), null)
+                assertEquals("secret-token", tokenOf("DELETE", "/v1/replay/events/od:match:1"))
                 client.postReplayStart(null)
+                assertEquals("secret-token", tokenOf("POST", "/v1/replay/play"))
             }
-
-            assertEquals("secret-token", token("/v1/users/whoami"))
-            assertEquals("secret-token", token("/v1/replay/events/od:match:1"))
-            assertEquals("secret-token", token("/v1/replay/play"))
             // the response is published with the URI the request went to
             assertEquals(listOf(URI.create("http://127.0.0.1:${server.address.port}/v1/users/whoami")), uris)
 
             // after all of them (get, put, delete, post) the application's manager is still its own
             assertNull(FuelManager.instance.baseHeaders)
             assertNull(FuelManager.instance.basePath)
-            url("/application").httpGet().response()
-            assertEquals("none", token("/application"))
-            assertTrue(received["/application"]?.containsKey("x-access-token") != true)
+            assertNull(applicationRequest("/application").headers["x-access-token"])
         } finally {
             client.close()
         }
@@ -184,8 +203,8 @@ class ApiClientFuelIsolationTest {
 
             runBlocking { client.fetchWhoAmI() }
 
-            assertEquals("secret-token", token("/v1/users/whoami"))
-            assertEquals("sdk-api.test", received["/v1/users/whoami"]?.get("host"))
+            assertEquals("secret-token", tokenOf("GET", "/v1/users/whoami"))
+            assertEquals("sdk-api.test", requestOf("GET", "/v1/users/whoami").headers["host"])
         } finally {
             client.close()
         }
@@ -209,7 +228,7 @@ class ApiClientFuelIsolationTest {
 
             runBlocking { client.fetchWhoAmI() }
 
-            val headers = received["/v1/users/whoami"].orEmpty()
+            val headers = requestOf("GET", "/v1/users/whoami").headers
             assertEquals("secret-token", headers["x-access-token"])
             assertNull(headers["x-application"])
             assertNull(headers["x-interceptor"])
