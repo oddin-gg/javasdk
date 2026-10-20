@@ -123,7 +123,10 @@ The release key has two parts, and only one of them goes to GitHub:
   any environment: it lives only in the release managers' vault entry (the release managers
   are the required reviewers of the `maven-central` environment), together with its passphrase
   and its revocation certificate. Anyone with the primary can make a new subkey, so it is used
-  only to make and revoke subkeys, on a machine that is cleaned afterwards;
+  only to make and revoke subkeys, on a machine that is cleaned afterwards. The rule is storage
+  that all the release managers can read. There is no shared one yet: for now one release manager
+  holds the primary, its passphrase and the certificate, with an offline encrypted backup, and
+  moving them to shared storage is open;
 - the **signing subkey** signs the release and expires two years after it is made. It is never
   extended: a renewal makes a new subkey and revokes the old one, so a subkey that leaked without
   anyone noticing is good for its two years at most. `MAVEN_GPG_KEY` is its export,
@@ -140,14 +143,16 @@ passphrase, which goes into the vault entry):
 
 ```
 export GNUPGHOME=$(mktemp -d)
-gpg --quick-gen-key '<name of the release key> <release mailbox>' ed25519 cert never
+gpg --quick-gen-key '<name of the release key> <release mailbox>' rsa4096 cert never
 gpg --list-keys --with-colons                # the first fpr: line is the primary's fingerprint
-gpg --quick-add-key <primary fingerprint> ed25519 sign 2y
+gpg --quick-add-key <primary fingerprint> rsa4096 sign 2y
 gpg --list-keys --with-subkey-fingerprints <primary fingerprint>   # the subkey and its expiry
 ```
 
-The name and the mailbox of the user ID are the owner's to choose; the mailbox must be one that
-can receive mail, for the verification below. Then:
+The key is RSA 4096, not ed25519: Central's documentation names no accepted algorithms and
+shows only RSA, so the key uses the one it is known to take. The name and the mailbox of the user
+ID are the owner's to choose; the mailbox must be one that can receive mail, for the verification
+below. Then:
 
 1. **The vault entry.** The primary with its subkey, from `gpg --armor --export-secret-keys
    <primary fingerprint>`, the passphrase, and the revocation certificate: gpg 2.4 wrote that
@@ -179,7 +184,7 @@ can receive mail, for the verification below. Then:
 4. **The expiry date, here.** Change the line below to the expiry of the subkey `MAVEN_GPG_KEY`
    holds (`YYYY-MM-DD`) by a PR:
 
-   Signing subkey expires: **not created yet**
+   Signing subkey expires: **2028-10-19**
 
 5. **The reminder.** A calendar event for the release managers and a tracked task, both dated 60
    days before that expiry, saying to replace the subkey with a new one as in "The signing subkey
@@ -192,10 +197,12 @@ The check job refuses a release when the subkey is within 30 days of its expiry,
 leaves twice that. A subkey without an expiry would pass the check, but this layout gives it two
 years, so that a leaked one does not stay valid for good.
 
-**Who holds the key.** The vault entry is readable by the release managers. When one of them
-leaves, their access to the entry ends. If they may have copied the key out of the vault, treat
-it as a leak: of the primary, if they copied that, as in "The primary key is suspected leaked"; of
-the subkey alone, as in "The signing key in the environment is suspected leaked".
+**Who holds the key.** The vault entry is meant to be readable by all the release managers; until
+the shared storage exists, one of them holds it, as above. When a release manager leaves, their
+access to the entry ends. If the one who holds it is leaving, the entry and its backup go to
+another release manager first. If they may have copied the key out of the vault, treat it as a
+leak: of the primary, if they copied that, as in "The primary key is suspected leaked"; of the
+subkey alone, as in "The signing key in the environment is suspected leaked".
 
 ## Every release
 
@@ -403,7 +410,7 @@ next attempt is a new version - the next release candidate number, or the next p
      entry), and note its fingerprint, the newer of the two:
 
      ```
-     gpg --quick-add-key <primary fingerprint> ed25519 sign 2y
+     gpg --quick-add-key <primary fingerprint> rsa4096 sign 2y
      gpg --list-keys --with-subkey-fingerprints <primary fingerprint>
      ```
 
@@ -447,7 +454,7 @@ next attempt is a new version - the next release candidate number, or the next p
      gpg> save
      ```
 
-  2. Make the new subkey, `gpg --quick-add-key <primary fingerprint> ed25519 sign 2y`. The
+  2. Make the new subkey, `gpg --quick-add-key <primary fingerprint> rsa4096 sign 2y`. The
      passphrase may have gone with the key: change it with `gpg --change-passphrase <primary
      fingerprint>`, and in the vault entry. Until the new secret is in place, the publish job
      refuses a release, naming the revoked subkey: nothing is signed with it.
