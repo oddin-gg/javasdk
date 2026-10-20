@@ -1,5 +1,6 @@
 package com.oddin.oddsfeedsdk.api
 
+import com.github.kittinunf.fuel.core.Client
 import com.github.kittinunf.fuel.core.FuelManager
 import com.github.kittinunf.fuel.httpGet
 import com.oddin.oddsfeedsdk.DispatchManager
@@ -13,13 +14,20 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.Proxy
 import java.net.URI
+import java.security.KeyStore
+import java.util.concurrent.Executor
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import javax.net.ssl.HostnameVerifier
+import javax.net.ssl.SSLContext
 
 // The SDK sends its token and base path with its own Fuel manager. Fuel's process-wide
 // FuelManager.instance is the application's: anything else in the JVM that makes a Fuel
@@ -118,6 +126,93 @@ class ApiClientFuelIsolationTest {
             url("/application").httpGet().response()
             assertEquals("none", token("/application"))
             assertTrue(received["/application"]?.containsKey("x-access-token") != true)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun theTransportSettingsOfTheApplicationsManagerApplyToTheSdkManager() {
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            val proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress(InetAddress.getByName("127.0.0.1"), 3128))
+            val hook = mockk<Client.Hook>(relaxed = true)
+            val keystore = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
+            val socketFactory = SSLContext.getInstance("TLS").apply { init(null, null, null) }.socketFactory
+            val hostnameVerifier = HostnameVerifier { _, _ -> true }
+            val callbackExecutor = Executor { it.run() }
+            val appClient = mockk<Client>()
+            applicationFuel.also {
+                it.proxy = proxy
+                it.hook = hook
+                it.keystore = keystore
+                it.socketFactory = socketFactory
+                it.hostnameVerifier = hostnameVerifier
+                it.client = appClient
+                it.executorService = executor
+                it.callbackExecutor = callbackExecutor
+                it.timeoutInMillisecond = 1234
+                it.timeoutReadInMillisecond = 5678
+                it.forceMethods = true
+            }
+
+            val sdk = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true)).also { it.close() }.fuel
+
+            assertSame(proxy, sdk.proxy)
+            assertSame(hook, sdk.hook)
+            assertSame(keystore, sdk.keystore)
+            assertSame(socketFactory, sdk.socketFactory)
+            assertSame(hostnameVerifier, sdk.hostnameVerifier)
+            assertSame(appClient, sdk.client)
+            assertSame(executor, sdk.executorService)
+            assertSame(callbackExecutor, sdk.callbackExecutor)
+            assertEquals(1234, sdk.timeoutInMillisecond)
+            assertEquals(5678, sdk.timeoutReadInMillisecond)
+            assertTrue(sdk.forceMethods)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun theSdkRequestsGoThroughTheProxyOfTheApplicationsManager() {
+        // the test server is the proxy: it sees the request for the API host, which does not resolve
+        applicationFuel.proxy = Proxy(Proxy.Type.HTTP, InetSocketAddress(InetAddress.getByName("127.0.0.1"), server.address.port))
+        val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
+        try {
+            client.fuel.basePath = "http://sdk-api.test/v1"
+
+            runBlocking { client.fetchWhoAmI() }
+
+            assertEquals("secret-token", token("/v1/users/whoami"))
+            assertEquals("sdk-api.test", received["/v1/users/whoami"]?.get("host"))
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun whatTheApplicationSentWithItsOwnRequestsIsNotCopied() {
+        applicationFuel.also {
+            it.basePath = "http://application.test/api"
+            it.baseHeaders = mapOf("x-application" to "yes", "x-access-token" to "application-token")
+            it.baseParams = listOf("application" to "yes")
+            it.addRequestInterceptor { next -> { request -> next(request.header("x-interceptor", "yes")) } }
+        }
+        val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
+        try {
+            assertEquals("https://api.test/v1", client.fuel.basePath)
+            assertEquals(setOf("x-access-token", "accept"), client.fuel.baseHeaders?.keys)
+            assertEquals("secret-token", client.fuel.baseHeaders?.get("x-access-token"))
+            assertTrue(client.fuel.baseParams.isEmpty())
+            client.fuel.basePath = "http://127.0.0.1:${server.address.port}/v1"
+
+            runBlocking { client.fetchWhoAmI() }
+
+            val headers = received["/v1/users/whoami"].orEmpty()
+            assertEquals("secret-token", headers["x-access-token"])
+            assertNull(headers["x-application"])
+            assertNull(headers["x-interceptor"])
         } finally {
             client.close()
         }
