@@ -1,6 +1,5 @@
 package com.oddin.oddsfeedsdk.api
 
-import com.github.kittinunf.fuel.Fuel
 import com.github.kittinunf.fuel.core.FuelError
 import com.github.kittinunf.fuel.core.FuelManager
 import com.github.kittinunf.fuel.core.ResponseDeserializable
@@ -85,6 +84,10 @@ class ApiClientImpl @Inject constructor(
     private val publisher = PublishSubject.create<Any>().toSerialized()
     private var rawDataSubscription: Disposable? = null
 
+    // The SDK's own Fuel manager. The token and the base path stay on it: the process-wide
+    // FuelManager.instance belongs to the application and sends nothing of the SDK's.
+    internal val fuel = FuelManager()
+
     companion object {
         private const val API_VERSION = "v1"
 
@@ -93,12 +96,12 @@ class ApiClientImpl @Inject constructor(
 
     init {
         // Set auth header
-        FuelManager.instance.baseHeaders =
+        fuel.baseHeaders =
             mapOf(
                 Pair("x-access-token", oddsFeedConfiguration.accessToken),
                 Pair("accept", "application/xml")
             )
-        FuelManager.instance.basePath = "https://${oddsFeedConfiguration.selectedEnvironment.apiHost}/${API_VERSION}"
+        fuel.basePath = "https://${oddsFeedConfiguration.selectedEnvironment.apiHost}/${API_VERSION}"
         simpleDateFormat.timeZone = TimeZone.getTimeZone("GMT")
     }
 
@@ -354,7 +357,7 @@ class ApiClientImpl @Inject constructor(
     }
 
     private suspend fun post(path: String): Boolean {
-        val result = Fuel.post(path).awaitStringResult()
+        val result = fuel.post(path).awaitStringResult()
         if (result is Result.Failure) {
             val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to post data", error, result.error)
@@ -364,7 +367,7 @@ class ApiClientImpl @Inject constructor(
     }
 
     private suspend fun put(path: String): Boolean {
-        val result = Fuel.put(path).awaitStringResult()
+        val result = fuel.put(path).awaitStringResult()
         if (result is Result.Failure) {
             val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to put data", error, result.error)
@@ -374,7 +377,7 @@ class ApiClientImpl @Inject constructor(
     }
 
     private suspend fun delete(path: String): Boolean {
-        val result = Fuel.delete(path).awaitStringResult()
+        val result = fuel.delete(path).awaitStringResult()
         if (result is Result.Failure) {
             val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to delete data", error, result.error)
@@ -384,7 +387,7 @@ class ApiClientImpl @Inject constructor(
     }
 
     private suspend fun <T : Any> fetchData(path: String, locale: Locale? = null): T {
-        val result: Result<T, FuelError> = Fuel.get(path).awaitObjectResult(Deserializer())
+        val result: Result<T, FuelError> = fuel.get(path).awaitObjectResult(Deserializer())
         if (result is Result.Failure) {
             val error = unmarshalPossibleError(result.error)
             throw ApiException("Failed to get data", error, result.error)
@@ -397,7 +400,7 @@ class ApiClientImpl @Inject constructor(
             )
         }
 
-        val apiResponse = ApiResponse(response, URI.create("${FuelManager.instance.basePath}$path"), locale)
+        val apiResponse = ApiResponse(response, URI.create("${fuel.basePath}$path"), locale)
         // Dispatch for possible processing
         dispatchManager.publish(apiResponse)
         // Synchronous processing

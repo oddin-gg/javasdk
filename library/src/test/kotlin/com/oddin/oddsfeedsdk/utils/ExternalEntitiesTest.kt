@@ -16,7 +16,6 @@ import com.oddin.oddsfeedsdk.mq.rabbit.AMQPConnectionProvider
 import com.oddin.oddsfeedsdk.schema.feed.v1.OFAlive
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAError
 import com.oddin.oddsfeedsdk.schema.rest.v1.RAResponseCode
-import com.github.kittinunf.fuel.core.FuelManager
 import com.sun.net.httpserver.HttpServer
 import com.rabbitmq.client.AMQP
 import com.rabbitmq.client.Channel
@@ -250,14 +249,13 @@ class ExternalEntitiesTest {
             it.responseBody.use { out -> out.write(bytes) }
         }
         server.start()
-        val basePath = FuelManager.instance.basePath
         try {
             val config = mockk<OddsFeedConfiguration> {
                 every { accessToken } returns "token"
                 every { selectedEnvironment } returns Environment("mq.test", "127.0.0.1", 5672)
             }
             val client = ApiClientImpl(config, mockk<DispatchManager>(relaxed = true))
-            FuelManager.instance.basePath = "http://127.0.0.1:${server.address.port}/v1"
+            client.fuel.basePath = "http://127.0.0.1:${server.address.port}/v1"
             try {
                 runBlocking { client.fetchWhoAmI() }
                 throw AssertionError("the request did not fail")
@@ -267,7 +265,6 @@ class ExternalEntitiesTest {
                 client.close()
             }
         } finally {
-            FuelManager.instance.basePath = basePath
             server.stop(0)
         }
     }
