@@ -3,10 +3,9 @@
 Two sets, one per line of the SDK:
 
 - [`odds-feed-1.0`](odds-feed-1.0): the examples of 1.0 (Java 25, Maven). Start here.
-- This directory's `src`: the sources of the examples of 0.0.x (Java 8, `com.oddin.oddsfeed:odds-feed`).
-  They stay as they are on purpose: a test of `odds-feed` compiles them against 1.0 to check that
-  code written for 0.0.x still compiles. They have no build of their own here; the Gradle build
-  that ran them is on the `release/0.x` branch.
+- [`odds-feed-0.0`](odds-feed-0.0): the sources of the examples of 0.0.x (Java 8,
+  `com.oddin.oddsfeed:odds-feed`), compiled against 1.0 by a test to check that code written for
+  0.0.x still compiles. To run them see its README.
 
 ## The 1.0 examples
 
@@ -81,15 +80,3 @@ depend on `gg.oddin.oddsfeed:odds-feed:1.0.0-SNAPSHOT` with `mavenLocal()` (Grad
 
 More: the [integration guide](../docs/integration-guide.md), [configuration](../docs/configuration.md),
 [health and logging](../docs/health-and-logging.md) and the [FAQ](../docs/faq.md).
-
-## The 0.0.x examples
-
-The sources are in `src` (`Main`, `Replay`). To run them, check out the `release/0.x` branch: its
-`examples` directory has the same sources with their Gradle build (Java 8,
-`com.oddin.oddsfeed:odds-feed` from the GitHub packages registry or your local Maven repository),
-and its `library` directory the SDK they use. On that branch:
-
-- `./library/gradlew clean publishToMavenLocal -p library`
-- `cd examples && ./gradlew clean build`
-- write your token into the environment property `ODDIN_GG_ODDS_FEED_TOKEN`
-- `./gradlew run` (in `examples`)
