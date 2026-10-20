@@ -88,7 +88,10 @@ changes_shape() {
       A) old=/dev/null ;;
       D) new=/dev/null ;;
     esac
-    case "$before$after" in *.xsd*) ;; *) continue ;; esac
+    # a rename across the .xsd boundary: only the XSD side is a schema, the other is no file at all
+    case "$before" in *.xsd) ;; *) old=/dev/null ;; esac
+    case "$after" in *.xsd) ;; *) new=/dev/null after=$before ;; esac
+    [ "$old" != /dev/null ] || [ "$new" != /dev/null ] || continue # neither side is one
     if [ "$old" != /dev/null ] && ! schema show "$commit^:$before" >"$old"; then
       echo "cannot read $before before $commit" >"$work/error"
       return 2

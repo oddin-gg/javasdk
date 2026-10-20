@@ -174,6 +174,32 @@ c23=$(commit 22 "a file whose name is a sed command")
 printf '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:complexType name="t">\n</xs:complexType></xs:schema>\n' >"$repo/$trap_name"
 c24=$(commit 22 "drop its attribute")
 
+# a rename across the .xsd boundary: only the XSD side is a schema, the other side is no file at all
+pair() { # pair <file> <attribute names...>: a schema of its own with these attributes, one to a line
+  local file=$1 name
+  shift
+  {
+    printf '<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"><xs:complexType name="t">\n'
+    for name in "$@"; do printf '<xs:attribute name="%s" type="xs:int"/>\n' "$name"; done
+    printf '</xs:complexType></xs:schema>\n'
+  } >"$repo/schema/feed/$file"
+}
+pair leave.xsd a b c
+pair join.txt a b c
+pair both.xsd a b c
+printf 'notes\nabout\nthe\nschema\n' >"$repo/schema/feed/notes.txt"
+c27=$(commit 23 "files to rename")
+git -C "$repo" mv schema/feed/leave.xsd schema/feed/leave.txt
+c28=$(commit 23 "an XSD renamed to a text file")
+git -C "$repo" mv schema/feed/join.txt schema/feed/join.xsd
+pair join.xsd a c
+c29=$(commit 23 "a text file renamed to an XSD, an attribute dropped")
+git -C "$repo" mv schema/feed/both.xsd schema/feed/both2.xsd
+pair both2.xsd a c
+c30=$(commit 23 "an XSD renamed to another, an attribute dropped")
+git -C "$repo" mv schema/feed/notes.txt schema/feed/notes.md
+c31=$(commit 23 "a text file renamed to another")
+
 # a commit that exists but not on main
 git -C "$repo" checkout -q -b side "$c1"
 echo side >"$repo/side.txt"
@@ -230,6 +256,10 @@ check "a new required element is additive" 0 "refresh due by" "line=$c20" "$(day
 check "reordered elements are additive" 0 "refresh due by" "line=$c21" "$(days 21)" "$c22"
 check "a new type's required attribute in an existing file is additive" 0 "refresh due by" "line=$c22" "$(days 22)" "$c25"
 check "a moved file is compared with itself" 0 "refresh due by" "line=$c25" "$(days 22)" "$c26"
+check "an XSD renamed to a text file left the schema" 0 "leave\.xsd: removed /" "line=$c27" "$(days 25)" "$c28"
+check "a text file renamed to an XSD is a new schema, not a changed one" 0 "refresh due by" "line=$c28" "$(days 25)" "$c29"
+check "an XSD renamed to another is compared with itself, under its new name" 0 "both2\.xsd: removed /" "line=$c29" "$(days 25)" "$c30"
+check "a rename between files that are no XSD is no concern" 0 "refresh due by" "line=$c30" "$(days 25)" "$c31"
 mkdir "$work/cwd"
 git -C "$repo" update-ref refs/heads/main "$c24"
 out=$(cd "$work/cwd" && SCHEMA_REPO="file://$repo" PINS="line=$c23" NOW="$(days 60)" "$here/schema-drift.sh" line 2>&1) \
