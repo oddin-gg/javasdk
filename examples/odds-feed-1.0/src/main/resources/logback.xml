@@ -8,6 +8,9 @@
     <!-- uncomment line below to see received raw xml messages -->
     <!-- <logger name="com.oddin.oddsfeedsdk" level="DEBUG"/> -->
 
+    <!-- uncomment line below to see every API call the SDK makes (LoggingGlobalListener.onApiCall) -->
+    <!-- <logger name="gg.oddin.oddsfeed.examples.LoggingGlobalListener" level="DEBUG"/> -->
+
     <root level="INFO">
         <appender-ref ref="STDOUT" />
     </root>

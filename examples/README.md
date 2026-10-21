@@ -18,8 +18,8 @@ Each is one short class with a `main`:
 | `EventRecovery` | `initiateEventOddsMessagesRecovery`, `onEventRecoveryCompleted` and `getEventRecoveryStatus` |
 | `Replay` | a replay session: `buildReplay()`, a list of events, `play(...)` |
 
-`LoggingGlobalListener` (the feed's events, with the health events, the connection state and the
-fatal error) and `LoggingListener` (a session's messages) are shared by all four; `ExampleConfig`
+`LoggingGlobalListener` (the feed's events, with the health events, the connection state, the
+fatal error and, at DEBUG, every API call) and `LoggingListener` (a session's messages) are shared by all four; `ExampleConfig`
 reads the configuration from the environment.
 
 ### Environment

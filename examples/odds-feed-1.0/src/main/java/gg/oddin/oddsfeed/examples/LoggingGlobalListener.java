@@ -2,6 +2,7 @@ package gg.oddin.oddsfeed.examples;
 
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
+import com.oddin.oddsfeedsdk.subscribe.ApiCallEvent;
 import com.oddin.oddsfeedsdk.subscribe.ConnectionStateChange;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
@@ -54,6 +55,23 @@ class LoggingGlobalListener implements GlobalEventsListener {
                 event.previous(),
                 event.state(),
                 event.reason());
+    }
+
+    /**
+     * Each HTTP attempt of every call the SDK makes to the API, whatever came of it. At DEBUG here, so
+     * it stays quiet unless asked for in logback.xml; setApiCallLogging(true) on the configuration
+     * builder logs the same at INFO.
+     */
+    @Override
+    public void onApiCall(ApiCallEvent call) {
+        LOG.debug(
+                "API call {} {}: {} in {} ms, attempt {}",
+                call.method(),
+                call.uri(),
+                call.status(),
+                call.latency().toMillis(),
+                call.attempt(),
+                call.failure());
     }
 
     /** The SDK gives up: a token the API refuses, a login the broker keeps refusing. Close and start anew. */
