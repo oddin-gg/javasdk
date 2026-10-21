@@ -96,6 +96,8 @@ public final class RestTransport implements AutoCloseable {
     private final int maxErrorBytes;
     private final CountDownLatch closing = new CountDownLatch(1);
     private volatile boolean closed;
+    /** Runs when the headers of an answer have arrived: for a test to act in the middle of an exchange. */
+    private volatile Runnable headersArrived = () -> {};
 
     public RestTransport(OddsFeedConfiguration configuration, ApiEvents events) {
         this(configuration, events, null);
@@ -127,6 +129,11 @@ public final class RestTransport implements AutoCloseable {
             builder.sslContext(tls);
         }
         this.http = builder.build();
+    }
+
+    /** Has a test hear of every answer's headers, before its body is read. */
+    void onHeaders(Runnable hook) {
+        headersArrived = hook;
     }
 
     /** A new deadline for one call: the HTTP client timeout from now. */
@@ -207,12 +214,15 @@ public final class RestTransport implements AutoCloseable {
             }
             long started = System.nanoTime();
             Attempt answer;
+            var arrived = new AtomicReference<HttpResponse.@Nullable ResponseInfo>();
             try {
-                answer = attempt(method, uri, deadline);
+                answer = attempt(method, uri, deadline, arrived);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                // the request was sent: the API call log and the events hear of it like any attempt
-                report(method, uri, 0, started, attempt, e);
+                // the request was sent: the API call log and the events hear of it like any attempt,
+                // with the status of the headers that came before the interrupt, 0 when none did
+                var info = arrived.get();
+                report(method, uri, info == null ? 0 : info.statusCode(), started, attempt, e);
                 throw last.set(e, null).failure(method, uri, "interrupted");
             } finally {
                 // before any pause: the permit is for this attempt only
@@ -316,10 +326,12 @@ public final class RestTransport implements AutoCloseable {
      * One HTTP exchange, headers and body both inside the deadline: an answer that is still arriving
      * when it passes is cancelled, whether the headers came or not.
      */
-    private Attempt attempt(String method, URI uri, Deadline deadline) throws InterruptedException {
-        var info = new AtomicReference<HttpResponse.@Nullable ResponseInfo>();
+    private Attempt attempt(
+            String method, URI uri, Deadline deadline, AtomicReference<HttpResponse.@Nullable ResponseInfo> info)
+            throws InterruptedException {
         CompletableFuture<HttpResponse<byte[]>> exchange = http.sendAsync(request(method, uri, deadline), response -> {
             info.set(response);
+            headersArrived.run();
             return response.statusCode() / 100 == 2 ? new Body(maxBytes, false) : new Body(maxErrorBytes, true);
         });
         IOException failure;

@@ -1046,6 +1046,63 @@ class ApiClientTest {
     }
 
     @Test
+    @Timeout(value = 60, threadMode = SEPARATE_THREAD)
+    void anAttemptCutOffByAnInterruptAfterTheHeadersIsLoggedWithTheirStatus() throws InterruptedException {
+        var summary = Fixtures.read("rest/match_summary/match_summary.xml");
+        // the headers and half the body, then a pause: short enough for the fake to be quiet when it closes
+        api.respond(SUMMARY, Reply.of(200, summary).stallingMidBody(Duration.ofSeconds(2)));
+        OddsFeedConfiguration configuration = OddsFeed.getOddsFeedConfigurationBuilder()
+                .selectEnvironment("mq.invalid", api.apiHost())
+                .setAccessToken("token")
+                .setRestConcurrencyLimit(1)
+                .setApiCallLogging(true)
+                .build();
+        var transport = new RestTransport(configuration, events, TestTls.clientContext());
+        var client = new ApiClient(configuration, transport);
+        open.add(client);
+        var headers = new CountDownLatch(1);
+        transport.onHeaders(headers::countDown);
+        var failure = new AtomicReference<@Nullable Throwable>();
+        var flagKept = new AtomicReference<@Nullable Boolean>();
+        try (var log = LogCapture.of(RestTransport.CALL_LOGGER, Level.INFO)) {
+            Thread caller = Thread.ofVirtual().start(() -> {
+                try {
+                    client.fetchMatchSummary(MATCH, Locale.ENGLISH);
+                } catch (RuntimeException e) {
+                    failure.set(e);
+                    flagKept.set(Thread.currentThread().isInterrupted());
+                }
+            });
+            try {
+                assertThat(headers.await(10, TimeUnit.SECONDS))
+                        .as("the headers arrive")
+                        .isTrue();
+                caller.interrupt();
+                assertThat(caller.join(Duration.ofSeconds(5)))
+                        .as("the call gives up at once")
+                        .isTrue();
+            } finally {
+                caller.interrupt();
+            }
+            assertThat(failure.get()).isInstanceOf(ApiException.class).hasMessageEndingWith(": interrupted");
+            assertThat(flagKept.get()).as("the interrupt stays set").isTrue();
+            assertThat(log.lines())
+                    .singleElement()
+                    .asString()
+                    .startsWith("INFO API call GET https://" + api.apiHost() + SUMMARY + ": 200 in ")
+                    .endsWith(", attempt 1, failed: java.lang.InterruptedException");
+        }
+        assertThat(events.calls).singleElement().satisfies(call -> {
+            assertThat(call.status()).isEqualTo(200);
+            assertThat(call.failure()).isInstanceOf(InterruptedException.class);
+        });
+        api.respond(SUMMARY, Reply.of(200, summary));
+        assertThat(client.fetchMatchSummary(MATCH, Locale.ENGLISH))
+                .as("the only permit was given back")
+                .isNotNull();
+    }
+
+    @Test
     void startupTriesAgainUntilTheApiAnswers() {
         ApiClient client = client(b -> b);
         api.respond(
