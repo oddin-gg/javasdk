@@ -57,6 +57,10 @@ GitHub Packages.
       because the check job has no secret to read the team with and the repository is public,
       so any read-only account could otherwise approve. An empty or missing file, or a line that
       is no login, stops the release.
+- [ ] **Excused direct pushes.** `scripts/release-approval-exceptions` lists, one a line, a
+      full commit SHA and the reason, for each direct push to `main` that a release manager has
+      read and accepted (see "When something fails"); it starts with no entry. It is read from
+      the tagged commit like the list of release managers, and changing it takes a reviewed PR.
 - [ ] **Branch protection on `main`:** every change through a PR with a required approval and
       code owners' review, linear history, no bypass for anyone, admins included. The rest of
       the protection is under "Before 1.0.0" below.
@@ -308,8 +312,10 @@ subkey alone, as in "The signing key in the environment is suspected leaked".
      patterns. The tag runs these files from the tagged commit, so the checks cannot protect
      themselves: a PR that weakened one of them was itself approved by the weakened check, and
      the approval check does not see a base that moved after an approval. Approve nothing that
-     weakens a check, changes `scripts/release-managers` for a reason you do not know, or adds
-     a path to the signing key or the token.
+     weakens a check, changes `scripts/release-managers` for a reason you do not know, adds
+     a line to `scripts/release-approval-exceptions` for a commit you have not read (the log of
+     the check job names each commit it excused, with the reason), or adds a path to the signing
+     key or the token.
 
    Being on `main` is not enough: the repository merges by rebase, which puts every
    intermediate commit of a PR on `main`, while the approval is for the PR's final commit. The
@@ -345,7 +351,8 @@ The **check** job (`scripts/release-check.sh`, then `scripts/release-approval-ch
   merged into `main` (a direct push; GitHub can list no PR for a commit shortly after its PR
   merged, so a commit with none is asked about up to four more times, ten seconds apart, and
   then looked for as the merge commit of a closed PR of `main`, before it counts as a direct
-  push). The previous release is the nearest `v1.*` tag, a release
+  push) - unless the commit is excused in `scripts/release-approval-exceptions`, which the
+  output then says, with the reason. The previous release is the nearest `v1.*` tag, a release
   candidate included, whose GitHub Release is published and no draft - a tag whose release never
   came out is passed over - and for the first release the commit in
   `scripts/release-approval-baseline`. A release manager is a login in `scripts/release-managers`
@@ -381,7 +388,8 @@ the publish and hold the signing key. The check is against a change by anyone el
 access that merged on an approval of an earlier version of itself. It does not detect a release
 manager who pushes commits under another identity and approves them: GitHub attributes a commit
 by its e-mail address and does not say who pushed it into a PR. Nor can it protect itself: a tag
-runs the script, `scripts/release-managers` and `release.yml` from the tagged commit, which is why
+runs the script, `scripts/release-managers`, `scripts/release-approval-exceptions` and
+`release.yml` from the tagged commit, which is why
 the approver of the publish looks at the diff of the release controls ("Every release", step 5).
 
 The check job cannot see the secrets, which only the approved publish job reads. So that job,
@@ -428,8 +436,15 @@ next attempt is a new version - the next release candidate number, or the next p
   any other failed tag and is not reused: the missing approval is given on the PR's final
   commit, by a release manager who did not write it, and the next version is tagged on a new
   commit. The refused tag has no release, so the next check starts again from the previous
-  published release and asks about the same PRs. Any other refusal - a direct push, a commit
-  from no PR, a missing or empty `scripts/release-managers` - needs its cause fixed in a new
+  published release and asks about the same PRs. A direct push cannot be fixed that way: the
+  commit stays in the range of every later release, and no release can be published after it
+  without the list below. A release manager reads the commit (`git show <sha>`), and a new reviewed PR adds a line to
+  `scripts/release-approval-exceptions`: its full SHA, whitespace and why it is safe to release.
+  That PR is checked like any other, and its approver vouches for the commit by approving it; the
+  next tag then passes the commit and the log of the check job names it as excused, with the
+  reason. Only a direct push can be excused: a commit that came from a PR is judged by that PR's
+  approval, whatever the list says, and its missing approval is given as above. A line that is no
+  SHA with a reason, or a missing file, stops every release. Any other refusal - a missing or empty `scripts/release-managers` - needs its cause fixed in a new
   reviewed PR before a new tag.
 - **During publish:** look the deployment up in the portal. Failed validation published
   nothing: release the next version as above. If it shows Published (the wait timed out, or the

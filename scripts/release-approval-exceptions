@@ -1,0 +1,13 @@
+# The direct pushes excused: commits that reached main with no pull request, which
+# release-approval-check.sh would refuse in every release for as long as they are in its range (the
+# commits since the previous published release; after the first release the baseline is no longer
+# read, so a fix in a later pull request does not clear one). One commit a line: its full SHA (40
+# lowercase hex digits), whitespace, and why it is excused, which is required. Comments and blank
+# lines are ignored; a line written any other way stops the release. A commit listed here that is
+# not in the range of the release is ignored: it was excused for an earlier one. Only a direct push
+# is excused: a commit that came from a pull request is judged by that pull request's approval
+# whatever this file says. The output of the check names each commit it excused, with the reason.
+#
+# This file is a release control. Adding a line takes a pull request, checked like any other and
+# approved by a release manager who wrote none of it, who by approving it vouches for the commit
+# after reading it (git show <sha>): the reason says what the commit is and why it is safe to release.

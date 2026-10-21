@@ -16,7 +16,7 @@
 # into a pull request, so that is out of scope. Nor can it protect itself: a tag runs this script,
 # scripts/release-managers and release.yml from the tagged commit, so a change to the release
 # controls since the previous release is for the approver of the publish to look at, with
-# git diff <previous release> <tag> -- .github scripts/release-* RELEASING.md
+# git diff <previous release> <tag> -- .github 'scripts/release-*' RELEASING.md
 #
 #   scripts/release-approval-check.sh <commit>
 #
@@ -29,7 +29,13 @@
 # direct push, fails as well. GitHub can answer with none for a commit shortly after its pull
 # request merged, so before a commit counts as a direct push it is asked about again, up to
 # APPROVAL_RETRIES times (default 4) after APPROVAL_RETRY_WAIT seconds each (default 10), and then
-# looked for among the closed pull requests of main as the merge commit of one. Of each such pull request, its final head is asked, and its reviews:
+# looked for among the closed pull requests of main as the merge commit of one. A direct push that
+# is still none stays in the range of every later release, which no later pull request can change,
+# so it is excused by a line in scripts/release-approval-exceptions (the commit's full SHA and why),
+# read from the tagged commit; the output names it and the reason. Only a direct push is excused: a
+# commit that came from a pull request is judged by that pull request, listed or not. The list is a
+# release control: adding to it takes a pull request, which is checked like any other, and whose
+# approver vouches for the commit after reading it. Of each such pull request, its final head is asked, and its reviews:
 # one APPROVED, for that head, by a release manager (a login in scripts/release-managers, read from
 # the tagged commit like the baseline, compared without regard to case: this job has no secret to
 # read the team with, and the repository is public, so anyone with a read-only account can leave an
@@ -49,6 +55,7 @@ repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY names the repository whose pul
 timeout=${APPROVAL_TIMEOUT:-60}
 baseline_file=scripts/release-approval-baseline
 managers_file=scripts/release-managers
+exceptions_file=scripts/release-approval-exceptions
 # how many more rounds, each after a wait of so many seconds, a commit without a pull request gets
 # before it counts as a direct push (the tests set the wait to 0)
 retries=${APPROVAL_RETRIES:-4}
@@ -145,6 +152,28 @@ manager() {
   printf '%s\n' "$managers" | grep -qxF -- "$(lower "$1")"
 }
 
+# The direct pushes excused, from the tagged commit: one commit a line, its full SHA (40 hex digits),
+# whitespace, and why it is excused; comments and blank lines aside. A direct push stays in the range
+# for good, which a pull request cannot change, so a release manager excuses it by adding it here, in
+# a reviewed pull request, after reading the commit. A line that is not so written stops the release.
+# A listed commit outside the range was excused for an earlier release and counts for nothing now.
+raw=$(git show "$commit:$exceptions_file" 2> /dev/null) || fail "$exceptions_file is missing: it lists the direct pushes a release manager has read and excused"
+exceptions=
+while IFS= read -r line; do
+  line=${line%$'\r'}
+  line=${line#"${line%%[![:space:]]*}"}
+  case "$line" in "" | "#"*) continue ;; esac
+  [[ "$line" =~ ^([0-9a-f]{40})[[:space:]]+([^[:space:]].*)$ ]] \
+    || fail "$exceptions_file has a line that is no full commit SHA, whitespace and a reason: $(plain "$line")"
+  reason=${BASH_REMATCH[2]}
+  reason=${reason%"${reason##*[![:space:]]}"}
+  exceptions+="${BASH_REMATCH[1]} $reason"$'\n'
+done <<< "$raw"
+# why a commit is excused: its line, without the SHA; empty when it is not listed
+excuse() {
+  printf '%s' "$exceptions" | awk -v sha="$1" '$1 == sha { sub(/^[^ ]+ /, ""); print; exit }'
+}
+
 commits=$(git rev-list "$start..$commit")
 total=$(printf '%s\n' "$commits" | wc -l)
 
@@ -188,6 +217,7 @@ while :; do
   sleep "$retry_wait"
 done
 direct=()
+excused=()
 if [ "${#pending[@]}" -gt 0 ]; then
   merged=$(ask --paginate "repos/$repository/pulls?state=closed&base=main&per_page=100" \
     --jq '.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha != null) | "\(.merge_commit_sha) \(.number)"') \
@@ -195,7 +225,11 @@ if [ "${#pending[@]}" -gt 0 ]; then
   for sha in "${pending[@]}"; do
     found=$(printf '%s\n' "$merged" | awk -v sha="$sha" '$1 == sha { print $2 }')
     if [ -z "$found" ]; then
-      direct+=("$sha")
+      if [ -n "$(excuse "$sha")" ]; then
+        excused+=("$sha")
+      else
+        direct+=("$sha")
+      fi
       continue
     fi
     echo "$label: GitHub lists no pull request for ${sha:0:12}, but the merged pull requests of main have one with it as the merge commit" >&2
@@ -207,6 +241,11 @@ failures=0
 for sha in ${direct[@]+"${direct[@]}"}; do
   echo "$label: commit ${sha:0:12} ($(plain "$(git log -1 --format=%s "$sha")")) came from no pull request merged into main: a direct push" >&2
   failures=$((failures + 1))
+done
+
+# only a direct push is excused: a commit with a pull request is judged by it, listed or not
+for sha in ${excused[@]+"${excused[@]}"}; do
+  echo "$label: commit ${sha:0:12} ($(plain "$(git log -1 --format=%s "$sha")")) is a direct push, excused by $exceptions_file: $(plain "$(excuse "$sha")")" >&2
 done
 
 pulls=0
@@ -275,4 +314,4 @@ for number in $(printf '%s\n' ${numbers[@]+"${numbers[@]}"} | sort -un); do
 done
 
 [ "$failures" -eq 0 ] || fail "$failures of the pull requests and direct pushes since $since were not approved on their final commit by a release manager who did not write it; the ruleset of main does not require that, so this release does"
-echo "$label: $total commit(s) since $since came from $pulls pull request(s), each approved on its final commit by a release manager who did not write it" >&2
+echo "$label: $total commit(s) since $since came from $pulls pull request(s), each approved on its final commit by a release manager who did not write it${excused[*]+; ${#excused[@]} direct push(es) excused}" >&2
