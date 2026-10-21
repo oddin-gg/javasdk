@@ -342,7 +342,10 @@ The **check** job (`scripts/release-check.sh`, then `scripts/release-approval-ch
   PR merged into `next` counts for nothing);
 - a PR merged into `main` since the previous release has no approval on GitHub for its final
   commit by a release manager who wrote none of it, or a commit since then came from no PR
-  merged into `main` (a direct push). The previous release is the nearest `v1.*` tag, a release
+  merged into `main` (a direct push; GitHub can list no PR for a commit shortly after its PR
+  merged, so a commit with none is asked about up to four more times, ten seconds apart, and
+  then looked for as the merge commit of a closed PR of `main`, before it counts as a direct
+  push). The previous release is the nearest `v1.*` tag, a release
   candidate included, whose GitHub Release is published and no draft - a tag whose release never
   came out is passed over - and for the first release the commit in
   `scripts/release-approval-baseline`. A release manager is a login in `scripts/release-managers`
