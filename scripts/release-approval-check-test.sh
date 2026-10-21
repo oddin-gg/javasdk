@@ -25,7 +25,9 @@ repo=$work/repo
 # repos/example/repo/ without its query: commits/<sha>/pulls.json, pulls/<n>.json,
 # pulls/<n>/reviews.json, pulls/<n>/commits.json and releases/tags/<tag>.json. A .fail file next to it makes the call fail, a .stall one makes it
 # answer only after 10 seconds, a .partial one makes a paginated call answer its first page and then
-# fail, no file at all is a 404. Like gh, it returns a list in pages of
+# fail, a .late one (holding N) makes the first N calls answer an empty list, as GitHub does for a
+# commit just after its pull request merged, and the later ones as usual, or fail when a .latefail
+# is there too; no file at all is a 404. Like gh, it returns a list in pages of
 # per_page (30 without one) and all of them only with --paginate, running the --jq filter on each
 # page. Every call is recorded.
 mkdir -p "$work/bin"
@@ -52,6 +54,17 @@ esac
 if [ -e "$api/$path.fail" ]; then
   echo "gh: HTTP 502" >&2
   exit 1
+fi
+if [ -e "$api/$path.late" ]; then
+  asked=$(cat "$api/$path.count" 2> /dev/null || echo 0)
+  if [ "$asked" -lt "$(cat "$api/$path.late")" ]; then
+    echo $((asked + 1)) > "$api/$path.count"
+    echo '[]' | jq -r "$filter"
+    exit 0
+  elif [ -e "$api/$path.latefail" ]; then
+    echo "gh: HTTP 502" >&2
+    exit 1
+  fi
 fi
 if [ -e "$api/$path.partial" ] && [ "$paginate" = true ]; then
   # the first page, and then the next one fails
@@ -164,6 +177,20 @@ left() {
     --args "$@" > "$api/commits/$commit/pulls.json"
 }
 
+# late <commit> <n>: the first n questions for the commit's pull requests are answered with none
+late() {
+  echo "$2" > "$api/commits/${sha[$1]:-$1}/pulls.late"
+}
+
+# merged_as <number> <commit>: the pull request is among the closed ones of main, with the commit
+# as its merge commit (the list pulls?state=closed gives, beside one open, one merged into
+# another branch and one with another merge commit, which do not count for it)
+merged_as() {
+  local commit=${sha[$2]:-$2}
+  jq --argjson n "$1" --arg c "$commit" '. + [{number: $n, merged_at: "2026-10-01T00:00:00Z", base: {ref: "main"}, merge_commit_sha: $c}]' \
+    "$api/pulls.json" > "$work/closed" && mv "$work/closed" "$api/pulls.json"
+}
+
 # release <tag> [draft]: GitHub has a release for the tag, published unless it is a draft
 release() {
   mkdir -p "$api/releases/tags"
@@ -173,6 +200,8 @@ release() {
 # the two pull requests every passing case starts from: #1 left c1 and c2 (a rebase merge puts
 # each commit of a pull request on main), #2 left c3, each approved on its final head by bob
 standard() {
+  jq -n '[{number: 997, merged_at: null, base: {ref: "main"}, merge_commit_sha: "x"},
+    {number: 996, merged_at: "2026-10-01T00:00:00Z", base: {ref: "main"}, merge_commit_sha: null}]' > "$api/pulls.json"
   left c1 1
   left c2 1
   left c3 2
@@ -193,13 +222,15 @@ failed() {
 
 script=$real
 timeout=5
+# a directory put before the others on the PATH of the script under test, when a case sets it
+stubs=
 # expect pass|fail <text>...: runs the script under test for c3; the text must be in what it says,
 # unless it starts with ! and then must not be
 expect() {
   local want=$1 text got=pass
   shift
   : > "$api/calls"
-  (cd "$repo" && PATH=$work/bin:$PATH GH_STUB_API=$api GITHUB_REPOSITORY=example/repo APPROVAL_TIMEOUT=$timeout \
+  (cd "$repo" && PATH=${stubs:+$stubs:}$work/bin:$PATH GH_STUB_API=$api GITHUB_REPOSITORY=example/repo APPROVAL_TIMEOUT=$timeout APPROVAL_RETRY_WAIT=0 \
     bash "$script" "${sha[c3]}") 2> "$work/err" || got=fail
   if [ "$got" != "$want" ]; then
     reason="expected $want, got $got: $(cat "$work/err")"
@@ -482,6 +513,129 @@ case_direct_push() {
   standard
   left c2
   expect fail "commit ${sha[c2]:0:12} (c2) came from no pull request merged into main: a direct push" || return 1
+  # asked once, and four times more, in rounds, before it counts; the merged pull requests of main,
+  # the other way round, once
+  if [ "$(asked | grep -c "^--paginate commits/${sha[c2]}/pulls")" -ne 5 ] || [ "$(asked | grep -c '^--paginate pulls?state=closed&base=main')" -ne 1 ]; then
+    reason="did not ask five times for the commit and once for the merged pull requests: $(asked)"
+    return 1
+  fi
+  if [ "$(grep -c "asking again" "$work/err")" -ne 4 ]; then
+    reason="did not say it asked again four times: $(cat "$work/err")"
+    return 1
+  fi
+}
+
+# GitHub lists no pull request for a commit just after its pull request merged: the first questions
+# are answered with none, and the commit is no direct push once a later answer has the pull request
+case_late_association() {
+  new_repo root
+  standard
+  late c3 2
+  expect pass "GitHub lists no pull request yet for 1 commit(s); asking again" "came from 2 pull request(s)" "!direct push" || return 1
+  if [ "$(asked | grep -c "^--paginate commits/${sha[c3]}/pulls")" -ne 3 ]; then
+    reason="did not ask three times for the commit: $(asked)"
+    return 1
+  fi
+  if asked | grep -q 'pulls?state=closed'; then
+    reason="asked for the merged pull requests of main though every commit had its pull request by then: $(asked)"
+    return 1
+  fi
+}
+
+# the last round that counts: the fifth answer, after four rounds, has the pull request
+case_late_last_round() {
+  new_repo root
+  standard
+  late c2 4
+  expect pass "came from 2 pull request(s)" || return 1
+}
+
+# the fifth answer is the first with the pull request, one too late: a direct push
+case_late_too_long() {
+  new_repo root
+  standard
+  late c2 5
+  expect fail "commit ${sha[c2]:0:12} (c2) came from no pull request merged into main: a direct push" || return 1
+}
+
+# two commits still without a pull request share the wait of a round
+case_late_two_commits() {
+  new_repo root
+  standard
+  late c2 1
+  late c3 1
+  # a sleep that waits for nothing and says it was called
+  mkdir -p "$work/sleep"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/sleeps"\n' "$api" > "$work/sleep/sleep"
+  chmod +x "$work/sleep/sleep"
+  stubs=$work/sleep
+  local status=0
+  expect pass "came from 2 pull request(s)" || status=1
+  stubs=
+  [ "$status" -eq 0 ] || return 1
+  if [ "$(grep -c . "$api/sleeps")" -ne 1 ]; then
+    reason="did not wait once for both commits: $(cat "$api/sleeps")"
+    return 1
+  fi
+}
+
+# the second question for a commit fails: that is no empty answer
+case_late_then_error() {
+  new_repo root
+  standard
+  late c3 1
+  : > "$api/commits/${sha[c3]}/pulls.latefail"
+  expect fail "could not ask GitHub which pull request left ${sha[c3]}" "!a direct push" || return 1
+}
+
+# GitHub never lists the pull request for the last commit of a rebase merge, but the closed pull
+# requests of main have it by its merge commit: it is judged like any other
+case_merge_commit_fallback() {
+  new_repo root
+  standard
+  left c3
+  merged_as 2 c3
+  expect pass "GitHub lists no pull request for ${sha[c3]:0:12}, but the merged pull requests of main have one" \
+    "came from 2 pull request(s)" "!direct push" || return 1
+}
+
+case_merge_commit_fallback_judged() {
+  new_repo root
+  standard
+  left c3
+  merged_as 2 c3
+  reviews 2 "APPROVED:$(head_of 200):bob"
+  expect fail "pull request #2 (Pull request 2) by carol has no approval of its final commit" || return 1
+}
+
+# the other way round finds the merge commit only: an intermediate commit of that pull request is a
+# direct push for it, as are a commit of an open pull request and of one merged into another branch
+case_merge_commit_fallback_only_merge_commit() {
+  new_repo root
+  standard
+  left c2
+  left c3
+  merged_as 2 c3
+  expect fail "commit ${sha[c2]:0:12} (c2) came from no pull request merged into main: a direct push" "!commit ${sha[c3]:0:12}" || return 1
+}
+
+case_merge_commit_fallback_not_merged() {
+  new_repo root
+  standard
+  left c3
+  jq --arg c "${sha[c3]}" '. + [{number: 2, merged_at: null, base: {ref: "main"}, merge_commit_sha: $c},
+    {number: 3, merged_at: "2026-10-01T00:00:00Z", base: {ref: "next"}, merge_commit_sha: $c}]' \
+    "$api/pulls.json" > "$work/closed" && mv "$work/closed" "$api/pulls.json"
+  expect fail "commit ${sha[c3]:0:12} (c3) came from no pull request merged into main: a direct push" || return 1
+}
+
+# the question for the merged pull requests of main fails: no answer is not "none"
+case_merge_commit_fallback_error() {
+  new_repo root
+  standard
+  left c3
+  : > "$api/pulls.fail"
+  expect fail "could not ask GitHub for the pull requests merged into main" "!a direct push" || return 1
 }
 
 case_only_other_base() {
@@ -712,7 +866,10 @@ case_pusher_author case_pusher_committer case_other_manager_approves case_unlink
 case_web_edit case_many_commits case_commit_limit case_no_commits case_managers_empty case_managers_missing
 case_managers_bad_line case_no_author case_approval_no_login case_title_controls case_api_error_commits
 case_api_stall_commits case_commits_partial case_two_pulls_one_commit case_no_review
-case_direct_push case_only_other_base case_every_failure_named case_previous_tag case_latest_tag
+case_direct_push case_late_association case_late_last_round case_late_too_long case_late_two_commits
+case_late_then_error case_merge_commit_fallback case_merge_commit_fallback_judged
+case_merge_commit_fallback_only_merge_commit case_merge_commit_fallback_not_merged case_merge_commit_fallback_error
+case_only_other_base case_every_failure_named case_previous_tag case_latest_tag
 case_refused_tag case_draft_release case_no_release_at_all case_api_error_release case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
 case_api_error_commit case_api_error_pull case_api_error_reviews case_api_stall case_no_head
 case_many_pulls case_many_reviews case_shallow"
@@ -779,7 +936,7 @@ breaks api_error_commits '|| fail "could not ask GitHub for the commits of pull 
   "goes on after the question for the commits failed"
 breaks api_stall_commits 'limit=(timeout "$timeout")' 'limit=()' \
   "waits for the commits without a limit"
-breaks two_pulls_one_commit '  for number in $found; do' '  for number in ${found%%$'"'"'\n'"'"'*}; do' \
+breaks two_pulls_one_commit '  for number in $2; do' '  for number in ${2%%$'"'"'\n'"'"'*}; do' \
   "takes the first of the pull requests that left a commit only"
 breaks many_commits 'ask --paginate "repos/$repository/pulls/$number/commits?per_page=100"' 'ask "repos/$repository/pulls/$number/commits?per_page=100"' \
   "reads the first page of the commits only"
@@ -797,6 +954,26 @@ breaks approval_no_login '    if [ "$login" = "-" ]; then' '    if false; then' 
   "takes an approval by a user GitHub does not name"
 breaks direct_push 'direct+=("$sha")' ':' \
   "lets a direct push pass"
+breaks direct_push 'retries=${APPROVAL_RETRIES:-4}' 'retries=${APPROVAL_RETRIES:-3}' \
+  "asks once less than it should before it counts a direct push"
+breaks late_association 'retries=${APPROVAL_RETRIES:-4}' 'retries=${APPROVAL_RETRIES:-0}' \
+  "takes a commit GitHub lists no pull request for yet for a direct push at once"
+breaks late_last_round 'retries=${APPROVAL_RETRIES:-4}' 'retries=${APPROVAL_RETRIES:-3}' \
+  "gives up one round too early"
+breaks late_too_long 'retries=${APPROVAL_RETRIES:-4}' 'retries=${APPROVAL_RETRIES:-5}' \
+  "keeps asking one round too long"
+breaks late_two_commits '  sleep "$retry_wait"' '  for _ in "${pending[@]}"; do sleep "$retry_wait"; done' \
+  "waits once for each commit still without a pull request"
+breaks late_then_error 'found=$(associated "$sha") || fail "could not ask GitHub which pull request left $sha"' 'found=$(associated "$sha" || true)' \
+  "takes a failed question for none"
+breaks merge_commit_fallback '    found=$(printf '"'"'%s\n'"'"' "$merged" | awk -v sha="$sha" '"'"'$1 == sha { print $2 }'"'"')' '    found=' \
+  "does not look at the merged pull requests of main for a commit with none"
+breaks merge_commit_fallback_not_merged 'select(.merged_at != null and .base.ref == "main" and .merge_commit_sha != null)' 'select(.base.ref == "main" and .merge_commit_sha != null)' \
+  "takes an open pull request for the one that merged, looking the other way round"
+breaks merge_commit_fallback_not_merged 'select(.merged_at != null and .base.ref == "main" and .merge_commit_sha != null)' 'select(.merged_at != null and .merge_commit_sha != null)' \
+  "takes a pull request merged into another branch, looking the other way round"
+breaks merge_commit_fallback_error '    || fail "could not ask GitHub for the pull requests merged into main"' '    || merged=' \
+  "takes a failed question for the merged pull requests of main for none"
 breaks previous_tag "'refs/tags/v1.*'" "'refs/tags/v1.nothing*'" \
   "ignores the previous release tag"
 breaks latest_tag 'done | sort -n)' 'done | sort -rn)' \
@@ -820,7 +997,7 @@ breaks api_error_reviews '|| fail "could not ask GitHub for the reviews of pull 
   "goes on after a failed question for the reviews"
 breaks api_stall 'limit=(timeout "$timeout")' 'limit=()' \
   "waits for GitHub without a limit"
-breaks many_pulls 'ask --paginate "repos/$repository/commits/$sha/pulls?per_page=100"' 'ask "repos/$repository/commits/$sha/pulls?per_page=100"' \
+breaks many_pulls 'ask --paginate "repos/$repository/commits/$1/pulls?per_page=100"' 'ask "repos/$repository/commits/$1/pulls?per_page=100"' \
   "reads the first page of a commit's pull requests only"
 breaks many_reviews 'ask --paginate "repos/$repository/pulls/$number/reviews?per_page=100"' 'ask "repos/$repository/pulls/$number/reviews?per_page=100"' \
   "reads the first page of the reviews only"
@@ -828,9 +1005,9 @@ breaks other_reviews 'select(.state == "APPROVED") | ' '' \
   "counts a review that is not an approval"
 breaks all_approved '| sort -un)' '| sort -n)' \
   "asks about a pull request once for each of its commits"
-breaks direct_push '.merged_at != null and ' '' \
+breaks direct_push 'select(.merged_at != null and .base.ref == "main") | .number' 'select(.base.ref == "main") | .number' \
   "takes an open pull request for the one that merged"
-breaks only_other_base ' and .base.ref == "main"' '' \
+breaks only_other_base 'select(.merged_at != null and .base.ref == "main") | .number' 'select(.merged_at != null) | .number' \
   "takes a pull request merged into another branch"
 breaks shallow '[ "$(git rev-parse --is-shallow-repository)" = false ] ||' 'true ||' \
   "checks a shallow clone"

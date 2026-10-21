@@ -26,7 +26,10 @@
 # candidate's included; a tag whose release never came out is passed over. Before the first
 # release, those after the commit in scripts/release-approval-baseline, read from the tagged
 # commit. Each commit is looked up for the pull request merged into main that left it; none, a
-# direct push, fails as well. Of each such pull request, its final head is asked, and its reviews:
+# direct push, fails as well. GitHub can answer with none for a commit shortly after its pull
+# request merged, so before a commit counts as a direct push it is asked about again, up to
+# APPROVAL_RETRIES times (default 4) after APPROVAL_RETRY_WAIT seconds each (default 10), and then
+# looked for among the closed pull requests of main as the merge commit of one. Of each such pull request, its final head is asked, and its reviews:
 # one APPROVED, for that head, by a release manager (a login in scripts/release-managers, read from
 # the tagged commit like the baseline, compared without regard to case: this job has no secret to
 # read the team with, and the repository is public, so anyone with a read-only account can leave an
@@ -34,7 +37,9 @@
 # commits (pulls/{n}/commits), so whoever pushed to it cannot approve it. Every pull request that
 # fails is named, with the approvals it had. The calls to GitHub are one per commit, two per pull
 # request (a third, for its commits, when a release manager approved its final commit), and one per
-# tag looked at until a release is found, plus the further pages of a long list. A call that
+# tag looked at until a release is found, plus the further pages of a long list, the rounds for a
+# commit without a pull request, and, for those still without, the list of the closed pull requests
+# of main. A call that
 # fails, or does not answer within APPROVAL_TIMEOUT seconds (default 60), stops the release: no
 # answer is never a pass.
 set -euo pipefail
@@ -44,11 +49,17 @@ repository=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY names the repository whose pul
 timeout=${APPROVAL_TIMEOUT:-60}
 baseline_file=scripts/release-approval-baseline
 managers_file=scripts/release-managers
+# how many more rounds, each after a wait of so many seconds, a commit without a pull request gets
+# before it counts as a direct push (the tests set the wait to 0)
+retries=${APPROVAL_RETRIES:-4}
+retry_wait=${APPROVAL_RETRY_WAIT:-10}
 
 fail() {
   echo "$label: $*" >&2
   exit 1
 }
+
+[[ "$retries" =~ ^[0-9]+$ && "$retry_wait" =~ ^[0-9]+$ ]] || fail "APPROVAL_RETRIES and APPROVAL_RETRY_WAIT must be whole numbers"
 
 limit=()
 if command -v timeout > /dev/null; then
@@ -138,21 +149,59 @@ commits=$(git rev-list "$start..$commit")
 total=$(printf '%s\n' "$commits" | wc -l)
 
 # The pull requests that left each commit: merged, into main. A commit may also be on open ones.
+# GitHub can answer with none for a commit shortly after its pull request merged, so a commit with
+# none is asked about again, in rounds with a wait before each (the wait is one for all the commits
+# still without, so it stays below RETRIES x RETRY_WAIT whatever their number), and then the other
+# way round: the pull requests merged into main, for one whose merge commit this is. That finds
+# only the merge commit of a pull request: the one commit of a squash merge, the last of a rebase
+# merge, whose other commits it cannot find (their hashes are the rebase's, not the pull request's).
+# So the rounds are the fix, and the other way round the second chance for the last commit. A
+# question that fails is no empty answer: it stops the release.
+associated() {
+  ask --paginate "repos/$repository/commits/$1/pulls?per_page=100" \
+    --jq '.[] | select(.merged_at != null and .base.ref == "main") | .number'
+}
 numbers=()
-direct=()
-for sha in $commits; do
-  found=$(ask --paginate "repos/$repository/commits/$sha/pulls?per_page=100" \
-    --jq '.[] | select(.merged_at != null and .base.ref == "main") | .number') \
-    || fail "could not ask GitHub which pull request left $sha"
-  if [ -z "$found" ]; then
-    direct+=("$sha")
-    continue
-  fi
-  for number in $found; do
-    [[ "$number" =~ ^[0-9]+$ ]] || fail "GitHub gave $number as a pull request number for $sha"
+record() {
+  local number
+  for number in $2; do
+    [[ "$number" =~ ^[0-9]+$ ]] || fail "GitHub gave $number as a pull request number for $1"
     numbers+=("$number")
   done
+}
+pending=($commits)
+round=0
+while :; do
+  still=()
+  for sha in ${pending[@]+"${pending[@]}"}; do
+    found=$(associated "$sha") || fail "could not ask GitHub which pull request left $sha"
+    if [ -z "$found" ]; then
+      still+=("$sha")
+      continue
+    fi
+    record "$sha" "$found"
+  done
+  pending=(${still[@]+"${still[@]}"})
+  [ "${#pending[@]}" -gt 0 ] && [ "$round" -lt "$retries" ] || break
+  round=$((round + 1))
+  echo "$label: GitHub lists no pull request yet for ${#pending[@]} commit(s); asking again in $retry_wait s (round $round of $retries)" >&2
+  sleep "$retry_wait"
 done
+direct=()
+if [ "${#pending[@]}" -gt 0 ]; then
+  merged=$(ask --paginate "repos/$repository/pulls?state=closed&base=main&per_page=100" \
+    --jq '.[] | select(.merged_at != null and .base.ref == "main" and .merge_commit_sha != null) | "\(.merge_commit_sha) \(.number)"') \
+    || fail "could not ask GitHub for the pull requests merged into main"
+  for sha in "${pending[@]}"; do
+    found=$(printf '%s\n' "$merged" | awk -v sha="$sha" '$1 == sha { print $2 }')
+    if [ -z "$found" ]; then
+      direct+=("$sha")
+      continue
+    fi
+    echo "$label: GitHub lists no pull request for ${sha:0:12}, but the merged pull requests of main have one with it as the merge commit" >&2
+    record "$sha" "$found"
+  done
+fi
 
 failures=0
 for sha in ${direct[@]+"${direct[@]}"}; do
