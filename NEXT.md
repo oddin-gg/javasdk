@@ -2171,8 +2171,9 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   generations and tombstones decide as they did. The same shape was in the match, fixture, live-state,
   competitor, player, tournament, sport and sport-list reads, and in the catalogs' cold read, background
   refresh and missing-item fetch (which compares the value held with the one it looked at), and is fixed in
-  each. Not changed: a client's reload, which asks for a fetch whatever is held, and a catalog's preload and
-  read, which never share a flight by design. Deterministic tests put a load of the key between a read's
+  each; the catalog's preload hands the loader the check that the key is still not held. Not changed: a client's
+  reload, which asks for a fetch whatever is held, and that a catalog's preload and a reader's fetch never share
+  a flight, by design (a flight's key includes whether it is a preload or a reload). Deterministic tests put a load of the key between a read's
   look and its load, and an invalidation after that load; the interleaving the loader's one step rules out
   is held by two threads. The 100 cold runs pinned to two cores made the expected requests every time, but
   the same 100 with the fix switched off did too, so they do not show the repair; the tests do. No public API
