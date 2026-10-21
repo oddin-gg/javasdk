@@ -213,7 +213,10 @@ below. Then:
    three go into the vault entry. The certificate revokes the whole key, so it is kept with
    the primary and its passphrase and nowhere else: in the vault entry, and in the one
    encrypted offline backup of those same three (a copy of the entry, not a second place for
-   any of them), until they move to shared storage the release managers can read.
+   any of them), until they move to shared storage the release managers can read. The backup
+   is made again whenever the vault entry's key file or passphrase changes (a renewal, a
+   revoked subkey, a new passphrase, a new key), and the old one is destroyed: a stale backup
+   holds a revoked subkey and lacks the current one.
 2. **Upload the public key to both keyservers**, since Central reads both and the check job
    asks both:
 
@@ -554,7 +557,8 @@ next attempt is a new version - the next release candidate number, or the next p
 
   6. Put the new subkey's expiry in the line "Signing subkey expires" above, by a PR, and move
      the reminder to 60 days before it. Replace the key file in the vault entry with `gpg --armor
-     --export-secret-keys <primary fingerprint>`, so that the entry has the new subkey.
+     --export-secret-keys <primary fingerprint>`, so that the entry has the new subkey, and make the
+     encrypted offline backup again from the entry ("The signing key", step 1).
   7. Run `RELEASE_KEY_FINGERPRINT=<primary fingerprint> scripts/release-key-check.sh`; it must
      pass. Delete the throwaway home and its files.
 - **The signing key in the environment is suspected leaked** - `MAVEN_GPG_KEY` or its
@@ -573,15 +577,16 @@ next attempt is a new version - the next release candidate number, or the next p
 
   2. Make the new subkey, `gpg --quick-add-key <primary fingerprint> rsa4096 sign 2y`. The
      passphrase may have gone with the key: change it with `gpg --change-passphrase <primary
-     fingerprint>`, and in the vault entry. Until the new secret is in place, the publish job
-     refuses a release, naming the revoked subkey: nothing is signed with it.
+     fingerprint>`, and in the vault entry, and make the encrypted offline backup again. Until
+     the new secret is in place, the publish job refuses a release, naming the revoked subkey:
+     nothing is signed with it.
   3. Upload the public key, with the revocation and the new subkey, to both keyservers, as in
      "The signing key", step 2. Central then refuses a signature by the old subkey.
   4. `gpg --armor --export-secret-subkeys '<new subkey fingerprint>!'` (the `!` exports that one
      subkey alone, not the revoked one) is the new `MAVEN_GPG_KEY`; replace it, and
      `MAVEN_GPG_PASSPHRASE` if it changed. Put the new subkey's expiry in the line "Signing subkey
-     expires" above and move the reminder, and replace the key file in the vault entry, as in the
-     renewal.
+     expires" above and move the reminder, and replace the key file in the vault entry and make the
+     encrypted offline backup again, as in the renewal.
   5. Delete the throwaway home and its files.
 
   Versions already on Central stay as they are. A signature the revoked subkey made still
@@ -610,7 +615,8 @@ next attempt is a new version - the next release candidate number, or the next p
      ```
 
   2. Make a new key, as in "The signing key", with a new vault entry (and the old one deleted),
-     new `MAVEN_GPG_KEY` and `MAVEN_GPG_PASSPHRASE`, and its fingerprint in
+     a new offline backup (the old one destroyed with it), new `MAVEN_GPG_KEY` and
+     `MAVEN_GPG_PASSPHRASE`, and its fingerprint in
      `RELEASE_KEY_FINGERPRINT`. Until that variable is changed, the check job refuses every
      release, as it should: the key it asks for is revoked. Put the new date in the line
      "Signing subkey expires" above and set the reminder again.
