@@ -736,10 +736,43 @@ case_exception_listed_fallback_pull_request() {
   new_repo root
   unset exceptions_text
   standard
+  # c1 is left by an approved pull request of its own, so that #1 is reached through c2 alone
+  left c1 4
+  pull 4 carol "$(head_of 4)"
+  reviews 4 "APPROVED:$(head_of 4):bob"
+  pr_commits 4 carol:carol
   left c2
   merged_as 1 c2
   reviews 1 "APPROVED:$(head_of 100):bob"
-  expect fail "pull request #1 (Pull request 1) by alice has no approval of its final commit" "!excused" "!came from no pull request" || return 1
+  expect fail "pull request #1 (Pull request 1) by alice has no approval of its final commit" "!pull request #4" "!excused" "!came from no pull request" || return 1
+}
+
+# the same, with #1 on the second page of the closed pull requests of main, which only a question
+# for every page reaches (the stub, like gh, answers the first page only without --paginate)
+case_exception_listed_fallback_later_page() {
+  exceptions_text='@c2@ it was a pull request
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c1 4
+  pull 4 carol "$(head_of 4)"
+  reviews 4 "APPROVED:$(head_of 4):bob"
+  pr_commits 4 carol:carol
+  left c2
+  jq -n '[range(1000; 1100) | {number: ., merged_at: "2026-10-01T00:00:00Z", base: {ref: "main"}, merge_commit_sha: "other\(.)"}]' > "$api/pulls.json"
+  merged_as 1 c2
+  reviews 1 "APPROVED:$(head_of 100):bob"
+  expect fail "pull request #1 (Pull request 1) by alice has no approval of its final commit" "!pull request #4" "!excused" "!came from no pull request" || return 1
+}
+
+# the list is the tagged commit's: a line added to the file in the working tree after c3 excuses nothing
+case_exception_working_tree() {
+  new_repo root
+  standard
+  left c2
+  printf '%s unreviewed, uncommitted\n' "${sha[c2]}" >> "$repo/scripts/release-approval-exceptions"
+  expect fail "commit ${sha[c2]:0:12} (c2) came from no pull request merged into main: a direct push" "!excused" || return 1
 }
 
 # a commit listed that is not in the range - the baseline itself, and one that is no commit here -
@@ -1046,7 +1079,8 @@ case_direct_push case_late_association case_late_last_round case_late_too_long c
 case_late_then_error case_merge_commit_fallback case_merge_commit_fallback_judged
 case_merge_commit_fallback_only_merge_commit case_merge_commit_fallback_not_merged case_merge_commit_fallback_error
 case_only_other_base case_exception_listed case_exception_no_line_end case_exception_unlisted case_exception_one_of_two
-case_exception_listed_with_pull_request case_exception_listed_fallback_pull_request case_exception_outside_range case_exception_no_reason case_exception_blank_reason
+case_exception_listed_with_pull_request case_exception_listed_fallback_pull_request case_exception_listed_fallback_later_page
+case_exception_working_tree case_exception_outside_range case_exception_no_reason case_exception_blank_reason
 case_exception_bad_sha case_exception_bad_line_after_good case_exception_file_missing case_exception_reason_controls
 case_every_failure_named case_previous_tag case_latest_tag
 case_refused_tag case_draft_release case_no_release_at_all case_api_error_release case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
@@ -1199,6 +1233,13 @@ breaks exception_listed_with_pull_request '    if [ -z "$found" ]; then
 breaks exception_listed_fallback_pull_request '  for sha in "${pending[@]}"; do' '  for sha in "${pending[@]}"; do
     if [ -n "$(excuse "$sha")" ]; then excused+=("$sha"); continue; fi' \
   "excuses a listed commit before it looks for a pull request that merged as it"
+breaks exception_listed_fallback_pull_request '  for sha in "${pending[@]}"; do' '  for sha in "${pending[@]}"; do
+    if [ -n "$(excuse "$sha")" ]; then continue; fi' \
+  "drops a listed commit without a pull request, neither judged nor named"
+breaks exception_listed_fallback_later_page 'ask --paginate "repos/$repository/pulls?state=closed&base=main&per_page=100"' 'ask "repos/$repository/pulls?state=closed&base=main&per_page=100"' \
+  "reads the first page of the closed pull requests of main only"
+breaks exception_working_tree 'raw=$(git show "$commit:$exceptions_file" 2> /dev/null)' 'raw=$(cat "$exceptions_file" 2> /dev/null)' \
+  "reads the list of excused direct pushes from the working tree, not the tagged commit"
 breaks exception_outside_range 'commits=$(git rev-list "$start..$commit")' 'commits=$(git rev-list "$start..$commit")
 for listed in $(printf '"'"'%s'"'"' "$exceptions" | cut -d" " -f1); do
   printf '"'"'%s\n'"'"' "$commits" | grep -qx "$listed" || fail "$listed is not in the range"
