@@ -37,14 +37,28 @@ GitHub Packages.
       public half is on `keyserver.ubuntu.com` and `keys.openpgp.org`, where Central looks for
       it; its primary's fingerprint is the repository variable `RELEASE_KEY_FINGERPRINT`; the
       subkey's expiry date is in this file and a reminder is set.
+- [ ] **Approval baseline.** At the rename of `next` to `main`, put the full SHA of the commit
+      `main` points to on the last line of `scripts/release-approval-baseline`, in a reviewed
+      PR merged before the first `v1.*` tag. The approval check starts from it for the first
+      release, which has no release before it; until it is set, the check refuses the release
+      ("set the baseline").
+- [ ] **Release managers' logins.** `scripts/release-managers` lists the release managers'
+      GitHub logins, one a line, any case, comments starting with `#`. Keep it equal to the
+      release managers' team: change it in a reviewed PR whenever someone joins or leaves, before
+      the next release. The approval check counts an approval only from a login in that file,
+      because the check job has no secret to read the team with and the repository is public,
+      so any read-only account could otherwise approve. An empty or missing file, or a line that
+      is no login, stops the release.
 - [ ] **Branch protection on `main`:** every change through a PR with a required approval and
       code owners' review, linear history, no bypass for anyone, admins included. The rest of
       the protection is under "Before 1.0.0" below.
 
-      The approver of the publish trusts the whole merge commit - `mvnw`, the POMs, the
-      plugins, the code - since the approved job builds and signs from it with the secrets at
-      hand. Until "Before 1.0.0" is done, that the PR's approval is for its final commit is the
-      approver's check ("Every release", step 5), not the ruleset's.
+      The ruleset does not dismiss an approval when the PR changes, nor ask for the approval of
+      its latest push, so a PR can merge on an approval of an earlier version of itself. Until
+      "Before 1.0.0" is done, the check job's approval check ("Pre-release checks") is what makes
+      an approval count for the code that was merged. The approver of the publish trusts the
+      whole merge commit - `mvnw`, the POMs, the plugins, the code - since the approved job
+      builds and signs from it with the secrets at hand.
 
       `next` is deliberately not protected this way: its PRs merge without a required
       approval. That is why releases never come from it - the check refuses a commit that is on
@@ -115,10 +129,11 @@ GitHub Packages.
 
 ## Before 1.0.0
 
-Until the settings below are on, an approval of a PR can outlive the commits pushed after it.
-For now the approver of the publish closes that gap: "Every release", step 5, has them check
-that the approval is for the PR's final commit, and a release candidate goes out with that
-check instead of the settings. Set them up before the first final release.
+Until the settings below are on, GitHub itself lets an approval outlive the commits pushed after
+it. For releases the check job's approval check covers that gap ("Pre-release checks"): it
+refuses a tag unless every PR merged since the previous release was approved for its final
+commit, so a release candidate goes out on that check. The settings are hardening on top of it,
+and a second line if the check ever fails to run. Set them up before the first final release.
 
 - [ ] **Stricter branch protection on `main`**, all together:
       - "Dismiss stale pull request approvals when new commits are pushed";
@@ -243,53 +258,44 @@ subkey alone, as in "The signing key in the environment is suspected leaked".
 
 5. **Approve the upload** under Actions - "Java SDK 1.0 release", once check and build are
    green: every release, candidates included, stops at **publish** until a reviewer other than
-   the tag's author approves the `maven-central` deployment. Before approving, the reviewer
-   checks that the run's commit is the merge commit of a PR merged into `main`, and approves
-   nothing else:
+   the tag's author approves the `maven-central` deployment. Two things before approving:
 
-   ```
-   gh api repos/oddin-gg/javasdk/commits/<sha>/pulls \
-     --jq '.[] | select(.merged_at and .merge_commit_sha == "<sha>") | {number, base: .base.ref}'
-   ```
+   - **Read the check job's log.** Its release check proved that the run's commit is the merge
+     commit of a PR merged into `main`, and its approval check that every PR merged into `main`
+     since the previous release was approved on GitHub for its final commit by a release
+     manager who wrote none of it, and that no commit in that range was pushed directly. The
+     log says what it counted: the previous release it started from (or the baseline), how many
+     commits and PRs, and any problem, which fails the job. If the check job is red, nothing
+     here is to be approved.
+   - **Look at what changed in the release controls** since the previous release - the nearest
+     `v1.*` tag whose GitHub Release is published:
 
-   must print the PR's number with base `main` (`next` does not count: its PRs need no
-   approval). If it prints nothing, ask the other way round; it must print a PR number:
+     ```
+     git fetch origin --tags
+     git diff <previous published release> <tag> -- .github scripts/release-* RELEASING.md
+     ```
 
-   ```
-   gh api --paginate 'repos/oddin-gg/javasdk/pulls?state=closed&base=main&per_page=100' --jq '.[] | select(.merge_commit_sha == "<sha>" and .merged_at) | .number'
-   ```
-
-   Then check that the PR has an approval for its final commit - its last head before the
-   merge, not an earlier one - and that nothing was pushed after that approval:
-
-   ```
-   gh pr view <number> -R oddin-gg/javasdk --json reviews,commits \
-     --jq '.commits[-1].oid as $last | {last: $last, approved: [.reviews[] | select(.state == "APPROVED") | {by: .author.login, commit: .commit.oid}], ok: any(.reviews[]; .state == "APPROVED" and .commit.oid == $last)}'
-   ```
-
-   must print `"ok": true`: an APPROVED review whose `commit` is `last`, the PR's last commit.
-   `approved` shows who approved which commit; an approval of an earlier commit does not
-   count, and neither does a review that is only a comment, or one that was dismissed. Do not
-   approve the deployment otherwise: ask for a new approval of the final commit first. This
-   is the approver's check until "Before 1.0.0" is done; those settings then make GitHub
-   enforce it. It covers the PR's own commits only, not a base that moved on after the
-   approval (the "up to date" setting of "Before 1.0.0").
+     The tag runs these files from the tagged commit, so the checks cannot protect themselves:
+     a PR that weakened one of them was itself approved by the weakened check. Approve nothing
+     that weakens a check, changes `scripts/release-managers` for a reason you do not know, or
+     adds a path to the signing key or the token. For the first release the previous one is
+     the baseline commit.
 
    Being on `main` is not enough: the repository merges by rebase, which puts every
-   intermediate commit of a PR on `main`, while the approval was for the PR's final commit.
-   The whole commit is trusted, not just `.github/`: the approved job runs that commit's
-   `mvnw`, POMs and plugins with the token and the key, so what makes it trustworthy is that
-   it is the final state of a PR that `main`'s ruleset made someone approve and that the
-   check above found approved at its final commit.
-   The checks inside a tagged `release.yml` are only as trustworthy as that commit.
+   intermediate commit of a PR on `main`, while the approval is for the PR's final commit. The
+   whole commit is trusted, not just `.github/`: the approved job runs that commit's `mvnw`,
+   POMs and plugins with the token and the key, so what makes it trustworthy is that it is the
+   final state of PRs that a release manager approved at their final commit, and that the
+   controls above were looked at.
+   The checks inside a tagged `release.yml` are only as trustworthy as that diff.
 6. **Check the result:** the version in the portal's Deployments as Published, then on
    `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/` (it shows up within about 30
    minutes), and the GitHub Release with its four files.
 
 ## Pre-release checks
 
-The **check** job (`scripts/release-check.sh`, then `scripts/release-key-check.sh`) fails the
-release, before anything is built, when:
+The **check** job (`scripts/release-check.sh`, then `scripts/release-approval-check.sh`, then
+`scripts/release-key-check.sh`) fails the release, before anything is built, when:
 
 - the tag is not `v1.MINOR.PATCH` or `v1.MINOR.PATCH-rc.N`;
 - the tag, as origin has it, no longer names the commit the run was started for (moved after
@@ -299,6 +305,17 @@ release, before anything is built, when:
   required review), or is not the merge commit of a PR merged into `main` (an intermediate
   commit of a rebase-merged PR is on `main`, but was never reviewed as a state of its own; a
   PR merged into `next` counts for nothing);
+- a PR merged into `main` since the previous release has no approval on GitHub for its final
+  commit by a release manager who wrote none of it, or a commit since then came from no PR
+  merged into `main` (a direct push). The previous release is the nearest `v1.*` tag, a release
+  candidate included, whose GitHub Release is published and no draft - a tag whose release never
+  came out is passed over - and for the first release the commit in
+  `scripts/release-approval-baseline`. A release manager is a login in `scripts/release-managers`
+  who is neither the PR's author nor the author or committer of any of its commits. `main`'s
+  ruleset neither dismisses a stale approval nor asks for the approval of the latest push, so this
+  check is what makes an approval count for the code that was merged. It names every PR that fails,
+  with the approvals it had; a GitHub call that fails or does not answer within a minute stops the
+  release;
 - any other tag names the same commit;
 - `release-notes/<version>.md` is missing, empty or not a plain file in the tagged commit (`gh`
   would follow a link into the public release text);
@@ -318,6 +335,14 @@ release, before anything is built, when:
   a renewal one that still holds the old expiry makes Central refuse the signature; the message
   names the server, the subkey and the date.
   "The signing subkey nears its expiry" below says what to do.
+
+**What the approval check protects against.** The release managers are trusted: they approve
+the publish and hold the signing key. The check is against a change by anyone else with write
+access that merged on an approval of an earlier version of itself. It does not detect a release
+manager who pushes commits under another identity and approves them: GitHub attributes a commit
+by its e-mail address and does not say who pushed it into a PR. Nor can it protect itself: a tag
+runs the script, `scripts/release-managers` and `release.yml` from the tagged commit, which is why
+the approver of the publish looks at the diff of the release controls ("Every release", step 5).
 
 The check job cannot see the secrets, which only the approved publish job reads. So that job,
 before it builds, runs `scripts/release-signing-key-check.sh`: it imports `MAVEN_GPG_KEY` into a
@@ -359,7 +384,11 @@ next attempt is a new version - the next release candidate number, or the next p
 
 - **Before publish:** nothing left the repository, but the tag stays. Fix what failed, write
   the release notes for the next version, merge them, and tag that merge commit - a commit of
-  its own, since two tags on one commit are refused.
+  its own, since two tags on one commit are refused. A tag the approval check refused is like
+  any other failed tag and is not reused: the missing approval is given on the PR's final
+  commit, by a release manager who did not write it, and the next version is tagged on a new
+  commit. The refused tag has no release, so the next check starts again from the previous
+  published release and asks about the same PRs.
 - **During publish:** look the deployment up in the portal. Failed validation published
   nothing: release the next version as above. If it shows Published (the wait timed out, or the
   run was cancelled or ended some other way), the version is out and a re-run would be refused:
