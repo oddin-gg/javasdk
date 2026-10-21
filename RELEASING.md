@@ -32,8 +32,9 @@ GitHub Packages.
 - [ ] **Portal token.** A user token generated in the portal by the account that owns the
       namespace. It is a username and password pair, not the login.
 - [ ] **Signing key,** as in "The signing key" below. A key for releases only, not a person's:
-      a primary key that never expires and never leaves the release managers' vault entry, and
-      a signing subkey of two years, which alone goes into the `maven-central` environment. Its
+      a primary key that never expires and never leaves the release managers' vault entry and
+      its backup, and a signing subkey of two years, which alone goes into the `maven-central`
+      environment. Its
       public half is on `keyserver.ubuntu.com` and `keys.openpgp.org`, where Central looks for
       it; its primary's fingerprint is the repository variable `RELEASE_KEY_FINGERPRINT`; the
       subkey's expiry date is in this file and a reminder is set.
@@ -171,8 +172,9 @@ The release key has two parts, and only one of them goes to GitHub:
   are the required reviewers of the `maven-central` environment), together with its passphrase
   and its revocation certificate. Anyone with the primary can make a new subkey, so it is used
   only to make and revoke subkeys, on a machine that is cleaned afterwards. The rule is storage
-  that all the release managers can read. There is no shared one yet: for now one release manager
-  holds the primary, its passphrase and the certificate, with an offline encrypted backup, and
+  that all the release managers can read. There is no shared one yet: for now the three - the
+  primary, its passphrase and the revocation certificate - are kept together, in one release
+  manager's password manager and in one encrypted offline backup of those same three, and
   moving them to shared storage is open;
 - the **signing subkey** signs the release and expires two years after it is made. It is never
   extended: a renewal makes a new subkey and revokes the old one, so a subkey that leaked without
@@ -204,8 +206,10 @@ below. Then:
 1. **The vault entry.** The primary with its subkey, from `gpg --armor --export-secret-keys
    <primary fingerprint>`, the passphrase, and the revocation certificate: gpg 2.4 wrote that
    one when it made the key, to `$GNUPGHOME/openpgp-revocs.d/<primary fingerprint>.rev`. All
-   three go into the vault entry. The certificate revokes the whole key, so it leaves the
-   machine with the rest and is kept nowhere else.
+   three go into the vault entry. The certificate revokes the whole key, so it is kept with
+   the primary and its passphrase and nowhere else: in the vault entry, and in the one
+   encrypted offline backup of those same three (a copy of the entry, not a second place for
+   any of them), until they move to shared storage the release managers can read.
 2. **Upload the public key to both keyservers**, since Central reads both and the check job
    asks both:
 
