@@ -51,7 +51,8 @@ public interface GlobalEventsListener {
     /**
      * Each HTTP attempt of every call the SDK makes to the API, whatever came of it. New in 1.0; does
      * nothing unless overridden. These are telemetry: when they pile up behind a slow callback, the
-     * oldest are dropped first.
+     * oldest are dropped first, and counted in the health counter {@code events.telemetry_dropped}.
+     * For a complete record, turn on the API call log ({@code setApiCallLogging(true)}).
      */
     default void onApiCall(ApiCallEvent call) {}
 

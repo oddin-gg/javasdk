@@ -17,20 +17,25 @@ public final class LogCapture implements AutoCloseable {
     private final Logger logger;
     private final ListAppender<ILoggingEvent> appender = new ListAppender<>();
 
-    private LogCapture(Class<?> source, Level level) {
-        logger = (Logger) LoggerFactory.getLogger(source);
+    private LogCapture(String name, Level level) {
+        logger = (Logger) LoggerFactory.getLogger(name);
         appender.start();
         logger.addAppender(appender);
         logger.setLevel(level);
     }
 
     public static LogCapture of(Class<?> source) {
-        return new LogCapture(source, Level.WARN);
+        return new LogCapture(source.getName(), Level.WARN);
     }
 
     /** What the class logs at {@code level} or above. */
     public static LogCapture of(Class<?> source, Level level) {
-        return new LogCapture(source, level);
+        return new LogCapture(source.getName(), level);
+    }
+
+    /** What the logger of that name logs at {@code level} or above. */
+    public static LogCapture of(String name, Level level) {
+        return new LogCapture(name, level);
     }
 
     /** "LEVEL message" for each line, oldest first. */

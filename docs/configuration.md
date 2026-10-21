@@ -50,7 +50,7 @@ minutes after the feed or the API last wrote it.
 | `setReplayExchangeName(String)` | `oddinreplay` | Not blank, at most 255 bytes in UTF-8. |
 | `setFutureStampMargin(Duration)` | 30 s | Positive, at most 1 day (a day is as good as off). How far ahead of its producer a message's timestamp may be and still hold back the status of the messages that follow it. See [the status order](#the-order-of-the-live-status) below. |
 | `setTimelyMessageAge(Duration)` | 10 s, or half the margin if that is shorter | Positive, at most half the margin (checked in `build()`). How old, by the producer's alives, a message may be to write the status in place of one with a later timestamp. |
-| `setApiCallLogging(boolean)` | off | Each attempt of an API call at INFO. `onApiCall` hears them either way. |
+| `setApiCallLogging(boolean)` | off | Each attempt of an API call at INFO, under the logger `com.oddin.oddsfeedsdk.api-calls`; a complete record, see [the API call log](health-and-logging.md#the-api-call-log). `onApiCall` hears them either way, best effort. |
 | `setDefaultLocale(Locale)` | English | Must name a language (not `Locale.ROOT`). The locale a getter without one reads in, and the one messages are built in. |
 | `setPreloadLocales(List<Locale>)` | none | Each must name a language. See below. |
 | `setEagerEntityPreload(boolean)` | off | See below. |

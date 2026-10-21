@@ -59,8 +59,9 @@ class LoggingGlobalListener implements GlobalEventsListener {
 
     /**
      * Each HTTP attempt of every call the SDK makes to the API, whatever came of it. At DEBUG here, so
-     * it stays quiet unless asked for in logback.xml; setApiCallLogging(true) on the configuration
-     * builder logs the same at INFO.
+     * it stays quiet unless asked for in logback.xml. Best effort: the oldest are dropped when the
+     * listener falls behind; setApiCallLogging(true) on the configuration builder gives the complete
+     * record at INFO.
      */
     @Override
     public void onApiCall(ApiCallEvent call) {

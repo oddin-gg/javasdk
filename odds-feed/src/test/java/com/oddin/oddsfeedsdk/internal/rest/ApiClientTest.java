@@ -990,13 +990,16 @@ class ApiClientTest {
 
     @Test
     void everyAttemptIsLoggedWhenTheConfigurationAsksAndNoneOtherwise() {
+        assertThat(RestTransport.CALL_LOGGER)
+                .as("the name the documentation gives clients")
+                .isEqualTo("com.oddin.oddsfeedsdk.api-calls");
         api.respond("/v1/descriptions/void_reasons", Reply.of(503, ""), Reply.of(200, NO_VOID_REASONS));
-        try (var log = LogCapture.of(RestTransport.class, Level.INFO)) {
+        try (var log = LogCapture.of(RestTransport.CALL_LOGGER, Level.INFO)) {
             client(b -> b).fetchMarketVoidReasons();
             assertThat(log.lines()).as("logged unless asked").isEmpty();
         }
         api.respond("/v1/descriptions/void_reasons", Reply.of(503, ""), Reply.of(200, NO_VOID_REASONS));
-        try (var log = LogCapture.of(RestTransport.class, Level.INFO)) {
+        try (var log = LogCapture.of(RestTransport.CALL_LOGGER, Level.INFO)) {
             client(b -> b.setApiCallLogging(true)).fetchMarketVoidReasons();
             String uri = "https://" + api.apiHost() + "/v1/descriptions/void_reasons";
             assertThat(log.lines()).hasSize(2);
@@ -1008,6 +1011,38 @@ class ApiClientTest {
                     .endsWith(" ms, attempt 2");
         }
         assertThat(events.calls).as("told to the events either way").hasSize(4);
+    }
+
+    @Test
+    void anAttemptCutOffByAnInterruptIsLoggedAndToldToo() throws InterruptedException {
+        // long enough to interrupt the call in, short enough for the fake to be quiet when it closes
+        api.respond(SUMMARY, Reply.of(200, "").after(Duration.ofSeconds(2)));
+        ApiClient client = client(b -> b.setApiCallLogging(true));
+        var failure = new AtomicReference<@Nullable Throwable>();
+        try (var log = LogCapture.of(RestTransport.CALL_LOGGER, Level.INFO)) {
+            Thread caller = Thread.ofVirtual().start(() -> {
+                try {
+                    client.fetchMatchSummary(MATCH, Locale.ENGLISH);
+                } catch (RuntimeException e) {
+                    failure.set(e);
+                }
+            });
+            api.awaitRequest("GET", SUMMARY);
+            caller.interrupt();
+            assertThat(caller.join(Duration.ofSeconds(1)))
+                    .as("the call gives up at once")
+                    .isTrue();
+            assertThat(failure.get()).isInstanceOf(ApiException.class).hasMessageEndingWith(": interrupted");
+            assertThat(log.lines())
+                    .singleElement()
+                    .asString()
+                    .startsWith("INFO API call GET https://" + api.apiHost() + SUMMARY + ": 0 in ")
+                    .endsWith(", attempt 1, failed: java.lang.InterruptedException");
+        }
+        assertThat(events.calls).singleElement().satisfies(call -> {
+            assertThat(call.status()).isZero();
+            assertThat(call.failure()).isInstanceOf(InterruptedException.class);
+        });
     }
 
     @Test
