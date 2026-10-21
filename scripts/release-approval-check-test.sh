@@ -106,6 +106,11 @@ Bob
 erin
 '
 
+# the direct pushes excused at c3: none; a case sets $exceptions_text to say otherwise, with @root@,
+# @c1@ and @c2@ for the commits made before it
+default_exceptions='# no direct push is excused
+'
+
 # new_repo <baseline>: the commits root, c1, c2 and c3, c3 the tagged one, and the baseline file
 # at c3 as the line given: unset, the commit of this name, or the text as it is
 new_repo() {
@@ -127,6 +132,11 @@ new_repo() {
   mkdir -p "$repo/scripts"
   printf '# the commit main pointed to when the rule began\n%s\n' "$line" > "$repo/scripts/release-approval-baseline"
   printf '%s' "${managers_text-$default_managers}" > "$repo/scripts/release-managers"
+  local text=${exceptions_text-$default_exceptions} name
+  for name in root c1 c2; do
+    text=${text//@$name@/${sha[$name]}}
+  done
+  printf '%s' "$text" > "$repo/scripts/release-approval-exceptions"
   git -C "$repo" add -A
   git -C "$repo" commit -q -m c3
   sha[c3]=$(git -C "$repo" rev-parse HEAD)
@@ -648,6 +658,157 @@ case_only_other_base() {
   expect fail "commit ${sha[c1]:0:12} (c1) came from no pull request merged into main" || return 1
 }
 
+# --- the direct pushes excused (scripts/release-approval-exceptions)
+
+# c2 is a direct push, listed with its reason: the release goes on, and says that and why. The file
+# has comments, blank lines, a CRLF line end, padding and a reason of several words, as it may
+exceptions_listed='# the direct pushes excused
+
+  @c2@   the first line of the reason,  and more of it  '$'\r''
+
+'
+case_exception_listed() {
+  exceptions_text=$exceptions_listed
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  expect pass "commit ${sha[c2]:0:12} (c2) is a direct push, excused by scripts/release-approval-exceptions: the first line of the reason,  and more of it" \
+    "came from 2 pull request(s)" "1 direct push(es) excused" "!came from no pull request" || return 1
+  # the reason ends where its words do
+  if ! grep -q 'and more of it$' "$work/err"; then
+    reason="the reason keeps its padding: $(cat "$work/err")"
+    return 1
+  fi
+}
+
+# the last line without its line end counts too
+case_exception_no_line_end() {
+  exceptions_text='@c2@ because'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  expect pass "excused by scripts/release-approval-exceptions: because" || return 1
+}
+
+# another commit is listed: c2 is refused
+case_exception_unlisted() {
+  exceptions_text='@c1@ read it
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  expect fail "commit ${sha[c2]:0:12} (c2) came from no pull request merged into main: a direct push" "!excused" || return 1
+}
+
+# every direct push is named: one excused, one not
+case_exception_one_of_two() {
+  exceptions_text='@c2@ read it
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c1
+  left c2
+  expect fail "commit ${sha[c1]:0:12} (c1) came from no pull request merged into main: a direct push" \
+    "commit ${sha[c2]:0:12} (c2) is a direct push, excused" "1 of the pull requests and direct pushes" || return 1
+}
+
+# a commit that came from a pull request is judged by it, listed or not: #1 has no approval
+case_exception_listed_with_pull_request() {
+  exceptions_text='@c2@ it was a pull request
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  reviews 1 "APPROVED:$(head_of 100):bob"
+  expect fail "pull request #1 (Pull request 1) by alice has no approval of its final commit" "!excused" || return 1
+}
+
+# a commit listed that is not in the range - the baseline itself, and one that is no commit here -
+# is ignored
+case_exception_outside_range() {
+  exceptions_text='@root@ excused for an earlier release
+0123456789abcdef0123456789abcdef01234567 not even in this clone
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  expect pass "came from 2 pull request(s)" "!excused" || return 1
+}
+
+case_exception_no_reason() {
+  exceptions_text='@c2@
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  expect fail "scripts/release-approval-exceptions has a line that is no full commit SHA, whitespace and a reason: ${sha[c2]}" "!excused" || return 1
+}
+
+case_exception_blank_reason() {
+  exceptions_text='@c2@   '$'\t''
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  expect fail "scripts/release-approval-exceptions has a line that is no full commit SHA" || return 1
+}
+
+# a short SHA, an upper case one and a line that is no SHA: each stops the release, though no commit
+# of the range is a direct push
+case_exception_bad_sha() {
+  local text
+  for text in '0123456 short' 'ABCDEF0123456789ABCDEF0123456789ABCDEF01 upper case' 'because it was fine' '@c2@x not a separate word'; do
+    exceptions_text=$text
+    new_repo root
+    unset exceptions_text
+    standard
+    expect fail "scripts/release-approval-exceptions has a line that is no full commit SHA" || { reason="$text: $reason"; return 1; }
+  done
+}
+
+# a bad line stops the release when it comes after a good one, too
+case_exception_bad_line_after_good() {
+  exceptions_text='@c2@ read it
+oops
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  expect fail "scripts/release-approval-exceptions has a line that is no full commit SHA, whitespace and a reason: oops" || return 1
+}
+
+case_exception_file_missing() {
+  new_repo root
+  standard
+  git -C "$repo" rm -q scripts/release-approval-exceptions
+  git -C "$repo" commit -q -m "no exceptions"
+  sha[c3]=$(git -C "$repo" rev-parse HEAD)
+  left c3 2
+  expect fail "scripts/release-approval-exceptions is missing" || return 1
+}
+
+# a reason is text anyone with a reviewed pull request writes, still not carried to the log as controls
+case_exception_reason_controls() {
+  exceptions_text='@c2@ read'$'\x1b''[31m it::error::forged
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  expect pass "excused by scripts/release-approval-exceptions: read[31m it::error::forged" || return 1
+  if [ -n "$(LC_ALL=C tr -d '[:print:]\n' < "$work/err")" ]; then
+    reason="the output carries a control character: $(od -c "$work/err" | head -5)"
+    return 1
+  fi
+}
+
 case_every_failure_named() {
   new_repo root
   standard
@@ -869,7 +1030,10 @@ case_api_stall_commits case_commits_partial case_two_pulls_one_commit case_no_re
 case_direct_push case_late_association case_late_last_round case_late_too_long case_late_two_commits
 case_late_then_error case_merge_commit_fallback case_merge_commit_fallback_judged
 case_merge_commit_fallback_only_merge_commit case_merge_commit_fallback_not_merged case_merge_commit_fallback_error
-case_only_other_base case_every_failure_named case_previous_tag case_latest_tag
+case_only_other_base case_exception_listed case_exception_no_line_end case_exception_unlisted case_exception_one_of_two
+case_exception_listed_with_pull_request case_exception_outside_range case_exception_no_reason case_exception_blank_reason
+case_exception_bad_sha case_exception_bad_line_after_good case_exception_file_missing case_exception_reason_controls
+case_every_failure_named case_previous_tag case_latest_tag
 case_refused_tag case_draft_release case_no_release_at_all case_api_error_release case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
 case_api_error_commit case_api_error_pull case_api_error_reviews case_api_stall case_no_head
 case_many_pulls case_many_reviews case_shallow"
@@ -1009,6 +1173,33 @@ breaks direct_push 'select(.merged_at != null and .base.ref == "main") | .number
   "takes an open pull request for the one that merged"
 breaks only_other_base 'select(.merged_at != null and .base.ref == "main") | .number' 'select(.merged_at != null) | .number' \
   "takes a pull request merged into another branch"
+breaks exception_listed '        excused+=("$sha")' '        direct+=("$sha")' \
+  "excuses no direct push"
+breaks exception_unlisted '      if [ -n "$(excuse "$sha")" ]; then' '      if true; then' \
+  "excuses every direct push"
+breaks exception_listed_with_pull_request '    if [ -z "$found" ]; then
+      still+=("$sha")' '    if [ -z "$found" ] || [ -n "$(excuse "$sha")" ]; then
+      still+=("$sha")' \
+  "excuses a listed commit though a pull request left it"
+breaks exception_outside_range 'commits=$(git rev-list "$start..$commit")' 'commits=$(git rev-list "$start..$commit")
+for listed in $(printf '"'"'%s'"'"' "$exceptions" | cut -d" " -f1); do
+  printf '"'"'%s\n'"'"' "$commits" | grep -qx "$listed" || fail "$listed is not in the range"
+done' \
+  "refuses a listed commit that is not in the range"
+breaks exception_no_reason '^([0-9a-f]{40})[[:space:]]+([^[:space:]].*)$' '^([0-9a-f]{40})[[:space:]]*(.*)$' \
+  "takes a line with no reason"
+breaks exception_bad_sha '^([0-9a-f]{40})[[:space:]]+' '^([0-9a-f]{4,41})[[:space:]]+' \
+  "takes a short SHA"
+breaks exception_bad_sha '    || fail "$exceptions_file has a line that is no full commit SHA, whitespace and a reason: $(plain "$line")"' '    || continue' \
+  "skips a line that is no SHA and a reason"
+breaks exception_bad_line_after_good '  case "$line" in "" | "#"*) continue ;; esac' '  case "$line" in "" | "#"* | *[!0-9a-f\ ]*) continue ;; esac' \
+  "skips a line with a character no SHA has"
+breaks exception_file_missing '|| fail "$exceptions_file is missing: it lists the direct pushes a release manager has read and excused"' '|| raw=' \
+  "goes on without the list"
+breaks exception_reason_controls 'is a direct push, excused by $exceptions_file: $(plain "$(excuse "$sha")")' 'is a direct push, excused by $exceptions_file: $(excuse "$sha")' \
+  "prints a reason as it is"
+breaks exception_listed 'reason=${reason%"${reason##*[![:space:]]}"}' ':' \
+  "keeps the padding after a reason"
 breaks shallow '[ "$(git rev-parse --is-shallow-repository)" = false ] ||' 'true ||' \
   "checks a shallow clone"
 
