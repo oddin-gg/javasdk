@@ -9,6 +9,7 @@ import io.mockk.every
 import io.mockk.mockk
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -18,6 +19,7 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 // ScheduledExecutorService.scheduleAtFixedRate stops all later runs of a task whose run
 // throws, and says nothing about it. The recovery timer and the static data refresh run as
@@ -113,6 +115,59 @@ class TaskManagerTest {
             // the test thread's flag, so that nothing after it is interrupted
             Thread.interrupted()
         }
+    }
+
+    @Test(timeout = 60_000)
+    fun aTaskInterruptedOnItsOwnThreadLeavesTheInterruptOnThatThread() {
+        val inTask = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val guarded = manager.guarded(task("blocked", {
+            inTask.countDown()
+            release.await()
+        }))
+        val flagAfterRun = AtomicReference<Boolean>()
+        val runner = Thread {
+            guarded.run()
+            flagAfterRun.set(Thread.currentThread().isInterrupted)
+        }
+        runner.start()
+        try {
+            assertTrue("the task did not start", inTask.await(10, TimeUnit.SECONDS))
+
+            // what close() does to a running task
+            runner.interrupt()
+            runner.join(10_000)
+
+            assertFalse("the run did not end", runner.isAlive)
+            assertEquals("the interrupt was not left on the thread that ran the task", true, flagAfterRun.get())
+            assertTrue(
+                "an interrupt was logged as a failure: ${appender.list.map { it.formattedMessage }}",
+                failureLogged("blocked").isEmpty()
+            )
+        } finally {
+            release.countDown()
+            runner.interrupt()
+            runner.join(10_000)
+        }
+    }
+
+    @Test(timeout = 60_000)
+    fun aPeriodicTaskThatWasInterruptedOnceRunsAgain() {
+        // the interrupt of one run (a thread of the pool, not close()) is not an end of the task
+        val runs = AtomicInteger()
+        val ranAgain = CountDownLatch(1)
+        manager.startTaskPeriodically(task("interrupted", {
+            if (runs.incrementAndGet() == 1) {
+                throw InterruptedException("stop")
+            }
+            ranAgain.countDown()
+        }))
+
+        assertTrue("the task did not run again after it was interrupted", ranAgain.await(10, TimeUnit.SECONDS))
+        assertTrue(
+            "an interrupt was logged as a failure: ${appender.list.map { it.formattedMessage }}",
+            failureLogged("interrupted").isEmpty()
+        )
     }
 
     @Test(timeout = 60_000)
