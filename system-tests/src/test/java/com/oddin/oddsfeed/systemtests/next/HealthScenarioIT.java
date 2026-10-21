@@ -12,6 +12,7 @@ import com.oddin.oddsfeedsdk.subscribe.FeedHealth;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 import org.junit.jupiter.api.Test;
 
@@ -84,22 +85,39 @@ class HealthScenarioIT {
                     .isNotEmpty()
                     .allSatisfy((name, value) -> assertThat(value)
                             .as(name)
-                            .isGreaterThanOrEqualTo(counted(opened).get(name)));
+                            .isGreaterThanOrEqualTo(counted(opened).getOrDefault(name, 0L)));
         }
     }
 
-    /** What the health counted: the totals of the transport, the alives and the recoveries, which only grow. */
+    /**
+     * What the health counted: every value of {@code counters()} that only grows, as the totals of the
+     * transport, the alives, the sessions, the recovery, the catalogs, the caches and the events.
+     */
     private static Map<String, Long> counted(FeedHealth health) {
         return health.counters().entrySet().stream()
                 .filter(entry -> isTotal(entry.getKey()))
                 .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
+    /**
+     * Whether a counter only grows. The ones that do not are named: a state, a flag, a queue's size,
+     * the keys failing now and for how long a catalog has served stale; whatever else is added
+     * counts, and is held to its total.
+     */
     private static boolean isTotal(String name) {
-        if (name.equals("alives.queued")) {
-            // the alives waiting now, which comes and goes
+        if (name.equals("state")
+                || name.startsWith("component.")
+                || name.equals("transport.connected")
+                || name.equals("alives.queued")) {
             return false;
         }
-        return name.equals("transport.reconnects") || name.startsWith("alives.") || name.startsWith("recovery.");
+        if (name.startsWith("session.") || name.startsWith("catalog.")) {
+            var gauge = name.substring(name.lastIndexOf('.') + 1);
+            return !GAUGES.contains(gauge);
+        }
+        return true;
     }
+
+    /** The last part of the name of a session's or a catalog's value that comes and goes. */
+    private static final Set<String> GAUGES = Set.of("state", "lagging", "queue_depth", "stale_for_millis", "failing");
 }
