@@ -417,9 +417,10 @@ public final class OddsFeedConfiguration {
     }
 
     /**
-     * Whether every attempt of an API call is logged at INFO, with its method, URI, status and
-     * latency: not unless set. The global listener's {@code onApiCall} hears them either way. New in
-     * 1.0.
+     * Whether every attempt of an API call is logged at INFO under the logger {@code
+     * com.oddin.oddsfeedsdk.api-calls}, with its method, URI, status and latency: not unless set. The
+     * log is complete; the global listener's {@code onApiCall} hears the attempts either way, but drops
+     * the oldest when its callbacks fall behind. New in 1.0.
      */
     public boolean isApiCallLogging() {
         return apiCallLogging;

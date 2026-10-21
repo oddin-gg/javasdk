@@ -108,7 +108,7 @@ is `DEGRADED` while the recovery reports it lagging, told at once.
 
 The SDK logs through SLF4J and nothing else: you pick the backend and the levels. A logger is named
 after its class, all under `com.oddin.oddsfeedsdk`, so you can turn a class or a package up or
-down. Normal traffic is quiet: an hour of it logs state changes at INFO and nothing per message.
+down; the one exception is the API call log, `com.oddin.oddsfeedsdk.api-calls`. Normal traffic is quiet: an hour of it logs state changes at INFO and nothing per message.
 
 | Level | What |
 |---|---|
@@ -137,7 +137,7 @@ password, and keep it out of anything that records the AMQP login.
 | Broker connection | `.internal.amqp` | `AmqpTransport` (connection, reopening, listeners), also the name of the AMQP client's own reports |
 | Recovery | `.internal.recovery` | `RecoveryMachine` (each recovery, producer up and down, the safety net), `RecoveryActor`, `EventRecoveryStatuses` |
 | Delivery | `.internal.dispatch` and `.internal.events` | `SessionDispatcher` (a session's messages and callbacks), `AliveDispatcher`, `EventsDispatcher` (global callbacks) |
-| REST | `.internal.rest` | `RestTransport` (the API call log) |
+| REST | `.internal.rest` | the API call log has a logger of its own, `com.oddin.oddsfeedsdk.api-calls` |
 | Messages and names | `.internal.message` | `MessageFactory`, `MarketNames`, `Naming` |
 | Entities and catalogs | `.internal.entity` and `.internal.descriptions` | `Entities`, `MatchCaches` (the eager preload), `SportsInfo`, `Strategy` (what the exception strategy turns into null) |
 | Producers | `.internal.producer` | `Producers` |
@@ -154,3 +154,48 @@ With Logback:
 <logger name="com.oddin.oddsfeedsdk.internal.recovery" level="DEBUG"/>
 <logger name="com.oddin.oddsfeedsdk.internal.amqp" level="DEBUG"/>
 ```
+
+### The API call log
+
+With `setApiCallLogging(true)` the SDK logs every attempt of every API call at INFO, retries and
+failures included, under the logger `com.oddin.oddsfeedsdk.api-calls`. That name stays across
+releases. One line per attempt:
+
+```
+API call GET https://api-mq.oddin.gg/v1/descriptions/en/markets: 200 in 42 ms, attempt 1
+```
+
+The method, the URI with its query, the status (0 when nothing answered), the latency and the
+attempt (2 for the first retry), then `, failed: ` and the reason when the attempt failed. The
+access token travels in a header, so it is not in the line.
+
+The log is complete: each line is written by the thread that made the call, before the call goes
+on. The global listener's `onApiCall` hears the same attempts, but on the feed's events thread,
+where they wait behind your callbacks; when 1,000 telemetry events are waiting, the oldest are
+dropped and counted in `events.telemetry_dropped`. Use `onApiCall` for metrics and the log for a
+record.
+
+To keep the API calls in a file of their own, with Logback:
+
+```xml
+<appender name="API_CALLS" class="ch.qos.logback.core.rolling.RollingFileAppender">
+    <file>logs/api-calls.log</file>
+    <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+        <fileNamePattern>logs/api-calls.%d{yyyy-MM-dd}.log</fileNamePattern>
+        <maxHistory>7</maxHistory>
+    </rollingPolicy>
+    <encoder>
+        <pattern>%d{ISO8601} %msg%n</pattern>
+    </encoder>
+</appender>
+
+<!-- additivity="false": in that file only, not in the main log too -->
+<logger name="com.oddin.oddsfeedsdk.api-calls" level="INFO" additivity="false">
+    <appender-ref ref="API_CALLS"/>
+</logger>
+```
+
+With an appender that writes as it goes, like this one, a slow disk slows the SDK's API calls
+down. Logback's `AsyncAppender` takes the writing off the SDK's threads, but by default it discards
+INFO lines once its queue is 80 % full: set its `discardingThreshold` to 0 and leave `neverBlock`
+off to keep the record complete.

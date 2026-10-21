@@ -20,8 +20,10 @@ public final class Quickstart {
     public static void main(String[] args) throws InterruptedException {
         // To see every call the SDK makes to the API, set setApiCallLogging(true) on the
         // configuration builder (see ExampleConfig): one INFO line per attempt, retries included,
-        // with its method, URI, status and latency. Or take each attempt in the global listener's
-        // onApiCall, as LoggingGlobalListener does at DEBUG, and hand it to your own log or metrics.
+        // with its method, URI, status and latency, under the logger com.oddin.oddsfeedsdk.api-calls
+        // (docs/health-and-logging.md shows how to send it to a file of its own). That log is
+        // complete. The global listener's onApiCall, which LoggingGlobalListener logs at DEBUG,
+        // hears the same attempts for metrics, but drops the oldest when the listener falls behind.
         // The access token travels in a header, so it is in neither.
         //
         // Creating the feed does nothing yet: it starts on the first call of a manager getter or of

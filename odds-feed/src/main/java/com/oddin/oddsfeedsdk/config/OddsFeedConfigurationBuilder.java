@@ -347,9 +347,11 @@ public final class OddsFeedConfigurationBuilder {
     }
 
     /**
-     * Whether every attempt of an API call is logged at INFO, with its method, URI, status and
-     * latency. Off unless set; the global listener's {@code onApiCall} hears them either way. New in
-     * 1.0.
+     * Whether every attempt of an API call is logged at INFO under the logger {@code
+     * com.oddin.oddsfeedsdk.api-calls}, with its method, URI, status and latency. Off unless set. The
+     * log is complete, since each line is written by the thread that made the call; the global
+     * listener's {@code onApiCall} hears the attempts either way, but drops the oldest when its
+     * callbacks fall behind. New in 1.0.
      */
     public OddsFeedConfigurationBuilder setApiCallLogging(boolean enabled) {
         this.apiCallLogging = enabled;

@@ -58,13 +58,17 @@ import org.slf4j.LoggerFactory;
  * 401 and 403 are also reported as refused, because no retry of any call can succeed after them.
  *
  * <p>Every attempt is reported to the feed's events, and logged at INFO when the configuration asks
- * for it.
+ * for it, under the logger {@value #CALL_LOGGER}: a name of its own that a client can route to a file
+ * of its own, and that stays when this class moves.
  *
  * <p>Safe for concurrent use.
  */
 public final class RestTransport implements AutoCloseable {
 
-    private static final Logger LOG = LoggerFactory.getLogger(RestTransport.class);
+    /** The name of the API call log, documented for clients: never change it. */
+    static final String CALL_LOGGER = "com.oddin.oddsfeedsdk.api-calls";
+
+    private static final Logger CALLS = LoggerFactory.getLogger(CALL_LOGGER);
 
     static final int MAX_ATTEMPTS = 3;
     static final Duration FIRST_BACKOFF = Duration.ofMillis(500);
@@ -207,6 +211,8 @@ public final class RestTransport implements AutoCloseable {
                 answer = attempt(method, uri, deadline);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+                // the request was sent: the API call log and the events hear of it like any attempt
+                report(method, uri, 0, started, attempt, e);
                 throw last.set(e, null).failure(method, uri, "interrupted");
             } finally {
                 // before any pause: the permit is for this attempt only
@@ -358,7 +364,7 @@ public final class RestTransport implements AutoCloseable {
     /** One line per attempt; the access token travels in a header, so the URI is safe to log. */
     private static void log(ApiCall call) {
         Exception failure = call.failure();
-        LOG.info(
+        CALLS.info(
                 "API call {} {}: {} in {} ms, attempt {}{}",
                 call.method(),
                 call.uri(),
