@@ -2332,8 +2332,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   approver read the check job's log and look at the diff of the release controls (`.github`,
   `scripts/release-*`, `RELEASING.md`, `mvnw`, `mvnw.cmd`, `.mvn/`, every `pom.xml`) since the previous
   release, or in full at the tag for the first release, which the check cannot protect itself against; the
-  baseline is committed only after the release managers reviewed those files at that commit. The approval
-  check does not see a base that moved after an approval: that gap stays open until "Require branches to be
-  up to date before merging" is on. The threat model (release managers trusted, a release manager's commits under another identity
+  baseline is committed only after the release managers reviewed those files at that commit; the rest of
+  the baseline (code that was reviewed in its pull requests and by CI, not approved on GitHub by a release
+  manager) is inherited without the approval check, an accepted residual risk for release candidates (decided
+  2026-10-21). The approval check does not see a base that moved after an approval: until "Require branches to
+  be up to date before merging" is on, the combined result of a rebase merge was not approved as a whole; the
+  approver's diff catches it for the release controls, and for the rest it is the same accepted risk, closed
+  before 1.0.0. The threat model (release managers trusted, a release manager's commits under another identity
   out of scope) is stated, and "When something fails" says what a refused tag leaves. Documentation only.
   No public API changes.
