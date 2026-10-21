@@ -675,6 +675,26 @@ class LiveStateTest {
         assertThat(timestampOf("m1")).isEqualTo(BASE + 1_010);
     }
 
+    /**
+     * The stamp floor is the update before the jump: a timely message stamped a millisecond below it
+     * is refused, one stamped exactly at it is not, the receipt and the gap being as good for both.
+     */
+    @Test
+    void aMessageStampedExactlyAtTheStampBeforeTheJumpTakesOverAndOneBelowDoesNot() {
+        assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).as("U").isTrue();
+        assertThat(message("m1", BASE + TEN_MINUTES, 900, AHEAD))
+                .as("F: newer by its stamp, handled after U, received before it")
+                .isTrue();
+        assertThat(message("m1", BASE + 999, 1_001, FRESH))
+                .as("C: a millisecond below U's stamp")
+                .isFalse();
+        assertThat(timestampOf("m1")).as("F's value stays").isEqualTo(BASE + TEN_MINUTES);
+        assertThat(message("m1", BASE + 1_000, 1_002, FRESH))
+                .as("C: exactly at U's stamp")
+                .isTrue();
+        assertThat(timestampOf("m1")).isEqualTo(BASE + 1_000);
+    }
+
     @Test
     void theStampBeforeTheJumpIsKeptThroughFurtherRaisesAndForgottenWhenAMessageTakesOver() {
         assertThat(message("m1", BASE + 1_000, 1_000, FRESH)).isTrue();
