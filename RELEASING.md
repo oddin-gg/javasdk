@@ -41,11 +41,14 @@ GitHub Packages.
       `main` points to on the last line of `scripts/release-approval-baseline`, in a reviewed
       PR merged before the first `v1.*` tag. The approval check starts from it for the first
       release, which has no release before it; until it is set, the check refuses the release
-      ("set the baseline"). The check trusts everything up to the baseline, and `next` merges
-      without a required approval, so before the SHA is committed the release managers review
-      the release controls in full at that commit - `.github/`, `scripts/release-*`,
-      `RELEASING.md`, `mvnw`, `mvnw.cmd`, `.mvn/` and every `pom.xml` - and the PR that sets the
-      baseline says that they did.
+      ("set the baseline"). The check trusts everything up to the baseline. The code that reached
+      `next` before the rename was reviewed in its pull requests and by CI, but not approved on
+      GitHub by a release manager, because `next` merges without a required approval. So before
+      the SHA is committed the release managers review the release controls in full at that
+      commit - `.github/`, `scripts/release-*`, `RELEASING.md`, `mvnw`, `mvnw.cmd`, `.mvn/` and
+      every `pom.xml` - and the PR that sets the baseline says that they did. The rest of the
+      baseline is inherited without the approval check: an accepted residual risk for release
+      candidates (decided 2026-10-21).
 - [ ] **Release managers' logins.** `scripts/release-managers` lists the release managers'
       GitHub logins, one a line, any case, comments starting with `#`. Keep it equal to the
       release managers' team: change it in a reviewed PR whenever someone joins or leaves, before
@@ -62,9 +65,9 @@ GitHub Packages.
       "Before 1.0.0" is done, the check job's approval check ("Pre-release checks") makes an
       approval count for the PR's final commit, but not for the result of rebasing it onto a base
       that moved after the approval: that gap stays open until "Require branches to be up to date
-      before merging" is on. The approver of the publish trusts the
-      whole merge commit - `mvnw`, the POMs, the plugins, the code - since the approved job
-      builds and signs from it with the secrets at hand.
+      before merging" is on ("Before 1.0.0"). The approver of the publish trusts the whole merge
+      commit - `mvnw`, the POMs, the plugins, the code - since the approved job builds and signs
+      from it with the secrets at hand.
 
       `next` is deliberately not protected this way: its PRs merge without a required
       approval. That is why releases never come from it - the check refuses a commit that is on
@@ -139,11 +142,13 @@ Until the settings below are on, GitHub itself lets an approval outlive the comm
 it. For releases the check job's approval check covers most of that ("Pre-release checks"): it
 refuses a tag unless every PR merged since the previous release was approved for its final
 commit, so a release candidate goes out on that check. It does not cover a base that moved after
-the approval: it asks about each PR's final head, not about the result of rebasing it onto
-`main` as it was at the merge. That gap stays open until "Require branches to be up to date
-before merging" is on; for the release controls the approver's diff in "Every release", step 5,
-covers it. The settings are hardening on top of the check, and a second line if it ever fails
-to run. Set them up before the first final release.
+the approval, because it asks about each PR's final head. Until "Require branches to be up to
+date before merging" is on, a PR approved on its final head can be rebase-merged onto a `main`
+that moved, and the combined result - release controls or SDK source - was not approved as a
+whole. For the release controls the approver's diff in "Every release", step 5, catches it; for
+the rest it is an accepted residual risk for release candidates (decided 2026-10-21), closed
+before 1.0.0. The settings are hardening on top of the check, and a second line if it ever
+fails to run. Set them up before the first final release.
 
 - [ ] **Stricter branch protection on `main`**, all together:
       - "Dismiss stale pull request approvals when new commits are pushed";
@@ -307,9 +312,12 @@ subkey alone, as in "The signing key in the environment is suspected leaked".
    whole commit is trusted, not just `.github/`: the approved job runs that commit's `mvnw`,
    POMs and plugins with the token and the key, so what makes it trustworthy is that the final
    commit of every PR in it was approved by a release manager, and that the release controls
-   were looked at. The first covers a stale approval, not a base that moved after one; for the
-   release controls the second covers that too, for the rest of the code only "Before 1.0.0"
-   does.
+   were looked at. The first covers a stale approval, not a base that moved after one: until
+   "Require branches to be up to date before merging" is on, a PR approved on its final head can
+   be rebase-merged onto a `main` that moved, and the combined result - release controls or SDK
+   source - was not approved as a whole. For the release controls the diff above catches it; for
+   the rest it is an accepted residual risk for release candidates (decided 2026-10-21), closed
+   before 1.0.0.
    The checks inside a tagged `release.yml` are only as trustworthy as that diff.
 6. **Check the result:** the version in the portal's Deployments as Published, then on
    `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/` (it shows up within about 30
@@ -413,7 +421,9 @@ next attempt is a new version - the next release candidate number, or the next p
   any other failed tag and is not reused: the missing approval is given on the PR's final
   commit, by a release manager who did not write it, and the next version is tagged on a new
   commit. The refused tag has no release, so the next check starts again from the previous
-  published release and asks about the same PRs.
+  published release and asks about the same PRs. Any other refusal - a direct push, a commit
+  from no PR, a missing or empty `scripts/release-managers` - needs its cause fixed in a new
+  reviewed PR before a new tag.
 - **During publish:** look the deployment up in the portal. Failed validation published
   nothing: release the next version as above. If it shows Published (the wait timed out, or the
   run was cancelled or ended some other way), the version is out and a re-run would be refused:
