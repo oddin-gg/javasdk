@@ -2330,7 +2330,10 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   against deleting `main`, an explicit non-fast-forward rule). The ruleset lets an approval outlive later
   commits; `scripts/release-approval-check.sh` closes that for releases, so step 5 of "Every release" has the
   approver read the check job's log and look at the diff of the release controls (`.github`,
-  `scripts/release-*`, `RELEASING.md`) since the previous release, which the check cannot protect itself
-  against. The threat model (release managers trusted, a release manager's commits under another identity
+  `scripts/release-*`, `RELEASING.md`, `mvnw`, `mvnw.cmd`, `.mvn/`, every `pom.xml`) since the previous
+  release, or in full at the tag for the first release, which the check cannot protect itself against; the
+  baseline is committed only after the release managers reviewed those files at that commit. The approval
+  check does not see a base that moved after an approval: that gap stays open until "Require branches to be
+  up to date before merging" is on. The threat model (release managers trusted, a release manager's commits under another identity
   out of scope) is stated, and "When something fails" says what a refused tag leaves. Documentation only.
   No public API changes.
