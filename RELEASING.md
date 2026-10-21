@@ -41,7 +41,11 @@ GitHub Packages.
       `main` points to on the last line of `scripts/release-approval-baseline`, in a reviewed
       PR merged before the first `v1.*` tag. The approval check starts from it for the first
       release, which has no release before it; until it is set, the check refuses the release
-      ("set the baseline").
+      ("set the baseline"). The check trusts everything up to the baseline, and `next` merges
+      without a required approval, so before the SHA is committed the release managers review
+      the release controls in full at that commit - `.github/`, `scripts/release-*`,
+      `RELEASING.md`, `mvnw`, `mvnw.cmd`, `.mvn/` and every `pom.xml` - and the PR that sets the
+      baseline says that they did.
 - [ ] **Release managers' logins.** `scripts/release-managers` lists the release managers'
       GitHub logins, one a line, any case, comments starting with `#`. Keep it equal to the
       release managers' team: change it in a reviewed PR whenever someone joins or leaves, before
@@ -55,8 +59,10 @@ GitHub Packages.
 
       The ruleset does not dismiss an approval when the PR changes, nor ask for the approval of
       its latest push, so a PR can merge on an approval of an earlier version of itself. Until
-      "Before 1.0.0" is done, the check job's approval check ("Pre-release checks") is what makes
-      an approval count for the code that was merged. The approver of the publish trusts the
+      "Before 1.0.0" is done, the check job's approval check ("Pre-release checks") makes an
+      approval count for the PR's final commit, but not for the result of rebasing it onto a base
+      that moved after the approval: that gap stays open until "Require branches to be up to date
+      before merging" is on. The approver of the publish trusts the
       whole merge commit - `mvnw`, the POMs, the plugins, the code - since the approved job
       builds and signs from it with the secrets at hand.
 
@@ -130,10 +136,14 @@ GitHub Packages.
 ## Before 1.0.0
 
 Until the settings below are on, GitHub itself lets an approval outlive the commits pushed after
-it. For releases the check job's approval check covers that gap ("Pre-release checks"): it
+it. For releases the check job's approval check covers most of that ("Pre-release checks"): it
 refuses a tag unless every PR merged since the previous release was approved for its final
-commit, so a release candidate goes out on that check. The settings are hardening on top of it,
-and a second line if the check ever fails to run. Set them up before the first final release.
+commit, so a release candidate goes out on that check. It does not cover a base that moved after
+the approval: it asks about each PR's final head, not about the result of rebasing it onto
+`main` as it was at the merge. That gap stays open until "Require branches to be up to date
+before merging" is on; for the release controls the approver's diff in "Every release", step 5,
+covers it. The settings are hardening on top of the check, and a second line if it ever fails
+to run. Set them up before the first final release.
 
 - [ ] **Stricter branch protection on `main`**, all together:
       - "Dismiss stale pull request approvals when new commits are pushed";
@@ -144,7 +154,8 @@ and a second line if the check ever fails to run. Set them up before the first f
         (non-fast-forward), not only by the pull request requirement.
 
       Without these settings an approval can outlive the code it was for: a commit pushed after
-      the approval, or a base that moved on, is not what was approved.
+      the approval, or a base that moved on, is not what was approved. The approval check closes
+      the first of these for releases, not the second.
 
 ## The signing key
 
@@ -267,26 +278,38 @@ subkey alone, as in "The signing key in the environment is suspected leaked".
      log says what it counted: the previous release it started from (or the baseline), how many
      commits and PRs, and any problem, which fails the job. If the check job is red, nothing
      here is to be approved.
-   - **Look at what changed in the release controls** since the previous release - the nearest
-     `v1.*` tag whose GitHub Release is published:
+   - **Look at what changed in the release controls** - `.github/`, `scripts/release-*`,
+     `RELEASING.md`, `mvnw`, `mvnw.cmd`, `.mvn/` and every `pom.xml` - since the previous
+     release, the nearest `v1.*` tag whose GitHub Release is published:
 
      ```
      git fetch origin --tags
-     git diff <previous published release> <tag> -- .github scripts/release-* RELEASING.md
+     git diff <previous published release> <tag> -- .github 'scripts/release-*' RELEASING.md mvnw mvnw.cmd .mvn ':(glob)**/pom.xml'
      ```
 
-     The tag runs these files from the tagged commit, so the checks cannot protect themselves:
-     a PR that weakened one of them was itself approved by the weakened check. Approve nothing
-     that weakens a check, changes `scripts/release-managers` for a reason you do not know, or
-     adds a path to the signing key or the token. For the first release the previous one is
-     the baseline commit.
+     For the first release there is no previous one, and the baseline is no reference: it was
+     reviewed once, and the files may have changed since. Read them in full at the tag
+     instead, as a diff from the empty tree:
+
+     ```
+     git diff "$(git hash-object -t tree /dev/null)" <tag> -- .github 'scripts/release-*' RELEASING.md mvnw mvnw.cmd .mvn ':(glob)**/pom.xml'
+     ```
+
+     (or `git show <tag>:<path>` for one file). The quotes keep the shell from expanding the
+     patterns. The tag runs these files from the tagged commit, so the checks cannot protect
+     themselves: a PR that weakened one of them was itself approved by the weakened check, and
+     the approval check does not see a base that moved after an approval. Approve nothing that
+     weakens a check, changes `scripts/release-managers` for a reason you do not know, or adds
+     a path to the signing key or the token.
 
    Being on `main` is not enough: the repository merges by rebase, which puts every
    intermediate commit of a PR on `main`, while the approval is for the PR's final commit. The
    whole commit is trusted, not just `.github/`: the approved job runs that commit's `mvnw`,
-   POMs and plugins with the token and the key, so what makes it trustworthy is that it is the
-   final state of PRs that a release manager approved at their final commit, and that the
-   controls above were looked at.
+   POMs and plugins with the token and the key, so what makes it trustworthy is that the final
+   commit of every PR in it was approved by a release manager, and that the release controls
+   were looked at. The first covers a stale approval, not a base that moved after one; for the
+   release controls the second covers that too, for the rest of the code only "Before 1.0.0"
+   does.
    The checks inside a tagged `release.yml` are only as trustworthy as that diff.
 6. **Check the result:** the version in the portal's Deployments as Published, then on
    `https://repo1.maven.org/maven2/gg/oddin/oddsfeed/odds-feed/` (it shows up within about 30
@@ -313,9 +336,11 @@ The **check** job (`scripts/release-check.sh`, then `scripts/release-approval-ch
   `scripts/release-approval-baseline`. A release manager is a login in `scripts/release-managers`
   who is neither the PR's author nor the author or committer of any of its commits. `main`'s
   ruleset neither dismisses a stale approval nor asks for the approval of the latest push, so this
-  check is what makes an approval count for the code that was merged. It names every PR that fails,
-  with the approvals it had; a GitHub call that fails or does not answer within a minute stops the
-  release;
+  check is what makes an approval count for each PR's final commit. It does not see a base that
+  moved after the approval (the result of rebasing the PR onto it), which stays open until
+  "Require branches to be up to date before merging" is on ("Before 1.0.0"). It names every PR
+  that fails, with the approvals it had; a GitHub call that fails or does not answer within a
+  minute stops the release;
 - any other tag names the same commit;
 - `release-notes/<version>.md` is missing, empty or not a plain file in the tagged commit (`gh`
   would follow a link into the public release text);
