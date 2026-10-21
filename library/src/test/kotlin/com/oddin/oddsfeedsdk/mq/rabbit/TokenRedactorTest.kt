@@ -2,6 +2,7 @@ package com.oddin.oddsfeedsdk.mq.rabbit
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -132,6 +133,100 @@ class TokenRedactorTest {
 
         assertNoToken(redacted)
         assertSame(redacted.suppressed[0], redacted.suppressed[1])
+    }
+
+    // the copy of a failure keeps its class (in its text), its stack trace and the redacted message
+    private fun assertCopyOf(original: Throwable, copy: Throwable) {
+        assertNotSame("${original.javaClass.name} was not copied", original, copy)
+        assertEquals(redactor.text(original.toString()), copy.toString())
+        assertTrue(copy.stackTrace.contentEquals(original.stackTrace))
+    }
+
+    @Test
+    fun aCleanFailureWhoseCauseIsACleanCauseOfAFailureNamingTheTokenIsCopiedAtEveryLevel() {
+        val c = IOException(named)
+        val b = IllegalStateException("clean middle", c)
+        val a = IOException("clean outside", b)
+
+        val redacted = redactor.throwable(a)
+
+        assertNoToken(redacted)
+        assertCopyOf(a, redacted)
+        assertCopyOf(b, redacted.cause!!)
+        assertCopyOf(c, redacted.cause!!.cause!!)
+        assertNull(redacted.cause!!.cause!!.cause)
+    }
+
+    @Test
+    fun aLongChainOfCleanCausesAboveAFailureNamingTheTokenIsCopiedAtEveryLevel() {
+        // a pass over the exceptions in whatever order they come would miss the token in a chain
+        // this long almost always, and a look at one level above it always
+        val depth = 12
+        val originals = ArrayList<Throwable>()
+        originals.add(IOException(named))
+        repeat(depth) { originals.add(IOException("clean $it", originals.last())) }
+        val outermost = originals.last()
+
+        val redacted = redactor.throwable(outermost)
+
+        assertNoToken(redacted)
+        var copy: Throwable? = redacted
+        for (original in originals.asReversed()) {
+            assertCopyOf(original, copy!!)
+            copy = copy.cause
+        }
+        assertNull(copy)
+    }
+
+    @Test
+    fun aFailureNamingTheTokenUnderACleanSuppressedExceptionWithACleanCauseIsReachedFromTheOutermost() {
+        val tainted = IOException(named)
+        val middle = IllegalStateException("clean cause", tainted)
+        val suppressed = IOException("clean suppressed", middle)
+        val outside = IOException("clean outside").also { it.addSuppressed(suppressed) }
+
+        val redacted = redactor.throwable(outside)
+
+        assertNoToken(redacted)
+        assertCopyOf(outside, redacted)
+        val copiedSuppressed = redacted.suppressed.single()
+        assertCopyOf(suppressed, copiedSuppressed)
+        assertCopyOf(middle, copiedSuppressed.cause!!)
+        assertCopyOf(tainted, copiedSuppressed.cause!!.cause!!)
+    }
+
+    @Test
+    fun aTaintBelowASuppressedExceptionOfACauseReachesTheOutermostAndLeavesCleanBranchesAlone() {
+        val tainted = IOException(named)
+        val deepSuppressed = IOException("clean deep suppressed", tainted)
+        val cleanSibling = IOException("clean sibling")
+        val cause = IllegalStateException("clean cause", cleanSibling).also { it.addSuppressed(deepSuppressed) }
+        val outside = IOException("clean outside", cause)
+
+        val redacted = redactor.throwable(outside)
+
+        assertNoToken(redacted)
+        assertCopyOf(outside, redacted)
+        assertCopyOf(cause, redacted.cause!!)
+        assertCopyOf(deepSuppressed, redacted.cause!!.suppressed.single())
+        assertCopyOf(tainted, redacted.cause!!.suppressed.single().cause!!)
+        // what carries no token is the original, however far down the copied chain it hangs
+        assertSame(cleanSibling, redacted.cause!!.cause)
+    }
+
+    @Test
+    fun aFailureNamingTheTokenReachedByACauseChainAndBySuppressionIsOneCopyOnBothPaths() {
+        val tainted = IOException(named)
+        val middle = IOException("clean middle", tainted)
+        val outside = IOException("clean outside", middle)
+        // the failure naming the token is suppressed on the outermost too: a second way to the same copy
+        outside.addSuppressed(tainted)
+
+        val redacted = redactor.throwable(outside)
+
+        assertNoToken(redacted)
+        assertCopyOf(middle, redacted.cause!!)
+        assertSame("one copy on both paths", redacted.cause!!.cause, redacted.suppressed.single())
     }
 
     @Test(timeout = 30_000)
