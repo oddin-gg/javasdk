@@ -727,6 +727,21 @@ case_exception_listed_with_pull_request() {
   expect fail "pull request #1 (Pull request 1) by alice has no approval of its final commit" "!excused" || return 1
 }
 
+# c2 is listed, the pull request listing none for it, and the closed pull requests of main have #1 by
+# its merge commit: #1 is not approved on its final commit, and judges c2, whatever the list says.
+# (c3 cannot be listed: the list is a file of c3, whose SHA is not known before it is made.)
+case_exception_listed_fallback_pull_request() {
+  exceptions_text='@c2@ it was a pull request
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c2
+  merged_as 1 c2
+  reviews 1 "APPROVED:$(head_of 100):bob"
+  expect fail "pull request #1 (Pull request 1) by alice has no approval of its final commit" "!excused" "!came from no pull request" || return 1
+}
+
 # a commit listed that is not in the range - the baseline itself, and one that is no commit here -
 # is ignored
 case_exception_outside_range() {
@@ -1031,7 +1046,7 @@ case_direct_push case_late_association case_late_last_round case_late_too_long c
 case_late_then_error case_merge_commit_fallback case_merge_commit_fallback_judged
 case_merge_commit_fallback_only_merge_commit case_merge_commit_fallback_not_merged case_merge_commit_fallback_error
 case_only_other_base case_exception_listed case_exception_no_line_end case_exception_unlisted case_exception_one_of_two
-case_exception_listed_with_pull_request case_exception_outside_range case_exception_no_reason case_exception_blank_reason
+case_exception_listed_with_pull_request case_exception_listed_fallback_pull_request case_exception_outside_range case_exception_no_reason case_exception_blank_reason
 case_exception_bad_sha case_exception_bad_line_after_good case_exception_file_missing case_exception_reason_controls
 case_every_failure_named case_previous_tag case_latest_tag
 case_refused_tag case_draft_release case_no_release_at_all case_api_error_release case_baseline case_placeholder case_baseline_malformed case_baseline_missing case_baseline_not_ancestor
@@ -1181,6 +1196,9 @@ breaks exception_listed_with_pull_request '    if [ -z "$found" ]; then
       still+=("$sha")' '    if [ -z "$found" ] || [ -n "$(excuse "$sha")" ]; then
       still+=("$sha")' \
   "excuses a listed commit though a pull request left it"
+breaks exception_listed_fallback_pull_request '  for sha in "${pending[@]}"; do' '  for sha in "${pending[@]}"; do
+    if [ -n "$(excuse "$sha")" ]; then excused+=("$sha"); continue; fi' \
+  "excuses a listed commit before it looks for a pull request that merged as it"
 breaks exception_outside_range 'commits=$(git rev-list "$start..$commit")' 'commits=$(git rev-list "$start..$commit")
 for listed in $(printf '"'"'%s'"'"' "$exceptions" | cut -d" " -f1); do
   printf '"'"'%s\n'"'"' "$commits" | grep -qx "$listed" || fail "$listed is not in the range"
