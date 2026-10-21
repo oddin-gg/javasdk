@@ -234,13 +234,18 @@ script=$real
 timeout=5
 # a directory put before the others on the PATH of the script under test, when a case sets it
 stubs=
+# the seconds a round waits before it asks again, as the script is told: none, so that no case waits, or
+# a number, or unset for the script's own
+retry_wait=0
 # expect pass|fail <text>...: runs the script under test for c3; the text must be in what it says,
 # unless it starts with ! and then must not be
 expect() {
   local want=$1 text got=pass
   shift
   : > "$api/calls"
-  (cd "$repo" && PATH=${stubs:+$stubs:}$work/bin:$PATH GH_STUB_API=$api GITHUB_REPOSITORY=example/repo APPROVAL_TIMEOUT=$timeout APPROVAL_RETRY_WAIT=0 \
+  (cd "$repo" || exit
+    export PATH=${stubs:+$stubs:}$work/bin:$PATH GH_STUB_API=$api GITHUB_REPOSITORY=example/repo APPROVAL_TIMEOUT=$timeout
+    if [ "$retry_wait" = unset ]; then unset APPROVAL_RETRY_WAIT; else export APPROVAL_RETRY_WAIT=$retry_wait; fi
     bash "$script" "${sha[c3]}") 2> "$work/err" || got=fail
   if [ "$got" != "$want" ]; then
     reason="expected $want, got $got: $(cat "$work/err")"
@@ -569,16 +574,20 @@ case_late_too_long() {
 }
 
 # two commits still without a pull request share the wait of a round
+# a sleep that waits for nothing and records what it was asked to wait, one line a call
+sleep_stub() {
+  mkdir -p "$work/sleep"
+  printf '#!/usr/bin/env bash\necho "$*" >> "%s/sleeps"\n' "$api" > "$work/sleep/sleep"
+  chmod +x "$work/sleep/sleep"
+  stubs=$work/sleep
+}
+
 case_late_two_commits() {
   new_repo root
   standard
   late c2 1
   late c3 1
-  # a sleep that waits for nothing and says it was called
-  mkdir -p "$work/sleep"
-  printf '#!/usr/bin/env bash\necho "$*" >> "%s/sleeps"\n' "$api" > "$work/sleep/sleep"
-  chmod +x "$work/sleep/sleep"
-  stubs=$work/sleep
+  sleep_stub
   local status=0
   expect pass "came from 2 pull request(s)" || status=1
   stubs=
@@ -587,6 +596,30 @@ case_late_two_commits() {
     reason="did not wait once for both commits: $(cat "$api/sleeps")"
     return 1
   fi
+}
+
+# the round waits as long as it is told, 10 seconds when it is not told
+case_late_wait() {
+  new_repo root
+  standard
+  late c3 1
+  sleep_stub
+  local status=0 told want
+  for told in 7 unset; do
+    want=${told/unset/10}
+    rm -f "$api/sleeps" "$api/commits/${sha[c3]}/pulls.count"
+    retry_wait=$told
+    expect pass "came from 2 pull request(s)" "asking again in $want s" || status=1
+    retry_wait=0
+    [ "$status" -eq 0 ] || break
+    if [ "$(cat "$api/sleeps")" != "$want" ]; then
+      reason="told $told, it waited: $(cat "$api/sleeps")"
+      status=1
+      break
+    fi
+  done
+  stubs=
+  return $status
 }
 
 # the second question for a commit fails: that is no empty answer
@@ -764,6 +797,26 @@ case_exception_listed_fallback_later_page() {
   merged_as 1 c2
   reviews 1 "APPROVED:$(head_of 100):bob"
   expect fail "pull request #1 (Pull request 1) by alice has no approval of its final commit" "!pull request #4" "!excused" "!came from no pull request" || return 1
+}
+
+# the closed pull requests of main answer their first page, the one without #1, and then fail: the
+# list is not whole, so the listed c2 is not excused on it
+case_exception_listed_fallback_partial() {
+  exceptions_text='@c2@ it was a pull request
+'
+  new_repo root
+  unset exceptions_text
+  standard
+  left c1 4
+  pull 4 carol "$(head_of 4)"
+  reviews 4 "APPROVED:$(head_of 4):bob"
+  pr_commits 4 carol:carol
+  left c2
+  jq -n '[range(1000; 1100) | {number: ., merged_at: "2026-10-01T00:00:00Z", base: {ref: "main"}, merge_commit_sha: "other\(.)"}]' > "$api/pulls.json"
+  merged_as 1 c2
+  reviews 1 "APPROVED:$(head_of 100):bob"
+  : > "$api/pulls.partial"
+  expect fail "could not ask GitHub for the pull requests merged into main" "!excused" "!pull request #1" || return 1
 }
 
 # the list is the tagged commit's: a line added to the file in the working tree after c3 excuses nothing
@@ -1075,11 +1128,11 @@ case_pusher_author case_pusher_committer case_other_manager_approves case_unlink
 case_web_edit case_many_commits case_commit_limit case_no_commits case_managers_empty case_managers_missing
 case_managers_bad_line case_no_author case_approval_no_login case_title_controls case_api_error_commits
 case_api_stall_commits case_commits_partial case_two_pulls_one_commit case_no_review
-case_direct_push case_late_association case_late_last_round case_late_too_long case_late_two_commits
+case_direct_push case_late_association case_late_last_round case_late_too_long case_late_two_commits case_late_wait
 case_late_then_error case_merge_commit_fallback case_merge_commit_fallback_judged
 case_merge_commit_fallback_only_merge_commit case_merge_commit_fallback_not_merged case_merge_commit_fallback_error
 case_only_other_base case_exception_listed case_exception_no_line_end case_exception_unlisted case_exception_one_of_two
-case_exception_listed_with_pull_request case_exception_listed_fallback_pull_request case_exception_listed_fallback_later_page
+case_exception_listed_with_pull_request case_exception_listed_fallback_pull_request case_exception_listed_fallback_later_page case_exception_listed_fallback_partial
 case_exception_working_tree case_exception_outside_range case_exception_no_reason case_exception_blank_reason
 case_exception_bad_sha case_exception_bad_line_after_good case_exception_file_missing case_exception_reason_controls
 case_every_failure_named case_previous_tag case_latest_tag
@@ -1177,6 +1230,12 @@ breaks late_too_long 'retries=${APPROVAL_RETRIES:-4}' 'retries=${APPROVAL_RETRIE
   "keeps asking one round too long"
 breaks late_two_commits '  sleep "$retry_wait"' '  for _ in "${pending[@]}"; do sleep "$retry_wait"; done' \
   "waits once for each commit still without a pull request"
+breaks late_wait '  sleep "$retry_wait"' '  sleep 0' \
+  "waits no time between the rounds"
+breaks late_wait 'retry_wait=${APPROVAL_RETRY_WAIT:-10}' 'retry_wait=10' \
+  "ignores the wait it is told"
+breaks late_wait 'retry_wait=${APPROVAL_RETRY_WAIT:-10}' 'retry_wait=${APPROVAL_RETRY_WAIT:-1}' \
+  "waits one second when it is told nothing"
 breaks late_then_error 'found=$(associated "$sha") || fail "could not ask GitHub which pull request left $sha"' 'found=$(associated "$sha" || true)' \
   "takes a failed question for none"
 breaks merge_commit_fallback '    found=$(printf '"'"'%s\n'"'"' "$merged" | awk -v sha="$sha" '"'"'$1 == sha { print $2 }'"'"')' '    found=' \
@@ -1238,6 +1297,10 @@ breaks exception_listed_fallback_pull_request '  for sha in "${pending[@]}"; do'
   "drops a listed commit without a pull request, neither judged nor named"
 breaks exception_listed_fallback_later_page 'ask --paginate "repos/$repository/pulls?state=closed&base=main&per_page=100"' 'ask "repos/$repository/pulls?state=closed&base=main&per_page=100"' \
   "reads the first page of the closed pull requests of main only"
+breaks exception_listed_fallback_partial '    || fail "could not ask GitHub for the pull requests merged into main"' '    || true' \
+  "goes on with the first pages of the closed pull requests of main when a later one fails"
+breaks exception_listed_fallback_partial '    || fail "could not ask GitHub for the pull requests merged into main"' '    || merged=' \
+  "takes a failure after the first page for no closed pull requests"
 breaks exception_working_tree 'raw=$(git show "$commit:$exceptions_file" 2> /dev/null)' 'raw=$(cat "$exceptions_file" 2> /dev/null)' \
   "reads the list of excused direct pushes from the working tree, not the tagged commit"
 breaks exception_outside_range 'commits=$(git rev-list "$start..$commit")' 'commits=$(git rev-list "$start..$commit")
