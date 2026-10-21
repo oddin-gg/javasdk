@@ -511,11 +511,14 @@ class ApiClientTest {
         api.respond(PRODUCER_RECOVERY, Reply.of(202, big));
         client.postRecovery("pre", 1, null);
         assertThat(api.requests("POST", "/v1/replay/stop")).as("not sent again").hasSize(1);
+        assertThat(api.requests("PUT", "/v1/replay/events/od:match:1"))
+                .as("not sent again")
+                .hasSize(1);
         assertThat(api.requests("POST", PRODUCER_RECOVERY)).as("not sent again").hasSize(1);
         assertThat(events.calls)
-                .extracting(ApiCall::failure)
-                .as("none is reported as failed")
-                .containsOnlyNulls();
+                .as("each call is reported once, as the success it was")
+                .extracting(ApiCall::method, ApiCall::status, ApiCall::attempt, ApiCall::failure)
+                .containsExactly(tuple("POST", 202, 1, null), tuple("PUT", 200, 1, null), tuple("POST", 202, 1, null));
 
         // a call that needs its body still fails on one over the limit, and is not read again
         api.respond(WHOAMI, Reply.of(200, big));
@@ -523,6 +526,7 @@ class ApiClientTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageContaining("the answer is over 50 bytes");
         assertThat(api.requests("GET", WHOAMI)).hasSize(1);
+        assertThat(events.calls).as("reported once more").hasSize(4);
 
         // and an error's body over its limit is cut short, the call failing by its status as ever
         api.respond("/v1/replay/clear", Reply.of(500, big));
@@ -530,6 +534,7 @@ class ApiClientTest {
                 .isInstanceOf(ApiException.class)
                 .hasMessageEndingWith("answered 500");
         assertThat(api.requests("POST", "/v1/replay/clear")).hasSize(1);
+        assertThat(events.calls).as("and once more").hasSize(5);
     }
 
     @Test
