@@ -2320,12 +2320,17 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   against a stub `gh`, and the pinned workflow forms and the workflow policy test hold the new step. No public
   API changes.
 - 2026-10-21, the release checklist is split by what the first final release needs on top of what the
-  candidate relies on. "Once, before the first release" keeps the namespace, the portal token, the signing
-  key, the environment `maven-central`, the tag ruleset (now written for `v0.*` and `v1.*` tags),
-  immutable releases, "only `release.yml` reacts to tags" and `main`'s ruleset as it is (a PR with an
-  approval and code owners' review, linear history, no bypass). A new "Before 1.0.0" holds only the
-  stricter branch protection: the three pull request settings, the rule against deleting `main` and an
-  explicit non-fast-forward rule. Until they are on, an approval can outlive later commits, so step 5 of
-  "Every release" now has the approver of the publish check, with a `gh` command, that the PR whose merge
-  commit is tagged has an approval for its final commit and nothing pushed after it; the claim that the
-  ruleset alone made the final code reviewed is gone. Documentation only. No public API changes.
+  candidate relies on, and describes the approval check that landed in the check job. "Once, before the
+  first release" keeps the namespace, the portal token, the signing key, the environment `maven-central`,
+  the tag ruleset (now written for `v0.*` and `v1.*` tags), immutable releases, "only `release.yml` reacts
+  to tags" and `main`'s ruleset as it is (a PR with an approval and code owners' review, linear history, no
+  bypass), and gains two items: the approval baseline (the commit `main` points to at the rename, committed
+  into `scripts/release-approval-baseline`) and the release managers' logins in `scripts/release-managers`.
+  A new "Before 1.0.0" holds only the stricter branch protection (the three pull request settings, the rule
+  against deleting `main`, an explicit non-fast-forward rule). The ruleset lets an approval outlive later
+  commits; `scripts/release-approval-check.sh` closes that for releases, so step 5 of "Every release" has the
+  approver read the check job's log and look at the diff of the release controls (`.github`,
+  `scripts/release-*`, `RELEASING.md`) since the previous release, which the check cannot protect itself
+  against. The threat model (release managers trusted, a release manager's commits under another identity
+  out of scope) is stated, and "When something fails" says what a refused tag leaves. Documentation only.
+  No public API changes.
