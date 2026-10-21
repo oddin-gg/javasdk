@@ -36,16 +36,16 @@ public final class ResumeAfterRestart {
         var feed = new OddsFeed(new LoggingGlobalListener(), ExampleConfig.fromEnvironment());
 
         // The producers are known once the feed has started, and the hook and the finally cover that
-        // start too: they save nothing while the list is empty, so a start that failed leaves the
-        // file as it was.
+        // start too. They save nothing while the list is empty, and it is filled only once every
+        // producer has its resume point back: a start that failed before that leaves the file as it was.
         var all = new CopyOnWriteArrayList<Producer>();
         // The hook saves after close(): that is when the points are final.
         Runtime.getRuntime().addShutdownHook(new Thread(() -> closeAndSave(feed, all, file), "close-feed"));
         try {
             var producers = feed.getProducerManager(); // this starts the feed, so it needs the API
-            all.addAll(producers.getAvailableProducers().values());
+            var available = producers.getAvailableProducers().values();
             var saved = load(file);
-            for (var producer : all) {
+            for (var producer : available) {
                 var id = producer.getId();
                 long since = Long.parseLong(saved.getProperty(Long.toString(id), "0"));
                 try {
@@ -57,6 +57,7 @@ public final class ResumeAfterRestart {
                     producers.setProducerRecoveryFromTimestamp(id, 0);
                 }
             }
+            all.addAll(available);
 
             feed.getSessionBuilder()
                     .setMessageInterest(MessageInterest.ALL)
