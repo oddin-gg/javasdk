@@ -1,49 +1,40 @@
 Java SDK
 ----------------
 
-> **Java SDK 1.0 is being built on the `next` branch.** The design is in [NEXT.md](NEXT.md).
-> The new build is Maven: run `./scripts/fetch-sdk.sh` once, then `./mvnw verify` from the repo
-> root. The script puts the published SDK the system tests run against into your local Maven
-> repository and checks it against the digests this repo records. It downloads the SDK from its
-> public GitHub release, so it needs no token; only a version whose release carries no jar
-> (0.0.54) needs a GitHub token with `read:packages` in `GITHUB_TOKEN`, and the script then reads
-> it from the packages registry. Running the build without the script leaves Maven to fetch the
-> SDK from that registry - with the same token in `~/.m2/settings.xml` under the server id
-> `oddin-github`, the id clients use - and the check to the tests instead of doing it first. The
-> build needs JDK 25 and `unzip` (the wrapper checks the distribution against a pinned checksum,
-> and that pin is the zip's).
-> The system tests also need Docker: they run the feed's message broker in a container through
-> Testcontainers (with colima, see Testcontainers' notes on `DOCKER_HOST` and
-> `TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`). To run them against another published SDK, give
-> the script and Maven the same version: `MAVEN_ARGS=-Dsdk.version=0.0.57 ./scripts/fetch-sdk.sh`,
-> then `./mvnw verify -Dsdk.version=0.0.57`. To run them against the 1.0 SDK this build makes,
-> add `-Dsdk.next` (any value, it only has to be set): `./mvnw verify -Dsdk.next`, or
-> `./mvnw verify -Dsdk.next -pl system-tests -am` for just the system tests and what they need -
-> `-am` matters, as the tests need odds-feed packaged in the same run, not resolved from
-> elsewhere; nothing needs fetching. Setting `sdk.version` to the 1.0 version alone is not enough.
-> The scenarios 1.0 does not pass yet are listed in
-> `system-tests/src/test/resources/pending-on-1.0.txt`: against 1.0 a listed test that fails is
-> reported as skipped with the list's reason, and one that passes fails the build until its line
-> is removed; against 0.0.x the list is ignored. The build fails on any compiler, Error Prone or
-> NullAway warning and on unformatted code; `./mvnw spotless:apply` formats it (Palantir Java
-> Format). `git blame --ignore-revs-file .git-blame-ignore-revs` skips the one-time reformat,
-> as GitHub already does. The old 0.0.x SDK (Kotlin, Gradle, JDK 8) is on the `release/0.x`
-> branch, in `library/`; it is no longer in this tree.
+The Java SDK for the Oddin.gg odds feed and API. It takes care of the connection, the data binding
+and the other issues of connecting to the API and the feed, so that an integration is much smoother
+and easier.
 
-Purpose of this SDK is to make integration process much smoother and easier. This SDK should take care of all connection, 
-data binding and other issues related to connection to API and Feed.
+### Versions
+
+**1.0** is `gg.oddin.oddsfeed:odds-feed` on Maven Central. It needs Java 25 and no token. The
+latest version is the release candidate `1.0.0-rc.1`:
+
+```xml
+<dependency>
+  <groupId>gg.oddin.oddsfeed</groupId>
+  <artifactId>odds-feed</artifactId>
+  <version>1.0.0-rc.1</version>
+</dependency>
+```
+
+**0.0.x** (Java 8, `com.oddin.oddsfeed:odds-feed` on GitHub Packages) lives on the `release/0.x`
+branch and gets critical fixes until 31 March 2027. To move to 1.0, see the
+[upgrade guide](docs/upgrade-guide.md).
 
 ### Documentation for 1.0
 
+* [Upgrade guide](docs/upgrade-guide.md): from 0.0.x to 1.0, what to change and every difference in behaviour
 * [Integration guide](docs/integration-guide.md): dependency, configuration, sessions and listeners,
   closing, resuming after a restart, the onboarding checklist, delivery guarantees, replay
 * [Configuration](docs/configuration.md): every option with its default and bounds, preload locales
 * [Health and logging](docs/health-and-logging.md): `getHealth()`, health events, thresholds, log levels and logger names
 * [FAQ](docs/faq.md)
 * [Examples](examples/README.md): small runnable examples of 1.0 (start, resume after a restart, event recovery, replay)
+* [Deprecation policy](docs/deprecation-policy.md): what a client can rely on within 1.x
 * [NEXT.md](NEXT.md): the design the above is checked against
 
-The examples below show the API of both lines; 1.0 is `gg.oddin.oddsfeed:odds-feed` on Maven Central.
+The examples below show the API, which is the same in both lines.
 
 ### How to start
 
@@ -135,4 +126,32 @@ oddsFeed.getReplayManager().clear();
 
 You should start receiving event odds via provided listener.
 
- 
+### Building from source
+
+The build of 1.0 is Maven: run `./scripts/fetch-sdk.sh` once, then `./mvnw verify` from the repo
+root. The script puts the published SDK the system tests run against into your local Maven
+repository and checks it against the digests this repo records. It downloads the SDK from its
+public GitHub release, so it needs no token; only a version whose release carries no jar
+(0.0.54) needs a GitHub token with `read:packages` in `GITHUB_TOKEN`, and the script then reads
+it from the packages registry. Running the build without the script leaves Maven to fetch the
+SDK from that registry - with the same token in `~/.m2/settings.xml` under the server id
+`oddin-github`, the id clients use - and the check to the tests instead of doing it first. The
+build needs JDK 25 and `unzip` (the wrapper checks the distribution against a pinned checksum,
+and that pin is the zip's).
+The system tests also need Docker: they run the feed's message broker in a container through
+Testcontainers (with colima, see Testcontainers' notes on `DOCKER_HOST` and
+`TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE`). To run them against another published SDK, give
+the script and Maven the same version: `MAVEN_ARGS=-Dsdk.version=0.0.57 ./scripts/fetch-sdk.sh`,
+then `./mvnw verify -Dsdk.version=0.0.57`. To run them against the 1.0 SDK this build makes,
+add `-Dsdk.next` (any value, it only has to be set): `./mvnw verify -Dsdk.next`, or
+`./mvnw verify -Dsdk.next -pl system-tests -am` for just the system tests and what they need -
+`-am` matters, as the tests need odds-feed packaged in the same run, not resolved from
+elsewhere; nothing needs fetching. Setting `sdk.version` to the 1.0 version alone is not enough.
+The scenarios 1.0 does not pass yet are listed in
+`system-tests/src/test/resources/pending-on-1.0.txt`: against 1.0 a listed test that fails is
+reported as skipped with the list's reason, and one that passes fails the build until its line
+is removed; against 0.0.x the list is ignored. The build fails on any compiler, Error Prone or
+NullAway warning and on unformatted code; `./mvnw spotless:apply` formats it (Palantir Java
+Format). `git blame --ignore-revs-file .git-blame-ignore-revs` skips the one-time reformat,
+as GitHub already does. The 0.0.x SDK (Kotlin, Gradle, JDK 8) is on the `release/0.x` branch,
+in `library/`; it is not in this tree.
