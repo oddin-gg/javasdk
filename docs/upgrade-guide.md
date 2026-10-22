@@ -2,7 +2,7 @@
 
 ## Before you start
 
-- 1.0 needs **Java 25**. A client on Java 8 stays on 0.0.x, which gets critical fixes and additive wire fields until 31 March 2027. On 0.0.x, use 0.0.59 or later: it is a security release that checks the broker's certificate and host name, parses XML with DTDs and external entities off and keeps the access token out of the SDK's logs.
+- 1.0 needs **Java 25**. A client on Java 8 stays on 0.0.x, which gets critical fixes and additive wire fields until 31 March 2027. On 0.0.x, use 0.0.60 or later: 0.0.59 checks the broker's certificate and host name, parses XML with DTDs and external entities off and keeps the access token out of the SDK's logs, and 0.0.60 no longer sends the access token with your application's other HTTP requests.
 - 1.0 is **source compatible** with 0.0.x and not binary compatible. Recompile everything that uses the SDK, including your own libraries. A library of yours that was compiled against 0.0.x and is used with 1.0 can fail with `NoSuchMethodError`.
 - Packages and class names are unchanged: no import changes.
 
@@ -17,7 +17,7 @@ Maven:
 <dependency>
   <groupId>com.oddin.oddsfeed</groupId>
   <artifactId>odds-feed</artifactId>
-  <version>0.0.59</version>
+  <version>0.0.60</version>
 </dependency>
 
 <!-- after -->
@@ -32,7 +32,7 @@ Gradle:
 
 ```kotlin
 // before
-implementation("com.oddin.oddsfeed:odds-feed:0.0.59")
+implementation("com.oddin.oddsfeed:odds-feed:0.0.60")
 // after
 implementation("gg.oddin.oddsfeed:odds-feed:1.0.0")
 ```
@@ -94,7 +94,7 @@ If you are a Java 8 client, pin the last 0.0.x version before that release comes
 
 ## 4. Recompile and fix
 
-Differences that stop compilation or change a type, from [`odds-feed/src/test/resources/api/differences.txt`](../odds-feed/src/test/resources/api/differences.txt) (the list is complete, against 0.0.59; a test keeps it so):
+Differences that stop compilation or change a type, from [`odds-feed/src/test/resources/api/differences.txt`](../odds-feed/src/test/resources/api/differences.txt) (the list is complete, against 0.0.60; a test keeps it so):
 
 | What | What to do |
 | --- | --- |
