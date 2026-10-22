@@ -2,10 +2,9 @@
 
 A `v1.*` tag on the merge commit of a PR merged into `main` releases
 `gg.oddin.oddsfeed:odds-feed` to Maven Central. Releases - release candidates included - are
-cut from `main` only, never from `next`. `main` is the 1.0 line once ticket 44 of NEXT.md has
-renamed `next` to it: the Kotlin line then moves to `legacy/main`, with an archive tag, and
-`next` no longer exists. Until that rename there is nothing to release from: `release.yml` and the
-1.0 code are on `next` alone. `.github/workflows/release.yml` does the work:
+cut from `main` only. `main` is the 1.0 line: on 22 October 2026 the branch `next` was renamed
+to it, the Kotlin line moved to `legacy/main` with the archive tag `archive/kotlin-main`, and
+`next` no longer exists. `.github/workflows/release.yml` does the work:
 
 1. **check** - refuses the tag unless every pre-release check below passes.
 2. **build** - the branch CI (`next.yml`) on the commit the check accepted, at the tag's
@@ -38,13 +37,14 @@ GitHub Packages.
       public half is on `keyserver.ubuntu.com` and `keys.openpgp.org`, where Central looks for
       it; its primary's fingerprint is the repository variable `RELEASE_KEY_FINGERPRINT`; the
       subkey's expiry date is in this file and a reminder is set.
-- [ ] **Approval baseline.** At the rename of `next` to `main`, put the full SHA of the commit
-      `main` points to on the last line of `scripts/release-approval-baseline`, in a reviewed
-      PR merged before the first `v1.*` tag. The approval check starts from it for the first
-      release, which has no release before it; until it is set, the check refuses the release
+- [ ] **Approval baseline.** The rename of `next` to `main` happened on 22 October 2026, and the
+      baseline is the commit `main` pointed to then, `b5d348f`. Put its full SHA on the last
+      line of `scripts/release-approval-baseline`, in a reviewed PR merged before the first
+      `v1.*` tag. The approval check starts from it for the first release, which has no release
+      before it; until it is set, the check refuses the release
       ("set the baseline"). The check trusts everything up to the baseline. The code that reached
       `next` before the rename was reviewed in its pull requests and by CI, but not approved on
-      GitHub by a release manager, because `next` merges without a required approval. So before
+      GitHub by a release manager, because `next` merged without a required approval. So before
       the SHA is committed the release managers review the release controls in full at that
       commit - `.github/`, `scripts/release-*`, `RELEASING.md`, `mvnw`, `mvnw.cmd`, `.mvn/` and
       every `pom.xml` - and the PR that sets the baseline says that they did. The rest of the
@@ -74,10 +74,9 @@ GitHub Packages.
       commit - `mvnw`, the POMs, the plugins, the code - since the approved job builds and signs
       from it with the secrets at hand.
 
-      `next` is deliberately not protected this way: its PRs merge without a required
-      approval. That is why releases never come from it - the check refuses a commit that is on
-      `next` but not on `main` - and why the rename described at the top is what makes a release
-      possible.
+      A PR into `main` needs a release manager's approval, which is why releases come from
+      `main` only. `next`, which was not protected this way and merged its PRs without a required
+      approval, no longer exists; the check still refuses a commit that is not on `main`.
       `.github/CODEOWNERS` names the release managers' team as owner of the whole repository
       (`*`), so that every change needs a release manager's review, whatever path a release
       script reaches. The lines after it say what the release depends on: what the publish job
@@ -272,10 +271,10 @@ subkey alone, as in "The signing key in the environment is suspected leaked".
    commit anyway: it may not share a commit with its last release candidate.
 4. **Tag the merge commit of the notes PR on `main` and push the tag** - or the current tip of
    `main`, which is always the merge commit of the last PR merged. Not an older commit on
-   `main`, and nothing from `next`: see step 5. Publish jobs for one version never overlap:
-   one runs, at most one waits, and a newer run replaces a waiting one; different versions
-   don't wait for each other. A version is never uploaded twice because Central refuses one it
-   has, as does the check job's lookup.
+   `main`, and nothing from any other branch: see step 5. Publish jobs for one version never
+   overlap: one runs, at most one waits, and a newer run replaces a waiting one; different
+   versions don't wait for each other. A version is never uploaded twice because Central
+   refuses one it has, as does the check job's lookup.
 
    ```
    git fetch origin
@@ -345,10 +344,10 @@ The **check** job (`scripts/release-check.sh`, then `scripts/release-approval-ch
 - the tag, as origin has it, no longer names the commit the run was started for (moved after
   the push, by someone who may bypass the tag ruleset: tags cannot be moved back, so release a
   new version) - the same is asked again right before the upload;
-- the tagged commit is not on `main` (on `next` only, the message says so: `next` has no
-  required review), or is not the merge commit of a PR merged into `main` (an intermediate
-  commit of a rebase-merged PR is on `main`, but was never reviewed as a state of its own; a
-  PR merged into `next` counts for nothing);
+- the tagged commit is not on `main` (a clone that still has an old `next` is told the commit is
+  on it only: `next` had no required review), or is not the merge commit of a PR merged into
+  `main` (an intermediate commit of a rebase-merged PR is on `main`, but was never reviewed as a
+  state of its own; a PR merged into any other branch, `next` once, counts for nothing);
 - a PR merged into `main` since the previous release has no approval on GitHub for its final
   commit by a release manager who wrote none of it, or a commit since then came from no PR
   merged into `main` (a direct push; GitHub can list no PR for a commit shortly after its PR
@@ -416,7 +415,7 @@ tag still names the commit it checked and built (`scripts/release-tag-check.sh`)
 it was moved or deleted - a release may have waited days for its approval.
 
 The portal also refuses a version it already has, which covers the minutes before a published
-version appears in the repository. On every push to `next`, `scripts/release-check-test.sh`
+version appears in the repository. On every push to `main`, `scripts/release-check-test.sh`
 runs each of these cases against a scratch repository and a stub Central,
 `scripts/release-key-check-test.sh` runs the key check's against stub keyservers and keys it
 makes, `scripts/release-signing-key-check-test.sh` runs the secret's check against keys it
