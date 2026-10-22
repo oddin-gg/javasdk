@@ -3,4 +3,4 @@
 # has no v1.* tag before it to start from. One full SHA (40 hex digits) on the line below; it must
 # be an ancestor of every commit that is released. Until it is set the line holds the placeholder,
 # and the check refuses the release: set the baseline.
-unset
+b5d348f287c5f8712761c8f7fd99322251267257
