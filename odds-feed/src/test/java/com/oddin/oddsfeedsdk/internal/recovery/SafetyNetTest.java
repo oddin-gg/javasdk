@@ -871,29 +871,7 @@ class SafetyNetTest {
     void theNetResetsASessionThreeTimesPerCooldownWithBackoffThenTheSessionLags() {
         Harness feed = Harness.upWith(MessageInterest.ALL);
         long start = feed.now();
-        List<Long> resetAt = new ArrayList<>();
-        while (feed.now() - start < Duration.ofMinutes(10).toMillis()) {
-            int before = feed.calls.size();
-            boolean lagging = stale(
-                                    feed,
-                                    1,
-                                    OLD,
-                                    Duration.ofMinutes(10),
-                                    () -> feed.calls.size() > before || feed.machine.lagging(1))
-                            > 0
-                    && feed.machine.lagging(1);
-            if (lagging) {
-                break;
-            }
-            Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
-            Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
-            feed.accept(pre);
-            feed.accept(live);
-            resetAt.add((feed.now() - start) / 1_000);
-            feed.resetDone();
-            feed.complete(feed.lastSnapshot(PRE), 1);
-            feed.complete(feed.lastSnapshot(LIVE), 1);
-        }
+        List<Long> resetAt = resetUntilTheSessionLags(feed, start);
         assertThat(resetAt)
                 .as("seconds of the resets: the window, then 1 and 2 minutes apart")
                 .containsExactly(61L, 122L, 242L);
@@ -913,6 +891,30 @@ class SafetyNetTest {
         int before = feed.calls.size();
         stale(feed, 1, OLD, Duration.ofMinutes(10), () -> feed.calls.size() > before);
         assertThat((feed.now() - start) / 1_000).as("seconds to the next try").isEqualTo(661);
+    }
+
+    @Test
+    void aLaggingSessionKeepsTheProducerDownForTheProcessingDelayUntilItIsOnTimeAgain() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        resetUntilTheSessionLags(feed, feed.now());
+        assertThat(feed.machine.lagging(1)).isTrue();
+
+        // the net takes no producer down, the processing delay does: the session takes it three minutes late
+        ProducerStatusChange late = requireNonNull(feed.lastStatus(PRE));
+        assertThat(late.down()).isTrue();
+        assertThat(late.cause()).isEqualTo(StatusCause.PROCESSING_DELAY);
+        int changes = feed.statuses(PRE).size();
+        stale(feed, 1, OLD, Duration.ofMinutes(2), () -> false);
+        assertThat(feed.machine.lagging(1)).isTrue();
+        assertThat(feed.statuses(PRE)).as("down all the while it lags").hasSize(changes);
+
+        // on time again: the lag clears and the producer is back
+        stale(feed, 1, FRESH, Duration.ofSeconds(1), () -> false);
+        assertThat(feed.machine.lagging(1)).isFalse();
+        ProducerStatusChange back = requireNonNull(feed.lastStatus(PRE));
+        assertThat(back.down()).isFalse();
+        assertThat(back.cause()).isEqualTo(StatusCause.DELAY_STABILIZED);
+        assertThat(feed.statuses(PRE)).hasSize(changes + 1);
     }
 
     @Test
@@ -1010,6 +1012,34 @@ class SafetyNetTest {
         feed.accept(feed.lastSnapshot(PRE));
         feed.accept(feed.lastSnapshot(LIVE));
         assertThat(feed.resets).isEmpty();
+    }
+
+    /** The net's resets, each one taken and finished, until session 1 lags: the seconds of each from {@code start}. */
+    private List<Long> resetUntilTheSessionLags(Harness feed, long start) {
+        List<Long> resetAt = new ArrayList<>();
+        while (feed.now() - start < Duration.ofMinutes(10).toMillis()) {
+            int before = feed.calls.size();
+            boolean lagging = stale(
+                                    feed,
+                                    1,
+                                    OLD,
+                                    Duration.ofMinutes(10),
+                                    () -> feed.calls.size() > before || feed.machine.lagging(1))
+                            > 0
+                    && feed.machine.lagging(1);
+            if (lagging) {
+                break;
+            }
+            Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+            Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+            feed.accept(pre);
+            feed.accept(live);
+            resetAt.add((feed.now() - start) / 1_000);
+            feed.resetDone();
+            feed.complete(feed.lastSnapshot(PRE), 1);
+            feed.complete(feed.lastSnapshot(LIVE), 1);
+        }
+        return resetAt;
     }
 
     /**
