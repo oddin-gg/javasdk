@@ -11,24 +11,33 @@ import com.oddin.oddsfeedsdk.api.entities.sportevent.Match;
 import com.oddin.oddsfeedsdk.config.OddsFeedConfiguration;
 import com.oddin.oddsfeedsdk.exceptions.ApiException;
 import com.oddin.oddsfeedsdk.exceptions.InitException;
+import com.oddin.oddsfeedsdk.internal.recovery.ProducerStatusChange;
+import com.oddin.oddsfeedsdk.internal.recovery.StatusCause;
 import com.oddin.oddsfeedsdk.mq.entities.ProducerStatus;
 import com.oddin.oddsfeedsdk.schema.utils.URN;
 import com.oddin.oddsfeedsdk.subscribe.ApiCallEvent;
+import com.oddin.oddsfeedsdk.subscribe.CallbackFailure;
+import com.oddin.oddsfeedsdk.subscribe.ConnectionStateChange;
 import com.oddin.oddsfeedsdk.subscribe.GlobalEventsListener;
 import com.oddin.oddsfeedsdk.subscribe.HealthComponent;
 import com.oddin.oddsfeedsdk.subscribe.HealthEvent;
 import com.oddin.oddsfeedsdk.subscribe.HealthState;
+import com.oddin.oddsfeedsdk.subscribe.ProducerCauseChange;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -42,6 +51,7 @@ class OddsFeedTest {
     private static final String WHOAMI = "/v1/users/whoami";
     private static final String PRODUCERS = "/v1/descriptions/producers";
     private static final URN MATCH = URN.parse("od:match:198314");
+    private static final String SUMMARY = "/v1/sports/en/sport_events/od:match:198314/summary";
     private static final Duration WAIT = Duration.ofSeconds(10);
 
     private static final String FORBIDDEN = """
@@ -436,6 +446,272 @@ class OddsFeedTest {
             assertThat(Duration.ofNanos(System.nanoTime() - closing)).isLessThan(Duration.ofSeconds(2));
             assertThatThrownBy(feed::getBookMakerDetail).isInstanceOf(InitException.class);
         }
+    }
+
+    @Test
+    void anApiCallAnsweredOnceTheCloseHasBegunReachesNoListener() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            api.respond(
+                    SUMMARY,
+                    Reply.of(200, Fixtures.read("rest/match_summary/match_summary.xml"))
+                            .stallingMidBody(Duration.ofSeconds(30)));
+            var heard = new Heard(1);
+            var before = Thread.getAllStackTraces().keySet();
+            var feed = new OddsFeed(heard, configurationAgainst(api));
+            try {
+                feed.getBookMakerDetail();
+                var events = eventsThread(before);
+                var call = callOnAThread(feed);
+                api.awaitRequest("GET", SUMMARY);
+
+                // the feed is marked closed, and its REST client is not closed yet: the call is answered
+                // now, and the closer waits until the listener has heard of it, or cannot
+                feed.afterMarkedClosed = () -> {
+                    heard.closeBegun = true;
+                    api.releaseStalls();
+                    awaitDone(call);
+                    awaitHeardOrEnded(heard, events);
+                };
+                feed.close();
+
+                assertThat(call).as("the call was answered").isCompleted();
+                assertThat(heard.afterClose).as("events after close() began").isEmpty();
+            } finally {
+                api.releaseStalls();
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    void anApiCallTheCloseCutsOffReachesNoListener() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            api.respond(
+                    SUMMARY,
+                    Reply.of(200, Fixtures.read("rest/match_summary/match_summary.xml"))
+                            .stallingMidBody(Duration.ofSeconds(30)));
+            var heard = new Heard(1);
+            var before = Thread.getAllStackTraces().keySet();
+            var feed = new OddsFeed(heard, configurationAgainst(api));
+            try {
+                feed.getBookMakerDetail();
+                var events = eventsThread(before);
+                var call = callOnAThread(feed);
+                api.awaitRequest("GET", SUMMARY);
+
+                // the REST client is closed, which fails the call in flight; the closer waits until the
+                // call has been reported and the listener has heard of it, or cannot
+                feed.afterMarkedClosed = () -> heard.closeBegun = true;
+                feed.afterClientClosed = () -> {
+                    awaitDone(call);
+                    awaitHeardOrEnded(heard, events);
+                };
+                feed.close();
+
+                assertThat(call).as("the call was cut off").isCompletedExceptionally();
+                assertThat(heard.afterClose).as("events after close() began").isEmpty();
+            } finally {
+                api.releaseStalls();
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    void noEventOfAnySourceReachesTheListenerOnceTheCloseHasBegun() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var heard = new Heard(7);
+            var before = Thread.getAllStackTraces().keySet();
+            var feed = new OddsFeed(heard, configurationAgainst(api));
+            try {
+                feed.getBookMakerDetail();
+                var events = eventsThread(before);
+                var dispatcher = feed.events();
+
+                // every source of the feed's events reports once the feed is marked closed
+                feed.afterMarkedClosed = () -> {
+                    heard.closeBegun = true;
+                    dispatcher.up();
+                    var change = new ProducerStatusChange(1, true, false, StatusCause.STARTING, 1L);
+                    dispatcher.producerStatus(change);
+                    dispatcher.producerCause(change);
+                    dispatcher.eventRecoveryCompleted(1, MATCH, 1);
+                    dispatcher.fatal("late", null);
+                    dispatcher.health(new HealthEvent(
+                            HealthComponent.CATALOGS,
+                            null,
+                            HealthState.HEALTHY,
+                            HealthState.DEGRADED,
+                            "late",
+                            Instant.now()));
+                    dispatcher.callbackFailed("late", true, new IllegalStateException("late"), null);
+                    awaitHeardOrEnded(heard, events);
+                };
+                feed.close();
+
+                assertThat(heard.afterClose).as("events after close() began").isEmpty();
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
+    @Test
+    void aListenerOfApiCallsCanCloseTheFeedAndHearsNothingMore() throws Exception {
+        try (var api = FakeRestServer.start()) {
+            var holder = new CompletableFuture<OddsFeed>();
+            var closed = new CompletableFuture<Void>();
+            var heard = new Heard(0) {
+                @Override
+                public void onApiCall(ApiCallEvent call) {
+                    super.onApiCall(call);
+                    if (call.uri().getPath().contains("198314")) {
+                        holder.join().close();
+                        closeBegun = true;
+                        closed.complete(null);
+                    }
+                }
+            };
+            var before = Thread.getAllStackTraces().keySet();
+            var feed = new OddsFeed(heard, configurationAgainst(api));
+            holder.complete(feed);
+            try {
+                feed.getBookMakerDetail();
+                var events = eventsThread(before);
+                requireNonNull(feed.getSportsInfoManager().getMatch(MATCH)).getName(Locale.ENGLISH);
+
+                closed.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+                events.join(WAIT);
+                assertThat(events.isAlive())
+                        .as("the events thread ended after the callback")
+                        .isFalse();
+                assertThat(heard.afterClose).isEmpty();
+            } finally {
+                feed.close();
+            }
+        }
+    }
+
+    /** What the listener of a feed that is closed heard, once the test says the close has begun. */
+    private static class Heard implements GlobalEventsListener {
+        /** Callbacks of the events the test makes or awaits that came once {@link #closeBegun}. */
+        final List<String> afterClose = new CopyOnWriteArrayList<>();
+        /** Counted down by each of those callbacks, the ones heard in time too; the closer waits for it. */
+        final CountDownLatch awaited;
+
+        volatile boolean closeBegun;
+
+        Heard(int awaited) {
+            this.awaited = new CountDownLatch(awaited);
+        }
+
+        private void heard(String callback) {
+            if (closeBegun) {
+                afterClose.add(callback);
+            }
+            awaited.countDown();
+        }
+
+        @Override
+        public void onProducerStatusChange(ProducerStatus producerStatus) {
+            heard("onProducerStatusChange");
+        }
+
+        @Override
+        public void onConnectionDown() {}
+
+        @Override
+        public void onEventRecoveryCompleted(URN eventId, long requestId) {
+            heard("onEventRecoveryCompleted");
+        }
+
+        @Override
+        public void onConnectionStateChange(ConnectionStateChange change) {
+            heard("onConnectionStateChange");
+        }
+
+        @Override
+        public void onFatalError(String reason, @Nullable Throwable cause) {
+            if (reason.equals("late")) {
+                heard("onFatalError");
+            }
+        }
+
+        @Override
+        public void onApiCall(ApiCallEvent call) {
+            // the calls of the start are not the test's
+            if (call.uri().getPath().contains("198314")) {
+                heard("onApiCall");
+            }
+        }
+
+        @Override
+        public void onCallbackFailure(CallbackFailure failure) {
+            if (failure.callback().equals("late")) {
+                heard("onCallbackFailure");
+            }
+        }
+
+        @Override
+        public void onProducerCauseChange(ProducerCauseChange change) {
+            heard("onProducerCauseChange");
+        }
+
+        @Override
+        public void onHealthEvent(HealthEvent event) {
+            if (event.reason().equals("late")) {
+                heard("onHealthEvent");
+            }
+        }
+    }
+
+    /** The match's name read on a thread of its own: the API call it makes is the one in flight. */
+    private static CompletableFuture<String> callOnAThread(OddsFeed feed) {
+        var call = new CompletableFuture<String>();
+        Thread.startVirtualThread(() -> {
+            try {
+                call.complete(requireNonNull(feed.getSportsInfoManager().getMatch(MATCH))
+                        .getName(Locale.ENGLISH));
+            } catch (Throwable e) {
+                call.completeExceptionally(e);
+            }
+        });
+        return call;
+    }
+
+    private static void awaitDone(CompletableFuture<?> call) {
+        try {
+            call.get(WAIT.toSeconds(), TimeUnit.SECONDS);
+        } catch (ExecutionException e) {
+            // cut off: done
+        } catch (TimeoutException e) {
+            throw new AssertionError("the call did not end", e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /**
+     * Waits until the listener has heard what the test awaits, or the events thread has ended and
+     * never will: a feed that delivers after its close began ends in the first, one that does not in
+     * the second. Spins, so the events thread is not woken by a wait.
+     */
+    private static void awaitHeardOrEnded(Heard heard, Thread events) {
+        long until = System.nanoTime() + WAIT.toNanos();
+        while (heard.awaited.getCount() > 0
+                && events.getState() != Thread.State.TERMINATED
+                && System.nanoTime() < until) {
+            Thread.onSpinWait();
+        }
+    }
+
+    /** The events thread of the feed made since {@code before}. */
+    private static Thread eventsThread(Set<Thread> before) {
+        return Thread.getAllStackTraces().keySet().stream()
+                .filter(thread -> !before.contains(thread) && thread.getName().equals("oddsfeed-events"))
+                .findFirst()
+                .orElseThrow();
     }
 
     @Test

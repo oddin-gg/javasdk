@@ -118,6 +118,9 @@ public final class OddsFeed {
     /** A test's hook, run in {@link #close} as soon as the feed is marked closed, before any shutdown work. */
     volatile Runnable afterMarkedClosed = () -> {};
 
+    /** A test's hook, run in {@link #close} once the REST client is closed, where the calls it cut off are reported. */
+    volatile Runnable afterClientClosed = () -> {};
+
     public OddsFeed(GlobalEventsListener listener, OddsFeedConfiguration configuration) {
         this(listener, configuration, null, null, HealthMonitor.Log.SLF4J);
     }
@@ -398,6 +401,8 @@ public final class OddsFeed {
      * Stops delivering and releases everything the feed has: the broker connection, the sessions'
      * threads once their callbacks return, and what the start built. A message a session takes once
      * it has begun reaches no listener, as in 0.0.x: it is dropped, and the resume point covers it.
+     * Nor does any event of the feed's: what is reported once it has begun, the API calls it cuts off
+     * among it, is dropped, and so is what is still queued.
      * Ends a start or an open under way, which then fails. Waits for the feed's threads within one
      * shutdown timeout, five seconds unless the configuration sets it, for all of them together; an
      * interrupt does not cut short the wait for the sessions and the recovery, so the resume points
@@ -418,6 +423,9 @@ public final class OddsFeed {
             if (closed) {
                 return;
             }
+            // before the mark, so no event is delivered once the feed reads as closed: the REST client's
+            // calls the close cuts off, and the watchdog and the health told while it stops, reach no listener
+            events.stop();
             closed = true;
             built = core;
             calling = startingWith;
@@ -434,7 +442,6 @@ public final class OddsFeed {
         if (built == null && calling == null && run == null) {
             // never started, or its start failed and released what it built: nothing to say, but a
             // callback of the failed start's may still run
-            events.stop();
             watchdog.awaitStop(deadline);
             events.awaitStop(deadline);
             return;
@@ -450,7 +457,7 @@ public final class OddsFeed {
             // the REST client, so a callback waiting on a call returns at once
             built.close();
         }
-        events.stop();
+        afterClientClosed.run();
         watchdog.awaitStop(deadline);
         if (run != null) {
             run.awaitStop(deadline);
