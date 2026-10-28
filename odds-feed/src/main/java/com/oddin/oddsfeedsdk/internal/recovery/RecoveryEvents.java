@@ -42,7 +42,8 @@ public interface RecoveryEvents {
 
     /**
      * A session has fallen behind with the safety net's resets spent, or has caught up again. A
-     * lagging session is not a producer fault, so no producer goes down for it.
+     * lagging session is not a producer fault, so lagging takes no producer down; the processing
+     * delay still does while the session is that late.
      */
     default void lagging(int session, boolean lagging) {}
 }

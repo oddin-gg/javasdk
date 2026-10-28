@@ -70,7 +70,8 @@ import org.slf4j.LoggerFactory;
  * off for a producer whose last alive is older than two alive intervals, and paused for a producer
  * with a recovery in flight or a gap open. It resets each session at most {@link
  * RecoverySettings#resets()} times per cool-down, with backoff between resets; when spent the
- * session is lagging, and no producer goes down for it.
+ * session is lagging. Lagging takes no producer down, but a producer the session processes later
+ * than the maximum inactivity stays down for that delay until the session is on time again.
  *
  * <p><b>Time.</b> Every duration the machine measures between two local events - a producer's
  * inactivity, the deadlines of a recovery and of an event recovery, the backoffs, the cool-down, the
