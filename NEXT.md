@@ -237,8 +237,10 @@ types in packages whose name contains `internal`.
   started. An interrupt does not cut short the wait for the sessions, the alive
   dispatcher and the recovery actor, so the resume points are final when `close()` returns;
   it is set again before it does. A callback still running at the deadline is left to end on its own daemon
-  thread, and the log says so. The order: the recovery actor is told the feed is closing,
-  then every dispatcher is told to stop and each session's close is posted to the actor;
+  thread, and the log says so. The order: the events dispatcher is told to stop first, in
+  one step with the mark that the feed is closed, so no event of the feed's, the API calls the
+  close cuts off among them, reaches the listener once `close()` has begun; the recovery actor
+  is told the feed is closing, then every other dispatcher is told to stop and each session's close is posted to the actor;
   the dispatchers are waited for, then the actor, which handles what is queued within what
   is left of the deadline, then the connection closes, so the actor hears of no loss the
   close makes, and the sessions' queues drop what they still hold.
