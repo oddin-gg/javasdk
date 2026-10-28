@@ -329,11 +329,8 @@ public final class RestTransport implements AutoCloseable {
     private Attempt attempt(
             String method, URI uri, Deadline deadline, AtomicReference<HttpResponse.@Nullable ResponseInfo> info)
             throws InterruptedException {
-        CompletableFuture<HttpResponse<byte[]>> exchange = http.sendAsync(request(method, uri, deadline), response -> {
-            info.set(response);
-            headersArrived.run();
-            return response.statusCode() / 100 == 2 ? new Body(maxBytes, false) : new Body(maxErrorBytes, true);
-        });
+        var exchange = http.sendAsync(
+                request(method, uri, deadline), bodyHandler(maxBytes, maxErrorBytes, info, headersArrived));
         IOException failure;
         try {
             byte[] body = exchange.get(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS)
@@ -350,6 +347,24 @@ public final class RestTransport implements AutoCloseable {
         }
         exchange.cancel(true);
         return Attempt.of(info.get(), new byte[0], failure);
+    }
+
+    /**
+     * Static, and handed what it needs, because the HTTP client keeps the handler for as long as
+     * its connection lives: past the close of the transport, since an HTTP/2 connection's idle
+     * timeout stays registered with the client. A handler that held the transport would keep the
+     * client, the feed's events and everything behind them from ever being collected.
+     */
+    private static HttpResponse.BodyHandler<byte[]> bodyHandler(
+            int maxBytes,
+            int maxErrorBytes,
+            AtomicReference<HttpResponse.@Nullable ResponseInfo> info,
+            Runnable headersArrived) {
+        return response -> {
+            info.set(response);
+            headersArrived.run();
+            return response.statusCode() / 100 == 2 ? new Body(maxBytes, false) : new Body(maxErrorBytes, true);
+        };
     }
 
     private HttpRequest request(String method, URI uri, Deadline deadline) {
