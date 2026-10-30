@@ -268,7 +268,9 @@ subkey alone, as in "The signing key in the environment is suspected leaked".
 2. **Check `main` is green**, including the schema drift job.
 3. **Write the release notes** as `release-notes/<version>.md`, e.g.
    `release-notes/1.0.0-rc.1.md`, and merge them through a PR into `main`. A final needs this
-   commit anyway: it may not share a commit with its last release candidate.
+   commit anyway: it may not share a commit with its last release candidate. The same PR moves
+   the version in `README.md`, `docs/integration-guide.md` and `examples/README.md` to the new
+   one, so none of them names an older release as the latest.
 4. **Tag the merge commit of the notes PR on `main` and push the tag** - or the current tip of
    `main`, which is always the merge commit of the last PR merged. Not an older commit on
    `main`, and nothing from any other branch: see step 5. Publish jobs for one version never

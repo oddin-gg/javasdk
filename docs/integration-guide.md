@@ -25,16 +25,16 @@ packages are the 0.0.x packages (`com.oddin.oddsfeedsdk...`), so imports do not 
 <dependency>
   <groupId>gg.oddin.oddsfeed</groupId>
   <artifactId>odds-feed</artifactId>
-  <version>1.0.0-rc.1</version>
+  <version>1.0.0-rc.2</version>
 </dependency>
 ```
 
 ```kotlin
 // Gradle
-implementation("gg.oddin.oddsfeed:odds-feed:1.0.0-rc.1")
+implementation("gg.oddin.oddsfeed:odds-feed:1.0.0-rc.2")
 ```
 
-Use the newest 1.0 version; `1.0.0-rc.1` is the first release candidate. Nothing else is needed
+Use the newest 1.0 version; `1.0.0-rc.2` is the second release candidate. Nothing else is needed
 to fetch it: no registry and no token, unlike 0.0.x, which lives on GitHub Packages as
 `com.oddin.oddsfeed:odds-feed`.
 

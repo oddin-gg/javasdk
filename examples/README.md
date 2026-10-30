@@ -62,12 +62,12 @@ event URN, `Replay` the events to replay.
 <dependency>
   <groupId>gg.oddin.oddsfeed</groupId>
   <artifactId>odds-feed</artifactId>
-  <version>1.0.0-rc.1</version>
+  <version>1.0.0-rc.2</version>
 </dependency>
 ```
 
 ```kotlin
-implementation("gg.oddin.oddsfeed:odds-feed:1.0.0-rc.1")
+implementation("gg.oddin.oddsfeed:odds-feed:1.0.0-rc.2")
 ```
 
 Use the newest 1.0 version. Add an SLF4J backend, as `odds-feed-1.0/pom.xml` adds Logback: the
