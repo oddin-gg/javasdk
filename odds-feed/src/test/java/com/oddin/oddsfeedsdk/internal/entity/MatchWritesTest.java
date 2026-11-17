@@ -31,7 +31,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import javax.xml.datatype.DatatypeFactory;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /** What the API's responses and the feed's live status write about a match, from the schema's fixtures. */
 class MatchWritesTest {
@@ -212,6 +215,44 @@ class MatchWritesTest {
                 .as("the same period, read from either side")
                 .isEqualTo(requireNonNull(requireNonNull(live.get(MATCH)).get(PERIOD_SCORES))
                         .getFirst());
+    }
+
+    @ParameterizedTest
+    @CsvSource(nullValues = "absent", textBlock = """
+            clock_running="true",   true
+            clock_running="false",  false
+            '',                     absent
+            """)
+    void aLiveMessageSaysWhetherTheClockRuns(String attribute, @Nullable Boolean expected) throws DecodeException {
+        var xml = Fixtures.read("feed/odds_change/odds_change_ehockey_scoreboard.xml")
+                .replace("clock_running=\"false\"", attribute);
+        var message = (OFOddsChange)
+                FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES).decode(xml.getBytes(UTF_8));
+        live.feedWriteIfNewer(
+                MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(message.getSportEventStatus()));
+        var scoreboard = requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD));
+        assertThat(scoreboard.getClockRunning()).as("clock_running as sent").isEqualTo(expected);
+        assertThat(scoreboard.getTime())
+                .as("the rest of the scoreboard is read as before")
+                .isEqualTo(754);
+    }
+
+    @ParameterizedTest
+    @CsvSource(nullValues = "absent", textBlock = """
+            ' clock_running="true"',   true
+            ' clock_running="false"',  false
+            '',                        absent
+            """)
+    void aSummaryDoesTheSame(String attribute, @Nullable Boolean expected) throws DecodeException {
+        var xml = Fixtures.read("rest/match_summary/match_summary_cricket_scoreboard.xml")
+                .replace("elapsed_time=\"1800\"", "elapsed_time=\"1800\"" + attribute);
+        var summary = rest.decode(xml.getBytes(UTF_8), RAMatchSummaryEndpoint.class);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(summary.getSportEventStatus()), () -> false);
+        var scoreboard = requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD));
+        assertThat(scoreboard.getClockRunning()).as("clock_running as sent").isEqualTo(expected);
+        assertThat(scoreboard.getElapsedTime())
+                .as("the rest of the scoreboard is read as before")
+                .isEqualTo(1800);
     }
 
     @Test

@@ -282,7 +282,8 @@ final class MatchWrites {
                 s.getHomeWonCoinToss(),
                 s.getHomeBatting(),
                 s.getAwayBatting(),
-                s.getInning());
+                s.getInning(),
+                s.getClockRunning());
     }
 
     private static Scoreboard scoreboard(OFScoreboard s) {
@@ -321,6 +322,7 @@ final class MatchWrites {
                 s.getHomeWonCoinToss(),
                 s.getHomeBatting(),
                 s.getAwayBatting(),
-                s.getInning());
+                s.getInning(),
+                s.getClockRunning());
     }
 }

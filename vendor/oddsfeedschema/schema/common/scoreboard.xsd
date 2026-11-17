@@ -58,5 +58,7 @@
         <xs:attribute name="game_time" type="xs:int" use="optional"/>
         <xs:attribute name="elapsed_time" type="xs:int" use="optional"/>
         <xs:attribute name="remaining_game_time" type="xs:int" use="optional"/>
+        <!-- eHockey: true while the in-game clock runs, false while it stands, absent when unknown -->
+        <xs:attribute name="clock_running" type="xs:boolean" use="optional"/>
     </xs:attributeGroup>
 </xs:schema>

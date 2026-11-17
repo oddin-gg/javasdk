@@ -267,6 +267,49 @@ class FeedMessageGoldenTest {
     }
 
     @Test
+    @Golden("odds_change/odds_change_ehockey_scoreboard.xml")
+    void oddsChangeEhockeyScoreboard() {
+        var change = (OddsChange<?>) deliver("odds_change/odds_change_ehockey_scoreboard.xml");
+        // the one fixture of another match than the world's
+        assertMessage(change, 102L, URN.parse("od:match:198330"));
+        assertThat(change.getMarkets())
+                .extracting(
+                        Market::getId, Market::getSpecifiers, MarketWithOdds::getStatus, MarketWithOdds::isFavourite)
+                .containsExactly(tuple(1, Map.of("variant", "way:two", "way", "two"), MarketStatus.ACTIVE, false));
+        MatchStatus status = status(EventStatus.Live, 0, 1.0, 0.0, true);
+        assertPeriods(
+                status,
+                Map.of(
+                        "getPeriodType",
+                        "period",
+                        "getPeriodNumber",
+                        1,
+                        "getMatchStatusCode",
+                        0,
+                        "getHomeScore",
+                        1.0,
+                        "getAwayScore",
+                        0.0,
+                        "getHomeGoals",
+                        1,
+                        "getAwayGoals",
+                        0));
+        assertScoreboard(
+                status,
+                Map.of(
+                        "getHomeGoals",
+                        1,
+                        "getAwayGoals",
+                        0,
+                        "getTime",
+                        754,
+                        "getGameTime",
+                        754,
+                        "getClockRunning",
+                        false));
+    }
+
+    @Test
     @Golden("odds_change/odds_change_points_scoreboard.xml")
     void oddsChangePointsScoreboard() {
         var change = (OddsChange<?>) deliver("odds_change/odds_change_points_scoreboard.xml");
@@ -589,7 +632,11 @@ class FeedMessageGoldenTest {
     }
 
     private void assertMessage(EventMessage<?> message, @Nullable Long requestId) {
-        assertThat(message.getEvent().getId()).isEqualTo(MATCH);
+        assertMessage(message, requestId, MATCH);
+    }
+
+    private void assertMessage(EventMessage<?> message, @Nullable Long requestId, URN match) {
+        assertThat(message.getEvent().getId()).isEqualTo(match);
         assertThat(message.getEvent()).isInstanceOf(Match.class);
         assertThat(requireNonNull(message.getProducer()).getId()).isEqualTo(2);
         assertThat(message.getRequestId()).isEqualTo(requestId);

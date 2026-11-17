@@ -42,7 +42,9 @@ public final class Scoreboard {
     private final @Nullable Boolean homeBatting;
     private final @Nullable Boolean awayBatting;
     private final @Nullable Integer inning;
+    private final @Nullable Boolean clockRunning;
 
+    /** A scoreboard without the clock flag: {@link #getClockRunning()} is null. */
     public Scoreboard(
             @Nullable Integer currentCtTeam,
             @Nullable Integer homeWonRounds,
@@ -79,6 +81,87 @@ public final class Scoreboard {
             @Nullable Boolean homeBatting,
             @Nullable Boolean awayBatting,
             @Nullable Integer inning) {
+        this(
+                currentCtTeam,
+                homeWonRounds,
+                awayWonRounds,
+                currentRound,
+                homeKills,
+                awayKills,
+                homeDestroyedTurrets,
+                awayDestroyedTurrets,
+                homeGold,
+                awayGold,
+                homeDestroyedTowers,
+                awayDestroyedTowers,
+                homeGoals,
+                awayGoals,
+                time,
+                gameTime,
+                elapsedTime,
+                currentDefenderTeam,
+                homePoints,
+                awayPoints,
+                homeGames,
+                awayGames,
+                remainingGameTime,
+                homeRuns,
+                awayRuns,
+                homeWicketsFallen,
+                awayWicketsFallen,
+                homeOversPlayed,
+                homeBallsPlayed,
+                awayOversPlayed,
+                awayBallsPlayed,
+                homeWonCoinToss,
+                homeBatting,
+                awayBatting,
+                inning,
+                null);
+    }
+
+    /**
+     * A scoreboard with the clock flag, as the feed and the API send it.
+     *
+     * @param clockRunning see {@link #getClockRunning()}
+     */
+    public Scoreboard(
+            @Nullable Integer currentCtTeam,
+            @Nullable Integer homeWonRounds,
+            @Nullable Integer awayWonRounds,
+            @Nullable Integer currentRound,
+            @Nullable Integer homeKills,
+            @Nullable Integer awayKills,
+            @Nullable Integer homeDestroyedTurrets,
+            @Nullable Integer awayDestroyedTurrets,
+            @Nullable Integer homeGold,
+            @Nullable Integer awayGold,
+            @Nullable Integer homeDestroyedTowers,
+            @Nullable Integer awayDestroyedTowers,
+            @Nullable Integer homeGoals,
+            @Nullable Integer awayGoals,
+            @Nullable Integer time,
+            @Nullable Integer gameTime,
+            @Nullable Integer elapsedTime,
+            @Nullable Integer currentDefenderTeam,
+            @Nullable Integer homePoints,
+            @Nullable Integer awayPoints,
+            @Nullable Integer homeGames,
+            @Nullable Integer awayGames,
+            @Nullable Integer remainingGameTime,
+            @Nullable Integer homeRuns,
+            @Nullable Integer awayRuns,
+            @Nullable Integer homeWicketsFallen,
+            @Nullable Integer awayWicketsFallen,
+            @Nullable Integer homeOversPlayed,
+            @Nullable Integer homeBallsPlayed,
+            @Nullable Integer awayOversPlayed,
+            @Nullable Integer awayBallsPlayed,
+            @Nullable Boolean homeWonCoinToss,
+            @Nullable Boolean homeBatting,
+            @Nullable Boolean awayBatting,
+            @Nullable Integer inning,
+            @Nullable Boolean clockRunning) {
         this.currentCtTeam = currentCtTeam;
         this.homeWonRounds = homeWonRounds;
         this.awayWonRounds = awayWonRounds;
@@ -114,6 +197,7 @@ public final class Scoreboard {
         this.homeBatting = homeBatting;
         this.awayBatting = awayBatting;
         this.inning = inning;
+        this.clockRunning = clockRunning;
     }
 
     public @Nullable Integer getCurrentCtTeam() {
@@ -256,6 +340,15 @@ public final class Scoreboard {
         return inning;
     }
 
+    /**
+     * Whether the in-game clock runs: true while it does, false while it stands (a pause within a
+     * period, between periods, before the start, after the end). Null when the feed does not say: it
+     * is unknown, never to be read as "not running" nor as "running".
+     */
+    public @Nullable Boolean getClockRunning() {
+        return clockRunning;
+    }
+
     @Override
     public boolean equals(@Nullable Object other) {
         if (this == other) {
@@ -298,7 +391,8 @@ public final class Scoreboard {
                 && Objects.equals(homeWonCoinToss, that.homeWonCoinToss)
                 && Objects.equals(homeBatting, that.homeBatting)
                 && Objects.equals(awayBatting, that.awayBatting)
-                && Objects.equals(inning, that.inning);
+                && Objects.equals(inning, that.inning)
+                && Objects.equals(clockRunning, that.clockRunning);
     }
 
     @Override
@@ -338,6 +432,7 @@ public final class Scoreboard {
         result = 31 * result + Objects.hashCode(homeBatting);
         result = 31 * result + Objects.hashCode(awayBatting);
         result = 31 * result + Objects.hashCode(inning);
+        result = 31 * result + Objects.hashCode(clockRunning);
         return result;
     }
 
@@ -377,6 +472,7 @@ public final class Scoreboard {
                 + "homeWonCoinToss=" + homeWonCoinToss + ", "
                 + "homeBatting=" + homeBatting + ", "
                 + "awayBatting=" + awayBatting + ", "
-                + "inning=" + inning + ")";
+                + "inning=" + inning + ", "
+                + "clockRunning=" + clockRunning + ")";
     }
 }

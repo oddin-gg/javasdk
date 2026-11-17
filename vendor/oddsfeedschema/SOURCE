@@ -1,5 +1,5 @@
 # Vendored from the oddsfeedschema repository. Do not edit these files by hand:
 # run scripts/refresh-schema.sh <tag or commit> and commit the result.
 repository https://github.com/oddin-gg/oddsfeedschema.git
-commit fb1012c8272a495929aa40eb607c761a86744c47
-release v1.1.0
+commit 3ee80196b2930b9345d83181a68ea2be61a216ca
+release none
