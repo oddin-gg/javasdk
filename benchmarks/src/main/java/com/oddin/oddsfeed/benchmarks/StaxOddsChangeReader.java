@@ -174,6 +174,7 @@ public final class StaxOddsChangeReader {
                 case "game_time" -> board.setGameTime(parseInt(value));
                 case "elapsed_time" -> board.setElapsedTime(parseInt(value));
                 case "remaining_game_time" -> board.setRemainingGameTime(parseInt(value));
+                case "clock_running" -> board.setClockRunning(parseBoolean(value));
                 default -> {}
             }
         }

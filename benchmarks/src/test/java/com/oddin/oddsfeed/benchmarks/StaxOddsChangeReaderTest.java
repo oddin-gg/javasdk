@@ -87,6 +87,23 @@ class StaxOddsChangeReaderTest {
     }
 
     @Test
+    void theClockFlagIsReadByXmlSchemasRulesAndAbsentStaysNull() throws Exception {
+        Marshaller marshaller = JAXBContext.newInstance(ObjectFactory.class).createMarshaller();
+        for (var flag :
+                new String[] {" clock_running=\"true\"", " clock_running=\"1\"", " clock_running=\"false\"", ""}) {
+            byte[] body = ("<odds_change product=\"2\" event_id=\"od:match:1\" timestamp=\"1\">"
+                            + "<sport_event_status status=\"1\" scoreboard_available=\"true\">"
+                            + "<scoreboard time=\"754\"" + flag + "/></sport_event_status></odds_change>")
+                    .getBytes(UTF_8);
+            var decoded = stax.read(body);
+            assertThat(decoded.getSportEventStatus().getScoreboard().getClockRunning())
+                    .as("clock_running as sent:%s", flag)
+                    .isEqualTo(flag.isEmpty() ? null : !flag.contains("false"));
+            assertThat(written(marshaller, decoded)).isEqualTo(written(marshaller, jaxb.decode(body)));
+        }
+    }
+
+    @Test
     void anotherMessageIsRefusedAsTheDecoderRefusesIt() {
         byte[] betStop = "<bet_stop product=\"2\" event_id=\"od:match:1\" timestamp=\"1\"/>".getBytes(UTF_8);
         assertThatThrownBy(() -> stax.read(betStop))
