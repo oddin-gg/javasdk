@@ -160,6 +160,11 @@ added | api/SportsInfoManager.clearSport (Lcom/oddin/oddsfeedsdk/schema/utils/UR
 added | api/entities/sportevent/Tournament.getCompetitorIds ()Ljava/util/List; | the ids of the tournament's competitors, without loading the competitors
 added | api/entities/sportevent/Sport.getTournamentIds ()Ljava/util/List; | the ids of the sport's tournaments, without building the tournaments
 
+# Whether the in-game clock runs, from the schema's clock_running: null while it is not sent. A new
+# getter and a constructor with the value; the constructor without it stays and reads null.
+added | api/entities/sportevent/Scoreboard.getClockRunning ()Ljava/lang/Boolean; | whether the in-game clock runs; null when the feed does not say
+added | api/entities/sportevent/Scoreboard.<init> (Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Integer;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Boolean;Ljava/lang/Integer;Ljava/lang/Boolean;)V | the scoreboard with the clock flag; the constructor without it stays
+
 # A tournament's icon path, as the Go SDK has it; a default method, so an implementation written for
 # 0.0.x compiles as it is.
 added | api/entities/sportevent/Tournament.getIconPath ()Ljava/lang/String; | the location of the tournament's icon, from its info
@@ -288,6 +293,8 @@ added | schema/feed/v1/OFRollbackBetCancel.setRequestId (Ljava/lang/Long;)V | in
 added | schema/feed/v1/OFRollbackBetSettlement$OFRollbackBetSettlementMarket | the schema declares the market inside its message
 added | schema/feed/v1/OFRollbackBetSettlement.getRequestId ()Ljava/lang/Long; | in the schema, new in 1.0
 added | schema/feed/v1/OFRollbackBetSettlement.setRequestId (Ljava/lang/Long;)V | in the schema, new in 1.0
+added | schema/feed/v1/OFScoreboard.getClockRunning ()Ljava/lang/Boolean; | clock_running, added to the schema after 0.0.60
+added | schema/feed/v1/OFScoreboard.setClockRunning (Ljava/lang/Boolean;)V | clock_running, added to the schema after 0.0.60
 added | schema/feed/v1/OFSportEventStatus.getScoreboardAvailable ()Ljava/lang/Boolean; | tells a missing value from false
 added | schema/feed/v1/OFSportEventStatus.getStatusRaw ()Ljava/lang/Integer; | the number as decoded, next to the enum getter, so a value this SDK does not know stays readable
 added | schema/feed/v1/OFSportEventStatus.getWinnerId ()Ljava/lang/String; | in the schema, new in 1.0
@@ -409,6 +416,8 @@ added | schema/rest/v1/RAPlayer | the one player type of the aligned schema
 added | schema/rest/v1/RAPlayerProfileEndpoint.getPlayer ()Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer; | the player is an RAPlayer now
 added | schema/rest/v1/RAPlayerProfileEndpoint.setPlayer (Lcom/oddin/oddsfeedsdk/schema/rest/v1/RAPlayer;)V | the player is an RAPlayer now
 added | schema/rest/v1/RAReplayStatusEndpoint | in the aligned schema; the SDK does not call this endpoint
+added | schema/rest/v1/RAScoreboard.getClockRunning ()Ljava/lang/Boolean; | clock_running, added to the schema after 0.0.60
+added | schema/rest/v1/RAScoreboard.setClockRunning (Ljava/lang/Boolean;)V | clock_running, added to the schema after 0.0.60
 added | schema/rest/v1/RASportEventStatus.getAggregateAwayScore ()Ljava/lang/Double; | in the aligned schema
 added | schema/rest/v1/RASportEventStatus.getAggregateHomeScore ()Ljava/lang/Double; | in the aligned schema
 added | schema/rest/v1/RASportEventStatus.getAggregateWinnerId ()Ljava/lang/String; | in the aligned schema
