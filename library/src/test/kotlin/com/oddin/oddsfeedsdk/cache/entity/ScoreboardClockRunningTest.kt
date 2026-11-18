@@ -212,4 +212,32 @@ class ScoreboardClockRunningTest {
             .invoke(feedScoreboard("true"), *nulls) as Scoreboard
         assertEquals("the copy of earlier releases keeps the clock flag", true, copied.clockRunning)
     }
+
+    // Kotlin callers: a named copy picks the copy with clockRunning, and so does a call with all
+    // 36 arguments; a positional call with the 35 arguments of earlier releases still compiles
+    // (with a deprecation warning) and keeps the flag.
+    @Test
+    @Suppress("DEPRECATION")
+    fun kotlinCopyCallsResolveToTheRightCopy() {
+        val sb = feedScoreboard("true")
+
+        val named = sb.copy(homeGoals = 5)
+        assertEquals(5, named.homeGoals)
+        assertEquals("a named copy keeps the clock flag", true, named.clockRunning)
+        assertEquals(false, sb.copy(clockRunning = false).clockRunning)
+
+        val all36 = sb.copy(
+            null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null
+        )
+        assertNull("the copy with every argument sets the flag", all36.clockRunning)
+
+        val all35 = sb.copy(
+            null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null, null,
+            null, null, null, null, null, null, null, null, null, null, null
+        )
+        assertEquals("the 35-argument copy keeps the clock flag", true, all35.clockRunning)
+    }
 }
