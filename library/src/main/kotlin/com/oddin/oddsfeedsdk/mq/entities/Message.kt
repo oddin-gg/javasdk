@@ -140,6 +140,7 @@ enum class BetSettlementCertainty {
 }
 
 interface BetSettlement<T : SportEvent> : MarketMessage<T> {
+    @Deprecated("the feed never sends this value.")
     val certainty: BetSettlementCertainty
     override val markets: List<MarketWithSettlement>
 }
@@ -165,14 +166,10 @@ class BetSettlementImpl<T : SportEvent>(
     MarketInitializer {
     private var _markets: List<MarketWithSettlement>? = null
 
+    // the feed never sends a certainty: UNKNOWN for every message, as on the 1.0 line
+    @Deprecated("the feed never sends this value.")
     override val certainty: BetSettlementCertainty
-        get() {
-            return when (message.certainty) {
-                1 -> BetSettlementCertainty.LIVE_SCOUTED
-                2 -> BetSettlementCertainty.CONFIRMED
-                else -> BetSettlementCertainty.UNKNOWN
-            }
-        }
+        get() = BetSettlementCertainty.UNKNOWN
 
     override val markets: List<MarketWithSettlement>
         get() {
