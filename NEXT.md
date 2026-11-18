@@ -2361,3 +2361,12 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   scoreboard (as once the match is over): the cache keeps the other scoreboard values from the last status that
   had one, but a flag that says whether the clock runs now is not kept. The scoreboard keeps its constructor and gets one
   with the extra value. An addition, so a minor release carries it; it is in the list of API differences.
+- 2026-11-18, the baseline moves to 0.0.61: the system tests and the API check run against it. It adds the
+  same flag to the 0.0.x `Scoreboard` (a 36-argument constructor, `getClockRunning()`, `component36()` and a
+  36-argument `copy`; the 35-argument constructor stays and its `copy` is deprecated) and the `clock_running`
+  accessors to `OFScoreboard` and `RAScoreboard`. 1.0 has the constructor and the getter from the entry above
+  and the accessors from the schema it vendors, with the shape 0.0.61 gave them, so the six entries the
+  list of API differences held for them are gone: they were additions against 0.0.60 and are none against
+  0.0.61. `component36()` and `copy` are Kotlin data class extras, section "Things we know are different and
+  accept", item 1, and stay out. Checked against the known differences: none concerns the scoreboard, so
+  only the release the 0.0.x side is named for changed. No public API changes.
