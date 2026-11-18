@@ -359,7 +359,8 @@ class MatchStatusCacheImpl @Inject constructor(
             homeWonCoinToss   = data.homeWonCoinToss,
             homeBatting =  data.homeBatting,
             awayBatting =  data.awayBatting,
-            inning = data.inning
+            inning = data.inning,
+            clockRunning = data.clockRunning
         )
     }
 
@@ -400,7 +401,8 @@ class MatchStatusCacheImpl @Inject constructor(
             homeWonCoinToss   = data.homeWonCoinToss,
             homeBatting =  data.homeBatting,
             awayBatting =  data.awayBatting,
-            inning = data.inning
+            inning = data.inning,
+            clockRunning = data.clockRunning
         )
     }
 }
