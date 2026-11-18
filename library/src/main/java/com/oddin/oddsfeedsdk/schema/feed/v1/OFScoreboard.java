@@ -55,6 +55,8 @@ public class OFScoreboard {
     protected Integer awayGames;
     @XmlAttribute(name = "remaining_game_time")
     protected Integer remainingGameTime;
+    @XmlAttribute(name = "clock_running")
+    protected Boolean clockRunning;
     @XmlAttribute(name = "home_runs")
     protected Integer homeRuns;
     @XmlAttribute(name = "away_runs")
@@ -360,5 +362,13 @@ public class OFScoreboard {
 
     public void setRemainingGameTime(Integer remainingGameTime) {
         this.remainingGameTime = remainingGameTime;
+    }
+
+    public Boolean getClockRunning() {
+        return clockRunning;
+    }
+
+    public void setClockRunning(Boolean clockRunning) {
+        this.clockRunning = clockRunning;
     }
 }

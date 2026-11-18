@@ -55,6 +55,8 @@ public class RAScoreboard {
     protected Integer awayGames;
     @XmlAttribute(name = "remaining_game_time")
     protected Integer remainingGameTime;
+    @XmlAttribute(name = "clock_running")
+    protected Boolean clockRunning;
     @XmlAttribute(name = "home_runs")
     protected Integer homeRuns;
     @XmlAttribute(name = "away_runs")
@@ -357,5 +359,13 @@ public class RAScoreboard {
 
     public void setInning(Integer inning) {
         this.inning = inning;
+    }
+
+    public Boolean getClockRunning() {
+        return clockRunning;
+    }
+
+    public void setClockRunning(Boolean clockRunning) {
+        this.clockRunning = clockRunning;
     }
 }
