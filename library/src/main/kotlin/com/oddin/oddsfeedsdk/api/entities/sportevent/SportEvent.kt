@@ -161,9 +161,14 @@ data class Scoreboard(
             clockRunning = null
     )
 
-    // The copy of the releases before clockRunning, kept for callers linked against it; it keeps
-    // the clock flag. Kotlin callers use the copy that takes clockRunning.
-    @Deprecated("kept for binary compatibility", level = DeprecationLevel.HIDDEN)
+    // The copy of the releases before clockRunning, kept so existing callers link and, from Java
+    // source, still compile; it keeps the clock flag. It is a warning and not hidden because a
+    // hidden member is compiled as synthetic and Java source can no longer call it. Kotlin calls
+    // with named arguments, or with all of them, resolve to the copy that takes clockRunning.
+    @Deprecated(
+        "Use the copy that takes clockRunning",
+        level = DeprecationLevel.WARNING
+    )
     fun copy(
         currentCtTeam: Int?,
         homeWonRounds: Int?,
