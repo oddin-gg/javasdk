@@ -186,7 +186,7 @@ class MatchStatusCacheImpl @Inject constructor(
             awayScore = data.awayScore ?: existing?.awayScore ?: 0.0,
             isScoreboardAvailable = data.isScoreboardAvailable,
             // Update scoreboard only when ready
-            scoreboard = if (data.scoreboard != null) makeFeedScoreboard(data.scoreboard) else existing?.scoreboard,
+            scoreboard = if (data.scoreboard != null) makeFeedScoreboard(data.scoreboard) else keptScoreboard(existing),
             properties = existing?.properties ?: mutableMapOf()
         )
         item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, stamp)
@@ -252,13 +252,19 @@ class MatchStatusCacheImpl @Inject constructor(
             awayScore = data.awayScore ?: existing?.awayScore ?: 0.0,
             isScoreboardAvailable = data.isScoreboardAvailable,
             // Update scoreboard only when ready
-            scoreboard = if (data.scoreboard != null) makeApiScoreboard(data.scoreboard) else existing?.scoreboard,
+            scoreboard = if (data.scoreboard != null) makeApiScoreboard(data.scoreboard) else keptScoreboard(existing),
             properties = existing?.properties ?: mutableMapOf()
         )
         item.lastUpdateTimestamp = maxOf(existing?.lastUpdateTimestamp ?: 0, stamp ?: 0)
         internalCache.put(id, item)
         return true
     }
+
+    // A newer status without a scoreboard (the match has ended, scoreboard_available="false")
+    // keeps the last scoreboard values, but whether the clock runs is a statement about now:
+    // it is unknown, not what it was.
+    private fun keptScoreboard(existing: LocalizedMatchStatus?): Scoreboard? =
+        existing?.scoreboard?.copy(clockRunning = null)
 
     private fun mapApiPeriodScores(periodScores: List<RAPeriodScore>): List<PeriodScore> {
         return periodScores.map {
