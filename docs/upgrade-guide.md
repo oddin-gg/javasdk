@@ -94,7 +94,7 @@ If you are a Java 8 client, pin the last 0.0.x version before that release comes
 
 ## 4. Recompile and fix
 
-Differences that stop compilation or change a type, from [`odds-feed/src/test/resources/api/differences.txt`](../odds-feed/src/test/resources/api/differences.txt) (the list is complete, against 0.0.60; a test keeps it so):
+Differences that stop compilation or change a type, from [`odds-feed/src/test/resources/api/differences.txt`](../odds-feed/src/test/resources/api/differences.txt) (the list is complete, against 0.0.61; a test keeps it so):
 
 | What | What to do |
 | --- | --- |
