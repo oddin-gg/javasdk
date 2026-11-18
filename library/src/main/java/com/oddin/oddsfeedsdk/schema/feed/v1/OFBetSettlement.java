@@ -109,7 +109,9 @@ public class OFBetSettlement implements BasicMessage {
     /**
      * Gets the value of the certainty property.
      * 
+     * @deprecated the feed never sends this value.
      */
+    @Deprecated
     public int getCertainty() {
         return certainty;
     }
@@ -117,7 +119,9 @@ public class OFBetSettlement implements BasicMessage {
     /**
      * Sets the value of the certainty property.
      * 
+     * @deprecated the feed never sends this value.
      */
+    @Deprecated
     public void setCertainty(int value) {
         this.certainty = value;
     }
