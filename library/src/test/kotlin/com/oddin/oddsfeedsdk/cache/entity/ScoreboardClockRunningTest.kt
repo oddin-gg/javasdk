@@ -13,6 +13,11 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import io.reactivex.Observable
+import io.reactivex.plugins.RxJavaPlugins
+import io.reactivex.schedulers.Schedulers
+import io.reactivex.subjects.PublishSubject
+import java.net.URI
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -95,6 +100,102 @@ class ScoreboardClockRunningTest {
 
     @Test
     fun summaryClockRunningAbsentIsUnknown() = assertNull(summaryScoreboard(null).clockRunning)
+
+    private fun feedMessage(scoreboard: String?, available: Boolean, timestamp: Long): FeedMessage {
+        val raw = """<odds_change event_id="od:match:7" product="1" timestamp="$timestamp">
+              <sport_event_status status="${if (available) 1 else 3}" match_status="0" scoreboard_available="$available" home_score="1" away_score="0">
+                ${scoreboard ?: ""}
+              </sport_event_status>
+              <odds/>
+            </odds_change>"""
+        val message = feedContext.createUnmarshaller()
+            .unmarshal(ByteArrayInputStream(raw.toByteArray())) as OFOddsChange
+        return FeedMessage(
+            message,
+            ByteArray(1),
+            RoutingKeyInfo("hi.live.-.odds_change.-.od:match.7", null, matchId, false),
+            MessageTimestamp(0, 0, 0, 0)
+        )
+    }
+
+    private fun feedSequence(first: String, second: String?, secondAvailable: Boolean): Scoreboard? {
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns Observable.never()
+        }
+        val cache = MatchStatusCacheImpl(apiClient)
+        val now = System.currentTimeMillis()
+        cache.onFeedMessageReceived(matchId, feedMessage(first, true, now - 2000))
+        assertEquals(true, cache.getMatchStatus(matchId)?.scoreboard?.clockRunning)
+        cache.onFeedMessageReceived(matchId, feedMessage(second, secondAvailable, now - 1000))
+        return cache.getMatchStatus(matchId)?.scoreboard
+    }
+
+    private fun summary(scoreboard: String?, available: Boolean, generatedAt: String): RAMatchSummaryEndpoint {
+        val raw = """<?xml version="1.0"?>
+            <match_summary generated_at="$generatedAt">
+              <sport_event id="od:match:7" name="X" scheduled="2026-01-01T12:00:00Z"/>
+              <sport_event_status status="${if (available) "live" else "closed"}" match_status_code="201" scoreboard_available="$available" home_score="1.0" away_score="0.0">
+                ${scoreboard ?: ""}
+              </sport_event_status>
+            </match_summary>"""
+        return restContext.createUnmarshaller()
+            .unmarshal(ByteArrayInputStream(raw.toByteArray())) as RAMatchSummaryEndpoint
+    }
+
+    private fun summarySequence(second: String?, secondAvailable: Boolean): Scoreboard? {
+        val first = summary("""<scoreboard home_goals="1" away_goals="0" time="754" clock_running="true"/>""", true, "2026-01-01T00:00:00Z")
+        val next = summary(second, secondAvailable, "2026-01-01T00:05:00Z")
+        val subject = PublishSubject.create<ApiResponse<*>>()
+        val apiClient = mockk<ApiClient> {
+            every { subscribeForClass(ApiResponse::class.java) } returns subject
+        }
+        // The observer hops to Schedulers.io(); run it inline so the assertions do not race it.
+        RxJavaPlugins.setIoSchedulerHandler { Schedulers.trampoline() }
+        val cache = try {
+            MatchStatusCacheImpl(apiClient)
+        } finally {
+            RxJavaPlugins.reset()
+        }
+        subject.onNext(ApiResponse(first, URI("http://localhost"), Locale.ENGLISH))
+        assertEquals(true, cache.getMatchStatus(matchId)?.scoreboard?.clockRunning)
+        subject.onNext(ApiResponse(next, URI("http://localhost"), Locale.ENGLISH))
+        return cache.getMatchStatus(matchId)?.scoreboard
+    }
+
+    private val runningBoard = """<scoreboard home_goals="1" away_goals="0" time="754" clock_running="true"/>"""
+    private val stoppedBoard = """<scoreboard home_goals="2" away_goals="0" time="900" clock_running="false"/>"""
+
+    @Test
+    fun feedStatusWithoutScoreboardKeepsTheValuesAndForgetsTheClockFlag() {
+        val kept = feedSequence(runningBoard, null, false)
+        assertNotNull(kept)
+        assertNull(kept!!.clockRunning)
+        assertEquals(1, kept.homeGoals)
+        assertEquals(754, kept.time)
+    }
+
+    @Test
+    fun summaryStatusWithoutScoreboardKeepsTheValuesAndForgetsTheClockFlag() {
+        val kept = summarySequence(null, false)
+        assertNotNull(kept)
+        assertNull(kept!!.clockRunning)
+        assertEquals(1, kept.homeGoals)
+        assertEquals(754, kept.time)
+    }
+
+    @Test
+    fun feedStatusWithAScoreboardThatSaysFalseIsFalse() {
+        val next = feedSequence(runningBoard, stoppedBoard, true)
+        assertEquals(false, next!!.clockRunning)
+        assertEquals(2, next.homeGoals)
+    }
+
+    @Test
+    fun summaryStatusWithAScoreboardThatSaysFalseIsFalse() {
+        val next = summarySequence(stoppedBoard, true)
+        assertEquals(false, next!!.clockRunning)
+        assertEquals(2, next.homeGoals)
+    }
 
     // The constructor and copy of the releases before clockRunning still exist and leave the flag
     // unknown (constructor) or keep it (copy).

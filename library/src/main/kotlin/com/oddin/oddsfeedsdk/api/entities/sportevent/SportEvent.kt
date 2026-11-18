@@ -80,7 +80,8 @@ data class Scoreboard(
     val awayBatting: Boolean?,
     val inning: Int?,
     // true while the in-game clock runs, false while it stands, null when the feed or the API
-    // did not say; unknown is never to be read as false
+    // did not say, or when the latest status carried no scoreboard; unknown is never to be read
+    // as false
     val clockRunning: Boolean?
 ) {
     // The constructor of the releases before clockRunning, kept so existing callers compile and
