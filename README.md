@@ -8,13 +8,13 @@ and easier.
 ### Versions
 
 **1.0** is `gg.oddin.oddsfeed:odds-feed` on Maven Central. It needs Java 25 and no token. The
-latest version is the release candidate `1.0.0-rc.2`:
+latest version is the release candidate `1.0.0-rc.3`:
 
 ```xml
 <dependency>
   <groupId>gg.oddin.oddsfeed</groupId>
   <artifactId>odds-feed</artifactId>
-  <version>1.0.0-rc.2</version>
+  <version>1.0.0-rc.3</version>
 </dependency>
 ```
 
