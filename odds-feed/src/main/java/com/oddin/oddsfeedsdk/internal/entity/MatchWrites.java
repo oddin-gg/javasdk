@@ -45,7 +45,8 @@ import org.jspecify.annotations.Nullable;
  * <p>An element the response leaves out is a field it does not carry, so the field keeps what it
  * had: the schemas make nearly all of them optional, and a missing optional value means "keep what
  * you have", never "reset". An id that is not a URN is left out the same way, rather than failing
- * the whole response.
+ * the whole response. The exception is the scoreboard's clock flag: a status without a scoreboard
+ * says nothing of whether the clock runs now, so the scoreboard it keeps has the flag unknown.
  */
 final class MatchWrites {
 
@@ -83,6 +84,7 @@ final class MatchWrites {
                 .put(AWAY_SCORE, status.getAwayScore())
                 .put(PERIOD_SCORES, periods == null ? null : restPeriods(periods))
                 .put(SCOREBOARD, scoreboard == null ? null : scoreboard(scoreboard))
+                .amend(SCOREBOARD, MatchWrites::clockUnknown)
                 .put(SCOREBOARD_AVAILABLE, status.getScoreboardAvailableRaw());
         String winner = status.getWinnerId();
         return winner == null ? write.clear(WINNER_ID) : write.put(WINNER_ID, ApiValues.urn(winner));
@@ -109,6 +111,7 @@ final class MatchWrites {
                 .put(AWAY_SCORE, status.getAwayScore())
                 .put(PERIOD_SCORES, periods == null ? null : feedPeriods(periods))
                 .put(SCOREBOARD, scoreboard == null ? null : scoreboard(scoreboard))
+                .amend(SCOREBOARD, MatchWrites::clockUnknown)
                 .put(SCOREBOARD_AVAILABLE, status.getScoreboardAvailable())
                 .put(WINNER_ID, ApiValues.urn(status.getWinnerId()));
     }
@@ -324,5 +327,52 @@ final class MatchWrites {
                 s.getAwayBatting(),
                 s.getInning(),
                 s.getClockRunning());
+    }
+
+    /**
+     * The scoreboard with the clock flag unknown: a status without a scoreboard does not say whether
+     * the clock runs now, whatever the last scoreboard said, so the rest of it stays as the last known.
+     */
+    private static Scoreboard clockUnknown(Scoreboard s) {
+        if (s.getClockRunning() == null) {
+            return s;
+        }
+        return new Scoreboard(
+                s.getCurrentCtTeam(),
+                s.getHomeWonRounds(),
+                s.getAwayWonRounds(),
+                s.getCurrentRound(),
+                s.getHomeKills(),
+                s.getAwayKills(),
+                s.getHomeDestroyedTurrets(),
+                s.getAwayDestroyedTurrets(),
+                s.getHomeGold(),
+                s.getAwayGold(),
+                s.getHomeDestroyedTowers(),
+                s.getAwayDestroyedTowers(),
+                s.getHomeGoals(),
+                s.getAwayGoals(),
+                s.getTime(),
+                s.getGameTime(),
+                s.getElapsedTime(),
+                s.getCurrentDefenderTeam(),
+                s.getHomePoints(),
+                s.getAwayPoints(),
+                s.getHomeGames(),
+                s.getAwayGames(),
+                s.getRemainingGameTime(),
+                s.getHomeRuns(),
+                s.getAwayRuns(),
+                s.getHomeWicketsFallen(),
+                s.getAwayWicketsFallen(),
+                s.getHomeOversPlayed(),
+                s.getHomeBallsPlayed(),
+                s.getAwayOversPlayed(),
+                s.getAwayBallsPlayed(),
+                s.getHomeWonCoinToss(),
+                s.getHomeBatting(),
+                s.getAwayBatting(),
+                s.getInning(),
+                null);
     }
 }

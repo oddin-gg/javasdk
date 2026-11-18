@@ -2357,5 +2357,7 @@ clients have pinned a version, and only to a final release that is on Maven Cent
   an optional `clock_running` (true while the clock runs, false while it stands: a pause within a period, between
   periods, before the start, after the end), on the feed's scoreboard and the API's match summary alike. 1.0 reads
   it from both into `Scoreboard.getClockRunning()`, a `Boolean` that is null when it is not sent, as the other
-  optional values are: unknown is neither running nor stopped. The scoreboard keeps its constructor and gets one
+  optional values are: unknown is neither running nor stopped. It is also null when the latest status carries no
+  scoreboard (as once the match is over): the cache keeps the other scoreboard values from the last status that
+  had one, but a flag that says whether the clock runs now is not kept. The scoreboard keeps its constructor and gets one
   with the extra value. An addition, so a minor release carries it; it is in the list of API differences.

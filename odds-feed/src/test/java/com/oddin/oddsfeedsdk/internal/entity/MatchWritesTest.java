@@ -256,6 +256,82 @@ class MatchWritesTest {
     }
 
     @Test
+    void aLiveMessageWithoutAScoreboardKeepsTheScoreboardWithTheClockUnknown() throws DecodeException {
+        var running = Fixtures.read("feed/odds_change/odds_change_ehockey_scoreboard.xml")
+                .replace("clock_running=\"false\"", "clock_running=\"true\"");
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(feedStatus(running)));
+        var before = requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD));
+        assertThat(before.getClockRunning()).isTrue();
+
+        var over = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
+        over.setStatus(com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus.FINALIZED);
+        over.setScoreboardAvailable(false);
+        live.feedWriteIfNewer(MATCH, 1, 2, Duration.ZERO, clock.monoMillis(), MatchWrites.live(over));
+
+        var after = requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD));
+        assertThat(after.getClockRunning())
+                .as("a status without a scoreboard says nothing of the clock")
+                .isNull();
+        assertThat(after.getHomeGoals()).as("the last known goals").isEqualTo(1);
+        assertThat(after.getTime()).as("the last known time").isEqualTo(754);
+        assertThat(after)
+                .usingRecursiveComparison()
+                .ignoringFields("clockRunning")
+                .isEqualTo(before);
+    }
+
+    @Test
+    void aSummaryWithoutAScoreboardKeepsTheScoreboardWithTheClockUnknown() throws DecodeException {
+        var xml = Fixtures.read("rest/match_summary/match_summary_cricket_scoreboard.xml")
+                .replace("elapsed_time=\"1800\"", "elapsed_time=\"1800\" clock_running=\"true\"");
+        var summary = rest.decode(xml.getBytes(UTF_8), RAMatchSummaryEndpoint.class);
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(summary.getSportEventStatus()), () -> false);
+        var before = requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD));
+        assertThat(before.getClockRunning()).isTrue();
+
+        var over = new com.oddin.oddsfeedsdk.schema.rest.v1.RASportEventStatus();
+        over.setStatus("closed");
+        live.restWriteIfQuiet(MATCH, MatchWrites.live(over), () -> false);
+
+        var after = requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD));
+        assertThat(after.getClockRunning())
+                .as("a status without a scoreboard says nothing of the clock")
+                .isNull();
+        assertThat(after.getHomeRuns()).as("the last known runs").isEqualTo(156);
+        assertThat(after.getElapsedTime()).as("the last known time").isEqualTo(1800);
+        assertThat(after)
+                .usingRecursiveComparison()
+                .ignoringFields("clockRunning")
+                .isEqualTo(before);
+    }
+
+    @Test
+    void aLiveMessageWithAScoreboardSaysTheClockStopped() throws DecodeException {
+        var running = Fixtures.read("feed/odds_change/odds_change_ehockey_scoreboard.xml")
+                .replace("clock_running=\"false\"", "clock_running=\"true\"");
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(feedStatus(running)));
+        var stopped = Fixtures.read("feed/odds_change/odds_change_ehockey_scoreboard.xml");
+        live.feedWriteIfNewer(MATCH, 1, 2, Duration.ZERO, clock.monoMillis(), MatchWrites.live(feedStatus(stopped)));
+        assertThat(requireNonNull(requireNonNull(live.get(MATCH)).get(SCOREBOARD))
+                        .getClockRunning())
+                .isFalse();
+    }
+
+    @Test
+    void aStatusWithoutAScoreboardLeavesNoScoreboardWhereThereWasNone() {
+        var bare = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
+        live.feedWriteIfNewer(MATCH, 1, 1, Duration.ZERO, clock.monoMillis(), MatchWrites.live(bare));
+        assertThat(requireNonNull(live.get(MATCH)).get(SCOREBOARD)).isNull();
+    }
+
+    private static com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus feedStatus(String xml)
+            throws DecodeException {
+        var message = (OFOddsChange)
+                FeedDecoder.lenient(FeedDecoder.DEFAULT_MAX_BYTES).decode(xml.getBytes(UTF_8));
+        return message.getSportEventStatus();
+    }
+
+    @Test
     void aLiveMessageWithoutScoresKeepsThose() {
         var message = new com.oddin.oddsfeedsdk.schema.feed.v1.OFSportEventStatus();
         message.setStatus(com.oddin.oddsfeedsdk.schema.feed.v1.OFEventStatus.LIVE);

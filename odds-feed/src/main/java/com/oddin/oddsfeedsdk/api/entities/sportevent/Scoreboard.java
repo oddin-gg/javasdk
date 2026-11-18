@@ -343,7 +343,9 @@ public final class Scoreboard {
     /**
      * Whether the in-game clock runs: true while it does, false while it stands (a pause within a
      * period, between periods, before the start, after the end). Null when the feed does not say: it
-     * is unknown, never to be read as "not running" nor as "running".
+     * is unknown, never to be read as "not running" nor as "running". It is unknown too when the latest
+     * status of the match carried no scoreboard, as when the match is over: the other values of the
+     * scoreboard are then the last ones known, but whether the clock runs now is not.
      */
     public @Nullable Boolean getClockRunning() {
         return clockRunning;

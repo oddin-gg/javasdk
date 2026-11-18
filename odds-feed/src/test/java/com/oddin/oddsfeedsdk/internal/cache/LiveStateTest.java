@@ -123,6 +123,40 @@ class LiveStateTest {
     }
 
     @Test
+    void anAmendedFieldKeepsItsValueChangedAndStaysAbsentWhereItHasNone() {
+        live.feedWriteIfNewer("m1", LIVE, 1_000, FRESH, now(), LiveWrite.of().put(CLOCK, "12:00"));
+        live.feedWriteIfNewer(
+                "m1",
+                LIVE,
+                2_000,
+                FRESH,
+                now(),
+                LiveWrite.of().put(HOME_SCORE, 1).amend(CLOCK, clock -> clock + "?"));
+        var values = requireNonNull(live.get("m1"));
+        assertThat(values.get(CLOCK)).as("kept, changed").isEqualTo("12:00?");
+        assertThat(values.get(HOME_SCORE)).isEqualTo(1);
+
+        live.feedWriteIfNewer("m2", LIVE, 1_000, FRESH, now(), LiveWrite.of().amend(CLOCK, clock -> clock + "?"));
+        assertThat(requireNonNull(live.get("m2")).get(CLOCK))
+                .as("none to change")
+                .isNull();
+
+        live.feedWriteIfNewer(
+                "m1",
+                LIVE,
+                3_000,
+                FRESH,
+                now(),
+                LiveWrite.of().put(CLOCK, "13:00").amend(CLOCK, clock -> "never"));
+        assertThat(requireNonNull(live.get("m1")).get(CLOCK))
+                .as("a value put wins")
+                .isEqualTo("13:00");
+        live.feedWriteIfNewer(
+                "m1", LIVE, 4_000, FRESH, now(), LiveWrite.of().clear(CLOCK).amend(CLOCK, clock -> "never"));
+        assertThat(requireNonNull(live.get("m1")).get(CLOCK)).as("a clear wins").isNull();
+    }
+
+    @Test
     void restFillsWhatTheFeedHasNotSentAndTakesNothingOver() {
         assertThat(live.restFill("m1", LiveWrite.of().put(CLOCK, "from REST"), () -> false))
                 .as("no record: the next read loads the summary")
