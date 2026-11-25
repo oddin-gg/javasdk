@@ -834,7 +834,10 @@ and REST workers post facts to it; it decides and posts work out.
   it, or of an event recovery asked for before it - so a slow, big snapshot that keeps
   arriving, or waits behind one that does, is not cut; a repeated `snapshot_complete` of
   a session that gave one already is no sign of life; one the API has not answered yet
-  waits for the maximum recovery time, which stays the outer bound. The client is not asked again: event
+  waits for the maximum recovery time, which stays the outer bound. What was asked for
+  before what is the order the requests were sent in, a number the machine gives each
+  recovery and event recovery as it goes out, not the clock, which two can read alike; what
+  ends in one step, as with a lost connection, ends in that order. The client is not asked again: event
   recoveries are the client's to ask for. A caller still waiting for the API's answer
   then hears it was not accepted. The first
   `snapshot_complete` of a request, from any session, says the API took it: an event
@@ -979,8 +982,9 @@ and REST workers post facts to it; it decides and posts work out.
     one it could not open at once it opens on its own, and a recovery asked for before
     then would send to no one. An event recovery asked for while a session that receives
     its producer is being reset waits until the reset is done, since its snapshot could
-    go to either channel; one that waits longer than the maximum recovery time expires
-    like one asked for. A reset that could not be handed to the AMQP layer at all, or that
+    go to either channel; the maximum recovery time counts from when it was asked for, the
+    wait included, so one that has waited longer than that expires like one asked for, at the
+    next tick or when the reset ends, and is not sent. A reset that could not be handed to the AMQP layer at all, or that
     failed before the old channel's deliveries were taken out - the channel's epoch tells,
     since it moves exactly then - is reported as not made: nothing was dropped, nothing
     counts against the cap, the net waits as long as after the last reset made - its
