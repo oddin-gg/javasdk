@@ -14,7 +14,6 @@ import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.EnumSet;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -120,9 +119,10 @@ final class RecoveryMachine {
     private final Map<Long, Track> tracks = new LinkedHashMap<>();
 
     private final Map<Integer, SessionState> sessions = new LinkedHashMap<>();
-    private final Map<Long, EventRecovery> eventRecoveries = new HashMap<>();
-    /** The callers waiting for whether the API took an event recovery, by request id. */
-    private final Map<Long, CompletableFuture<@Nullable Long>> replies = new HashMap<>();
+    /** In the order they were sent, so what ends in one step ends in that order. */
+    private final Map<Long, EventRecovery> eventRecoveries = new LinkedHashMap<>();
+    /** The callers waiting for whether the API took an event recovery, by request id, in the order sent. */
+    private final Map<Long, CompletableFuture<@Nullable Long>> replies = new LinkedHashMap<>();
     /** Event recoveries asked for while a session that would receive them was being reset. */
     private final List<DeferredEvent> deferred = new ArrayList<>();
     /** The API's refusals of event recoveries, which the caller hears of only as null. */
@@ -145,6 +145,12 @@ final class RecoveryMachine {
     private boolean connected;
     /** The number of the last gap opened; a recovery covers the gaps up to the number at its start. */
     private long gapSeq;
+    /**
+     * The number of the last request sent, a recovery's or an event recovery's: each takes the next
+     * as it goes out, so what was asked for before what is told by the numbers, never by the clock,
+     * which two requests can read the same.
+     */
+    private long sentSeq;
     /** The number of the last reset the safety net set out to make. */
     private long resetSeq;
 
@@ -446,13 +452,22 @@ final class RecoveryMachine {
         releaseDeferred();
     }
 
-    /** The event recoveries that waited for a session's channel are asked for once none waits. */
+    /**
+     * The event recoveries that waited for a session's channel are asked for once none waits. The
+     * maximum recovery time counts from when the client asked, the wait included: one past it expires
+     * as at a tick, and is not sent.
+     */
     private void releaseDeferred() {
         for (DeferredEvent event : new ArrayList<>(deferred)) {
             Track track = track(event.producerId());
             if (!awaitsChannel(track)) {
                 deferred.remove(event);
-                recoverEvent(event.producerId(), event.eventId(), event.stateful(), event.reply());
+                if (pastMaximum(event.deferredAt(), mono())) {
+                    expired(event);
+                } else {
+                    recoverEvent(
+                            event.producerId(), event.eventId(), event.stateful(), event.reply(), event.deferredAt());
+                }
             }
         }
     }
@@ -643,7 +658,9 @@ final class RecoveryMachine {
      * recovery asked for since does not: one after another, they would hold a recovery whose
      * snapshot complete is lost for the maximum recovery time. An event recovery's deadline is put
      * off the same way, by its own snapshot and by what queues ahead of it: a recovery or an event
-     * recovery asked for before it, in flight or ended without completing.
+     * recovery asked for before it, in flight or ended without completing. Before is the order the
+     * requests were sent in, {@link #sentSeq}: two sent at one clock reading are still one before the
+     * other.
      */
     private void heard(Track track, int id, long generatedAt, long requestId) {
         for (EventRecovery event : eventRecoveries.values()) {
@@ -678,21 +695,20 @@ final class RecoveryMachine {
         }
         Active active = track.active;
         if (active != null && active.requestId == requestId) {
-            return active.issuedMono < event.issuedMono;
+            return active.seq < event.seq;
         }
         EventRecovery other = eventRecoveries.get(requestId);
         if (other != null) {
-            return other.producerId == track.id && other.issuedMono < event.issuedMono;
+            return other.producerId == track.id && other.seq < event.seq;
         }
-        return askedBefore(track.ended, requestId, event.issuedMono)
-                || askedBefore(track.endedEvents, requestId, event.issuedMono);
+        return askedBefore(track.ended, requestId, event.seq) || askedBefore(track.endedEvents, requestId, event.seq);
     }
 
-    /** Whether the request id is one of {@code ended}, asked for before {@code issuedMono}. */
-    private static boolean askedBefore(ArrayDeque<Ended> ended, long requestId, long issuedMono) {
+    /** Whether the request id is one of {@code ended}, sent before the request numbered {@code seq}. */
+    private static boolean askedBefore(ArrayDeque<Ended> ended, long requestId, long seq) {
         for (Ended one : ended) {
             if (one.requestId() == requestId) {
-                return one.issuedMono() < issuedMono;
+                return one.seq() < seq;
             }
         }
         return false;
@@ -705,11 +721,11 @@ final class RecoveryMachine {
         }
         EventRecovery event = eventRecoveries.get(requestId);
         if (event != null) {
-            return event.producerId == track.id && event.issuedMono < active.issuedMono;
+            return event.producerId == track.id && event.seq < active.seq;
         }
         // what ended before the one in flight was asked for: the one in flight is the only one at a time
         return track.ended.stream().anyMatch(one -> one.requestId() == requestId)
-                || askedBefore(track.endedEvents, requestId, active.issuedMono);
+                || askedBefore(track.endedEvents, requestId, active.seq);
     }
 
     /** A session has seen a snapshot complete; an id the actor has not in flight is counted, and ignored. */
@@ -830,6 +846,17 @@ final class RecoveryMachine {
      * @throws IllegalArgumentException through {@code reply}, for a producer the list does not have
      */
     void recoverEvent(long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply) {
+        recoverEvent(producerId, eventId, stateful, reply, mono());
+    }
+
+    /**
+     * {@code askedAt}, on the monotonic clock, is when the client asked: now, or for one that waited
+     * for a session's channel, when it began to wait. The maximum recovery time counts from it; the
+     * snapshot complete's silence deadline and the request's place in the order count from the
+     * request going out.
+     */
+    private void recoverEvent(
+            long producerId, URN eventId, boolean stateful, CompletableFuture<@Nullable Long> reply, long askedAt) {
         if (reply.isDone()) {
             // the caller stopped waiting: a request sent now would carry an id it never got
             counters.eventCallerGone.incrementAndGet();
@@ -873,13 +900,13 @@ final class RecoveryMachine {
             // a session that receives it is being reset, or has lost its channel: its snapshot could
             // go to either channel, or to none
             LOG.debug("Event recovery of {} waits for a session's channel", eventId);
-            deferred.add(new DeferredEvent(producerId, eventId, stateful, reply, mono()));
+            deferred.add(new DeferredEvent(producerId, eventId, stateful, reply, askedAt));
             return;
         }
         long requestId = ids.next(this::inFlight);
         long wall = wall();
-        var recovery =
-                new EventRecovery(requestId, producerId, eventId, wall, mono(), producerNow(track), awaited(track));
+        var recovery = new EventRecovery(
+                requestId, ++sentSeq, producerId, eventId, wall, askedAt, mono(), producerNow(track), awaited(track));
         eventRecoveries.put(requestId, recovery);
         statuses.pending(requestId, producerId, eventId, Instant.ofEpochMilli(recovery.issuedWall));
         replies.put(requestId, reply);
@@ -934,7 +961,7 @@ final class RecoveryMachine {
         }
         for (EventRecovery recovery : new ArrayList<>(eventRecoveries.values())) {
             String why = null;
-            if (mono - recovery.issuedMono > settings.maxRecoveryTime().toMillis()) {
+            if (pastMaximum(recovery.askedMono, mono)) {
                 why = "no snapshot complete within " + settings.maxRecoveryTime();
             } else if (!replies.containsKey(recovery.requestId)
                     && mono - recovery.heardAt
@@ -956,27 +983,36 @@ final class RecoveryMachine {
             }
         }
         for (DeferredEvent event : new ArrayList<>(deferred)) {
-            if (mono - event.deferredAt() > settings.maxRecoveryTime().toMillis()) {
-                // the reset it waited for never ended: it expires as one asked for would
+            if (pastMaximum(event.deferredAt(), mono)) {
                 deferred.remove(event);
-                counters.eventExpired.incrementAndGet();
-                outbox.reply(event.reply(), null);
-                long expired = expiredDeferred.count();
-                if (Throttle.due(expired)) {
-                    LOG.warn(
-                            "Event recovery of {} waited for a reset longer than {}, {} so far",
-                            event.eventId(),
-                            settings.maxRecoveryTime(),
-                            expired);
-                } else {
-                    LOG.debug(
-                            "Event recovery of {} waited for a reset longer than {}",
-                            event.eventId(),
-                            settings.maxRecoveryTime());
-                }
+                expired(event);
             }
         }
         statuses.expire(mono);
+    }
+
+    /** Whether a request the client made at {@code askedAt} has waited longer than the maximum recovery time. */
+    private boolean pastMaximum(long askedAt, long mono) {
+        return mono - askedAt > settings.maxRecoveryTime().toMillis();
+    }
+
+    /** A deferred event recovery whose reset never ended in time: its caller hears it was not accepted. */
+    private void expired(DeferredEvent event) {
+        counters.eventExpired.incrementAndGet();
+        outbox.reply(event.reply(), null);
+        long expired = expiredDeferred.count();
+        if (Throttle.due(expired)) {
+            LOG.warn(
+                    "Event recovery of {} waited for a reset longer than {}, {} so far",
+                    event.eventId(),
+                    settings.maxRecoveryTime(),
+                    expired);
+        } else {
+            LOG.debug(
+                    "Event recovery of {} waited for a reset longer than {}",
+                    event.eventId(),
+                    settings.maxRecoveryTime());
+        }
     }
 
     // ---- recoveries
@@ -1016,7 +1052,7 @@ final class RecoveryMachine {
         long gapStart = oldestGap(track);
         long after = after(track, gapStart);
         long requestId = ids.next(this::inFlight);
-        var active = new Active(requestId, after, wall, mono, producerNow(track), gapSeq, awaited(track));
+        var active = new Active(requestId, ++sentSeq, after, wall, mono, producerNow(track), gapSeq, awaited(track));
         active.causes.add(track.cause);
         track.active = active;
         counters.requested.incrementAndGet();
@@ -1271,14 +1307,14 @@ final class RecoveryMachine {
     private void ended(Track track, Active active, long mono) {
         track.active = null;
         track.pausedUntil = mono;
-        remember(track.ended, new Ended(active.requestId, active.issuedMono));
+        remember(track.ended, new Ended(active.requestId, active.seq));
     }
 
     /** The event recovery ended without completing: what it sent may still be ahead of a later one. */
     private void endedWithoutCompleting(EventRecovery recovery) {
         var track = tracks.get(recovery.producerId);
         if (track != null) {
-            remember(track.endedEvents, new Ended(recovery.requestId, recovery.issuedMono));
+            remember(track.endedEvents, new Ended(recovery.requestId, recovery.seq));
         }
     }
 
@@ -2009,12 +2045,14 @@ final class RecoveryMachine {
     /** A producer's recovery in flight. */
     private static final class Active {
         final long requestId;
+        /** Its place in the order requests were sent in, {@link #sentSeq}. */
+        final long seq;
         /** Epoch millis, 0 for a full snapshot. */
         final long after;
 
         /** When it was asked for, by the SDK's wall clock: what {@link Recovery} publishes. */
         final long issuedWall;
-        /** When it was asked for, on the monotonic clock: what its deadlines and its order count from. */
+        /** When it was asked for, on the monotonic clock: what its deadlines count from. */
         final long issuedMono;
         /** When it was asked for, by the producer's clock. */
         final long requestedAt;
@@ -2038,6 +2076,7 @@ final class RecoveryMachine {
 
         Active(
                 long requestId,
+                long seq,
                 long after,
                 long issuedWall,
                 long issuedMono,
@@ -2045,6 +2084,7 @@ final class RecoveryMachine {
                 long covers,
                 Set<Integer> awaited) {
             this.requestId = requestId;
+            this.seq = seq;
             this.after = after;
             this.issuedWall = issuedWall;
             this.issuedMono = issuedMono;
@@ -2058,13 +2098,20 @@ final class RecoveryMachine {
     /** An event recovery in flight. */
     private static final class EventRecovery {
         final long requestId;
+        /** Its place in the order requests were sent in, {@link #sentSeq}. */
+        final long seq;
+
         final long producerId;
         final URN eventId;
-        /** When it was asked for, by the SDK's wall clock: what its status publishes. */
+        /** When it was sent, by the SDK's wall clock: what its status publishes. */
         final long issuedWall;
-        /** When it was asked for, on the monotonic clock: what its deadlines and its order count from. */
-        final long issuedMono;
-        /** When it was asked for, by the producer's clock. */
+        /**
+         * When the client asked for it, on the monotonic clock: what the maximum recovery time counts
+         * from. It is when the request was sent, but for one that waited for a session's channel, when
+         * it began to wait.
+         */
+        final long askedMono;
+        /** When it was sent, by the producer's clock. */
         final long requestedAt;
 
         final Set<Integer> awaited;
@@ -2077,25 +2124,28 @@ final class RecoveryMachine {
 
         EventRecovery(
                 long requestId,
+                long seq,
                 long producerId,
                 URN eventId,
                 long issuedWall,
+                long askedMono,
                 long issuedMono,
                 long requestedAt,
                 Set<Integer> awaited) {
             this.requestId = requestId;
+            this.seq = seq;
             this.producerId = producerId;
             this.eventId = eventId;
             this.issuedWall = issuedWall;
-            this.issuedMono = issuedMono;
+            this.askedMono = askedMono;
             this.requestedAt = requestedAt;
             this.awaited = awaited;
             this.heardAt = issuedMono;
         }
     }
 
-    /** A recovery or an event recovery that ended without completing: its id, and when it was asked for. */
-    private record Ended(long requestId, long issuedMono) {}
+    /** A recovery or an event recovery that ended without completing: its id, and its place in the order sent. */
+    private record Ended(long requestId, long seq) {}
 
     /** An event recovery waiting for a session's reset to be done. */
     private record DeferredEvent(

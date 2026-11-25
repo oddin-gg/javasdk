@@ -2695,6 +2695,268 @@ class RecoveryMachineTest {
         assertThat(statusOf(call).reason()).contains("PT6H");
     }
 
+    // ---- the maximum recovery time of an event recovery that waited for a channel
+
+    /** An event recovery asked for while session 1's channel is lost, and the channel back after {@code wait}. */
+    private Outbox.Call.Event askedLostAndReleasedAfter(Duration wait) {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.machine.channelLost(1);
+        assertThat(feed.recoverEvent(LIVE)).as("waits for the channel").isNotDone();
+        feed.advance(wait);
+        feed.machine.channelReopened(1);
+        assertThat(feed.calls.getLast()).isInstanceOf(Outbox.Call.Event.class);
+        return (Outbox.Call.Event) feed.calls.getLast();
+    }
+
+    @Test
+    void theMaximumRecoveryTimeOfAnEventRecoveryThatWaitedForAChannelCountsFromWhenItWasAskedFor() {
+        var call = askedLostAndReleasedAfter(Duration.ofHours(5).plusMinutes(59));
+        feed.accept(call);
+        // its snapshot keeps arriving, three minutes apart, past six hours since it was asked for
+        feed.advance(Duration.ofMinutes(1));
+        assertThat(feed.counters.eventExpired())
+                .as("six hours since it was asked for")
+                .isZero();
+        for (int i = 0; i < 2; i++) {
+            feed.advance(Duration.ofMinutes(3));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), call.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six hours and six minutes since it was asked for")
+                .isEqualTo(1);
+        assertThat(statusOf(call).state()).isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+        assertThat(statusOf(call).reason()).contains("PT6H");
+    }
+
+    @Test
+    void theSilenceDeadlineOfAnEventRecoveryThatWaitedForAChannelCountsFromWhenItWasSent() {
+        var call = askedLostAndReleasedAfter(Duration.ofHours(5));
+        feed.accept(call);
+        feed.advance(feed.settings.snapshotCompleteTimeout());
+        assertThat(feed.counters.eventExpired())
+                .as("five minutes after it was sent")
+                .isZero();
+        assertThat(statusOf(call).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+        assertThat(statusOf(call).reason()).contains("nor anything of it heard");
+    }
+
+    @Test
+    void anEventRecoveryPastTheMaximumRecoveryTimeWhenItsChannelReturnsIsNotSentAndExpires()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.machine.channelLost(1);
+        var reply = feed.recoverEvent(LIVE);
+        feed.advance(Duration.ofHours(6));
+        assertThat(reply).as("at the maximum recovery time").isNotDone();
+        // the channel is back before the tick that would expire it
+        feed.clock.advance(Duration.ofSeconds(1));
+        try (var log = LogCapture.of(RecoveryMachine.class)) {
+            feed.machine.channelReopened(1);
+            assertThat(log.lines())
+                    .singleElement()
+                    .asString()
+                    .startsWith("WARN Event recovery of " + MATCH + " waited for a reset longer than PT6H");
+        }
+        assertThat(done(reply)).isNull();
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+        assertThat(feed.calls).as("nothing sent for it").noneMatch(call -> call instanceof Outbox.Call.Event);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.counters.eventExpired()).as("counted once").isEqualTo(1);
+    }
+
+    @Test
+    void anEventRecoveryThatWaitedForAChannelIsStillRefusedWhileTheConnectionIsDown()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.machine.channelLost(1);
+        var reply = feed.recoverEvent(LIVE);
+        feed.machine.connectionDown();
+        feed.machine.channelReopened(1);
+        assertThat(done(reply)).isNull();
+        assertThat(feed.counters.eventRefused()).isEqualTo(1);
+        assertThat(feed.calls).noneMatch(call -> call instanceof Outbox.Call.Event);
+    }
+
+    @Test
+    void anEventRecoveryThatWaitedForAChannelIsNotSentOnceItsCallerStoppedWaiting() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.machine.channelLost(1);
+        var reply = feed.recoverEvent(LIVE);
+        reply.complete(null);
+        feed.machine.channelReopened(1);
+        assertThat(feed.counters.eventCallerGone()).isEqualTo(1);
+        assertThat(feed.calls).noneMatch(call -> call instanceof Outbox.Call.Event);
+    }
+
+    @Test
+    void anEventRecoveryThatWaitedForAChannelCountsAgainstTheCapOnceItIsSent()
+            throws ExecutionException, InterruptedException {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.machine.channelLost(1);
+        for (int i = 0; i < 128; i++) {
+            assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        }
+        feed.machine.channelReopened(1);
+        assertThat(feed.calls.stream().filter(call -> call instanceof Outbox.Call.Event))
+                .hasSize(128);
+        assertThat(feed.counters.eventRefused()).isZero();
+        assertThat(done(feed.recoverEvent(LIVE))).as("the 129th").isNull();
+        assertThat(feed.counters.eventRefused()).isEqualTo(1);
+    }
+
+    // ---- the order requests were sent in
+
+    @Test
+    void theSnapshotOfAnEventRecoveryAskedForAtOneClockReadingPutsOffTheDeadlineOfTheOneAskedForAfterIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var earlier = feed.calls.getLast();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.accept(earlier);
+        feed.accept(later);
+        // a slow session takes what the earlier one sent, which the later one's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.advance(Duration.ofMinutes(1));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), earlier.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six minutes in, still coming")
+                .isZero();
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        feed.machine.snapshotComplete(1, LIVE, earlier.requestId());
+        feed.machine.snapshotComplete(1, LIVE, later.requestId());
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.COMPLETED);
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryAskedForAtOneClockReadingDoesNotPutOffTheDeadlineOfTheOneAskedForBeforeIt() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var earlier = feed.calls.getLast();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.accept(earlier);
+        feed.accept(later);
+        for (int minute = 1; minute <= 4; minute++) {
+            feed.advance(Duration.ofMinutes(1));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), later.requestId());
+        }
+        assertThat(statusOf(earlier).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        for (int minute = 5; minute <= 6; minute++) {
+            feed.advance(Duration.ofMinutes(1));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), later.requestId());
+        }
+        assertThat(statusOf(earlier).state())
+                .as("six minutes of the later one's snapshot, none of its own")
+                .isEqualTo(EventRecoveryStatus.State.TIMED_OUT);
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+        assertThat(feed.counters.eventExpired()).isEqualTo(1);
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryTheApiRefusedPutsOffTheDeadlineOfOneAskedForAtTheSameClockReading() {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var refused = feed.calls.getLast();
+        assertThat(feed.recoverEvent(LIVE)).isNotDone();
+        var later = feed.calls.getLast();
+        feed.refuse(refused);
+        assertThat(statusOf(refused).state()).isEqualTo(EventRecoveryStatus.State.FAILED);
+        feed.accept(later);
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.advance(Duration.ofMinutes(1));
+            feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), refused.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six minutes in, still coming")
+                .isZero();
+        assertThat(statusOf(later).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+    }
+
+    @Test
+    void theSnapshotOfAnEventRecoveryPutsOffTheDeadlineOfARecoveryAskedForAtTheSameClockReading() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var event = (Outbox.Call.Event) feed.calls.getLast();
+        feed.alive(PRE);
+        var recovery = feed.lastSnapshot(PRE);
+        feed.accept(event);
+        feed.accept(recovery);
+        // a slow session takes what the event recovery sent, which the recovery's queues behind
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), event.requestId());
+        }
+        assertThat(feed.counters.timedOut()).as("six minutes in, still coming").isZero();
+    }
+
+    @Test
+    void theSnapshotOfARecoveryPutsOffTheDeadlineOfAnEventRecoveryAskedForAtTheSameClockReading() {
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        var recovery = feed.lastSnapshot(PRE);
+        assertThat(feed.recoverEvent(PRE)).isNotDone();
+        var event = (Outbox.Call.Event) feed.calls.getLast();
+        feed.accept(recovery);
+        feed.accept(event);
+        for (int minute = 1; minute <= 6; minute++) {
+            feed.runWithAlives(Duration.ofMinutes(1));
+            feed.machine.processed(1, PRE, feed.now(), Stamp.of(feed.now()), recovery.requestId());
+        }
+        assertThat(feed.counters.eventExpired())
+                .as("six minutes in, still coming")
+                .isZero();
+        assertThat(statusOf(event).state()).isEqualTo(EventRecoveryStatus.State.PENDING);
+    }
+
+    /**
+     * Twenty event recoveries the API has not answered, asked for at one clock reading, and the
+     * request ids of the order their callers hear them end in, once {@code end} ends them.
+     */
+    @SuppressWarnings("FutureReturnValueIgnored") // the callback only records the order
+    private void endsInTheOrderSent(Runnable end) {
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        var sent = new ArrayList<Long>();
+        var heard = new ArrayList<Long>();
+        for (int i = 0; i < 20; i++) {
+            var reply = feed.recoverEvent(LIVE);
+            var call = feed.calls.getLast();
+            sent.add(call.requestId());
+            reply.whenComplete((id, failure) -> heard.add(call.requestId()));
+        }
+        end.run();
+        assertThat(heard).as("the order they were heard in").containsExactlyElementsOf(sent);
+    }
+
+    @Test
+    void eventRecoveriesGivenUpWithTheConnectionEndInTheOrderSent() {
+        endsInTheOrderSent(feed.machine::connectionDown);
+    }
+
+    @Test
+    void eventRecoveriesThatExpireTogetherEndInTheOrderSent() {
+        endsInTheOrderSent(() -> feed.advance(Duration.ofHours(6).plusSeconds(1)));
+    }
+
+    @Test
+    void eventRecoveriesStillInFlightWhenTheFeedClosesEndInTheOrderSent() {
+        endsInTheOrderSent(feed.machine::close);
+    }
+
     @Test
     void aSnapshotCompleteAfterAnEventRecoveryWasGivenUpIsCountedAndIgnored() {
         feed.open(1, MessageInterest.ALL);
