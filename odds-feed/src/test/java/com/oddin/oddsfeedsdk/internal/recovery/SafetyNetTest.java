@@ -1249,6 +1249,8 @@ class SafetyNetTest {
         }
         feed.alive(PRE);
         feed.alive(LIVE);
+        feed.clock.advance(Duration.ofSeconds(1));
+        feed.machine.tick();
 
         long now = feed.now();
         feed.machine.processed(1, PRE, now - OLD.toMillis(), Stamp.of(now), 0);
