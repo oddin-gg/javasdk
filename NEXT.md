@@ -970,7 +970,10 @@ and REST workers post facts to it; it decides and posts work out.
     producer's stateful recovery window on: a session whose checkpoint of any enabled producer
     it receives - one the net can ask for now or not, since the reset drops its backlog too and
     its recovery after the reset is clamped the same way - lies before the start that request
-    would be clamped to - it has lagged longer than the window - is not reset. It is reported lagging instead (once per episode, as with the cap
+    would be clamped to - it has lagged longer than the window - is not reset. The start is
+    moved on by a margin, ten minutes at most half the window, for the time from the last
+    acceptance to the recovery asked into the new queue, which is clamped later: a margin for
+    that time, not a proof that the checkpoint stays inside. It is reported lagging instead (once per episode, as with the cap
     spent), nothing is asked and no gap is opened, and it stops lagging as always, when its
     messages are on time. The same check runs when the last acceptance arrives, and a reset
     whose checkpoint the window has overtaken meanwhile is cancelled like a refused request.
@@ -1018,7 +1021,9 @@ and REST workers post facts to it; it decides and posts work out.
     operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
     cool-down, and has its own cap of three per session per cool-down; only a reset the
-    AMQP layer has made counts, and raises the event. When spent, the net stops
+    AMQP layer has made counts, and raises the event. The backoff counts the resets of the
+    cool-down only: one that has aged out no longer lengthens it, whichever way the pause
+    began. When spent, the net stops
     resetting: messages keep flowing under
     backpressure, the session is marked "lagging" in `getHealth()` and
     `onSessionLagChange` tells it. The net itself takes no producer down, because a slow

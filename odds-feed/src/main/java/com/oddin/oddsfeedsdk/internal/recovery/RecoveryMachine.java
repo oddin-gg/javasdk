@@ -68,7 +68,8 @@ import org.slf4j.LoggerFactory;
  * recoveries, part of whose messages may have gone with the old queue, are asked for again. It is
  * off for a producer whose last alive is older than two alive intervals, and paused for a producer
  * with a recovery in flight or a gap open. It resets each session at most {@link
- * RecoverySettings#resets()} times per cool-down, with backoff between resets; when spent the
+ * RecoverySettings#resets()} times per cool-down, with backoff between resets, counted over the
+ * resets of the cool-down only; when spent the
  * session is lagging. Lagging takes no producer down, but a producer the session processes later
  * than the maximum inactivity stays down for that delay until the session is on time again.
  * A window of stale samples that began before a recovery of the producer ended does not count the
@@ -78,7 +79,8 @@ import org.slf4j.LoggerFactory;
  * producer's stateful recovery window on. A session whose checkpoint of an enabled producer it
  * receives, one the net could ask for now or not, lies before where that request would start - it
  * has lagged longer than the window - is not reset: it is lagging instead, with nothing asked,
- * and stops lagging when it is on time again.
+ * and stops lagging when it is on time again. The start is moved on by a margin of ten minutes, at
+ * most half the window, for the time from the acceptance to the recovery asked into the new queue.
  * The same is checked when the last recovery is accepted, and a reset the window has overtaken is
  * cancelled like a refused request. A reset is not made once the feed is {@link #closing}, nor
  * for a producer that was disabled while its recovery was asked for.
@@ -101,6 +103,12 @@ final class RecoveryMachine {
 
     private static final String CLAMPED = "Recovery {} of producer {}: the gap began at {}, before the producer's"
             + " stateful recovery window of {} minutes; asking from {}, so {} of what the producer sent cannot be recovered";
+
+    /**
+     * How much of the stateful recovery window's start the safety net keeps clear of before a reset:
+     * see {@link #beyondWindow}.
+     */
+    private static final Duration WINDOW_MARGIN = Duration.ofMinutes(10);
 
     /** A sample's age when the producer's clock offset is not known. */
     private static final long UNKNOWN_AGE = Long.MIN_VALUE;
@@ -444,6 +452,7 @@ final class RecoveryMachine {
         long mono = mono();
         if (replaced) {
             // only a reset made counts against the cap and the backoff
+            resetsWithinCooldown(session, mono);
             session.resets.addLast(mono);
             session.nextResetAt = mono + backoff(settings.firstResetBackoff(), session.resets.size());
             counters.resets.incrementAndGet();
@@ -457,7 +466,8 @@ final class RecoveryMachine {
             // nothing was dropped, but the snapshot completes ignored meanwhile are gone; the net waits
             // as long as after the last reset made, and the backoff does not grow for one not made
             LOG.warn("The safety net's reset of session {} was not made", id);
-            session.nextResetAt = mono + backoff(settings.firstResetBackoff(), Math.max(1, session.resets.size()));
+            session.nextResetAt =
+                    mono + backoff(settings.firstResetBackoff(), Math.max(1, resetsWithinCooldown(session, mono)));
             notSeen(session, mono);
         }
         releaseDeferred();
@@ -1123,12 +1133,17 @@ final class RecoveryMachine {
      * set, else 0 for a full snapshot.
      */
     private long after(Track track, long oldestGap) {
+        return after(track, oldestGap, 0);
+    }
+
+    /** As above, with the window's start moved on by {@code margin}, in millis: for {@link #beyondWindow}. */
+    private long after(Track track, long oldestGap, long margin) {
         long after = oldestGap;
         int window = track.producer.getStatefulRecoveryWindowInMinutes();
         if (after != 0 && window > 0) {
             // the window counts back from now by the producer's clock, as the gaps' starts are
             after = Math.max(
-                    after, producerNow(track) - Duration.ofMinutes(window).toMillis());
+                    after, producerNow(track) - Duration.ofMinutes(window).toMillis() + margin);
         }
         return capped(track, after);
     }
@@ -1543,11 +1558,7 @@ final class RecoveryMachine {
      * first, the reset once the API has accepted them all. Spent, the session is lagging instead.
      */
     private void trigger(SessionState session, Track track, long age, long mono) {
-        while (!session.resets.isEmpty()
-                && mono - session.resets.getFirst() >= settings.cooldown().toMillis()) {
-            session.resets.removeFirst();
-        }
-        if (session.resets.size() >= settings.resets()) {
+        if (resetsWithinCooldown(session, mono) >= settings.resets()) {
             if (!session.lagging) {
                 session.lagging = true;
                 LOG.warn(
@@ -1659,10 +1670,18 @@ final class RecoveryMachine {
      * by no recovery, and a reset would drop them for good - the recovery of a producer the net
      * cannot ask for now included, which the session asks for after the reset. The start is the one {@link #request}
      * computes; a checkpoint of 0 is a full snapshot's or none, and the recovery then covers it.
+     *
+     * <p>A checkpoint within {@link #WINDOW_MARGIN} of the window's start counts as beyond it, the
+     * margin at most half the window. It is for the time from the acceptance of the recoveries to the
+     * recovery asked into the new queue, which is clamped later, when the window has moved on; it is
+     * a margin for that time, not a proof that the checkpoint stays inside.
      */
     private boolean beyondWindow(Track track, Lane lane) {
         long checkpoint = lane.checkpoint;
-        return checkpoint != 0 && checkpoint < after(track, Math.min(oldestGap(track), checkpoint));
+        long window = Duration.ofMinutes(track.producer.getStatefulRecoveryWindowInMinutes())
+                .toMillis();
+        long margin = Math.clamp(window / 2, 0, WINDOW_MARGIN.toMillis());
+        return checkpoint != 0 && checkpoint < after(track, Math.min(oldestGap(track), checkpoint), margin);
     }
 
     /** The session is too far behind for a reset to be safe: it lags instead, once per episode, and nothing is asked. */
@@ -1745,10 +1764,22 @@ final class RecoveryMachine {
         }
     }
 
+    /**
+     * How many resets the session made within the cool-down, the older ones dropped: what the cap
+     * and the backoff count, so every backoff is computed after this.
+     */
+    private int resetsWithinCooldown(SessionState session, long mono) {
+        while (!session.resets.isEmpty()
+                && mono - session.resets.getFirst() >= settings.cooldown().toMillis()) {
+            session.resets.removeFirst();
+        }
+        return session.resets.size();
+    }
+
     /** A reset that will not be made: its gaps close, and the net waits before it tries again. */
     private void cancelReset(SessionState session, long mono) {
         session.pending = null;
-        session.nextResetAt = mono + backoff(settings.firstResetBackoff(), session.resets.size() + 1);
+        session.nextResetAt = mono + backoff(settings.firstResetBackoff(), resetsWithinCooldown(session, mono) + 1);
         for (Lane lane : session.lanes.values()) {
             Gap gap = lane.gap;
             if (gap != null && gap.pendingReset) {

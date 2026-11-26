@@ -928,7 +928,7 @@ class SafetyNetTest {
 
     @Test
     void aCheckpointOfAProducerNotAskedForThatFellOutOfItsWindowWhileTheRecoveriesWereAcceptedCancelsTheReset() {
-        Harness feed = new Harness(Harness.settings(), false, 2);
+        Harness feed = new Harness(Harness.settings(), false, 4);
         feed.open(1, MessageInterest.ALL);
         feed.start();
         feed.bothUp(1);
@@ -955,7 +955,8 @@ class SafetyNetTest {
 
     @Test
     void aSessionWhoseCheckpointIsInsideTheRecoveryWindowIsResetAsBefore() {
-        Harness feed = new Harness(Harness.settings(), false, 2);
+        // a four minute window, a margin of two: the checkpoint, a minute back, is inside both
+        Harness feed = new Harness(Harness.settings(), false, 4);
         feed.open(1, MessageInterest.ALL);
         feed.start();
         feed.bothUp(1);
@@ -969,8 +970,8 @@ class SafetyNetTest {
 
     @Test
     void aCheckpointThatFellOutOfTheRecoveryWindowWhileTheRecoveriesWereAcceptedCancelsTheReset() {
-        // a two minute window: the checkpoint, a minute back, is inside it when the net asks
-        Harness feed = new Harness(Harness.settings(), false, 2);
+        // a four minute window, a margin of two: the checkpoint, a minute back, is clear of both when the net asks
+        Harness feed = new Harness(Harness.settings(), false, 4);
         feed.open(1, MessageInterest.ALL);
         feed.start();
         feed.bothUp(1);
@@ -1083,6 +1084,149 @@ class SafetyNetTest {
         long now = feed.now();
         feed.machine.processed(1, LIVE, now - OLD.toMillis(), Stamp.of(now), 0);
         assertThat(feed.calls).as("not at once").hasSize(asked);
+    }
+
+    // ---- the backoff counts the resets within the cool-down only
+
+    /**
+     * Session 1 reset twice, the second a little over two minutes after the first, and then a third
+     * time asked for, accepted, just before the first ages out of the ten minutes' cool-down.
+     *
+     * @return the time the first reset was made
+     */
+    private long twoResetsThenAThirdThatOutlastsTheFirst(Harness feed, boolean accept) {
+        long first = 0;
+        for (int round = 0; round < 2; round++) {
+            int before = feed.calls.size();
+            stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+            feed.accept(feed.lastSnapshot(PRE));
+            feed.accept(feed.lastSnapshot(LIVE));
+            feed.resetDone();
+            if (round == 0) {
+                first = feed.now();
+            }
+            feed.complete(feed.lastSnapshot(PRE), 1);
+            feed.complete(feed.lastSnapshot(LIVE), 1);
+        }
+        // quiet, with messages on time, until the third is asked for a little before the first ages out
+        while (feed.now() - first < Duration.ofSeconds(520).toMillis()) {
+            stale(feed, 1, FRESH, Duration.ofSeconds(10), () -> false);
+        }
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        assertThat(feed.now() - first)
+                .as("the third asked for before the first ages out")
+                .isLessThan(600_000);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        if (accept) {
+            feed.accept(pre);
+            feed.accept(live);
+            assertThat(feed.resets).hasSize(3);
+        }
+        // the transport is slow: the first ages out of the cool-down before the third is done
+        feed.runWithAlives(Duration.ofSeconds(601 - (feed.now() - first) / 1_000 + 1));
+        assertThat(feed.now() - first).isGreaterThan(600_000);
+        return first;
+    }
+
+    @Test
+    void theBackoffAfterAResetCountsOnlyTheResetsWithinTheCooldown() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        twoResetsThenAThirdThatOutlastsTheFirst(feed, true);
+        feed.resetDone();
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(6), () -> feed.calls.size() > after))
+                .as("seconds to the next request: two resets within the cool-down, so two minutes")
+                .isEqualTo(120);
+    }
+
+    @Test
+    void theBackoffAfterAResetTheTransportCouldNotTakeCountsOnlyTheResetsWithinTheCooldown() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        twoResetsThenAThirdThatOutlastsTheFirst(feed, true);
+        feed.resetRefused();
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(6), () -> feed.calls.size() > after))
+                .as(
+                        "seconds to the next request: one reset within the cool-down, so a minute's backoff, then the window")
+                .isEqualTo(61);
+    }
+
+    @Test
+    void theBackoffAfterACancelledResetCountsOnlyTheResetsWithinTheCooldown() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        twoResetsThenAThirdThatOutlastsTheFirst(feed, false);
+        feed.refuse(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        int after = feed.calls.size();
+        feed.runWithAlives(Duration.ofSeconds(10));
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(6), () -> feed.calls.size() > after))
+                .as("seconds to the next request, counted from ten seconds after the cancel: a pause of two minutes")
+                .isEqualTo(110);
+    }
+
+    // ---- the margin on the recovery window
+
+    @Test
+    void aCheckpointInsideTheWindowButWithinTheMarginOfItsStartIsNotReset() {
+        // a two minute window, a margin of a minute: the checkpoint, a minute back, is inside it and within it
+        Harness feed = new Harness(Harness.settings(), false, 2);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(3), () -> false);
+        assertThat(feed.calls).as("nothing asked for").hasSize(before);
+        assertThat(feed.resets).isEmpty();
+        assertThat(feed.machine.lagging(1)).isTrue();
+    }
+
+    @Test
+    void aCheckpointAMarginOfTenMinutesFromTheWindowsStartIsNotReset() {
+        Harness feed = new Harness(Harness.settings(), false, 20);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        quiet(feed, 540);
+        stale(feed, 1, OLD, Duration.ofMinutes(3), () -> false);
+        assertThat(feed.calls).as("nothing asked for").hasSize(before);
+        assertThat(feed.machine.lagging(1)).isTrue();
+    }
+
+    @Test
+    void aCheckpointJustOutsideTheMarginOfTenMinutesIsReset() {
+        Harness feed = new Harness(Harness.settings(), false, 20);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        quiet(feed, 480);
+        stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
+    }
+
+    @Test
+    void theMarginIsAtMostHalfTheWindow() {
+        // a three minute window: the margin is a minute and a half, not ten minutes; the checkpoint is a minute back
+        Harness feed = new Harness(Harness.settings(), false, 3);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
     }
 
     @Test
@@ -1312,6 +1456,17 @@ class SafetyNetTest {
             }
             long now = feed.now();
             feed.machine.processed(1, PRE, now - OLD.toMillis(), now, Stamp.of(now), 0);
+            feed.machine.tick();
+        }
+    }
+
+    /** The clock moves, with the alives of both producers every ten seconds and nothing taken by the session. */
+    private void quiet(Harness feed, int seconds) {
+        for (int second = 1; second <= seconds; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            if (Duration.between(Harness.START, feed.clock.instant()).toSeconds() % 10 == 0) {
+                aliveBoth(feed);
+            }
             feed.machine.tick();
         }
     }
