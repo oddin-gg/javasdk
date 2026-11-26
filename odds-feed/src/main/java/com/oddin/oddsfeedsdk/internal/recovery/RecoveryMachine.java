@@ -72,8 +72,9 @@ import org.slf4j.LoggerFactory;
  * resets of the cool-down only; when spent the
  * session is lagging. Lagging takes no producer down, but a producer the session processes later
  * than the maximum inactivity stays down for that delay until the session is on time again.
- * A window of stale samples that began before a recovery of the producer ended does not count the
- * recovery's time: it starts again with the first stale sample after it.
+ * A window of stale samples that began before a recovery of the producer ended, or before an alive
+ * made a stale clock offset fresh again, does not count that time: it starts again with the first
+ * stale sample after it, and a sample taken before is not the net's.
  *
  * <p>The reset drops what the session's queue holds, and a recovery repeats it only from the
  * producer's stateful recovery window on. A session whose checkpoint of an enabled producer it
@@ -83,7 +84,12 @@ import org.slf4j.LoggerFactory;
  * most half the window, for the time from the acceptance to the recovery asked into the new queue.
  * The same is checked when the last recovery is accepted, and a reset the window has overtaken is
  * cancelled like a refused request. A reset is not made once the feed is {@link #closing}, nor
- * for a producer that was disabled while its recovery was asked for.
+ * for a producer that was disabled while its recovery was asked for. The net also waits - no
+ * lagging, no gap, no request - while another session that receives a producer of the session has
+ * lost its channel or has a reset under way, since that producer's recovery cannot be asked for
+ * until the queue is back, and the reset would drop the session's backlog of it meanwhile; that is
+ * checked again at the last acceptance. Producers in backoff, with their cap spent or silent do
+ * not hold the net back.
  *
  * <p><b>Time.</b> Every duration the machine measures between two local events - a producer's
  * inactivity, the deadlines of a recovery and of an event recovery, the backoffs, the cool-down, the
@@ -554,6 +560,10 @@ final class RecoveryMachine {
         long mono = mono();
         // the alive after the one that gave a recovery up: it may be asked for again
         track.awaitsAlive = false;
+        if (track.lastAliveAt == 0 || received.mono() - track.lastAliveAt > 2 * track.aliveInterval) {
+            // the offset was stale, or there was none: a window of stale samples from before does not count it
+            track.offsetFreshAt = received.mono();
+        }
         if (track.lastAliveAt != 0) {
             // a second at least, and the maximum inactivity at most, unless that is less
             long measured = Math.clamp(
@@ -1530,7 +1540,7 @@ final class RecoveryMachine {
                 || hasGaps(track)
                 || session.pending != null
                 || session.underway != 0
-                || taken.mono() <= track.pausedUntil) {
+                || taken.mono() <= pausedUntil(track)) {
             // a recovery's snapshot ahead of a live message makes it old, on every session
             lane.above = false;
             return;
@@ -1544,13 +1554,22 @@ final class RecoveryMachine {
             }
             return;
         }
-        if (!lane.above || lane.aboveSince <= track.pausedUntil) {
-            // a window that began before the recovery ended does not count the recovery's time
+        if (!lane.above || lane.aboveSince <= pausedUntil(track)) {
+            // a window that began before the recovery ended, or before the offset was fresh again, does not count that
+            // time
             lane.above = true;
             lane.aboveSince = taken.mono();
         } else if (taken.mono() - lane.aboveSince >= settings.staleWindow().toMillis()) {
             trigger(session, track, age, mono);
         }
+    }
+
+    /**
+     * Samples taken up to this time are not the safety net's: a recovery of the producer was in
+     * flight, or its clock offset was stale and an alive has made it fresh again.
+     */
+    private static long pausedUntil(Track track) {
+        return Math.max(track.pausedUntil, track.offsetFreshAt);
     }
 
     /**
@@ -1582,7 +1601,8 @@ final class RecoveryMachine {
         // misses what the queue held like any other, to be asked for when it can be
         for (Long producerId : session.lanes.keySet()) {
             Track other = track(producerId);
-            if (enabled(other) && other.active != null) {
+            // nor while another session's queue is missing for a producer: its recovery waits for it
+            if (enabled(other) && (other.active != null || awaitsAnotherSessionsChannel(session, other))) {
                 return;
             }
         }
@@ -1717,19 +1737,55 @@ final class RecoveryMachine {
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             long producerId = entry.getKey();
             Track other = track(producerId);
-            if (enabled(other) && beyondWindow(other, entry.getValue())) {
-                cancelReset(session, mono);
-                counters.resetRequestsFailed.incrementAndGet();
-                LOG.warn(
-                        "The safety net did not reset session {}: its messages of producer {} reach back beyond the"
-                                + " producer's stateful recovery window, which moved on while the recovery was accepted",
-                        session.info.id(),
-                        producerId);
-                events.safetyNetRequestFailed(session.info.id(), producerId, "beyond the recovery window");
+            if (!enabled(other)) {
+                continue;
+            }
+            if (awaitsAnotherSessionsChannel(session, other)) {
+                resetNotMadeAtAcceptance(
+                        session,
+                        producerId,
+                        mono,
+                        "another session's queue is not bound",
+                        "another session that receives producer " + producerId
+                                + " has no queue bound, so its recovery could not be asked for after the reset");
+                return;
+            }
+            if (beyondWindow(other, entry.getValue())) {
+                resetNotMadeAtAcceptance(
+                        session,
+                        producerId,
+                        mono,
+                        "beyond the recovery window",
+                        "its messages of producer " + producerId
+                                + " reach back beyond the producer's stateful recovery window, which moved on"
+                                + " while the recovery was accepted");
                 return;
             }
         }
         reset(session, pending);
+    }
+
+    private void resetNotMadeAtAcceptance(
+            SessionState session, long producerId, long mono, String reason, String explanation) {
+        cancelReset(session, mono);
+        counters.resetRequestsFailed.incrementAndGet();
+        LOG.warn("The safety net did not reset session {}: {}", session.info.id(), explanation);
+        events.safetyNetRequestFailed(session.info.id(), producerId, reason);
+    }
+
+    /**
+     * Whether a session other than {@code session} that receives the producer has lost its channel
+     * or has a reset under way: a recovery of the producer cannot be asked for until its queue is
+     * back, so a reset of {@code session} would drop its backlog of the producer for that long. The
+     * session's own state does not count.
+     */
+    private boolean awaitsAnotherSessionsChannel(SessionState session, Track track) {
+        for (SessionState other : sessions.values()) {
+            if (other != session && (other.underway != 0 || other.lost) && other.lanes.containsKey(track.id)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -2105,6 +2161,8 @@ final class RecoveryMachine {
         final ArrayDeque<Ended> endedEvents = new ArrayDeque<>();
         /** Samples taken up to this time are not the safety net's: a recovery was in flight. */
         long pausedUntil;
+        /** When an alive made the clock offset fresh again after it was stale, monotonic; 0 before the first alive. */
+        long offsetFreshAt;
         /** Recoveries failed in a row. */
         int failures;
 

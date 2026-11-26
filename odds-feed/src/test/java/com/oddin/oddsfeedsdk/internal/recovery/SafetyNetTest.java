@@ -704,8 +704,9 @@ class SafetyNetTest {
                 .isEqualTo(-1);
         alives = true;
         assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
-                .as("seconds to a request once alives resume: the first at 10 s, then the window")
-                .isEqualTo(70);
+                .as("seconds to a request once alives resume: the first at 10 s, a sample taken then is not the"
+                        + " net's, and the window follows")
+                .isEqualTo(71);
     }
 
     @Test
@@ -1170,6 +1171,93 @@ class SafetyNetTest {
         assertThat(stale(feed, 1, OLD, Duration.ofMinutes(6), () -> feed.calls.size() > after))
                 .as("seconds to the next request, counted from ten seconds after the cancel: a pause of two minutes")
                 .isEqualTo(110);
+    }
+
+    // ---- another session's queue that is not bound
+
+    @Test
+    void theNetDoesNotResetWhileAnotherSessionsLostChannelHoldsBackAProducerOfThisOne() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.LIVE_ONLY);
+        feed.start();
+        feed.bothUp(1, 2);
+        // session 2 has no queue, so live cannot be asked for, and a reset would drop session 1's live backlog
+        feed.machine.channelLost(2);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        assertThat(feed.calls).as("nothing is asked for").hasSize(before);
+        assertThat(feed.resets).isEmpty();
+        assertThat(feed.events).as("no lagging either: it waits").isEmpty();
+        assertThat(feed.machine.lagging(1)).isFalse();
+
+        // session 2's queue is back, live is recovered, and the net acts on session 1
+        feed.machine.channelReopened(2);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.complete(live, 1, 2);
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > after))
+                .as("seconds to the net's request once no queue is missing: stale all along")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void anotherSessionsChannelLostWhileTheRecoveriesWereAcceptedCancelsTheReset() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.ALL);
+        feed.open(2, MessageInterest.LIVE_ONLY);
+        feed.start();
+        feed.bothUp(1, 2);
+        // live is silent, so the net asks for prematch only
+        liveAlives = false;
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        assertThat(feed.calls).as("prematch only").hasSize(before + 1);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+
+        feed.machine.channelLost(2);
+        feed.accept(pre);
+        assertThat(feed.resets)
+                .as("live could not be asked for while session 2 has no queue")
+                .isEmpty();
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+    }
+
+    // ---- a stale clock offset
+
+    @Test
+    void aStaleWindowThatBeganBeforeTheProducersOffsetWentStaleDoesNotCountThatTime() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        // alives every two seconds, so that the offset is stale after a few seconds without one
+        for (int second = 1; second <= 50; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            long now = feed.now();
+            if (second % 2 == 0) {
+                feed.alive(PRE);
+                feed.alive(LIVE);
+            }
+            feed.machine.processed(1, PRE, now - OLD.toMillis(), Stamp.of(now), 0);
+            feed.machine.tick();
+        }
+        assertThat(feed.calls).as("not yet").hasSize(before);
+        // no alive for fifteen seconds, and the session takes nothing of the producer meanwhile
+        for (int second = 1; second <= 15; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            feed.machine.tick();
+        }
+        feed.alive(PRE);
+        feed.alive(LIVE);
+
+        long now = feed.now();
+        feed.machine.processed(1, PRE, now - OLD.toMillis(), Stamp.of(now), 0);
+        assertThat(feed.calls)
+                .as("a window of its own, not the one from before")
+                .hasSize(before);
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .as("seconds to the net's request: a window from the first sample after the alive")
+                .isGreaterThan(55);
     }
 
     // ---- the margin on the recovery window

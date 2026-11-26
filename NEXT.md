@@ -977,8 +977,15 @@ and REST workers post facts to it; it decides and posts work out.
     spent), nothing is asked and no gap is opened, and it stops lagging as always, when its
     messages are on time. The same check runs when the last acceptance arrives, and a reset
     whose checkpoint the window has overtaken meanwhile is cancelled like a refused request.
-    A stale window that began before a recovery of the producer ended does not count the
-    recovery's time: it starts again with the first stale sample after it. The session's own
+    The net also waits, with no lagging, no gap and no request, while another session that
+    receives a producer of the session has lost its channel or has a reset under way: that
+    producer's recovery cannot be asked for until the queue is back, and a reset would drop the
+    session's backlog of it meanwhile. The wait is checked again at the last acceptance, which
+    cancels the reset like the window check does; the session's own state does not count, and
+    producers in backoff, with their cap spent or silent do not hold the net back.
+    A stale window that began before a recovery of the producer ended, or before an alive made
+    a stale clock offset fresh again, does not count that time: it starts again with the first
+    stale sample after it, and a sample taken before is not the net's. The session's own
     `snapshot_complete` of one of those recoveries, seen before the reset, cancels it,
     since the reset would now drop what the recovery sent - and only that does. Another
     session's completion is no evidence that this session's backlog was replaced: a
