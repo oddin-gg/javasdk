@@ -1109,7 +1109,12 @@ public final class RecoveryActor implements AliveFacts, ConnectionEvents, AutoCl
         }
     }
 
-    /** Completes callers' futures each on a thread of its own, never on the actor's. */
+    /**
+     * Completes callers' futures each on a thread of its own, never on the actor's, so what one
+     * caller chains to its future cannot hold up another's reply, nor the actor. The order in which
+     * separate callers hear their replies is therefore not defined, whatever order the machine
+     * handed them over in.
+     */
     private static final class Replies {
         private Replies() {}
 

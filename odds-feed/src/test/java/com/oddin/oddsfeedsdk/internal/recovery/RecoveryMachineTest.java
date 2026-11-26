@@ -2924,37 +2924,35 @@ class RecoveryMachineTest {
 
     /**
      * Twenty event recoveries the API has not answered, asked for at one clock reading, and the
-     * request ids of the order their callers hear them end in, once {@code end} ends them.
+     * order the machine hands their callers' futures to the outbox in once {@code end} ends them:
+     * the order sent. The order in which separate callers hear their futures complete is the
+     * actor's, one thread each, and is not asserted.
      */
-    @SuppressWarnings("FutureReturnValueIgnored") // the callback only records the order
-    private void endsInTheOrderSent(Runnable end) {
+    private void theMachineEndsThemInTheOrderSent(Runnable end) {
         feed.open(1, MessageInterest.ALL);
         feed.start();
-        var sent = new ArrayList<Long>();
-        var heard = new ArrayList<Long>();
+        var sent = new ArrayList<CompletableFuture<@Nullable Long>>();
         for (int i = 0; i < 20; i++) {
-            var reply = feed.recoverEvent(LIVE);
-            var call = feed.calls.getLast();
-            sent.add(call.requestId());
-            reply.whenComplete((id, failure) -> heard.add(call.requestId()));
+            sent.add(feed.recoverEvent(LIVE));
         }
+        assertThat(feed.replied).as("nothing answered yet").isEmpty();
         end.run();
-        assertThat(heard).as("the order they were heard in").containsExactlyElementsOf(sent);
+        assertThat(feed.replied).as("the order the machine ended them in").containsExactlyElementsOf(sent);
     }
 
     @Test
-    void eventRecoveriesGivenUpWithTheConnectionEndInTheOrderSent() {
-        endsInTheOrderSent(feed.machine::connectionDown);
+    void theMachineEndsEventRecoveriesGivenUpWithTheConnectionInTheOrderSent() {
+        theMachineEndsThemInTheOrderSent(feed.machine::connectionDown);
     }
 
     @Test
-    void eventRecoveriesThatExpireTogetherEndInTheOrderSent() {
-        endsInTheOrderSent(() -> feed.advance(Duration.ofHours(6).plusSeconds(1)));
+    void theMachineEndsEventRecoveriesThatExpireTogetherInTheOrderSent() {
+        theMachineEndsThemInTheOrderSent(() -> feed.advance(Duration.ofHours(6).plusSeconds(1)));
     }
 
     @Test
-    void eventRecoveriesStillInFlightWhenTheFeedClosesEndInTheOrderSent() {
-        endsInTheOrderSent(feed.machine::close);
+    void theMachineEndsEventRecoveriesStillInFlightWhenTheFeedClosesInTheOrderSent() {
+        theMachineEndsThemInTheOrderSent(feed.machine::close);
     }
 
     @Test

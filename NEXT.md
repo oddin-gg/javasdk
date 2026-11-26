@@ -837,7 +837,12 @@ and REST workers post facts to it; it decides and posts work out.
   waits for the maximum recovery time, which stays the outer bound. What was asked for
   before what is the order the requests were sent in, a number the machine gives each
   recovery and event recovery as it goes out, not the clock, which two can read alike; what
-  ends in one step, as with a lost connection, ends in that order. The client is not asked again: event
+  ends in one step, as with a lost connection, ends in that order within its kind: the
+  recoveries of the producers among themselves, the event recoveries among themselves. The
+  producers' recoveries end before the event recoveries. This is the order the machine
+  ends them in, in its calls to the outbox, its statuses and its counters; the callers of
+  separate requests hear their futures complete on threads of their own, in any order.
+  The client is not asked again: event
   recoveries are the client's to ask for. A caller still waiting for the API's answer
   then hears it was not accepted. The first
   `snapshot_complete` of a request, from any session, says the API took it: an event

@@ -45,6 +45,8 @@ final class Harness {
     final List<Outbox.Call> calls = new ArrayList<>();
     final List<Integer> resets = new ArrayList<>();
     final List<Long> resetNumbers = new ArrayList<>();
+    /** The callers' futures the machine handed to the outbox, completed or failed, in that order. */
+    final List<CompletableFuture<@Nullable Long>> replied = new ArrayList<>();
     /** Every status change, with its cause. */
     final List<ProducerStatusChange> statuses = new ArrayList<>();
     /** The status changes 0.0.x's callback fires for: the down flag or the public reason changed. */
@@ -98,11 +100,13 @@ final class Harness {
 
             @Override
             public void reply(CompletableFuture<@Nullable Long> reply, @Nullable Long requestId) {
+                replied.add(reply);
                 reply.complete(requestId);
             }
 
             @Override
             public void fail(CompletableFuture<@Nullable Long> reply, RuntimeException failure) {
+                replied.add(reply);
                 reply.completeExceptionally(failure);
             }
         };
