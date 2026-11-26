@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -61,11 +62,18 @@ import org.slf4j.LoggerFactory;
  *
  * <p><b>The safety net.</b> A message's age is the time it was taken against its timestamp, with the
  * producer's clock offset measured on its own alives. When a session's live messages of a producer
- * stay older than the limit for the window, the net asks for a recovery of every producer of the
- * session it can ask for now, and only once the API has accepted them all has the session's channel
- * replaced; it waits while one of them has a recovery in flight. Once
- * the transport reports that done, the session has lost its queue like a lost channel, and those
- * recoveries, part of whose messages may have gone with the old queue, are asked for again. It is
+ * stay older than the limit for the window, the net asks for a recovery of every enabled producer
+ * of the session, and only once the API has accepted them all has the session's channel replaced.
+ * It starts only when every one of those producers can be asked for now: none has a recovery in
+ * flight, is in backoff or in its cool-down, is silent, or has a session without a bound queue.
+ * Otherwise it waits, with no request, no lagging and no backoff, and a later stale sample tries
+ * again: the reset drops the backlog of every producer the session receives, and a producer that
+ * could not be asked for right after it would miss what the reset dropped. A recovery of the net
+ * that ends before the reset is made - refused, timed out, given up, completed - cancels the
+ * reset. Once the transport reports it done, the session has lost its queue like a lost channel,
+ * and every recovery still in flight for a producer of the session, which was asked for before the
+ * reset and part of whose messages may have gone with the old queue, is given up and asked for
+ * again in that step, whether the session waited for it or not. The net is
  * off for a producer whose last alive is older than two alive intervals, and paused for a producer
  * with a recovery in flight or a gap open. It resets each session at most {@link
  * RecoverySettings#resets()} times per cool-down, with backoff between resets, counted over the
@@ -84,12 +92,13 @@ import org.slf4j.LoggerFactory;
  * most half the window, for the time from the acceptance to the recovery asked into the new queue.
  * The same is checked when the last recovery is accepted, and a reset the window has overtaken is
  * cancelled like a refused request. A reset is not made once the feed is {@link #closing}, nor
- * for a producer that was disabled while its recovery was asked for. The net also waits - no
- * lagging, no gap, no request - while another session that receives a producer of the session has
- * lost its channel or has a reset under way, since that producer's recovery cannot be asked for
- * until the queue is back, and the reset would drop the session's backlog of it meanwhile; that is
- * checked again at the last acceptance. Producers in backoff, with their cap spent or silent do
- * not hold the net back.
+ * for a producer that was disabled while its recovery was asked for, nor when a producer was
+ * enabled since or one's recovery is no longer the one the net asked for. Another session that
+ * receives a producer of the session and has lost its channel or has a reset under way holds the
+ * net back at the start, since that producer cannot be asked for until the queue is back; that is
+ * checked again at the last acceptance, where it cancels the reset with no backoff, as does a lost
+ * connection or channel. An enabled producer that is silent, in backoff, capped or mid-recovery thus
+ * holds the net back for all the sessions that receive it.
  *
  * <p><b>Time.</b> Every duration the machine measures between two local events - a producer's
  * inactivity, the deadlines of a recovery and of an event recovery, the backoffs, the cool-down, the
@@ -261,7 +270,7 @@ final class RecoveryMachine {
                 // a snapshot complete stands for the API's acceptance; with none seen, and none left
                 // to wait for, the API's answer decides
                 if (active.seen.containsAll(active.awaited) && (active.accepted || seenAny)) {
-                    complete(track, active, mono);
+                    complete(track, active, mono, true);
                 }
             } else if (active == null) {
                 upIfNothingMissing(track);
@@ -373,7 +382,7 @@ final class RecoveryMachine {
         long mono = mono();
         for (Track track : tracks.values()) {
             if (track.active != null) {
-                giveUp(track, mono, "its snapshot went with the connection");
+                giveUp(track, mono, "its snapshot went with the connection", true);
             }
         }
         for (SessionState session : sessions.values()) {
@@ -417,7 +426,7 @@ final class RecoveryMachine {
         }
         session.pending = null;
         session.lost = true;
-        queueLost(session, StatusCause.CHANNEL_LOST, mono());
+        queueLost(session, StatusCause.CHANNEL_LOST, mono(), 0);
     }
 
     /**
@@ -439,8 +448,9 @@ final class RecoveryMachine {
 
     /**
      * The safety net's reset is made: the session's queue lost what it held, as with a lost
-     * channel. The recoveries it waited for were asked for before the reset, so part of what they
-     * sent went with the old queue: they are given up and asked for again.
+     * channel. Every recovery still in flight for a producer of the session was asked for before
+     * the reset, so part of what it sent went with the old queue, whether the session waited for its
+     * snapshot complete or not: each is given up, and asked for again in this step.
      *
      * <p>A reset with the transport stays one through a lost connection or channel: replacing the
      * channel late can still drop what the new one holds, so its report counts all the same.
@@ -467,14 +477,15 @@ final class RecoveryMachine {
                 session.lagging = false;
                 events.lagging(id, false);
             }
-            queueLost(session, StatusCause.SAFETY_NET_RESET, mono);
+            queueLost(session, StatusCause.SAFETY_NET_RESET, mono, session.underwaySeq);
         } else {
-            // nothing was dropped, but the snapshot completes ignored meanwhile are gone; the net waits
-            // as long as after the last reset made, and the backoff does not grow for one not made
+            // nothing was dropped, so the recoveries in flight stay, but the snapshot completes ignored
+            // meanwhile are gone; the net waits as long as after the last reset made, and the backoff does
+            // not grow for one not made
             LOG.warn("The safety net's reset of session {} was not made", id);
             session.nextResetAt =
                     mono + backoff(settings.firstResetBackoff(), Math.max(1, resetsWithinCooldown(session, mono)));
-            notSeen(session, mono);
+            notSeen(session, mono, 0);
         }
         releaseDeferred();
     }
@@ -503,7 +514,7 @@ final class RecoveryMachine {
      * The session's queue lost what it held: it misses everything after its checkpoints, and a
      * recovery or event recovery that waited for its snapshot complete will not see it.
      */
-    private void queueLost(SessionState session, StatusCause cause, long mono) {
+    private void queueLost(SessionState session, StatusCause cause, long mono, long askedUpTo) {
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Lane lane = entry.getValue();
             lane.gap = openGap(lane.gap, lane.checkpoint, false);
@@ -512,21 +523,29 @@ final class RecoveryMachine {
         for (Long producerId : session.lanes.keySet()) {
             markDown(track(producerId), cause);
         }
-        notSeen(session, mono);
+        notSeen(session, mono, askedUpTo);
     }
 
     /**
      * The session will not see the snapshot completes it has not seen yet: the recoveries and event
      * recoveries waiting for them are given up, and asked for again as far as anything is missing.
+     *
+     * @param askedUpTo the recoveries asked for up to this request in the order sent are given up as
+     *     well, those the session did not wait for included: what they sent went with its queue, and
+     *     one that stays in flight holds back the recovery that repeats it. 0 for none.
      */
-    private void notSeen(SessionState session, long mono) {
+    private void notSeen(SessionState session, long mono, long askedUpTo) {
         int id = session.info.id();
         giveUpEvents(id);
         for (Long producerId : session.lanes.keySet()) {
             Track track = track(producerId);
             Active active = track.active;
-            if (active != null && active.awaited.contains(id) && !active.seen.contains(id)) {
-                giveUp(track, mono, "its snapshot went with session " + id + "'s queue");
+            if (active != null) {
+                if (active.awaited.contains(id) && !active.seen.contains(id)) {
+                    giveUp(track, mono, "its snapshot went with session " + id + "'s queue", true);
+                } else if (active.seq <= askedUpTo) {
+                    giveUp(track, mono, "what it sent went with session " + id + "'s queue, in the reset", true);
+                }
             }
             maybeRequest(track, mono);
         }
@@ -590,7 +609,7 @@ final class RecoveryMachine {
             if (active != null && active.accepted && received.mono() >= active.acceptedAt) {
                 // still unsubscribed after the producer took the request: it lost it, restarting say,
                 // and will send neither the snapshot nor its snapshot complete
-                giveUp(track, mono, "the producer says unsubscribed since it accepted it");
+                giveUp(track, mono, "the producer says unsubscribed since it accepted it", false);
                 track.awaitsAlive = true;
             }
             markDown(track, StatusCause.UNSUBSCRIBED);
@@ -772,16 +791,16 @@ final class RecoveryMachine {
             if (active.awaited.contains(id)) {
                 active.seen.add(id);
                 PendingReset pending = session == null ? null : session.pending;
-                if (session != null && pending != null && pending.producers.contains(producerId)) {
+                if (session != null && pending != null && pending.asked.containsKey(producerId)) {
                     // the session has what the recovery sent: a reset now would drop it
-                    cancelReset(session, mono());
+                    cancelReset(session, mono(), true);
                 }
                 if (!active.accepted) {
                     // a snapshot complete says the API took the request, whatever it answers later
                     accepted(track, active, mono());
                 }
                 if (track.active == active && active.seen.containsAll(active.awaited)) {
-                    complete(track, active, mono());
+                    complete(track, active, mono(), true);
                 }
             }
             return;
@@ -983,7 +1002,7 @@ final class RecoveryMachine {
                     track.inactive = true;
                     openProducerGap(track, track.lastAliveMark);
                     // a producer that went silent while a recovery was in flight may have lost it
-                    giveUp(track, mono, "the producer sent no alive for " + settings.maxInactivity());
+                    giveUp(track, mono, "the producer sent no alive for " + settings.maxInactivity(), false);
                     markDown(track, StatusCause.ALIVE_INTERVAL_VIOLATION);
                 }
                 checkDelay(track, mono);
@@ -1195,7 +1214,7 @@ final class RecoveryMachine {
                 track.id, new Recovery(active.after, active.issuedWall, active.requestId, settings.nodeId(), true));
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
-            if (pending == null || !pending.unaccepted.contains(track.id)) {
+            if (pending == null || !asks(pending, track, active) || !pending.unaccepted.contains(track.id)) {
                 continue;
             }
             Long disabled = disabledAmongUnaccepted(pending);
@@ -1205,13 +1224,18 @@ final class RecoveryMachine {
                 continue;
             }
             pending.unaccepted.remove(track.id);
+            if (active.awaited.isEmpty()) {
+                // nothing waits for its snapshot complete, so it ends with its acceptance: that is no
+                // reason to cancel the reset
+                pending.endedOnAcceptance.add(track.id);
+            }
             if (pending.unaccepted.isEmpty()) {
                 resetOrCancel(session, pending, mono);
             }
         }
         if (track.active == active && active.awaited.isEmpty()) {
             // no session takes snapshot completes: nothing would ever complete it
-            complete(track, active, mono);
+            complete(track, active, mono, false);
         }
     }
 
@@ -1219,12 +1243,13 @@ final class RecoveryMachine {
      * Every session has seen the snapshot complete: the gaps it covers are closed. With gaps left
      * that opened since, one more recovery; with none, the producer is up.
      *
-     * <p>A pending reset of another session is left as it is: a session's reset is cancelled only by
-     * its own snapshot complete, the one evidence that its backlog was replaced. A low-priority
-     * session next to a high-priority one sees none, so its reset goes ahead, and once it is done
-     * what the recovery had sent into the old queue is asked for again.
+     * <p>A reset waiting for this recovery is cancelled, as for any recovery that ends before the
+     * reset is made.
      */
-    private void complete(Track track, Active active, long mono) {
+    private void complete(Track track, Active active, long mono, boolean cancelsResets) {
+        if (cancelsResets) {
+            cancelResetsAskedFor(track, active, mono, true, null);
+        }
         track.active = null;
         track.pausedUntil = mono;
         if (!active.accepted) {
@@ -1274,20 +1299,7 @@ final class RecoveryMachine {
         producers.setRecoveryInfo(
                 track.id, new Recovery(active.after, active.issuedWall, active.requestId, settings.nodeId(), false));
         counters.failed.incrementAndGet();
-        for (SessionState session : sessions.values()) {
-            PendingReset pending = session.pending;
-            if (pending != null && pending.unaccepted.contains(track.id)) {
-                cancelReset(session, mono);
-                counters.resetRequestsFailed.incrementAndGet();
-                LOG.warn(
-                        "The safety net did not reset session {}: recovery {} of producer {} failed, {}",
-                        session.info.id(),
-                        active.requestId,
-                        track.id,
-                        reason);
-                events.safetyNetRequestFailed(session.info.id(), track.id, reason);
-            }
-        }
+        cancelResetsAskedFor(track, active, mono, true, reason);
         if (!hasGaps(track)) {
             // nothing is missing, so nothing is asked for again, and nothing failed in a row
             track.failures = 0;
@@ -1329,8 +1341,11 @@ final class RecoveryMachine {
     /**
      * The recovery's snapshot will not come, through no fault of the request: lost with a queue, or
      * by the producer. It is no longer waited for, its gaps stay open, and no failure is counted.
+     *
+     * @param loss whether a lost connection, channel or queue is the reason: a reset it cancels is
+     *     not held back by the net's backoff, as the loss says nothing against the net
      */
-    private void giveUp(Track track, long mono, String reason) {
+    private void giveUp(Track track, long mono, String reason, boolean loss) {
         Active active = track.active;
         if (active == null) {
             return;
@@ -1338,10 +1353,40 @@ final class RecoveryMachine {
         ended(track, active, mono);
         counters.abandoned.incrementAndGet();
         LOG.info("Recovery {} of producer {} given up: {}", active.requestId, track.id, reason);
+        cancelResetsAskedFor(track, active, mono, !loss, null);
+    }
+
+    /** Whether the reset asked for exactly this recovery of the producer. */
+    private static boolean asks(PendingReset pending, Track track, Active active) {
+        Long requestId = pending.asked.get(track.id);
+        return requestId != null && requestId == active.requestId;
+    }
+
+    /**
+     * A recovery ended, by whatever way - failed, given up, completed - and a reset that asked for
+     * it will not be made: what it would drop is no longer repeated by the recovery the reset waited
+     * for. This is the one place that cancels a reset for the end of a recovery.
+     *
+     * @param backoff whether the net waits before it tries again
+     * @param failure why the API did not take it, for a refusal or a timeout; null otherwise
+     */
+    private void cancelResetsAskedFor(
+            Track track, Active active, long mono, boolean backoff, @Nullable String failure) {
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
-            if (pending != null && pending.unaccepted.contains(track.id)) {
-                cancelReset(session, mono);
+            if (pending == null || !asks(pending, track, active)) {
+                continue;
+            }
+            cancelReset(session, mono, backoff);
+            if (failure != null) {
+                counters.resetRequestsFailed.incrementAndGet();
+                LOG.warn(
+                        "The safety net did not reset session {}: recovery {} of producer {} failed, {}",
+                        session.info.id(),
+                        active.requestId,
+                        track.id,
+                        failure);
+                events.safetyNetRequestFailed(session.info.id(), track.id, failure);
             }
         }
     }
@@ -1573,8 +1618,17 @@ final class RecoveryMachine {
     }
 
     /**
-     * The session has been too far behind for the window: a recovery for each of its producers
-     * first, the reset once the API has accepted them all. Spent, the session is lagging instead.
+     * The session has been too far behind for the window: a recovery for each of its enabled
+     * producers first, the reset once the API has accepted them all. Spent, the session is lagging
+     * instead.
+     *
+     * <p>The reset drops the backlog of every producer the session receives, and what it drops of a
+     * producer is repeated only by the recovery asked for after it. So the net starts only when all
+     * of them can be asked for now, and asked for again right after the reset: none with a recovery
+     * in flight, in its backoff or its cool-down, silent, or missing a bound queue of any session.
+     * Until then it waits, with no request, no lagging and no backoff, and a later stale sample
+     * tries again. The cap and the cool-down count failures, not requests: a request that is
+     * accepted spends none of it, and one that fails ends the reset before it is made.
      */
     private void trigger(SessionState session, Track track, long age, long mono) {
         if (resetsWithinCooldown(session, mono) >= settings.resets()) {
@@ -1590,63 +1644,53 @@ final class RecoveryMachine {
             }
             return;
         }
-        if (mono < session.nextResetAt) {
+        if (mono < session.nextResetAt || session.underway != 0) {
             return;
         }
-        if (session.underway != 0 || !canRequest(track, mono)) {
-            return;
-        }
-        // wait for a recovery in flight; a producer that cannot be asked now - silent, its cap
-        // spent, in backoff - sends the session nothing to drop, and once the reset is done it
-        // misses what the queue held like any other, to be asked for when it can be
-        for (Long producerId : session.lanes.keySet()) {
-            Track other = track(producerId);
-            // nor while another session's queue is missing for a producer: its recovery waits for it
-            if (enabled(other) && (other.active != null || awaitsAnotherSessionsChannel(session, other))) {
-                return;
-            }
-        }
-        var asked = new ArrayList<Map.Entry<Long, Lane>>();
+        var lanes = new ArrayList<Map.Entry<Long, Lane>>();
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Track other = track(entry.getKey());
             if (!enabled(other)) {
                 continue;
             }
-            // the reset drops the backlog of every producer the session receives, one that cannot be
-            // asked now included, and its recovery later is clamped to its window as any other
+            if (!canRequest(other, mono)) {
+                return;
+            }
+            lanes.add(entry);
+        }
+        if (lanes.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<Long, Lane> entry : lanes) {
+            Track other = track(entry.getKey());
             if (beyondWindow(other, entry.getValue())) {
                 laggingBeyondWindow(session, other, age, track);
                 return;
             }
-            if (canRequest(other, mono)) {
-                asked.add(entry);
-            }
         }
-        var unaccepted = new HashSet<Long>();
-        for (Map.Entry<Long, Lane> entry : asked) {
+        var unaccepted = new LinkedHashSet<Long>();
+        for (Map.Entry<Long, Lane> entry : lanes) {
             Lane lane = entry.getValue();
             lane.gap = openGap(lane.gap, lane.checkpoint, true);
             unaccepted.add(entry.getKey());
         }
-        if (unaccepted.isEmpty()) {
-            // the producer was disabled since the check above: nothing to ask for, so nothing to wait for
-            return;
-        }
-        session.pending = new PendingReset(unaccepted, track.id, age, ++resetSeq);
+        var pending = new PendingReset(unaccepted, track.id, age, ++resetSeq);
+        session.pending = pending;
         LOG.warn(
                 "Session {} is {} ms behind producer {}: the safety net asks for recoveries before it resets",
                 session.info.id(),
                 age,
                 track.id);
         for (Long producerId : unaccepted) {
-            maybeRequest(track(producerId), mono);
-        }
-        // a producer disabled since the selection got no request, and none will answer for it
-        for (Long producerId : unaccepted) {
-            if (track(producerId).active == null) {
+            Track other = track(producerId);
+            maybeRequest(other, mono);
+            Active active = other.active;
+            if (active == null) {
+                // disabled since the check above: it got no request, and none will answer for it
                 resetNotMadeForDisabledProducer(session, producerId, mono);
                 return;
             }
+            pending.asked.put(producerId, active.requestId);
         }
     }
 
@@ -1675,7 +1719,7 @@ final class RecoveryMachine {
     }
 
     private void resetNotMadeForDisabledProducer(SessionState session, long producerId, long mono) {
-        cancelReset(session, mono);
+        cancelReset(session, mono, true);
         counters.resetRequestsFailed.incrementAndGet();
         LOG.warn(
                 "The safety net did not reset session {}: producer {} was disabled before its recovery was accepted",
@@ -1687,8 +1731,8 @@ final class RecoveryMachine {
     /**
      * Whether a recovery for what the lane misses would start after the lane's checkpoint: the
      * producer's stateful recovery window has moved past it, so the messages between are repeated
-     * by no recovery, and a reset would drop them for good - the recovery of a producer the net
-     * cannot ask for now included, which the session asks for after the reset. The start is the one {@link #request}
+     * by no recovery, and a reset would drop them for good, the producer's backlog in the session's
+     * queue included, which the session asks for after the reset. The start is the one {@link #request}
      * computes; a checkpoint of 0 is a full snapshot's or none, and the recovery then covers it.
      *
      * <p>A checkpoint within {@link #WINDOW_MARGIN} of the window's start counts as beyond it, the
@@ -1723,15 +1767,18 @@ final class RecoveryMachine {
     }
 
     /**
-     * Every recovery the reset waited for is accepted. The session's channel is replaced, unless
-     * the feed is closing - what the close is about to settle would be dropped - or the checkpoint
-     * of an enabled producer of the session, one asked for or not, has fallen out of its stateful
-     * recovery window meanwhile, and no recovery repeats what the reset would drop of it.
+     * Every recovery the reset waited for is accepted. The state is looked at again, as it is now:
+     * the session's channel is replaced only if each enabled producer of the session still has, as
+     * its recovery in flight, the one the net asked for, and the API has accepted it - or it ended
+     * with its acceptance, with no session to wait for; no session that receives one is missing a
+     * queue; the feed is not closing, which would drop what the close is about to settle; and the
+     * checkpoint of each has not fallen out of its stateful recovery window meanwhile, which no
+     * recovery would then repeat.
      */
     private void resetOrCancel(SessionState session, PendingReset pending, long mono) {
         if (closing) {
             LOG.debug("The safety net did not reset session {}: the feed is closing", session.info.id());
-            cancelReset(session, mono);
+            cancelReset(session, mono, true);
             return;
         }
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
@@ -1740,11 +1787,37 @@ final class RecoveryMachine {
             if (!enabled(other)) {
                 continue;
             }
+            Long requestId = pending.asked.get(producerId);
+            if (requestId == null) {
+                resetNotMadeAtAcceptance(
+                        session,
+                        producerId,
+                        mono,
+                        true,
+                        "producer enabled since",
+                        "producer " + producerId + " was enabled after the net asked for its recoveries");
+                return;
+            }
+            Active active = other.active;
+            boolean asked = active == null
+                    ? pending.endedOnAcceptance.contains(producerId)
+                    : active.requestId == requestId && active.accepted;
+            if (!asked) {
+                resetNotMadeAtAcceptance(
+                        session,
+                        producerId,
+                        mono,
+                        true,
+                        "recovery changed",
+                        "the recovery it asked of producer " + producerId + " is not the one in flight");
+                return;
+            }
             if (awaitsAnotherSessionsChannel(session, other)) {
                 resetNotMadeAtAcceptance(
                         session,
                         producerId,
                         mono,
+                        false,
                         "another session's queue is not bound",
                         "another session that receives producer " + producerId
                                 + " has no queue bound, so its recovery could not be asked for after the reset");
@@ -1755,6 +1828,7 @@ final class RecoveryMachine {
                         session,
                         producerId,
                         mono,
+                        true,
                         "beyond the recovery window",
                         "its messages of producer " + producerId
                                 + " reach back beyond the producer's stateful recovery window, which moved on"
@@ -1765,9 +1839,13 @@ final class RecoveryMachine {
         reset(session, pending);
     }
 
+    /**
+     * @param backoff whether the net waits before it tries again: not when another session's missing
+     *     queue is the reason, which is a loss that says nothing against the net
+     */
     private void resetNotMadeAtAcceptance(
-            SessionState session, long producerId, long mono, String reason, String explanation) {
-        cancelReset(session, mono);
+            SessionState session, long producerId, long mono, boolean backoff, String reason, String explanation) {
+        cancelReset(session, mono, backoff);
         counters.resetRequestsFailed.incrementAndGet();
         LOG.warn("The safety net did not reset session {}: {}", session.info.id(), explanation);
         events.safetyNetRequestFailed(session.info.id(), producerId, reason);
@@ -1799,6 +1877,7 @@ final class RecoveryMachine {
         session.underway = pending.number;
         session.underwayProducer = pending.producerId;
         session.underwayAge = pending.age;
+        session.underwaySeq = sentSeq;
         for (Lane lane : session.lanes.values()) {
             Gap gap = lane.gap;
             if (gap != null) {
@@ -1814,10 +1893,11 @@ final class RecoveryMachine {
                 session.info.id(),
                 pending.age,
                 pending.producerId);
-        outbox.reset(session.info.id(), pending.number);
+        // every producer is down before the outbox hears of the reset
         for (Long producerId : session.lanes.keySet()) {
             markDown(track(producerId), StatusCause.SAFETY_NET_RESET);
         }
+        outbox.reset(session.info.id(), pending.number);
     }
 
     /**
@@ -1832,10 +1912,15 @@ final class RecoveryMachine {
         return session.resets.size();
     }
 
-    /** A reset that will not be made: its gaps close, and the net waits before it tries again. */
-    private void cancelReset(SessionState session, long mono) {
+    /**
+     * A reset that will not be made: its gaps close, and the net waits before it tries again, unless
+     * {@code backoff} is false, as for a loss.
+     */
+    private void cancelReset(SessionState session, long mono, boolean backoff) {
         session.pending = null;
-        session.nextResetAt = mono + backoff(settings.firstResetBackoff(), resetsWithinCooldown(session, mono) + 1);
+        if (backoff) {
+            session.nextResetAt = mono + backoff(settings.firstResetBackoff(), resetsWithinCooldown(session, mono) + 1);
+        }
         for (Lane lane : session.lanes.values()) {
             Gap gap = lane.gap;
             if (gap != null && gap.pendingReset) {
@@ -2198,6 +2283,8 @@ final class RecoveryMachine {
         long underwayProducer;
 
         long underwayAge;
+        /** The last request sent before the reset underway was made: what it dropped was asked for up to it. */
+        long underwaySeq;
 
         SessionState(SessionInfo info) {
             this.info = info;
@@ -2349,8 +2436,10 @@ final class RecoveryMachine {
     private static final class PendingReset {
         /** The producers whose recoveries the API has not accepted yet. */
         final Set<Long> unaccepted;
-        /** The producers it asked for recoveries of. */
-        final Set<Long> producers;
+        /** The recovery it asked for of each enabled producer of the session, by producer, as a request id. */
+        final Map<Long, Long> asked = new LinkedHashMap<>();
+        /** The producers whose recovery ended with its acceptance, with no session to wait for. */
+        final Set<Long> endedOnAcceptance = new HashSet<>();
         /** The producer whose messages were too old. */
         final long producerId;
 
@@ -2359,7 +2448,6 @@ final class RecoveryMachine {
 
         PendingReset(Set<Long> unaccepted, long producerId, long age, long number) {
             this.unaccepted = unaccepted;
-            this.producers = Set.copyOf(unaccepted);
             this.producerId = producerId;
             this.age = age;
             this.number = number;

@@ -59,6 +59,9 @@ final class Harness {
     /** Called with each request as it goes out, before the machine goes on: a test's way to act in between. */
     Consumer<Outbox.Call> onRequest = call -> {};
 
+    /** Called as the machine hands a reset to the outbox, before it goes on: what the machine's state is then. */
+    Runnable onReset = () -> {};
+
     final RecoveryMachine machine;
 
     Harness() {
@@ -94,6 +97,7 @@ final class Harness {
 
             @Override
             public void reset(int session, long number) {
+                onReset.run();
                 resets.add(session);
                 resetNumbers.add(number);
             }
