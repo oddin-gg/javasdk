@@ -36,6 +36,9 @@ class RecoveryClockTest {
     /** The monotonic seconds {@link #monoSecond} has moved, for the alives' pace. */
     private long seconds;
 
+    /** How far the producers' clock is ahead of the SDK's wall clock, in millis: what steps of the wall clock moved. */
+    private long producerAhead;
+
     // ---- inactivity
 
     @ParameterizedTest
@@ -583,8 +586,9 @@ class RecoveryClockTest {
         assertThat(stale(10, () -> feed.calls.size() > before)).isEqualTo(-1);
 
         feed.stepWall(Duration.ofSeconds(step));
-        // the producer's clock stepped with the SDK's, as its next alive says
-        feed.alive(PRE);
+        // the SDK's wall clock stepped, the producer's did not, as its next alive says
+        producerAhead -= Duration.ofSeconds(step).toMillis();
+        feed.machine.alive(PRE, producerTime(), feed.feedClock.stamp(), true);
         assertThat(feed.calls).as("after the step").hasSize(before);
         assertThat(stale(100, () -> feed.calls.size() > before))
                 .as("seconds on to the net's request: 61 from the first stale message")
@@ -609,7 +613,8 @@ class RecoveryClockTest {
 
         // the third reset waits for the backoff of two minutes, not the window of 61 s
         feed.stepWall(Duration.ofSeconds(300 * direction));
-        feed.alive(PRE);
+        producerAhead -= Duration.ofSeconds(300 * direction).toMillis();
+        feed.machine.alive(PRE, producerTime(), feed.feedClock.stamp(), true);
         int before = feed.calls.size();
         assertThat(stale(300, () -> feed.calls.size() > before))
                 .as("seconds to the net's request in round 3")
@@ -618,7 +623,8 @@ class RecoveryClockTest {
 
         // three resets spend the cap: the session lags, whatever the wall clock says of the cool-down
         feed.stepWall(Duration.ofMinutes(20 * direction));
-        feed.alive(PRE);
+        producerAhead -= Duration.ofMinutes(20 * direction).toMillis();
+        feed.machine.alive(PRE, producerTime(), feed.feedClock.stamp(), true);
         int spent = feed.calls.size();
         assertThat(stale(300, () -> feed.machine.lagging(1))).isEqualTo(61);
         assertThat(feed.calls).as("no more requests with the cap spent").hasSize(spent);
@@ -731,12 +737,20 @@ class RecoveryClockTest {
         monoSecond(feed);
     }
 
+    /**
+     * The producers' clock now: the wall clock's reading and what steps of it moved, and the seconds
+     * the monotonic clock has moved since, which the wall clock, standing still here, does not show.
+     */
+    private long producerTime() {
+        return feed.now() + producerAhead + seconds * 1_000;
+    }
+
     /** One second of the monotonic clock alone, ticked, with both producers' alives every ten. */
     private void monoSecond(Harness feed) {
         feed.advanceMono(Duration.ofSeconds(1));
         if (++seconds % 10 == 0) {
-            feed.alive(PRE);
-            feed.alive(LIVE);
+            feed.machine.alive(PRE, producerTime(), feed.feedClock.stamp(), true);
+            feed.machine.alive(LIVE, producerTime(), feed.feedClock.stamp(), true);
         }
     }
 
@@ -759,7 +773,7 @@ class RecoveryClockTest {
     private long stale(int session, long limit, BooleanSupplier until) {
         for (long second = 1; second <= limit; second++) {
             monoSecond();
-            feed.machine.processed(session, PRE, feed.now() - OLD.toMillis(), feed.feedClock.stamp(), 0);
+            feed.machine.processed(session, PRE, producerTime() - OLD.toMillis(), feed.feedClock.stamp(), 0);
             feed.machine.tick();
             if (until.getAsBoolean()) {
                 return second;

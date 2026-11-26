@@ -427,7 +427,25 @@ final class RecoveryMachine {
         }
         session.pending = null;
         session.lost = true;
-        queueLost(session, StatusCause.CHANNEL_LOST, mono(), 0);
+        long mono = mono();
+        // another session's reset that asked for a producer this one receives: its recovery cannot be asked for
+        // again until this queue is back, and a reset now would drop the backlog meanwhile. A loss, so no backoff
+        for (SessionState other : sessions.values()) {
+            if (other != session && other.pending != null && sharesEnabledProducer(session, other)) {
+                cancelReset(other, mono, false);
+            }
+        }
+        queueLost(session, StatusCause.CHANNEL_LOST, mono, 0);
+    }
+
+    /** Whether both sessions receive a producer that is enabled. */
+    private boolean sharesEnabledProducer(SessionState one, SessionState other) {
+        for (Long producerId : one.lanes.keySet()) {
+            if (other.lanes.containsKey(producerId) && enabled(track(producerId))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -977,13 +995,27 @@ final class RecoveryMachine {
         cancelResetsWaitingForDisabledProducers(mono);
         for (Track track : tracks.values()) {
             if (!enabled(track)) {
+                forgetStaleWindows(track);
                 continue;
+            }
+            if (!track.down && underway(track)) {
+                // enabled while a session that receives it is being reset: it is not up until the recovery after
+                markDown(track, StatusCause.SAFETY_NET_RESET);
             }
             Active active = track.active;
             if (active != null) {
                 if (mono - active.issuedMono > settings.maxRecoveryTime().toMillis()) {
-                    counters.timedOut.incrementAndGet();
-                    failed(track, active, mono, "no snapshot complete within " + settings.maxRecoveryTime());
+                    if (underway(track)) {
+                        // the reset gives it up once done, and what it lost with the queue is no fault of the request
+                        giveUp(
+                                track,
+                                mono,
+                                "no snapshot complete within " + settings.maxRecoveryTime() + ", a reset under way",
+                                false);
+                    } else {
+                        counters.timedOut.incrementAndGet();
+                        failed(track, active, mono, "no snapshot complete within " + settings.maxRecoveryTime());
+                    }
                 } else if (mono - active.heardAt
                                 > settings.snapshotCompleteTimeout().toMillis()
                         && !underway(track)) {
@@ -1042,6 +1074,19 @@ final class RecoveryMachine {
         statuses.expire(mono);
     }
 
+    /**
+     * A disabled producer sends the safety net no samples: a window of stale samples its lanes had
+     * begun does not wait for it to be enabled again, and a session that lags stops lagging without it.
+     */
+    private void forgetStaleWindows(Track track) {
+        for (SessionState session : sessions.values()) {
+            Lane lane = session.lanes.get(track.id);
+            if (lane != null) {
+                lane.above = false;
+            }
+        }
+    }
+
     /** Whether a request the client made at {@code askedAt} has waited longer than the maximum recovery time. */
     private boolean pastMaximum(long askedAt, long mono) {
         return mono - askedAt > settings.maxRecoveryTime().toMillis();
@@ -1085,9 +1130,16 @@ final class RecoveryMachine {
      * that gave the last recovery up - and its backoff and its cap's cool-down over.
      */
     private boolean canRequest(Track track, long mono) {
+        return track.active == null && askable(track, mono);
+    }
+
+    /**
+     * {@link #canRequest} apart from a recovery in flight: whether nothing else holds a request of
+     * the producer back, as it will not once the recovery it has ends.
+     */
+    private boolean askable(Track track, long mono) {
         return started
                 && connected
-                && track.active == null
                 && enabled(track)
                 && receivers(track) > 0
                 && aliveRecent(track, mono)
@@ -1593,7 +1645,9 @@ final class RecoveryMachine {
         }
         if (age <= settings.staleLimit().toMillis()) {
             lane.above = false;
-            if (session.lagging && session.lanes.values().stream().noneMatch(other -> other.above)) {
+            if (session.lagging
+                    && session.lanes.entrySet().stream()
+                            .noneMatch(other -> other.getValue().above && enabled(track(other.getKey())))) {
                 session.lagging = false;
                 LOG.info("Session {} caught up", session.info.id());
                 events.lagging(session.info.id(), false);
@@ -1667,6 +1721,13 @@ final class RecoveryMachine {
         }
         if (lanes.isEmpty()) {
             return;
+        }
+        for (Map.Entry<Long, Lane> entry : lanes) {
+            if (aheadOfProducer(track(entry.getKey()), entry.getValue())) {
+                // the producer's clock stepped back: a recovery is asked from its now, and a reset would drop
+                // what is queued after it; the checkpoint is behind it again when the clock has caught up
+                return;
+            }
         }
         for (Map.Entry<Long, Lane> entry : lanes) {
             Track other = track(entry.getKey());
@@ -1755,6 +1816,15 @@ final class RecoveryMachine {
         return checkpoint != 0 && checkpoint < after(track, Math.min(oldestGap(track), checkpoint), margin);
     }
 
+    /**
+     * Whether the lane's checkpoint lies after the producer's now, which a recovery is capped at: the
+     * producer's clock stepped back after the session took messages stamped by it, and a reset would
+     * drop what is queued between.
+     */
+    private boolean aheadOfProducer(Track track, Lane lane) {
+        return lane.checkpoint > producerNow(track);
+    }
+
     /** The session is too far behind for a reset to be safe: it lags instead, once per episode, and nothing is asked. */
     private void laggingBeyondWindow(SessionState session, Track producer, long age, Track stale) {
         if (session.lagging) {
@@ -1777,10 +1847,12 @@ final class RecoveryMachine {
      * Every recovery the reset waited for is accepted. The state is looked at again, as it is now:
      * the session's channel is replaced only if each enabled producer of the session still has, as
      * its recovery in flight, the one the net asked for, and the API has accepted it - or it ended
-     * with its acceptance, with no session to wait for; no session that receives one is missing a
-     * queue; the feed is not closing, which would drop what the close is about to settle; and the
-     * checkpoint of each has not fallen out of its stateful recovery window meanwhile, which no
-     * recovery would then repeat.
+     * with its acceptance, with no session to wait for; each can still be asked for after the reset
+     * - an alive is recent and none is awaited, no retry or cool-down holds it back, every session
+     * that receives it has a bound queue, as {@link #canRequest} says apart from the recovery in
+     * flight; the feed is not closing, which would drop what the close is about to settle; and the
+     * checkpoint of each is not after the producer's clock and has not fallen out of its stateful
+     * recovery window meanwhile, which no recovery would then repeat.
      */
     private void resetOrCancel(SessionState session, PendingReset pending, long mono) {
         if (closing) {
@@ -1819,15 +1891,27 @@ final class RecoveryMachine {
                         "the recovery it asked of producer " + producerId + " is not the one in flight");
                 return;
             }
-            if (awaitsAnotherSessionsChannel(session, other)) {
+            if (!askable(other, mono)) {
                 resetNotMadeAtAcceptance(
                         session,
                         producerId,
                         mono,
-                        false,
-                        "another session's queue is not bound",
-                        "another session that receives producer " + producerId
-                                + " has no queue bound, so its recovery could not be asked for after the reset");
+                        true,
+                        "producer cannot be asked",
+                        "producer " + producerId
+                                + " could not be asked for a recovery after the reset: it is silent, waits to be asked"
+                                + " again, or a session that receives it has no queue bound");
+                return;
+            }
+            if (aheadOfProducer(other, entry.getValue())) {
+                resetNotMadeAtAcceptance(
+                        session,
+                        producerId,
+                        mono,
+                        true,
+                        "checkpoint ahead of the producer",
+                        "its checkpoint of producer " + producerId
+                                + " lies after the producer's clock, which a recovery is not asked from");
                 return;
             }
             if (beyondWindow(other, entry.getValue())) {
@@ -1846,31 +1930,12 @@ final class RecoveryMachine {
         reset(session, pending);
     }
 
-    /**
-     * @param backoff whether the net waits before it tries again: not when another session's missing
-     *     queue is the reason, which is a loss that says nothing against the net
-     */
     private void resetNotMadeAtAcceptance(
             SessionState session, long producerId, long mono, boolean backoff, String reason, String explanation) {
         cancelReset(session, mono, backoff);
         counters.resetRequestsFailed.incrementAndGet();
         LOG.warn("The safety net did not reset session {}: {}", session.info.id(), explanation);
         events.safetyNetRequestFailed(session.info.id(), producerId, reason);
-    }
-
-    /**
-     * Whether a session other than {@code session} that receives the producer has lost its channel
-     * or has a reset under way: a recovery of the producer cannot be asked for until its queue is
-     * back, so a reset of {@code session} would drop its backlog of the producer for that long. The
-     * session's own state does not count.
-     */
-    private boolean awaitsAnotherSessionsChannel(SessionState session, Track track) {
-        for (SessionState other : sessions.values()) {
-            if (other != session && (other.underway != 0 || other.lost) && other.lanes.containsKey(track.id)) {
-                return true;
-            }
-        }
-        return false;
     }
 
     /**
