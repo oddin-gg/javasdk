@@ -99,6 +99,9 @@ behind meanwhile is not reset. A session whose messages reach back past a produc
 margin, is not reset either: it lags (`onSessionLagChange`), because no recovery would repeat what the reset drops. If a
 recovery the net asked for fails, ends or is given up before the reset is made, the reset is cancelled (a refusal or a
 timeout raises `onSafetyNetEvent` and makes the net wait a minute or more; a lost connection or channel does not).
+The last acceptance checks again that every producer can still be asked for a recovery after the reset: one that went silent
+meanwhile, or is in its retry backoff, cancels the reset. A checkpoint after the producer's own clock - the clock stepped back -
+holds the net back until the clock has caught up.
 
 ### Thresholds
 
