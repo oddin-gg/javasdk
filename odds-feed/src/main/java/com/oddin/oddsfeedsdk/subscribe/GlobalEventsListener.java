@@ -78,8 +78,8 @@ public interface GlobalEventsListener {
     default void onSafetyNetEvent(SafetyNetEvent event) {}
 
     /**
-     * A session fell behind with the safety net's resets spent, or caught up again. New in 1.0; does
-     * nothing unless overridden. Of a session's changes, the newest replaces one still queued.
+     * A session fell behind with the safety net's resets spent, or too far behind for a reset to be safe,
+     * or caught up again. New in 1.0; does nothing unless overridden. Of a session's changes, the newest replaces one still queued.
      */
     default void onSessionLagChange(SessionLagChange change) {}
 

@@ -41,7 +41,8 @@ public interface RecoveryEvents {
     default void safetyNetRequestFailed(int session, long producerId, String reason) {}
 
     /**
-     * A session has fallen behind with the safety net's resets spent, or has caught up again. A
+     * A session has fallen behind with the safety net's resets spent, or too far for a reset to be
+     * safe, or has caught up again. A
      * lagging session is not a producer fault, so lagging takes no producer down; the processing
      * delay still does while the session is that late.
      */

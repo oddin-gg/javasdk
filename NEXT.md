@@ -963,7 +963,18 @@ and REST workers post facts to it; it decides and posts work out.
     misses what the queue held like the others, to be asked for when it can be. Only
     when every request has been accepted does it ask
     the AMQP layer to replace the session's channel. A rejected or failed request means
-    no reset: the actor backs off, counts, and raises an event. The session's own
+    no reset: the actor backs off, counts, and raises an event. So does a producer disabled
+    while its request is outstanding, whether the tick or the API's answer comes first, and a
+    feed that has begun to close, since a reset at shutdown drops what the shutdown is about to
+    settle. The reset drops the queue's messages, and a recovery repeats them only from the
+    producer's stateful recovery window on: a session whose checkpoint of a producer it would
+    ask for lies before the start that request would be clamped to - it has lagged longer than
+    the window - is not reset. It is reported lagging instead (once per episode, as with the cap
+    spent), nothing is asked and no gap is opened, and it stops lagging as always, when its
+    messages are on time. The same check runs when the last acceptance arrives, and a reset
+    whose checkpoint the window has overtaken meanwhile is cancelled like a refused request.
+    A stale window that began before a recovery of the producer ended does not count the
+    recovery's time: it starts again with the first stale sample after it. The session's own
     `snapshot_complete` of one of those recoveries, seen before the reset, cancels it,
     since the reset would now drop what the recovery sent - and only that does. Another
     session's completion is no evidence that this session's backlog was replaced: a

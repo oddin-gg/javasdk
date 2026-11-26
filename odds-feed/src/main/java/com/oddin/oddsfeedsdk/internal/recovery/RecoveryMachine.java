@@ -71,6 +71,16 @@ import org.slf4j.LoggerFactory;
  * RecoverySettings#resets()} times per cool-down, with backoff between resets; when spent the
  * session is lagging. Lagging takes no producer down, but a producer the session processes later
  * than the maximum inactivity stays down for that delay until the session is on time again.
+ * A window of stale samples that began before a recovery of the producer ended does not count the
+ * recovery's time: it starts again with the first stale sample after it.
+ *
+ * <p>The reset drops what the session's queue holds, and a recovery repeats it only from the
+ * producer's stateful recovery window on. A session whose checkpoint of a producer it would ask
+ * for lies before where that request would start - it has lagged longer than the window - is not
+ * reset: it is lagging instead, with nothing asked, and stops lagging when it is on time again.
+ * The same is checked when the last recovery is accepted, and a reset the window has overtaken is
+ * cancelled like a refused request. A reset is not made once the feed is {@link #closing}, nor
+ * for a producer that was disabled while its recovery was asked for.
  *
  * <p><b>Time.</b> Every duration the machine measures between two local events - a producer's
  * inactivity, the deadlines of a recovery and of an event recovery, the backoffs, the cool-down, the
@@ -1159,8 +1169,18 @@ final class RecoveryMachine {
                 track.id, new Recovery(active.after, active.issuedWall, active.requestId, settings.nodeId(), true));
         for (SessionState session : sessions.values()) {
             PendingReset pending = session.pending;
-            if (pending != null && pending.unaccepted.remove(track.id) && pending.unaccepted.isEmpty()) {
-                reset(session, pending);
+            if (pending == null || !pending.unaccepted.contains(track.id)) {
+                continue;
+            }
+            Long disabled = disabledAmongUnaccepted(pending);
+            if (disabled != null) {
+                // the tick would cancel it too, but the answer came first: a reset made now is not the one asked for
+                resetNotMadeForDisabledProducer(session, disabled, mono);
+                continue;
+            }
+            pending.unaccepted.remove(track.id);
+            if (pending.unaccepted.isEmpty()) {
+                resetOrCancel(session, pending, mono);
             }
         }
         if (track.active == active && active.awaited.isEmpty()) {
@@ -1508,7 +1528,8 @@ final class RecoveryMachine {
             }
             return;
         }
-        if (!lane.above) {
+        if (!lane.above || lane.aboveSince <= track.pausedUntil) {
+            // a window that began before the recovery ended does not count the recovery's time
             lane.above = true;
             lane.aboveSince = taken.mono();
         } else if (taken.mono() - lane.aboveSince >= settings.staleWindow().toMillis()) {
@@ -1553,14 +1574,22 @@ final class RecoveryMachine {
                 return;
             }
         }
-        var unaccepted = new HashSet<Long>();
+        var asked = new ArrayList<Map.Entry<Long, Lane>>();
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Track other = track(entry.getKey());
             if (enabled(other) && canRequest(other, mono)) {
-                Lane lane = entry.getValue();
-                lane.gap = openGap(lane.gap, lane.checkpoint, true);
-                unaccepted.add(other.id);
+                if (beyondWindow(other, entry.getValue())) {
+                    laggingBeyondWindow(session, other, age, track);
+                    return;
+                }
+                asked.add(entry);
             }
+        }
+        var unaccepted = new HashSet<Long>();
+        for (Map.Entry<Long, Lane> entry : asked) {
+            Lane lane = entry.getValue();
+            lane.gap = openGap(lane.gap, lane.checkpoint, true);
+            unaccepted.add(entry.getKey());
         }
         if (unaccepted.isEmpty()) {
             // the producer was disabled since the check above: nothing to ask for, so nothing to wait for
@@ -1591,13 +1620,21 @@ final class RecoveryMachine {
             if (pending == null) {
                 continue;
             }
-            for (Long producerId : pending.unaccepted) {
-                if (!enabled(track(producerId))) {
-                    resetNotMadeForDisabledProducer(session, producerId, mono);
-                    break;
-                }
+            Long disabled = disabledAmongUnaccepted(pending);
+            if (disabled != null) {
+                resetNotMadeForDisabledProducer(session, disabled, mono);
             }
         }
+    }
+
+    /** A producer the reset still waits for that has been disabled since, or null for none. */
+    private @Nullable Long disabledAmongUnaccepted(PendingReset pending) {
+        for (Long producerId : pending.unaccepted) {
+            if (!enabled(track(producerId))) {
+                return producerId;
+            }
+        }
+        return null;
     }
 
     private void resetNotMadeForDisabledProducer(SessionState session, long producerId, long mono) {
@@ -1608,6 +1645,63 @@ final class RecoveryMachine {
                 session.info.id(),
                 producerId);
         events.safetyNetRequestFailed(session.info.id(), producerId, "producer disabled");
+    }
+
+    /**
+     * Whether a recovery for what the lane misses would start after the lane's checkpoint: the
+     * producer's stateful recovery window has moved past it, so the messages between are repeated
+     * by no recovery, and a reset would drop them for good. The start is the one {@link #request}
+     * computes; a checkpoint of 0 is a full snapshot's or none, and the recovery then covers it.
+     */
+    private boolean beyondWindow(Track track, Lane lane) {
+        long checkpoint = lane.checkpoint;
+        return checkpoint != 0 && checkpoint < after(track, Math.min(oldestGap(track), checkpoint));
+    }
+
+    /** The session is too far behind for a reset to be safe: it lags instead, once per episode, and nothing is asked. */
+    private void laggingBeyondWindow(SessionState session, Track producer, long age, Track stale) {
+        if (session.lagging) {
+            return;
+        }
+        session.lagging = true;
+        LOG.warn(
+                "Session {} is {} ms behind producer {}, and its messages of producer {} reach back beyond the"
+                        + " producer's stateful recovery window of {} minutes: a reset would drop what no recovery"
+                        + " repeats, so it lags",
+                session.info.id(),
+                age,
+                stale.id,
+                producer.id,
+                producer.producer.getStatefulRecoveryWindowInMinutes());
+        events.lagging(session.info.id(), true);
+    }
+
+    /**
+     * Every recovery the reset waited for is accepted. The session's channel is replaced, unless
+     * the feed is closing - what the close is about to settle would be dropped - or a checkpoint
+     * has fallen out of a stateful recovery window meanwhile, and the recovery no longer repeats it.
+     */
+    private void resetOrCancel(SessionState session, PendingReset pending, long mono) {
+        if (closing) {
+            LOG.debug("The safety net did not reset session {}: the feed is closing", session.info.id());
+            cancelReset(session, mono);
+            return;
+        }
+        for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
+            long producerId = entry.getKey();
+            if (pending.producers.contains(producerId) && beyondWindow(track(producerId), entry.getValue())) {
+                cancelReset(session, mono);
+                counters.resetRequestsFailed.incrementAndGet();
+                LOG.warn(
+                        "The safety net did not reset session {}: its messages of producer {} reach back beyond the"
+                                + " producer's stateful recovery window, which moved on while the recovery was accepted",
+                        session.info.id(),
+                        producerId);
+                events.safetyNetRequestFailed(session.info.id(), producerId, "beyond the recovery window");
+                return;
+            }
+        }
+        reset(session, pending);
     }
 
     /**
@@ -1650,6 +1744,8 @@ final class RecoveryMachine {
             Gap gap = lane.gap;
             if (gap != null && gap.pendingReset) {
                 lane.gap = null;
+                // a gap opened and closed with no recovery of this lane between: the window's time was not its own
+                lane.above = false;
             }
         }
     }

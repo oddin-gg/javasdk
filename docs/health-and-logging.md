@@ -14,7 +14,7 @@ Each part is in one of three `HealthState`s:
 | State | Meaning |
 |---|---|
 | `HEALTHY` | As it should be. |
-| `DEGRADED` | Working, with a quality the design gives up on purpose: a catalog served stale, a session lagging with the safety net's resets spent, the broker connection down for longer than its limit. |
+| `DEGRADED` | Working, with a quality the design gives up on purpose: a catalog served stale, a session lagging - its resets spent, or too far behind for a reset - the broker connection down for longer than its limit. |
 | `STALLED` | Something not moving that the feed cannot unblock: a callback that has not returned, a queue that has not moved while not empty, a deadlock among the SDK's threads, a recovery thread that has ended (all found by the watchdog, which never kills threads), or an access token the API refuses. The remedy is `close()` and a new feed. |
 
 ### `getHealth()`
@@ -81,8 +81,8 @@ warning, a recovery as information. A part found healthy again is told the same 
 Events go through a slot per part in the events thread's queue, so behind a slow callback the newest
 change replaces one still queued, with the state the client heard last as its previous.
 
-Related events: `onSessionLagChange` (a session fell behind with the safety net's resets spent, or
-caught up), `onSafetyNetEvent` (a reset made, or a recovery request the API refused),
+Related events: `onSessionLagChange` (a session fell behind with the safety net's resets spent, or so far
+that a reset would drop what no recovery repeats, or caught up), `onSafetyNetEvent` (a reset made, or a recovery request the API refused),
 `onConnectionStateChange` (`CONNECTING`, `UP`, `DOWN`, `RECOVERING`), `onFatalError` (a token the
 API refuses, a login or virtual host the broker keeps refusing), `onCallbackFailure` and
 `onProducerCauseChange` (the producer's status with its cause).
