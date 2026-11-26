@@ -93,8 +93,8 @@ A session whose live messages stay older than the stale limit for the window is 
 recovery of every enabled producer the session receives, and once the API has accepted them all it replaces the
 session's channel, dropping the backlog. It starts only when every one of those producers can be asked for right now,
 so that the recovery after the reset follows at once. Until then it waits, with no request and no lagging event, and
-tries again at a later stale message. An enabled producer that is silent, in backoff after failed recoveries, capped, or
-in the middle of a recovery therefore holds the net back for every session that receives it, and a session that stays
+tries again at a later stale message. An enabled producer that is silent, in backoff after failed recoveries, capped,
+in the middle of a recovery, or with a gap open (its own recovery goes first) therefore holds the net back for every session that receives it, and a session that stays
 behind meanwhile is not reset. A session whose messages reach back past a producer's stateful recovery window, less a
 margin, is not reset either: it lags (`onSessionLagChange`), because no recovery would repeat what the reset drops. If a
 recovery the net asked for fails, ends or is given up before the reset is made, the reset is cancelled (a refusal or a

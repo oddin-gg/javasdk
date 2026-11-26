@@ -959,16 +959,18 @@ and REST workers post facts to it; it decides and posts work out.
     the session receives, each from its checkpoint on that session, since the reset drops
     the messages of all of them. It starts only when every one of those producers can be
     asked for now: none has a recovery in flight, is in backoff or in its cool-down after
-    failures, is silent, or has a session that receives it without a bound queue (its channel
-    lost, or a reset with the AMQP layer). Otherwise it waits, with no request, no lagging, no
+    failures, is silent, has a session that receives it without a bound queue (its channel
+    lost, or a reset with the AMQP layer), or has a gap open, the producer's or any session's:
+    its ordinary recovery asks from the older gap, not from the checkpoint the window check
+    compares, so it goes first. Otherwise it waits, with no request, no lagging, no
     gap and no backoff, and a later stale sample tries again. What the reset drops of a
     producer is repeated only by the recovery asked for after it, so a producer that cannot
     be asked for right after the reset would miss what the reset dropped, and its recovery
     would start later, clamped to a window that moved on. The cap and the cool-down count
     failed recoveries, not requests: a recovery the API accepts spends none of them, and one
     that fails ends the reset before it is made, so the second request after the reset needs no
-    check of its own. An enabled producer that is silent, in backoff, capped or mid-recovery
-    therefore holds the net back for every session that receives it; a session that stays
+    check of its own. An enabled producer that is silent, in backoff, capped, mid-recovery or
+    with a gap open therefore holds the net back for every session that receives it; a session that stays
     behind meanwhile is not reset, and lags once it is past the window below. Only
     when every request has been accepted does the actor ask
     the AMQP layer to replace the session's channel. A rejected or failed request means
