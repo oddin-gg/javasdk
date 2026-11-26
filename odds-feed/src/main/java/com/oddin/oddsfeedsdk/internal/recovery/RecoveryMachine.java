@@ -65,7 +65,8 @@ import org.slf4j.LoggerFactory;
  * stay older than the limit for the window, the net asks for a recovery of every enabled producer
  * of the session, and only once the API has accepted them all has the session's channel replaced.
  * It starts only when every one of those producers can be asked for now: none has a recovery in
- * flight, is in backoff or in its cool-down, is silent, or has a session without a bound queue.
+ * flight, is in backoff or in its cool-down, is silent, has a session without a bound queue, or has a
+ * gap open, the producer's or a session's, whose own recovery comes first.
  * Otherwise it waits, with no request, no lagging and no backoff, and a later stale sample tries
  * again: the reset drops the backlog of every producer the session receives, and a producer that
  * could not be asked for right after it would miss what the reset dropped. A recovery of the net
@@ -1625,12 +1626,18 @@ final class RecoveryMachine {
      * <p>The reset drops the backlog of every producer the session receives, and what it drops of a
      * producer is repeated only by the recovery asked for after it. So the net starts only when all
      * of them can be asked for now, and asked for again right after the reset: none with a recovery
-     * in flight, in its backoff or its cool-down, silent, or missing a bound queue of any session.
-     * Until then it waits, with no request, no lagging and no backoff, and a later stale sample
-     * tries again. The cap and the cool-down count failures, not requests: a request that is
+     * in flight, in its backoff or its cool-down, silent, or missing a bound queue of any session,
+     * and none with a gap open, the producer's or a session's: its ordinary recovery asks from the
+     * older gap, not from the checkpoint the window check compares, so it goes first. Until then
+     * the net waits, with no request, no lagging and no backoff, and a later stale sample tries
+     * again. The cap and the cool-down count failures, not requests: a request that is
      * accepted spends none of it, and one that fails ends the reset before it is made.
      */
     private void trigger(SessionState session, Track track, long age, long mono) {
+        if (!enabled(track)) {
+            // a client callback disabled the producer on the very sample: it says nothing of the others
+            return;
+        }
         if (resetsWithinCooldown(session, mono) >= settings.resets()) {
             if (!session.lagging) {
                 session.lagging = true;
@@ -1653,7 +1660,7 @@ final class RecoveryMachine {
             if (!enabled(other)) {
                 continue;
             }
-            if (!canRequest(other, mono)) {
+            if (!canRequest(other, mono) || hasGaps(other)) {
                 return;
             }
             lanes.add(entry);

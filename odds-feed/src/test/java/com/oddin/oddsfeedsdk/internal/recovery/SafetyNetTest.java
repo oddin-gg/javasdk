@@ -190,25 +190,25 @@ class SafetyNetTest {
         assertThat(feed.machine.lagging(1)).isFalse();
         assertThat(feed.resets).isEmpty();
 
-        // the cool-down over, live can be asked for again, and the net acts on the next stale sample
+        // the cool-down over, live is asked for on its own account at an alive: its gap comes first
         int live = feed.snapshots(LIVE).size();
-        assertThat(stale(
-                        feed,
-                        1,
-                        OLD,
-                        Duration.ofMinutes(11),
-                        () -> feed.snapshots(PRE).size() > pre))
-                .as("seconds to the net's request: no backoff of its own was started by the wait")
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(11), () -> feed.machine.inFlightRecovery(LIVE) != 0))
                 .isPositive();
-        assertThat(feed.snapshots(LIVE)).as("live asked for as well").hasSize(live + 1);
+        assertThat(feed.snapshots(LIVE)).hasSize(live + 1);
+        assertThat(feed.snapshots(PRE)).as("the net still waits").hasSize(pre);
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        int before = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(3), () -> feed.calls.size() > before))
+                .as("seconds to the net's request once no producer holds it back: stale all along, no backoff")
+                .isEqualTo(1);
+        assertThat(feed.calls).as("a recovery for each producer").hasSize(before + 2);
         feed.accept(feed.lastSnapshot(PRE));
         feed.accept(feed.lastSnapshot(LIVE));
         assertThat(feed.resets).containsExactly(1);
-        int before = feed.calls.size();
         feed.resetDone();
         assertThat(feed.calls)
                 .as("both asked for again in the step of the reset")
-                .hasSize(before + 2);
+                .hasSize(before + 4);
     }
 
     @Test
@@ -1264,7 +1264,7 @@ class SafetyNetTest {
     // ---- the net starts only when every producer can be asked, and ends with any recovery it asked
 
     @Test
-    void aProducerInItsRetryBackoffHoldsTheNetBackAndStartsNoBackoffOfTheNets() {
+    void aProducerWithAGapWhoseRetryIsDueAtTheStaleSampleIsRetriedFirstAndTheNetWaits() {
         Harness feed = withSlowBackoff();
         feed.open(1, MessageInterest.ALL);
         feed.start();
@@ -1288,17 +1288,28 @@ class SafetyNetTest {
         assertThat(feed.events).as("no lagging, no failed request").isEmpty();
         assertThat(feed.counters.resetRequestsFailed()).isZero();
 
-        // its backoff over, live can be asked for, and the net acts at once: it waited, with no backoff of its own
+        // its backoff over, live's gap is still open: its own retry goes out, the net's request does not
+        stale(feed, 1, OLD, Duration.ofSeconds(1), () -> false);
+        assertThat(feed.snapshots(LIVE)).as("only the ordinary retry").hasSize(live + 1);
+        assertThat(feed.snapshots(PRE))
+                .as("the net did not ask at the very sample the retry came due")
+                .hasSize(1);
+        assertThat(feed.events).isEmpty();
+        Outbox.Call.Snapshot retry = feed.lastSnapshot(LIVE);
+        feed.accept(retry);
+        assertThat(feed.resets).as("no pending reset: nothing to make").isEmpty();
+        feed.machine.snapshotComplete(1, LIVE, retry.requestId());
+
+        // the recovery done, nothing holds the net back, and it has started no backoff of its own
         assertThat(stale(
                         feed,
                         1,
                         OLD,
                         Duration.ofMinutes(1),
                         () -> feed.snapshots(PRE).size() > 1))
-                .as("seconds to the net's request once live's backoff is over")
+                .as("seconds to the net's request once live's recovery is done")
                 .isEqualTo(1);
-        assertThat(feed.calls).as("both producers asked for").hasSize(before + 2 + 1);
-        assertThat(feed.snapshots(LIVE)).hasSize(live + 1);
+        assertThat(feed.calls).as("both producers asked for").hasSize(before + 2 + 2);
     }
 
     @Test
@@ -1492,6 +1503,163 @@ class SafetyNetTest {
         feed.machine.snapshotComplete(1, PRE, pre.requestId());
         feed.machine.snapshotComplete(1, LIVE, live.requestId());
         assertThat(feed.counters.failed()).isZero();
+    }
+
+    @Test
+    void aProducerDisabledOnTheVerySampleThatCrossesTheWindowStartsNoResetOfTheOthers() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofSeconds(60), () -> false);
+        // the client's callback disables the producer as the sample that crosses the window is handled
+        feed.producers.setProducerState(PRE, false);
+        stale(feed, 1, OLD, Duration.ofSeconds(1), () -> false);
+        assertThat(feed.calls)
+                .as("nothing asked for live on a sample of a disabled producer")
+                .hasSize(before);
+        assertThat(feed.events).as("no lagging either").isEmpty();
+        assertThat(feed.machine.lagging(1)).isFalse();
+    }
+
+    @Test
+    void aLoneLowPrioritySessionNoOneTakesSnapshotCompletesForIsResetAndAsksAgainAfterIt() {
+        Harness feed = new Harness();
+        feed.open(new SessionInfo(1, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.start();
+        feed.bothUp();
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        assertThat(feed.calls).as("both asked for").hasSize(before + 2);
+        // each ends with its acceptance, with nothing to wait for
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets).containsExactly(1);
+        assertThat(feed.events).as("no failed request").isEmpty();
+        assertThat(feed.counters.resetRequestsFailed()).isZero();
+        feed.resetDone();
+        assertThat(feed.events).containsExactly("session 1 reset for producer 1");
+        assertThat(feed.calls).as("both asked for again").hasSize(before + 4);
+    }
+
+    @Test
+    void aSilentProducerOrAnUnsubscribedAliveCancelsTheResetWithTheNetsBackoff() {
+        // the producer goes silent while the reset waits
+        Harness feed = withSlowBackoff();
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        liveAlives = false;
+        stale(feed, 1, OLD, Duration.ofSeconds(30), () -> false);
+        assertThat(feed.resets).isEmpty();
+        liveAlives = true;
+        feed.alive(LIVE);
+        feed.machine.snapshotComplete(1, PRE, pre.requestId());
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(15), () -> feed.calls.size() > after))
+                .as("seconds to the net's next request after a silent producer: past the ten minutes' backoff")
+                .isGreaterThan(500);
+        assertThat(live.requestId()).isNotEqualTo(feed.lastSnapshot(LIVE).requestId());
+    }
+
+    @Test
+    void anUnsubscribedAliveAfterTheAcceptanceCancelsTheResetWithTheNetsBackoff() {
+        Harness feed = withSlowBackoff();
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.unsubscribed(PRE);
+        assertThat(feed.machine.inFlightRecovery(PRE)).isZero();
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        // the next alive asks for prematch again, for its own gap; it completes
+        stale(feed, 1, OLD, Duration.ofSeconds(30), () -> feed.machine.inFlightRecovery(PRE) != 0);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(15), () -> feed.calls.size() > after))
+                .as("seconds to the net's next request after the give-up: past the ten minutes' backoff")
+                .isGreaterThan(500);
+    }
+
+    @Test
+    void aProducerWhoseCheckpointLiesOutsideTheCutoffMakesTheSessionLagWhileTheTriggeringOnesIsInside() {
+        // a four minute window, a margin of two: a checkpoint is outside once it is more than two minutes back
+        Harness feed = new Harness(Harness.settings(), false, 4);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        quiet(feed, 100);
+        // prematch's messages are old, but its checkpoint moves with them; live's stays 161 s back
+        takeStaleWithCheckpoints(feed, 61);
+        assertThat(feed.calls).as("nothing is asked for").hasSize(before);
+        assertThat(feed.resets).isEmpty();
+        assertThat(feed.events).containsExactly("session 1 lagging");
+        assertThat(feed.machine.lagging(1)).isTrue();
+    }
+
+    @Test
+    void aRecoveryThatReplacesOneThatEndedOnItsAcceptanceCancelsTheResetAtTheLastAcceptance() {
+        Harness feed = new Harness();
+        feed.open(new SessionInfo(1, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.start();
+        feed.bothUp();
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+        assertThat(feed.machine.inFlightRecovery(PRE))
+                .as("ended with its acceptance")
+                .isZero();
+        // prematch stops sending: a gap opens, and a recovery of its own, not the one the net asked for, starts
+        feed.unsubscribed(PRE);
+        assertThat(feed.machine.inFlightRecovery(PRE)).isNotZero().isNotEqualTo(pre.requestId());
+        feed.accept(live);
+        assertThat(feed.resets)
+                .as("the recovery is no longer the one the net asked for")
+                .isEmpty();
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+    }
+
+    @Test
+    void anAcceptedRecoveryThatTimesOutWhileTheOtherIsPendingCancelsTheResetOnceWithTheNetsBackoff() {
+        Harness feed = withSlowBackoff();
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+        // live's snapshot messages keep arriving, so only prematch's recovery goes quiet and times out
+        for (int second = 1; second <= 6 * 60; second++) {
+            feed.runWithAlives(Duration.ofSeconds(1));
+            if (second % 30 == 0) {
+                feed.machine.processed(1, LIVE, feed.now(), Stamp.of(feed.now()), live.requestId());
+            }
+        }
+        assertThat(feed.counters.timedOut()).isEqualTo(1);
+        assertThat(feed.events).as("one cancellation").containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
+        feed.accept(live);
+        assertThat(feed.resets)
+                .as("nothing to make once the remaining request is accepted")
+                .isEmpty();
+        assertThat(feed.events).hasSize(1);
+
+        feed.machine.snapshotComplete(1, LIVE, live.requestId());
+        int after = feed.calls.size();
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(15), () -> feed.calls.size() > after))
+                .as("seconds to the net's next request: past the ten minutes' backoff")
+                .isGreaterThan(500);
     }
 
     // ---- a stale clock offset
