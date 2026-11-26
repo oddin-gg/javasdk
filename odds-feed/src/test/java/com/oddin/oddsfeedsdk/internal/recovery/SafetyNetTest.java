@@ -910,6 +910,50 @@ class SafetyNetTest {
     }
 
     @Test
+    void aProducerTheNetCannotAskForNowButWhoseCheckpointLiesBeforeItsWindowKeepsTheSessionFromAReset() {
+        Harness feed = new Harness(Harness.settings(), false, 1);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        // live is silent, so it cannot be asked for, and its checkpoint stays where its recovery put it;
+        // prematch is stale, but its checkpoint moves with the messages
+        liveAlives = false;
+        takeStaleWithCheckpoints(feed, 120);
+        assertThat(feed.calls).as("nothing is asked for").hasSize(before);
+        assertThat(feed.resets).isEmpty();
+        assertThat(feed.events).as("lagging, told once").containsExactly("session 1 lagging");
+        assertThat(feed.machine.lagging(1)).isTrue();
+    }
+
+    @Test
+    void aCheckpointOfAProducerNotAskedForThatFellOutOfItsWindowWhileTheRecoveriesWereAcceptedCancelsTheReset() {
+        Harness feed = new Harness(Harness.settings(), false, 2);
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        liveAlives = false;
+        takeStaleWithCheckpoints(feed, 61);
+        assertThat(feed.calls).as("prematch asked for, live silent").hasSize(before + 1);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+
+        // nothing is taken meanwhile: prematch's checkpoint is inside its window, live's moves out of it
+        for (int second = 1; second <= 70; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            if (second % 10 == 0) {
+                aliveBoth(feed);
+            }
+            feed.machine.tick();
+        }
+        feed.accept(pre);
+        assertThat(feed.resets)
+                .as("a reset would drop live's backlog, which no recovery repeats")
+                .isEmpty();
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+    }
+
+    @Test
     void aSessionWhoseCheckpointIsInsideTheRecoveryWindowIsResetAsBefore() {
         Harness feed = new Harness(Harness.settings(), false, 2);
         feed.open(1, MessageInterest.ALL);
@@ -1254,6 +1298,22 @@ class SafetyNetTest {
             }
         }
         return -1;
+    }
+
+    /**
+     * Second by second, session 1 takes a live message of producer 1 that is old by that producer's
+     * clock, as {@link #stale} does, but one that moves its checkpoint to now, with the alives every ten seconds.
+     */
+    private void takeStaleWithCheckpoints(Harness feed, int seconds) {
+        for (int second = 1; second <= seconds; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            if (second % 10 == 0) {
+                aliveBoth(feed);
+            }
+            long now = feed.now();
+            feed.machine.processed(1, PRE, now - OLD.toMillis(), now, Stamp.of(now), 0);
+            feed.machine.tick();
+        }
     }
 
     private void aliveBoth(Harness feed) {

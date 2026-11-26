@@ -75,9 +75,10 @@ import org.slf4j.LoggerFactory;
  * recovery's time: it starts again with the first stale sample after it.
  *
  * <p>The reset drops what the session's queue holds, and a recovery repeats it only from the
- * producer's stateful recovery window on. A session whose checkpoint of a producer it would ask
- * for lies before where that request would start - it has lagged longer than the window - is not
- * reset: it is lagging instead, with nothing asked, and stops lagging when it is on time again.
+ * producer's stateful recovery window on. A session whose checkpoint of an enabled producer it
+ * receives, one the net could ask for now or not, lies before where that request would start - it
+ * has lagged longer than the window - is not reset: it is lagging instead, with nothing asked,
+ * and stops lagging when it is on time again.
  * The same is checked when the last recovery is accepted, and a reset the window has overtaken is
  * cancelled like a refused request. A reset is not made once the feed is {@link #closing}, nor
  * for a producer that was disabled while its recovery was asked for.
@@ -1577,11 +1578,16 @@ final class RecoveryMachine {
         var asked = new ArrayList<Map.Entry<Long, Lane>>();
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             Track other = track(entry.getKey());
-            if (enabled(other) && canRequest(other, mono)) {
-                if (beyondWindow(other, entry.getValue())) {
-                    laggingBeyondWindow(session, other, age, track);
-                    return;
-                }
+            if (!enabled(other)) {
+                continue;
+            }
+            // the reset drops the backlog of every producer the session receives, one that cannot be
+            // asked now included, and its recovery later is clamped to its window as any other
+            if (beyondWindow(other, entry.getValue())) {
+                laggingBeyondWindow(session, other, age, track);
+                return;
+            }
+            if (canRequest(other, mono)) {
                 asked.add(entry);
             }
         }
@@ -1650,7 +1656,8 @@ final class RecoveryMachine {
     /**
      * Whether a recovery for what the lane misses would start after the lane's checkpoint: the
      * producer's stateful recovery window has moved past it, so the messages between are repeated
-     * by no recovery, and a reset would drop them for good. The start is the one {@link #request}
+     * by no recovery, and a reset would drop them for good - the recovery of a producer the net
+     * cannot ask for now included, which the session asks for after the reset. The start is the one {@link #request}
      * computes; a checkpoint of 0 is a full snapshot's or none, and the recovery then covers it.
      */
     private boolean beyondWindow(Track track, Lane lane) {
@@ -1678,8 +1685,9 @@ final class RecoveryMachine {
 
     /**
      * Every recovery the reset waited for is accepted. The session's channel is replaced, unless
-     * the feed is closing - what the close is about to settle would be dropped - or a checkpoint
-     * has fallen out of a stateful recovery window meanwhile, and the recovery no longer repeats it.
+     * the feed is closing - what the close is about to settle would be dropped - or the checkpoint
+     * of an enabled producer of the session, one asked for or not, has fallen out of its stateful
+     * recovery window meanwhile, and no recovery repeats what the reset would drop of it.
      */
     private void resetOrCancel(SessionState session, PendingReset pending, long mono) {
         if (closing) {
@@ -1689,7 +1697,8 @@ final class RecoveryMachine {
         }
         for (Map.Entry<Long, Lane> entry : session.lanes.entrySet()) {
             long producerId = entry.getKey();
-            if (pending.producers.contains(producerId) && beyondWindow(track(producerId), entry.getValue())) {
+            Track other = track(producerId);
+            if (enabled(other) && beyondWindow(other, entry.getValue())) {
                 cancelReset(session, mono);
                 counters.resetRequestsFailed.incrementAndGet();
                 LOG.warn(

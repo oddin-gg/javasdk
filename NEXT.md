@@ -967,9 +967,10 @@ and REST workers post facts to it; it decides and posts work out.
     while its request is outstanding, whether the tick or the API's answer comes first, and a
     feed that has begun to close, since a reset at shutdown drops what the shutdown is about to
     settle. The reset drops the queue's messages, and a recovery repeats them only from the
-    producer's stateful recovery window on: a session whose checkpoint of a producer it would
-    ask for lies before the start that request would be clamped to - it has lagged longer than
-    the window - is not reset. It is reported lagging instead (once per episode, as with the cap
+    producer's stateful recovery window on: a session whose checkpoint of any enabled producer
+    it receives - one the net can ask for now or not, since the reset drops its backlog too and
+    its recovery after the reset is clamped the same way - lies before the start that request
+    would be clamped to - it has lagged longer than the window - is not reset. It is reported lagging instead (once per episode, as with the cap
     spent), nothing is asked and no gap is opened, and it stops lagging as always, when its
     messages are on time. The same check runs when the last acceptance arrives, and a reset
     whose checkpoint the window has overtaken meanwhile is cancelled like a refused request.
