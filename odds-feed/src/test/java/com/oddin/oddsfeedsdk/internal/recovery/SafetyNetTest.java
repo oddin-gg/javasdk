@@ -623,6 +623,7 @@ class SafetyNetTest {
         feed.accept(feed.lastSnapshot(PRE));
         assertThat(feed.resets).isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        assertThat(feed.failureReasons).as("the check that cancelled it").containsExactly("producer enabled since");
         assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
     }
 
@@ -962,7 +963,8 @@ class SafetyNetTest {
         Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
         Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
 
-        // nothing is taken meanwhile: prematch's checkpoint is inside its window, live's moves out of it
+        // nothing is taken meanwhile: prematch's checkpoint, moved by its messages, stays inside the window;
+        // live's, where its recovery left it, falls out of it, and live is producer 2
         for (int second = 1; second <= 70; second++) {
             feed.clock.advance(Duration.ofSeconds(1));
             if (second % 10 == 0) {
@@ -976,6 +978,7 @@ class SafetyNetTest {
                 .as("a reset would drop live's backlog, which no recovery repeats")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        assertThat(feed.failureReasons).as("the check that cancelled it").containsExactly("beyond the recovery window");
     }
 
     @Test
@@ -1020,6 +1023,7 @@ class SafetyNetTest {
                 .as("the recoveries no longer repeat what the reset would drop")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.failureReasons).as("the check that cancelled it").containsExactly("beyond the recovery window");
         assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
     }
 
@@ -1637,6 +1641,7 @@ class SafetyNetTest {
                 .as("the recovery is no longer the one the net asked for")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.failureReasons).as("the check that cancelled it").containsExactly("recovery changed");
         assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
     }
 
@@ -1752,6 +1757,9 @@ class SafetyNetTest {
                 .as("a recovery is asked from the producer's now, before the checkpoint")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.failureReasons)
+                .as("the check that cancelled it")
+                .containsExactly("checkpoint ahead of the producer");
     }
 
     @Test
@@ -2008,6 +2016,9 @@ class SafetyNetTest {
                 .as("live's recovery is asked from its now, before its checkpoint")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        assertThat(feed.failureReasons)
+                .as("the check that cancelled it")
+                .containsExactly("checkpoint ahead of the producer");
     }
 
     @Test
