@@ -964,7 +964,9 @@ and REST workers post facts to it; it decides and posts work out.
     its ordinary recovery asks from the older gap, not from the checkpoint the window check
     compares, so it goes first. A checkpoint after the producer's clock - it stepped back since the
     session took the messages - makes it wait too: a recovery is asked from the producer's now, and
-    a reset would drop what is queued after it. Otherwise it waits, with no request, no lagging, no
+    a reset would drop what is queued after it. So does a producer whose clock offset is stale,
+    with no alive for two alive intervals: the ages and checkpoints are corrected by it, and the
+    stale sample that starts the net asks it of the sampled producer alone. Otherwise it waits, with no request, no lagging, no
     gap and no backoff, and a later stale sample tries again. What the reset drops of a
     producer is repeated only by the recovery asked for after it, so a producer that cannot
     be asked for right after the reset would miss what the reset dropped, and its recovery
@@ -982,14 +984,22 @@ and REST workers post facts to it; it decides and posts work out.
     goes silent between the last acceptance and the reset being done is asked for again at its
     next alive, which the margin of the window check covers - up to ten minutes, at most half
     the window - and a silence longer than the window left loses what any outage of that length
-    loses. Only
+    loses; a reset already handed to the AMQP layer cannot be recalled when a producer of the
+    session is disabled, or a sibling session's queue is lost, after the last acceptance checked
+    it and before the queue is replaced, and the margin of the window check covers the delay; the raw messages (`onRawFeedMessageReceived`, the extended listener) of a disabled
+    producer are reported as they arrive, and those queued at a reset are dropped with the rest
+    and not repeated by any recovery. Only
     when every request has been accepted does the actor ask
     the AMQP layer to replace the session's channel. A rejected or failed request means
-    no reset: the actor backs off, counts, and raises an event. So does any recovery the reset
-    waits for that ends before it - given up (a producer's gap, a lost queue), abandoned or
-    completed - and a producer disabled while its request is outstanding, whether the tick or
-    the API's answer comes first, and a feed that has begun to close, since a reset at shutdown
-    drops what the shutdown is about to settle. A lost connection cancels the reset too, and so does a
+    no reset. Whichever recovery of the net's ends before the reset is made cancels it: a
+    refusal or a timeout counts (`resetRequestsFailed`) and raises `onSafetyNetEvent`, with the
+    net's backoff; a recovery given up (a producer's gap, an unsubscribed alive, silence) or
+    completed cancels it with the backoff too, but counts nothing and raises no event; so does a
+    feed that has begun to close, since a reset at shutdown drops what the shutdown is about to
+    settle, with no event either. A producer the net asked a recovery of that is disabled before
+    the reset is made - its recovery accepted or not, and whether the tick or the API's answer
+    comes first - cancels it, counts and raises the event. Each check of the last acceptance
+    below that cancels counts and raises the event with its own reason. A lost connection cancels the reset too, and so does a
     session's lost channel, that of any session that shares an enabled producer with it, whether or
     not that session had seen the recovery's `snapshot_complete`: none starts a backoff, as the loss
     says nothing against the net. The last acceptance looks at the state again: each enabled
@@ -997,7 +1007,7 @@ and REST workers post facts to it; it decides and posts work out.
     accepted (or it ended with its acceptance, with no session to wait for), and can still be asked
     for a recovery after the reset - an alive is recent and none awaited, no retry or cool-down holds
     it back, every session that receives it has a bound queue, as at the start, the recovery in
-    flight apart - none has a gap open apart from the net's own (an unsubscribed alive or a lost
+    flight apart; its clock offset is still fresh - none has a gap open apart from the net's own (an unsubscribed alive or a lost
     queue opened one since: its ordinary recovery asks from the older gap, and a reset now would
     discard what that recovery sends; the reset is cancelled with the net's backoff) - and the
     window check below still holds. The reset drops the queue's messages, and a recovery repeats them only from the
@@ -1012,10 +1022,21 @@ and REST workers post facts to it; it decides and posts work out.
     whose checkpoint the window has overtaken meanwhile is cancelled like a refused request. A
     recovery of the net that passes the maximum recovery time while its session's reset is with the
     AMQP layer is given up, not failed, so no retry backoff delays its follow-up. A producer
-    enabled while a session that receives it is being reset is down for the reset until the
-    recovery after it completes - also one that was down for the processing delay when it was
-    disabled, which a session taking messages on time again does not bring up - and a disabled producer's lanes keep no stale window: a session
-    stops lagging without waiting for its samples, whether its lane was over the limit or not.
+    enabled after a reset it was disabled through is down for the reset while any lane of it has
+    the reset's gap open - a flag of the gap, set when the reset is handed to the AMQP layer and
+    cleared when the layer reports the queue was not replaced; it goes with the session that
+    closes, and another session's ordinary gap does not carry it - until that recovery completes,
+    also one that was down for the processing delay when it was disabled, which a session taking
+    messages on time again does not bring up. It is applied where every request of the producer
+    passes, so an alive that comes before the tick does not send the recovery while the producer
+    reports up, and at the tick for one whose request is still held back; a producer disabled for
+    any other gap is not put down for it, as before. A disabled producer's lanes keep no stale
+    window, nor last age, and a sample taken before the tick that saw it disabled does not put
+    them back. A session lags until none of its lanes is behind: its producer enabled, its offset
+    fresh, and its stale window begun or its last age over the limit. The on-time sample of one
+    lane, a producer being disabled and the tick, which sees an offset expire, end the lagging
+    only by that one test. A sample taken before the newest one the lane's window was judged by
+    does not start the window at its earlier time, nor replace the lane's age.
     A stale window that began before a recovery of the producer ended, or before an alive made
     a stale clock offset fresh again, does not count that time: it starts again with the first
     stale sample after it, and a sample taken before is not the net's. The session's own
