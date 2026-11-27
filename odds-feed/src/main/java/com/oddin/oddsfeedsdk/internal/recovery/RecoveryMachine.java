@@ -998,8 +998,9 @@ final class RecoveryMachine {
                 forgetStaleWindows(track);
                 continue;
             }
-            if (!track.down && underway(track)) {
-                // enabled while a session that receives it is being reset: it is not up until the recovery after
+            if ((!track.down || track.cause == StatusCause.PROCESSING_DELAY) && underway(track)) {
+                // enabled while a session that receives it is being reset, which skipped it: it is not up until the
+                // recovery after, and a session taking messages on time again must not bring it up before
                 markDown(track, StatusCause.SAFETY_NET_RESET);
             }
             Active active = track.active;
@@ -1081,9 +1082,22 @@ final class RecoveryMachine {
     private void forgetStaleWindows(Track track) {
         for (SessionState session : sessions.values()) {
             Lane lane = session.lanes.get(track.id);
-            if (lane != null) {
+            if (lane != null && lane.above) {
                 lane.above = false;
+                // no sample of the producer will say it caught up
+                stopLaggingIfCaughtUp(session);
             }
+        }
+    }
+
+    /** A session that lags stops when none of its lanes of an enabled producer is over the limit. */
+    private void stopLaggingIfCaughtUp(SessionState session) {
+        if (session.lagging
+                && session.lanes.entrySet().stream()
+                        .noneMatch(lane -> lane.getValue().above && enabled(track(lane.getKey())))) {
+            session.lagging = false;
+            LOG.info("Session {} caught up", session.info.id());
+            events.lagging(session.info.id(), false);
         }
     }
 
@@ -1158,6 +1172,7 @@ final class RecoveryMachine {
         var active = new Active(requestId, ++sentSeq, after, wall, mono, producerNow(track), gapSeq, awaited(track));
         active.causes.add(track.cause);
         track.active = active;
+        track.lastRequestId = requestId;
         counters.requested.incrementAndGet();
         if (track.failures > 0) {
             counters.reissued.incrementAndGet();
@@ -1645,13 +1660,7 @@ final class RecoveryMachine {
         }
         if (age <= settings.staleLimit().toMillis()) {
             lane.above = false;
-            if (session.lagging
-                    && session.lanes.entrySet().stream()
-                            .noneMatch(other -> other.getValue().above && enabled(track(other.getKey())))) {
-                session.lagging = false;
-                LOG.info("Session {} caught up", session.info.id());
-                events.lagging(session.info.id(), false);
-            }
+            stopLaggingIfCaughtUp(session);
             return;
         }
         if (!lane.above || lane.aboveSince <= pausedUntil(track)) {
@@ -1878,8 +1887,9 @@ final class RecoveryMachine {
                 return;
             }
             Active active = other.active;
+            // one that ended with its acceptance counts only while it is the producer's latest recovery
             boolean asked = active == null
-                    ? pending.endedOnAcceptance.contains(producerId)
+                    ? pending.endedOnAcceptance.contains(producerId) && other.lastRequestId == requestId
                     : active.requestId == requestId && active.accepted;
             if (!asked) {
                 resetNotMadeAtAcceptance(
@@ -2305,6 +2315,8 @@ final class RecoveryMachine {
 
         @Nullable
         Active active;
+        /** The request id of its latest recovery, in flight or ended; 0 before the first. */
+        long lastRequestId;
         /**
          * The request ids of its last recoveries that failed or were given up, newest first, at most
          * {@code ENDED_REMEMBERED}: what they sent may still be ahead of the one in flight.
