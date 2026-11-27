@@ -973,7 +973,16 @@ and REST workers post facts to it; it decides and posts work out.
     that fails ends the reset before it is made, so the second request after the reset needs no
     check of its own. An enabled producer that is silent, in backoff, capped, mid-recovery or
     with a gap open therefore holds the net back for every session that receives it; a session that stays
-    behind meanwhile is not reset, and lags once it is past the window below. Only
+    behind meanwhile is not reset, and lags once it is past the window below. Limits of the
+    net: after a producer's clock stepped back and has passed the checkpoint again, messages
+    stamped in between may still be queued, and a recovery from the checkpoint does not repeat
+    them, with a reset or without one; the feed is trusted, so an alive's or a message's
+    timestamp is taken as sent, and a checkpoint taken from a wrong far-future one stays, as the
+    checkpoint is a running maximum, and holds the net back for that session; a producer that
+    goes silent between the last acceptance and the reset being done is asked for again at its
+    next alive, which the margin of the window check covers - up to ten minutes, at most half
+    the window - and a silence longer than the window left loses what any outage of that length
+    loses. Only
     when every request has been accepted does the actor ask
     the AMQP layer to replace the session's channel. A rejected or failed request means
     no reset: the actor backs off, counts, and raises an event. So does any recovery the reset
