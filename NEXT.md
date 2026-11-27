@@ -988,7 +988,10 @@ and REST workers post facts to it; it decides and posts work out.
     accepted (or it ended with its acceptance, with no session to wait for), and can still be asked
     for a recovery after the reset - an alive is recent and none awaited, no retry or cool-down holds
     it back, every session that receives it has a bound queue, as at the start, the recovery in
-    flight apart - and the window check below still holds. The reset drops the queue's messages, and a recovery repeats them only from the
+    flight apart - none has a gap open apart from the net's own (an unsubscribed alive or a lost
+    queue opened one since: its ordinary recovery asks from the older gap, and a reset now would
+    discard what that recovery sends; the reset is cancelled with the net's backoff) - and the
+    window check below still holds. The reset drops the queue's messages, and a recovery repeats them only from the
     producer's stateful recovery window on: a session whose checkpoint of any enabled producer
     it receives lies before the start that request would be clamped to - it has lagged longer
     than the window - is not reset. The start is
@@ -1003,7 +1006,7 @@ and REST workers post facts to it; it decides and posts work out.
     enabled while a session that receives it is being reset is down for the reset until the
     recovery after it completes - also one that was down for the processing delay when it was
     disabled, which a session taking messages on time again does not bring up - and a disabled producer's lanes keep no stale window: a session
-    stops lagging without waiting for its samples.
+    stops lagging without waiting for its samples, whether its lane was over the limit or not.
     A stale window that began before a recovery of the producer ended, or before an alive made
     a stale clock offset fresh again, does not count that time: it starts again with the first
     stale sample after it, and a sample taken before is not the net's. The session's own
@@ -1025,9 +1028,10 @@ and REST workers post facts to it; it decides and posts work out.
     complete. A reset already with the AMQP layer stays one through a lost connection or
     channel, since replacing the channel late could still drop what the new one holds:
     the session's producers are asked for nothing until it is reported done. The AMQP
-    layer reports a reset done only once the session reads from an open channel again:
-    one it could not open at once it opens on its own, and a recovery asked for before
-    then would send to no one. An event recovery asked for while a session that receives
+    layer reports a reset done only once the session reads from an open channel again, with
+    no deadline of the actor's: one it could not open at once it opens on its own, with backoff,
+    and until then the recoveries after the reset, and the net for the session's producers,
+    wait, since a recovery asked for before then would send to no one. An event recovery asked for while a session that receives
     its producer is being reset waits until the reset is done, since its snapshot could
     go to either channel; the maximum recovery time counts from when it was asked for, the
     wait included, so one that has waited longer than that expires like one asked for, at the
