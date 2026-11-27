@@ -584,7 +584,7 @@ public final class HealthMonitor implements RecoveryEvents, ConnectionEvents, Ap
         return lagging
                 ? new Found(
                         HealthState.DEGRADED,
-                        "session " + session + " is lagging: it fell behind with the safety net's resets spent")
+                        "session " + session + " is lagging: it fell behind beyond what the safety net resets")
                 : new Found(HealthState.HEALTHY, "session " + session + " is keeping up");
     }
 

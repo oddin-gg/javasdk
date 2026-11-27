@@ -955,37 +955,92 @@ and REST workers post facts to it; it decides and posts work out.
     session. An event recovery does not pause the net: its messages are snapshot
     messages, excluded already.
   - When the age of live messages from a producer stays above the configured limit for
-    the configured window, the actor first requests a recovery for every producer the
-    session receives that it can ask for now, each from its checkpoint on that session,
-    since the reset drops the messages of all of them. It waits while one of them has a
-    recovery in flight, but not for one that is silent, has its cap spent or waits out a
-    backoff: that one sends the session nothing to drop, and once the reset is done it
-    misses what the queue held like the others, to be asked for when it can be. Only
-    when every request has been accepted does it ask
+    the configured window, the actor first requests a recovery for every enabled producer
+    the session receives, each from its checkpoint on that session, since the reset drops
+    the messages of all of them. It starts only when every one of those producers can be
+    asked for now: none has a recovery in flight, is in backoff or in its cool-down after
+    failures, is silent, has a session that receives it without a bound queue (its channel
+    lost, or a reset with the AMQP layer), or has a gap open, the producer's or any session's:
+    its ordinary recovery asks from the older gap, not from the checkpoint the window check
+    compares, so it goes first. A checkpoint after the producer's clock - it stepped back since the
+    session took the messages - makes it wait too: a recovery is asked from the producer's now, and
+    a reset would drop what is queued after it. Otherwise it waits, with no request, no lagging, no
+    gap and no backoff, and a later stale sample tries again. What the reset drops of a
+    producer is repeated only by the recovery asked for after it, so a producer that cannot
+    be asked for right after the reset would miss what the reset dropped, and its recovery
+    would start later, clamped to a window that moved on. The cap and the cool-down count
+    failed recoveries, not requests: a recovery the API accepts spends none of them, and one
+    that fails ends the reset before it is made, so the second request after the reset needs no
+    check of its own. An enabled producer that is silent, in backoff, capped, mid-recovery or
+    with a gap open therefore holds the net back for every session that receives it; a session that stays
+    behind meanwhile is not reset, and lags once it is past the window below. Limits of the
+    net: after a producer's clock stepped back and has passed the checkpoint again, messages
+    stamped in between may still be queued, and a recovery from the checkpoint does not repeat
+    them, with a reset or without one; the feed is trusted, so an alive's or a message's
+    timestamp is taken as sent, and a checkpoint taken from a wrong far-future one stays, as the
+    checkpoint is a running maximum, and holds the net back for that session; a producer that
+    goes silent between the last acceptance and the reset being done is asked for again at its
+    next alive, which the margin of the window check covers - up to ten minutes, at most half
+    the window - and a silence longer than the window left loses what any outage of that length
+    loses. Only
+    when every request has been accepted does the actor ask
     the AMQP layer to replace the session's channel. A rejected or failed request means
-    no reset: the actor backs off, counts, and raises an event. The session's own
+    no reset: the actor backs off, counts, and raises an event. So does any recovery the reset
+    waits for that ends before it - given up (a producer's gap, a lost queue), abandoned or
+    completed - and a producer disabled while its request is outstanding, whether the tick or
+    the API's answer comes first, and a feed that has begun to close, since a reset at shutdown
+    drops what the shutdown is about to settle. A lost connection cancels the reset too, and so does a
+    session's lost channel, that of any session that shares an enabled producer with it, whether or
+    not that session had seen the recovery's `snapshot_complete`: none starts a backoff, as the loss
+    says nothing against the net. The last acceptance looks at the state again: each enabled
+    producer of the session still has, as its recovery in flight, the one the net asked for,
+    accepted (or it ended with its acceptance, with no session to wait for), and can still be asked
+    for a recovery after the reset - an alive is recent and none awaited, no retry or cool-down holds
+    it back, every session that receives it has a bound queue, as at the start, the recovery in
+    flight apart - none has a gap open apart from the net's own (an unsubscribed alive or a lost
+    queue opened one since: its ordinary recovery asks from the older gap, and a reset now would
+    discard what that recovery sends; the reset is cancelled with the net's backoff) - and the
+    window check below still holds. The reset drops the queue's messages, and a recovery repeats them only from the
+    producer's stateful recovery window on: a session whose checkpoint of any enabled producer
+    it receives lies before the start that request would be clamped to - it has lagged longer
+    than the window - is not reset. The start is
+    moved on by a margin, ten minutes at most half the window, for the time from the last
+    acceptance to the recovery asked into the new queue, which is clamped later: a margin for
+    that time, not a proof that the checkpoint stays inside. It is reported lagging instead (once per episode, as with the cap
+    spent), nothing is asked and no gap is opened, and it stops lagging as always, when its
+    messages are on time. The same check runs when the last acceptance arrives, and a reset
+    whose checkpoint the window has overtaken meanwhile is cancelled like a refused request. A
+    recovery of the net that passes the maximum recovery time while its session's reset is with the
+    AMQP layer is given up, not failed, so no retry backoff delays its follow-up. A producer
+    enabled while a session that receives it is being reset is down for the reset until the
+    recovery after it completes - also one that was down for the processing delay when it was
+    disabled, which a session taking messages on time again does not bring up - and a disabled producer's lanes keep no stale window: a session
+    stops lagging without waiting for its samples, whether its lane was over the limit or not.
+    A stale window that began before a recovery of the producer ended, or before an alive made
+    a stale clock offset fresh again, does not count that time: it starts again with the first
+    stale sample after it, and a sample taken before is not the net's. The session's own
     `snapshot_complete` of one of those recoveries, seen before the reset, cancels it,
-    since the reset would now drop what the recovery sent - and only that does. Another
-    session's completion is no evidence that this session's backlog was replaced: a
-    low-priority session next to a high-priority one sees no completions, so its reset
-    goes ahead once its requests are accepted, and the gaps it reopens ask for what the
-    recoveries had sent into the old queue. Data is never dropped before its
+    since the reset would now drop what the recovery sent. Data is never dropped before its
     replacement is on the way. When the reset is handed to the AMQP layer, every lane of
     the session misses what came after its checkpoint then, before any message of the
     new channel can move it. The reset stays pending until the AMQP layer reports it
     done; meanwhile the session's `snapshot_complete`s, from the queue being replaced,
     are ignored, and nothing more is asked for its producers, whose recoveries are in
-    flight. Once done, the session counts as having lost its queue: the
-    recoveries asked for before the reset may have sent part of what they brought into
-    the old queue, so they are given up and asked for again. A reset therefore costs a
-    second recovery of the session's producers, which the first, accepted, has shown the
-    API will take. The reset takes the session's producers down until those recoveries
+    flight. Once done, the session counts as having lost its queue: every recovery still in
+    flight for a producer of the session was asked for before the reset and may have sent part
+    of what it brought into the old queue, so each is given up and asked for again in that
+    step, whether the session waited for its `snapshot_complete` or not - a low-priority
+    session next to a high-priority one waits for none, and a recovery left in flight would
+    block its follow-up until the high-priority session had completed it. A reset therefore
+    costs a second recovery of the session's producers, which the first, accepted, has shown
+    the API will take. The reset takes the session's producers down until those recoveries
     complete. A reset already with the AMQP layer stays one through a lost connection or
     channel, since replacing the channel late could still drop what the new one holds:
     the session's producers are asked for nothing until it is reported done. The AMQP
-    layer reports a reset done only once the session reads from an open channel again:
-    one it could not open at once it opens on its own, and a recovery asked for before
-    then would send to no one. An event recovery asked for while a session that receives
+    layer reports a reset done only once the session reads from an open channel again, with
+    no deadline of the actor's: one it could not open at once it opens on its own, with backoff,
+    and until then the recoveries after the reset, and the net for the session's producers,
+    wait, since a recovery asked for before then would send to no one. An event recovery asked for while a session that receives
     its producer is being reset waits until the reset is done, since its snapshot could
     go to either channel; the maximum recovery time counts from when it was asked for, the
     wait included, so one that has waited longer than that expires like one asked for, at the
@@ -994,7 +1049,8 @@ and REST workers post facts to it; it decides and posts work out.
     since it moves exactly then - is reported as not made: nothing was dropped, nothing
     counts against the cap, the net waits as long as after the last reset made - its
     backoff does not grow - and the recoveries whose `snapshot_complete` was ignored
-    meanwhile are asked for again. The net's numbers - the limit of two minutes, the window
+    meanwhile are asked for again; the others stay in flight, since the queue kept what they
+    sent. The net's numbers - the limit of two minutes, the window
     of one, three resets per session per ten minutes, a minute's backoff doubling - are
     decided defaults. The limit and the window are options (`setStaleMessageLimit`,
     `setStaleMessageWindow`, each up to a day, which is as good as off). The limit must be
@@ -1006,7 +1062,9 @@ and REST workers post facts to it; it decides and posts work out.
     operator can see exactly when and why.
   - The net backs off between resets, a minute after the first and doubling within the
     cool-down, and has its own cap of three per session per cool-down; only a reset the
-    AMQP layer has made counts, and raises the event. When spent, the net stops
+    AMQP layer has made counts, and raises the event. The backoff counts the resets of the
+    cool-down only: one that has aged out no longer lengthens it, whichever way the pause
+    began. When spent, the net stops
     resetting: messages keep flowing under
     backpressure, the session is marked "lagging" in `getHealth()` and
     `onSessionLagChange` tells it. The net itself takes no producer down, because a slow

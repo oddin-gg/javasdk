@@ -53,11 +53,16 @@ final class Harness {
     final List<ProducerStatusChange> publicStatuses = new ArrayList<>();
 
     final List<String> events = new ArrayList<>();
+    /** The reasons of the safety net's failed requests, in order: which check cancelled a reset. */
+    final List<String> failureReasons = new ArrayList<>();
     /** The sessions opened, for the alives in their queues. */
     final List<Integer> sessions = new ArrayList<>();
 
     /** Called with each request as it goes out, before the machine goes on: a test's way to act in between. */
     Consumer<Outbox.Call> onRequest = call -> {};
+
+    /** Called as the machine hands a reset to the outbox, before it goes on: what the machine's state is then. */
+    Runnable onReset = () -> {};
 
     final RecoveryMachine machine;
 
@@ -94,6 +99,7 @@ final class Harness {
 
             @Override
             public void reset(int session, long number) {
+                onReset.run();
                 resets.add(session);
                 resetNumbers.add(number);
             }
@@ -134,6 +140,7 @@ final class Harness {
             @Override
             public void safetyNetRequestFailed(int session, long producerId, String reason) {
                 events.add("session " + session + " not reset for producer " + producerId);
+                failureReasons.add(reason);
             }
 
             @Override

@@ -40,6 +40,7 @@ class StaleFeedScenarioIT {
             "");
 
     private static final String PREMATCH_RECOVERY = "/v1/pre/recovery/initiate_request";
+    private static final String LIVE_RECOVERY = "/v1/live/recovery/initiate_request";
 
     /**
      * The safety net's limit and window on 1.0, set so the scenario takes seconds. A message a
@@ -161,18 +162,29 @@ class StaleFeedScenarioIT {
                 FakeFeed feed = FakeFeed.start();
                 Sdk sdk = Sdk.against(rest, feed, StaleFeedScenarioIT::safetyNetInSeconds)) {
             Received received = sdk.open(MessageInterest.ALL);
+            // both producers of the session are up before the scenario starts: the net resets a session
+            // only when each producer it receives can be asked for a recovery
             feed.publish(alive(1, true));
+            feed.publish(alive(2, true));
             RecordedRequest first = rest.awaitRequest("POST", PREMATCH_RECOVERY);
+            RecordedRequest live = rest.awaitRequest("POST", LIVE_RECOVERY);
+            // one at a time: a status of the other producer read while waiting for this one's is lost
             feed.publish(snapshotComplete(1, Long.parseLong(first.parameter("request_id"))));
             assertThat(sdk.events().nextProducerStatus(1).isDown())
                     .as("producer 1 down once its first recovery completed")
+                    .isFalse();
+            feed.publish(snapshotComplete(2, Long.parseLong(live.parameter("request_id"))));
+            assertThat(sdk.events().nextProducerStatus(2).isDown())
+                    .as("producer 2 down once its first recovery completed")
                     .isFalse();
             List<String> queues = feed.sessionQueues();
             assertThat(queues).as("the session's queue").hasSize(1);
 
             // an alive on time, so the SDK knows the producer's clock; none in the stream, since the
             // session would take each as on time, while one queued behind a backlog is as old as it
+            // live's too, right before the stream: the net resets only while every producer's alive is recent
             feed.publish(alive(1, true));
+            feed.publish(alive(2, true));
             long until = System.nanoTime() + STALE_WINDOW.multipliedBy(3).toNanos();
             int published = 0;
             while (System.nanoTime() < until) {

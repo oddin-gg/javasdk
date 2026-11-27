@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 class ClockSkewSafetyNetScenarioIT {
 
     private static final String PREMATCH_RECOVERY = "/v1/pre/recovery/initiate_request";
+    private static final String LIVE_RECOVERY = "/v1/live/recovery/initiate_request";
     private static final Duration LIMIT = Duration.ofSeconds(30);
     private static final Duration WINDOW = Duration.ofSeconds(1);
     private static final Duration BEHIND = Duration.ofMinutes(1);
@@ -56,11 +57,20 @@ class ClockSkewSafetyNetScenarioIT {
                         builder -> builder.setStaleMessageLimit(LIMIT).setStaleMessageWindow(WINDOW))) {
             Received received = sdk.open(MessageInterest.ALL);
             feed.skewClock(BEHIND.negated());
+            // both producers of the session are up first: the net resets a session only when each
+            // producer it receives can be asked for a recovery
             feed.publish(alive(1, true));
+            feed.publish(alive(2, true));
             var first = rest.awaitRequests("POST", PREMATCH_RECOVERY, 1).getFirst();
+            var live = rest.awaitRequests("POST", LIVE_RECOVERY, 1).getFirst();
+            // one at a time: a status of the other producer read while waiting for this one's is lost
             feed.publish(snapshotComplete(1, Long.parseLong(first.parameter("request_id"))));
             assertThat(sdk.events().nextProducerStatus(1).isDown())
                     .as("producer 1 down once its first recovery completed")
+                    .isFalse();
+            feed.publish(snapshotComplete(2, Long.parseLong(live.parameter("request_id"))));
+            assertThat(sdk.events().nextProducerStatus(2).isDown())
+                    .as("producer 2 down once its first recovery completed")
                     .isFalse();
             List<String> queues = feed.sessionQueues();
             assertThat(queues).as("the session's queue").hasSize(1);
@@ -84,6 +94,8 @@ class ClockSkewSafetyNetScenarioIT {
             // the same stamps, the producer's clock now the SDK's: a feed a minute behind
             feed.skewClock(Duration.ZERO);
             feed.publish(alive(1, true));
+            // live's too, right before the stream: the net resets only while every producer's alive is recent
+            feed.publish(alive(2, true));
             stream(() -> feed.publishAsIs(stampedAt(LIVE_ODDS_CHANGE, System.currentTimeMillis() - BEHIND.toMillis())));
             assertThat(rest.awaitRequests("POST", PREMATCH_RECOVERY, 2))
                     .as("recoveries asked for: the first, and the safety net's")

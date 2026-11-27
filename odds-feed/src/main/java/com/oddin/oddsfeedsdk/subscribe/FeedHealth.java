@@ -18,7 +18,7 @@ import java.util.Map;
  * value under a stable name, for a metrics exporter. New in 1.0.
  *
  * <p>A part is {@link HealthState#DEGRADED} while it works with a quality the SDK gave up: a session
- * lagging, with the safety net's resets spent, a catalog that has served a value stale, its
+ * lagging, with the safety net's resets spent or too far behind for a reset, a catalog that has served a value stale, its
  * refreshes failing, for an hour or more, or the broker connection down, or a channel of it refused
  * again and again, for longer than its limit. It is {@link HealthState#STALLED} when the SDK's own
  * watch finds it not moving: in one callback, or with a queue that has not moved, for longer than the SDK itself can
@@ -179,7 +179,7 @@ public record FeedHealth(
      * @param id the feed's number for the session, from 1 in the order they were built; the key of its
      *     counters
      * @param state degraded while it lags; stalled when the SDK's own watch finds it not moving
-     * @param lagging whether it fell behind with the safety net's resets spent, as {@code
+     * @param lagging whether it fell behind with the safety net's resets spent, or too far for a reset, as {@code
      *     onSessionLagChange} last told
      * @param queueDepth deliveries waiting for the session's thread now
      * @param queueOverflows deliveries refused for want of room, which the prefetch should never let

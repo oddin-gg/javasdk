@@ -14,7 +14,7 @@ Each part is in one of three `HealthState`s:
 | State | Meaning |
 |---|---|
 | `HEALTHY` | As it should be. |
-| `DEGRADED` | Working, with a quality the design gives up on purpose: a catalog served stale, a session lagging with the safety net's resets spent, the broker connection down for longer than its limit. |
+| `DEGRADED` | Working, with a quality the design gives up on purpose: a catalog served stale, a session lagging - its resets spent, or too far behind for a reset - the broker connection down for longer than its limit. |
 | `STALLED` | Something not moving that the feed cannot unblock: a callback that has not returned, a queue that has not moved while not empty, a deadlock among the SDK's threads, a recovery thread that has ended (all found by the watchdog, which never kills threads), or an access token the API refuses. The remedy is `close()` and a new feed. |
 
 ### `getHealth()`
@@ -81,11 +81,27 @@ warning, a recovery as information. A part found healthy again is told the same 
 Events go through a slot per part in the events thread's queue, so behind a slow callback the newest
 change replaces one still queued, with the state the client heard last as its previous.
 
-Related events: `onSessionLagChange` (a session fell behind with the safety net's resets spent, or
-caught up), `onSafetyNetEvent` (a reset made, or a recovery request the API refused),
+Related events: `onSessionLagChange` (a session fell behind with the safety net's resets spent, or so far
+that a reset would drop what no recovery repeats, or caught up), `onSafetyNetEvent` (a reset made, or a recovery request the API refused),
 `onConnectionStateChange` (`CONNECTING`, `UP`, `DOWN`, `RECOVERING`), `onFatalError` (a token the
 API refuses, a login or virtual host the broker keeps refusing), `onCallbackFailure` and
 `onProducerCauseChange` (the producer's status with its cause).
+
+### When the safety net resets a session
+
+A session whose live messages stay older than the stale limit for the window is reset: the SDK asks the API for a
+recovery of every enabled producer the session receives, and once the API has accepted them all it replaces the
+session's channel, dropping the backlog. It starts only when every one of those producers can be asked for right now,
+so that the recovery after the reset follows at once. Until then it waits, with no request and no lagging event, and
+tries again at a later stale message. An enabled producer that is silent, in backoff after failed recoveries, capped,
+in the middle of a recovery, or with a gap open (its own recovery goes first) therefore holds the net back for every session that receives it, and a session that stays
+behind meanwhile is not reset. A session whose messages reach back past a producer's stateful recovery window, less a
+margin, is not reset either: it lags (`onSessionLagChange`), because no recovery would repeat what the reset drops. If a
+recovery the net asked for fails, ends or is given up before the reset is made, the reset is cancelled (a refusal or a
+timeout raises `onSafetyNetEvent` and makes the net wait a minute or more; a lost connection or channel does not).
+The last acceptance checks again that every producer can still be asked for a recovery after the reset: one that went silent
+meanwhile, or is in its retry backoff, cancels the reset. A checkpoint after the producer's own clock - the clock stepped back -
+holds the net back until the clock has caught up.
 
 ### Thresholds
 
