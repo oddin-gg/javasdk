@@ -1001,7 +1001,8 @@ and REST workers post facts to it; it decides and posts work out.
     recovery of the net that passes the maximum recovery time while its session's reset is with the
     AMQP layer is given up, not failed, so no retry backoff delays its follow-up. A producer
     enabled while a session that receives it is being reset is down for the reset until the
-    recovery after it completes, and a disabled producer's lanes keep no stale window: a session
+    recovery after it completes - also one that was down for the processing delay when it was
+    disabled, which a session taking messages on time again does not bring up - and a disabled producer's lanes keep no stale window: a session
     stops lagging without waiting for its samples.
     A stale window that began before a recovery of the producer ended, or before an alive made
     a stale clock offset fresh again, does not count that time: it starts again with the first
