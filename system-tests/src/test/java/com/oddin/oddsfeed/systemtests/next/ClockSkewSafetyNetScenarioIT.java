@@ -63,11 +63,12 @@ class ClockSkewSafetyNetScenarioIT {
             feed.publish(alive(2, true));
             var first = rest.awaitRequests("POST", PREMATCH_RECOVERY, 1).getFirst();
             var live = rest.awaitRequests("POST", LIVE_RECOVERY, 1).getFirst();
+            // one at a time: a status of the other producer read while waiting for this one's is lost
             feed.publish(snapshotComplete(1, Long.parseLong(first.parameter("request_id"))));
-            feed.publish(snapshotComplete(2, Long.parseLong(live.parameter("request_id"))));
             assertThat(sdk.events().nextProducerStatus(1).isDown())
                     .as("producer 1 down once its first recovery completed")
                     .isFalse();
+            feed.publish(snapshotComplete(2, Long.parseLong(live.parameter("request_id"))));
             assertThat(sdk.events().nextProducerStatus(2).isDown())
                     .as("producer 2 down once its first recovery completed")
                     .isFalse();
