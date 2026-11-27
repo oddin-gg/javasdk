@@ -181,7 +181,9 @@ class StaleFeedScenarioIT {
 
             // an alive on time, so the SDK knows the producer's clock; none in the stream, since the
             // session would take each as on time, while one queued behind a backlog is as old as it
+            // live's too, right before the stream: the net resets only while every producer's alive is recent
             feed.publish(alive(1, true));
+            feed.publish(alive(2, true));
             long until = System.nanoTime() + STALE_WINDOW.multipliedBy(3).toNanos();
             int published = 0;
             while (System.nanoTime() < until) {

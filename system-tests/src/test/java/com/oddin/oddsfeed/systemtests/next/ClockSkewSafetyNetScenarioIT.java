@@ -93,6 +93,8 @@ class ClockSkewSafetyNetScenarioIT {
             // the same stamps, the producer's clock now the SDK's: a feed a minute behind
             feed.skewClock(Duration.ZERO);
             feed.publish(alive(1, true));
+            // live's too, right before the stream: the net resets only while every producer's alive is recent
+            feed.publish(alive(2, true));
             stream(() -> feed.publishAsIs(stampedAt(LIVE_ODDS_CHANGE, System.currentTimeMillis() - BEHIND.toMillis())));
             assertThat(rest.awaitRequests("POST", PREMATCH_RECOVERY, 2))
                     .as("recoveries asked for: the first, and the safety net's")
