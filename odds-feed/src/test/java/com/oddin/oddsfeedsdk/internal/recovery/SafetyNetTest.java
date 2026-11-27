@@ -2088,6 +2088,228 @@ class SafetyNetTest {
         assertThat(feed.events).as("told once").hasSize(2);
     }
 
+    // ---- offset freshness, producers disabled, one predicate for lagging
+
+    @Test
+    void aClockOffsetThatWentStaleBeforeTheLastAcceptanceCancelsTheReset() {
+        // a minute's maximum inactivity: an alive is recent for a minute, its offset fresh for two intervals
+        Harness feed = new Harness(Harness.settings(Duration.ofSeconds(60)));
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.clock.advance(Duration.ofSeconds(30));
+        feed.accept(pre);
+        feed.accept(live);
+        assertThat(feed.resets)
+                .as("the ages and checkpoints were corrected by an offset gone stale")
+                .isEmpty();
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.failureReasons).containsExactly("producer offset stale");
+    }
+
+    @Test
+    void theNetWaitsWhileAnotherProducersClockOffsetIsStaleAndActsOnceItIsFreshAgain() {
+        Harness feed = new Harness(Harness.settings(Duration.ofSeconds(60)));
+        feed.open(1, MessageInterest.ALL);
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofSeconds(30), () -> false);
+        liveAlives = false;
+        assertThat(stale(feed, 1, OLD, Duration.ofSeconds(40), () -> feed.calls.size() > before))
+                .as("a request while live's offset is stale, its alive still recent")
+                .isEqualTo(-1);
+        assertThat(feed.events).as("it waits, with no lagging").isEmpty();
+        liveAlives = true;
+        assertThat(stale(feed, 1, OLD, Duration.ofMinutes(1), () -> feed.calls.size() > before))
+                .as("seconds to the net's request once live's alive has made the offset fresh: no backoff of its own")
+                .isBetween(1L, 10L);
+    }
+
+    @Test
+    void aProducerEnabledAfterAResetItWasDisabledThroughIsDownWhileItsGapIsOpen() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofSeconds(55), () -> false);
+        feed.producers.setProducerState(LIVE, false);
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        assertThat(feed.resets).containsExactly(1);
+        feed.resetDone();
+
+        feed.producers.setProducerState(LIVE, true);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.producers.isProducerDown(LIVE))
+                .as("its recovery of the reset's gap runs, and it is not up for it")
+                .isTrue();
+        assertThat(requireNonNull(feed.lastStatus(LIVE)).cause()).isEqualTo(StatusCause.SAFETY_NET_RESET);
+        assertThat(feed.machine.inFlightRecovery(LIVE)).isNotZero();
+        feed.complete(feed.lastSnapshot(LIVE), 1);
+        assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
+    void aProducerEnabledAfterAnOrdinaryGapItWasDisabledThroughStaysUpAsBefore() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        feed.producers.setProducerState(LIVE, false);
+        // session 1's channel is lost and comes back while live is disabled: a gap that put it down for no one
+        feed.machine.channelLost(1);
+        feed.machine.channelReopened(1);
+        feed.producers.setProducerState(LIVE, true);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.producers.isProducerDown(LIVE)).isFalse();
+    }
+
+    @Test
+    void aProducerAcceptedForTheResetAndDisabledSinceCancelsItAtTheNextTick() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.producers.setProducerState(PRE, false);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.failureReasons).containsExactly("producer disabled");
+        feed.accept(feed.lastSnapshot(LIVE));
+        assertThat(feed.resets)
+                .as("its backlog would go with the reset, and no recovery repeats it")
+                .isEmpty();
+    }
+
+    @Test
+    void aProducerAcceptedForTheResetAndDisabledSinceCancelsItAtTheLastAcceptanceBeforeAnyTick() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(feed.lastSnapshot(PRE));
+        feed.producers.setProducerState(PRE, false);
+        feed.accept(live);
+        assertThat(feed.resets).isEmpty();
+        assertThat(feed.failureReasons).containsExactly("producer disabled");
+    }
+
+    @Test
+    void disablingAnUnrelatedProducerDoesNotEndTheLaggingWhileAnotherLaneIsStillBehind() {
+        Harness feed = laggingWithBothLanesStale();
+        // prematch's recovery runs, and the session's next sample of it clears its window; its last age stays old
+        feed.unsubscribed(PRE);
+        feed.live(1, PRE, OLD);
+        assertThat(feed.machine.lagging(1)).isTrue();
+        feed.producers.setProducerState(LIVE, false);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.machine.lagging(1)).as("prematch is behind still").isTrue();
+        assertThat(feed.events).containsExactly("session 1 lagging");
+    }
+
+    @Test
+    void anOnTimeSampleOfOneLaneDoesNotEndTheLaggingWhileAnotherLanesLastAgeIsOverTheLimit() {
+        Harness feed = laggingWithBothLanesStale();
+        feed.unsubscribed(PRE);
+        feed.live(1, PRE, OLD);
+        feed.live(1, LIVE, FRESH);
+        assertThat(feed.machine.lagging(1)).isTrue();
+        // prematch's messages are on time too, once its recovery is done
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        feed.advance(Duration.ofSeconds(1));
+        feed.live(1, PRE, FRESH);
+        assertThat(feed.machine.lagging(1)).isFalse();
+        assertThat(feed.events).containsExactly("session 1 lagging", "session 1 caught up");
+    }
+
+    @Test
+    void theNetDoesNotActWhenTheTriggeringProducerIsDisabledBetweenTheCheckAndTheCollection() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofSeconds(60), () -> false);
+        // the client's thread disables prematch after the trigger has looked: its next reading says disabled
+        boolean[] looked = {false};
+        feed.machine.enabledView = id -> {
+            if (id == PRE && looked[0]) {
+                return false;
+            }
+            looked[0] |= id == PRE;
+            return feed.producers.isProducerEnabled(id);
+        };
+        stale(feed, 1, OLD, Duration.ofSeconds(1), () -> false);
+        assertThat(feed.calls)
+                .as("live is not asked for on a sample of a producer that is gone")
+                .hasSize(before);
+        assertThat(feed.events).isEmpty();
+    }
+
+    @Test
+    void aSampleTakenBeforeTheNewestJudgedOneDoesNotStartTheStaleWindowAtItsEarlierTime() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        feed.machine.processed(1, PRE, feed.now() - OLD.toMillis(), feed.feedClock.stamp(), 0);
+        quiet(feed, 10);
+        Stamp early = feed.feedClock.stamp();
+        quiet(feed, 20);
+        feed.live(1, PRE, FRESH);
+        // the older message's sample reaches the machine after the newer, on-time one
+        feed.machine.processed(1, PRE, early.wall() - OLD.toMillis(), early, 0);
+        quiet(feed, 40);
+        feed.live(1, PRE, OLD);
+        assertThat(feed.calls)
+                .as("forty seconds after the on-time sample, not a window")
+                .hasSize(before);
+    }
+
+    @Test
+    void aLaneWhoseGapTheNetCancelledNeedsAFullNewStaleWindowWhenItsProducerIsEnabledAgainBeforeTheFirstTick() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        feed.onRequest = call -> {
+            if (call.producerId() == PRE) {
+                feed.producers.setProducerState(LIVE, false);
+            }
+        };
+        int before = feed.calls.size();
+        for (int second = 1; second <= 60; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            if (second % 10 == 0) {
+                feed.alive(PRE);
+                feed.alive(LIVE);
+            }
+            long now = feed.now();
+            if (second <= 30) {
+                feed.machine.processed(1, LIVE, now - OLD.toMillis(), Stamp.of(now), 0);
+            }
+            feed.machine.processed(1, PRE, now - OLD.toMillis(), Stamp.of(now), 0);
+            feed.machine.tick();
+        }
+        // the sample of the 61st second cancels the reset, and live is enabled again before any tick has seen it off
+        feed.clock.advance(Duration.ofSeconds(1));
+        long now = feed.now();
+        feed.machine.processed(1, PRE, now - OLD.toMillis(), Stamp.of(now), 0);
+        feed.onRequest = call -> {};
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        feed.producers.setProducerState(LIVE, true);
+        feed.machine.tick();
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        assertThat(feed.calls).as("prematch asked for, live not").hasSize(before + 1);
+
+        // past the backoff and with no message of live, a stale one starts a window of its own
+        int asked = feed.calls.size();
+        for (int second = 1; second <= 70; second++) {
+            feed.clock.advance(Duration.ofSeconds(1));
+            if (second % 10 == 0) {
+                feed.alive(PRE);
+                feed.alive(LIVE);
+            }
+            feed.machine.tick();
+        }
+        long late = feed.now();
+        feed.machine.processed(1, LIVE, late - OLD.toMillis(), Stamp.of(late), 0);
+        assertThat(feed.calls)
+                .as("not at once: the window of the cancelled gap does not carry over")
+                .hasSize(asked);
+    }
+
     // ---- a stale clock offset
 
     @Test
