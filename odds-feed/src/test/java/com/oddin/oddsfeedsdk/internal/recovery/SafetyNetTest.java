@@ -1690,11 +1690,12 @@ class SafetyNetTest {
                 .as("prematch could not be asked for again after the reset")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.failureReasons).containsExactly("producer cannot be asked");
         assertThat(feed.counters.resetRequestsFailed()).isEqualTo(1);
     }
 
     @Test
-    void aReplacementRecoveryRefusedBeforeTheLastAcceptanceCancelsTheResetWhileItsProducerWaitsToBeAskedAgain() {
+    void aReplacementRecoveryRefusedBeforeTheLastAcceptanceCancelsTheResetAsChanged() {
         Harness feed = new Harness();
         feed.open(new SessionInfo(1, MessageInterest.LOW_PRIORITY_ONLY, false));
         feed.start();
@@ -1712,6 +1713,9 @@ class SafetyNetTest {
                 .as("with prematch waiting to be asked again, what the reset drops is not repeated at once")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 1");
+        assertThat(feed.failureReasons)
+                .as("the recovery is not the one asked for")
+                .containsExactly("recovery changed");
     }
 
     @Test
@@ -2004,6 +2008,73 @@ class SafetyNetTest {
                 .as("live's recovery is asked from its now, before its checkpoint")
                 .isEmpty();
         assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+    }
+
+    @Test
+    void
+            anUnsubscribedAliveWhilePreflightRequestsAreOutstandingLeavesThemInFlightAndTheLastAcceptanceCancelsTheReset() {
+        Harness feed = Harness.upWith(MessageInterest.ALL);
+        int before = feed.calls.size();
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+        // live stops sending before the API has answered for it: a gap opens, and the request stays in flight
+        feed.unsubscribed(LIVE);
+        assertThat(feed.machine.inFlightRecovery(LIVE))
+                .as("not given up: not accepted yet")
+                .isEqualTo(live.requestId());
+        assertThat(feed.events).as("nothing cancelled it").isEmpty();
+        feed.accept(live);
+        assertThat(feed.resets)
+                .as("live's own recovery asks from the older gap and goes first")
+                .isEmpty();
+        assertThat(feed.events).containsExactly("session 1 not reset for producer 2");
+        assertThat(feed.failureReasons).containsExactly("producer has a gap open");
+    }
+
+    @Test
+    void anUnsubscribedAliveBeforeASiblingsSnapshotCompleteSuppliesTheLastAcceptanceCancelsTheReset() {
+        Harness feed = new Harness();
+        feed.open(1, MessageInterest.HI_PRIORITY_ONLY);
+        feed.open(new SessionInfo(2, MessageInterest.LOW_PRIORITY_ONLY, false));
+        feed.start();
+        feed.bothUp(1);
+        int before = feed.calls.size();
+        stale(feed, 2, OLD, Duration.ofMinutes(5), () -> feed.calls.size() > before);
+        Outbox.Call.Snapshot pre = feed.lastSnapshot(PRE);
+        Outbox.Call.Snapshot live = feed.lastSnapshot(LIVE);
+        feed.accept(pre);
+        feed.unsubscribed(LIVE);
+        // the high-priority session's snapshot complete says the API took it, before the REST answer
+        feed.machine.snapshotComplete(1, LIVE, live.requestId());
+        assertThat(feed.resets)
+                .as("the gap the unsubscribe opened is older than the checkpoints say")
+                .isEmpty();
+        assertThat(feed.events).containsExactly("session 2 not reset for producer 2");
+        assertThat(feed.failureReasons).containsExactly("producer has a gap open");
+    }
+
+    @Test
+    void aLaggingSessionWhoseLaneWasNotOverTheLimitStopsLaggingWhenItsProducerIsDisabled() {
+        Harness feed = new Harness(Harness.settings(), false, 1);
+        feed.open(1, MessageInterest.PREMATCH_ONLY);
+        feed.start();
+        feed.alive(PRE);
+        feed.complete(feed.lastSnapshot(PRE), 1);
+        stale(feed, 1, OLD, Duration.ofMinutes(5), () -> false);
+        assertThat(feed.machine.lagging(1)).isTrue();
+        // a recovery of the producer's own is in flight, and the session's next sample clears its lane
+        feed.unsubscribed(PRE);
+        feed.live(1, PRE, OLD);
+        assertThat(feed.machine.lagging(1)).as("nothing yet says it caught up").isTrue();
+
+        feed.producers.setProducerState(PRE, false);
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.machine.lagging(1)).isFalse();
+        assertThat(feed.events).containsExactly("session 1 lagging", "session 1 caught up");
+        feed.advance(Duration.ofSeconds(1));
+        assertThat(feed.events).as("told once").hasSize(2);
     }
 
     // ---- a stale clock offset

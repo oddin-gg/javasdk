@@ -998,6 +998,7 @@ final class RecoveryMachine {
                 forgetStaleWindows(track);
                 continue;
             }
+            track.disabledNoticed = false;
             if ((!track.down || track.cause == StatusCause.PROCESSING_DELAY) && underway(track)) {
                 // enabled while a session that receives it is being reset, which skipped it: it is not up until the
                 // recovery after, and a session taking messages on time again must not bring it up before
@@ -1080,12 +1081,16 @@ final class RecoveryMachine {
      * begun does not wait for it to be enabled again, and a session that lags stops lagging without it.
      */
     private void forgetStaleWindows(Track track) {
+        boolean first = !track.disabledNoticed;
+        track.disabledNoticed = true;
         for (SessionState session : sessions.values()) {
             Lane lane = session.lanes.get(track.id);
-            if (lane != null && lane.above) {
+            if (lane != null) {
                 lane.above = false;
-                // no sample of the producer will say it caught up
-                stopLaggingIfCaughtUp(session);
+                if (first) {
+                    // no sample of the producer will say it caught up, whether its lane was over the limit or not
+                    stopLaggingIfCaughtUp(session);
+                }
             }
         }
     }
@@ -1859,7 +1864,8 @@ final class RecoveryMachine {
      * with its acceptance, with no session to wait for; each can still be asked for after the reset
      * - an alive is recent and none is awaited, no retry or cool-down holds it back, every session
      * that receives it has a bound queue, as {@link #canRequest} says apart from the recovery in
-     * flight; the feed is not closing, which would drop what the close is about to settle; and the
+     * flight, and none has a gap open apart from the net's own, which its ordinary recovery asks from;
+     * the feed is not closing, which would drop what the close is about to settle; and the
      * checkpoint of each is not after the producer's clock and has not fallen out of its stateful
      * recovery window meanwhile, which no recovery would then repeat.
      */
@@ -1899,6 +1905,19 @@ final class RecoveryMachine {
                         true,
                         "recovery changed",
                         "the recovery it asked of producer " + producerId + " is not the one in flight");
+                return;
+            }
+            if (hasDownGaps(other)) {
+                // a gap opened since - the producer stopped sending, a session lost its queue - which the ordinary
+                // recovery asks from, older than what the checkpoints say: it goes first, and the reset waits
+                resetNotMadeAtAcceptance(
+                        session,
+                        producerId,
+                        mono,
+                        true,
+                        "producer has a gap open",
+                        "producer " + producerId
+                                + " has a gap open since the net asked, which its ordinary recovery has to repeat first");
                 return;
             }
             if (!askable(other, mono)) {
@@ -2315,6 +2334,8 @@ final class RecoveryMachine {
 
         @Nullable
         Active active;
+        /** Whether the tick has seen the producer disabled since it was last enabled. */
+        boolean disabledNoticed;
         /** The request id of its latest recovery, in flight or ended; 0 before the first. */
         long lastRequestId;
         /**

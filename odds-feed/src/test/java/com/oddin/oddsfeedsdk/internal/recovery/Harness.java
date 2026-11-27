@@ -53,6 +53,8 @@ final class Harness {
     final List<ProducerStatusChange> publicStatuses = new ArrayList<>();
 
     final List<String> events = new ArrayList<>();
+    /** The reasons of the safety net's failed requests, in order: which check cancelled a reset. */
+    final List<String> failureReasons = new ArrayList<>();
     /** The sessions opened, for the alives in their queues. */
     final List<Integer> sessions = new ArrayList<>();
 
@@ -138,6 +140,7 @@ final class Harness {
             @Override
             public void safetyNetRequestFailed(int session, long producerId, String reason) {
                 events.add("session " + session + " not reset for producer " + producerId);
+                failureReasons.add(reason);
             }
 
             @Override
