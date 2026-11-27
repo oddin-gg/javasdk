@@ -146,7 +146,7 @@ final class RecoveryMachine {
      * Whether a producer is enabled, as the client's producer manager says: a client's thread can change
      * it between two readings. A test's hook, to change it between two.
      */
-    LongPredicate enabledView;
+    volatile LongPredicate enabledView;
 
     private final RecoverySettings settings;
     private final Outbox outbox;
@@ -511,6 +511,13 @@ final class RecoveryMachine {
             // meanwhile are gone; the net waits as long as after the last reset made, and the backoff does
             // not grow for one not made
             LOG.warn("The safety net's reset of session {} was not made", id);
+            for (Lane lane : session.lanes.values()) {
+                if (lane.gap != null) {
+                    // the queue was not replaced: the gap is no gap of a reset, and a producer enabled now is not
+                    // down for one
+                    lane.gap.afterReset = false;
+                }
+            }
             session.nextResetAt =
                     mono + backoff(settings.firstResetBackoff(), Math.max(1, resetsWithinCooldown(session, mono)));
             notSeen(session, mono, 0);
@@ -820,8 +827,14 @@ final class RecoveryMachine {
                 active.seen.add(id);
                 PendingReset pending = session == null ? null : session.pending;
                 if (session != null && pending != null && pending.asked.containsKey(producerId)) {
-                    // the session has what the recovery sent: a reset now would drop it
-                    cancelReset(session, mono(), true);
+                    Long disabled = disabledAmongAsked(pending);
+                    if (disabled != null) {
+                        // a producer asked for is gone: that is what the reset is not made for, and it is reported
+                        resetNotMadeForDisabledProducer(session, disabled, mono());
+                    } else {
+                        // the session has what the recovery sent: a reset now would drop it
+                        cancelReset(session, mono(), true);
+                    }
                 }
                 if (!active.accepted) {
                     // a snapshot complete says the API took the request, whatever it answers later
@@ -1002,20 +1015,17 @@ final class RecoveryMachine {
     void tick() {
         long mono = mono();
         cancelResetsWaitingForDisabledProducers(mono);
+        for (SessionState session : sessions.values()) {
+            // an offset that went stale, or a producer disabled, may have taken the last lane that was behind
+            stopLaggingIfCaughtUp(session, mono);
+        }
         for (Track track : tracks.values()) {
             if (!enabled(track)) {
                 forgetStaleWindows(track);
                 continue;
             }
             track.disabledNoticed = false;
-            if (track.resetMissed) {
-                track.resetMissed = false;
-                if (hasDownGaps(track)) {
-                    // enabled with the gap of a reset it was disabled through still open: it is not up until the
-                    // recovery after, and a session taking messages on time again must not bring it up before
-                    markDown(track, StatusCause.SAFETY_NET_RESET);
-                }
-            }
+            downWhileResetting(track);
             Active active = track.active;
             if (active != null) {
                 if (mono - active.issuedMono > settings.maxRecoveryTime().toMillis()) {
@@ -1100,6 +1110,8 @@ final class RecoveryMachine {
             if (lane != null) {
                 lane.above = false;
                 lane.age = UNKNOWN_AGE;
+                // a sample taken before now, still on its way, would put back what is forgotten
+                lane.forgottenAt = mono();
                 if (first) {
                     // no sample of the producer will say it caught up, whether its lane was over the limit or not
                     stopLaggingIfCaughtUp(session, mono());
@@ -1195,7 +1207,31 @@ final class RecoveryMachine {
                         || mono - track.capSpentAt >= settings.cooldown().toMillis());
     }
 
+    /**
+     * A producer enabled after a reset it was disabled through, so the reset could not mark it down, is
+     * down for the reset while any lane of it has the reset's gap open: it is not up until the recovery
+     * after the reset completes, and a session taking messages on time again must not bring it up before.
+     * Checked where every request passes, and at the tick for one whose request is still held back.
+     */
+    private void downWhileResetting(Track track) {
+        if ((!track.down || track.cause == StatusCause.PROCESSING_DELAY) && hasAfterResetGap(track)) {
+            markDown(track, StatusCause.SAFETY_NET_RESET);
+        }
+    }
+
+    /** Whether a lane of the producer has the gap of a safety net reset open. */
+    private boolean hasAfterResetGap(Track track) {
+        for (SessionState session : sessions.values()) {
+            Lane lane = session.lanes.get(track.id);
+            if (lane != null && lane.gap != null && lane.gap.afterReset) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void request(Track track, long mono) {
+        downWhileResetting(track);
         long wall = wall();
         long gapStart = oldestGap(track);
         long after = after(track, gapStart);
@@ -1672,6 +1708,10 @@ final class RecoveryMachine {
     // ---- the safety net
 
     private void sample(SessionState session, Lane lane, Track track, long generatedAt, Stamp taken) {
+        if (taken.mono() <= lane.forgottenAt) {
+            // taken before the lane's producer was seen disabled, and its state forgotten: not what it is now
+            return;
+        }
         long mono = mono();
         if (!offsetFresh(track, mono)) {
             lane.age = UNKNOWN_AGE;
@@ -1679,6 +1719,11 @@ final class RecoveryMachine {
             return;
         }
         long age = taken.wall() - generatedAt - offsetAt(track, taken);
+        if (age > settings.staleLimit().toMillis() && taken.mono() < lane.judgedAt) {
+            // taken before a sample the window was already judged by: it says nothing of how long the lane has been
+            // stale, as the newer one is on time or began the window, and it does not replace its age
+            return;
+        }
         lane.age = age;
         if (track.active != null
                 || hasGaps(track)
@@ -1693,11 +1738,6 @@ final class RecoveryMachine {
             lane.above = false;
             lane.judgedAt = Math.max(lane.judgedAt, taken.mono());
             stopLaggingIfCaughtUp(session, mono);
-            return;
-        }
-        if (taken.mono() < lane.judgedAt) {
-            // taken before a sample the window was already judged by: it says nothing of how long the lane has been
-            // stale, as the newer one is on time or began the window
             return;
         }
         lane.judgedAt = taken.mono();
@@ -2039,8 +2079,10 @@ final class RecoveryMachine {
                 gap.pendingReset = false;
             } else {
                 // what the reset drops starts here, before any sample of the new channel moves it
-                lane.gap = openGap(null, lane.checkpoint, false);
+                gap = openGap(null, lane.checkpoint, false);
+                lane.gap = gap;
             }
+            gap.afterReset = true;
             lane.above = false;
         }
         LOG.warn(
@@ -2147,14 +2189,7 @@ final class RecoveryMachine {
      * another cause, and to 0.0.x's callback only when it was up or down for another public reason.
      */
     private void markDown(Track track, StatusCause cause) {
-        if (!enabled(track)) {
-            if (cause == StatusCause.SAFETY_NET_RESET) {
-                // a reset dropped its queue's messages while it was disabled: it is down for that once enabled
-                track.resetMissed = true;
-            }
-            return;
-        }
-        if (track.down && track.cause == cause) {
+        if (!enabled(track) || (track.down && track.cause == cause)) {
             return;
         }
         Active active = track.active;
@@ -2397,8 +2432,6 @@ final class RecoveryMachine {
         Active active;
         /** Whether the tick has seen the producer disabled since it was last enabled. */
         boolean disabledNoticed;
-        /** Whether a safety net reset was made while it was disabled, so it could not be marked down for it. */
-        boolean resetMissed;
         /** The request id of its latest recovery, in flight or ended; 0 before the first. */
         long lastRequestId;
         /**
@@ -2472,6 +2505,8 @@ final class RecoveryMachine {
         long lastAt;
         /** When the newest sample the stale window was judged by was taken, monotonic; 0 before the first. */
         long judgedAt;
+        /** When the lane's stale state was last forgotten, because its producer was disabled; 0 for never. */
+        long forgottenAt;
         /** Whether the samples have been over the stale limit since {@link #aboveSince}. */
         boolean above;
 
@@ -2485,6 +2520,8 @@ final class RecoveryMachine {
         long seq;
         /** Whether it is the safety net's, for a reset not made yet. */
         boolean pendingReset;
+        /** Whether it is the gap of a reset handed to the transport, which the queue's replacement left open. */
+        boolean afterReset;
 
         Gap(long from, long seq, boolean pendingReset) {
             this.from = from;
